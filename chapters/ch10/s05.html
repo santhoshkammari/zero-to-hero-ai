@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Attention Mechanism — Zero to Hero AI</title>
+  <title>State Space Models &amp; Mamba — Zero to Hero AI</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="../../css/style.css">
@@ -191,18 +191,13 @@
     <span class="ch-arrow">▶</span>
   </a>
   <div class="nav-sections">
-    <a class="nav-section" data-href="ch10/s01.html">Recurrent Neural Networks</a>
-    <a class="nav-section" data-href="ch10/s02.html">LSTM</a>
-    <a class="nav-section" data-href="ch10/s03.html">GRU</a>
-    <a class="nav-section" data-href="ch10/s04.html">Sequence-to-Sequence</a>
-    <a class="nav-section" data-href="ch10/s05.html">Attention Mechanism</a>
-    <a class="nav-section" data-href="ch10/s06.html">Self-Attention</a>
-    <a class="nav-section" data-href="ch10/s07.html">Transformer Architecture</a>
-    <a class="nav-section" data-href="ch10/s08.html">BERT Internals</a>
-    <a class="nav-section" data-href="ch10/s09.html">GPT Internals</a>
-    <a class="nav-section" data-href="ch10/s10.html">State Space Models &amp; Mamba</a>
-    <a class="nav-section" data-href="ch10/s11.html">Transformer Interpretability &amp; Analysis</a>
-    <a class="nav-section" data-href="ch10/s12.html">Sub-Quadratic Architectures</a>
+    <a class="nav-section" data-href="ch10/s01.html">Recurrent Models: RNN, LSTM, GRU</a>
+    <a class="nav-section" data-href="ch10/s02.html">Seq2Seq &amp; the Birth of Attention</a>
+    <a class="nav-section" data-href="ch10/s03.html">Self-Attention &amp; the Transformer</a>
+    <a class="nav-section" data-href="ch10/s04.html">BERT &amp; GPT: The Two Paradigms</a>
+    <a class="nav-section" data-href="ch10/s05.html">State Space Models &amp; Mamba</a>
+    <a class="nav-section" data-href="ch10/s06.html">Interpretability &amp; Efficient Architectures</a>
+    <a class="nav-section" data-href="ch10/s07.html">Nice to Know</a>
     <a class="nav-section" data-href="ch10/s13.html">Nice to Know</a>
   </div>
   <div class="nav-part">Language &amp; LLMs</div>
@@ -373,7 +368,7 @@
 
   <div class="main">
     <div class="topbar">
-      <div class="breadcrumb"><a href="../../index.html">Home</a><span class="sep">/</span><a href="../../chapters/ch10/index.html">Ch 10</a><span class="sep">/</span><span>Attention Mechanism</span></div>
+      <div class="breadcrumb"><a href="../../index.html">Home</a><span class="sep">/</span><a href="../../chapters/ch10/index.html">Ch 10</a><span class="sep">/</span><span>State Space Models &amp; Mamba</span></div>
       <div class="topbar-actions">
         <button class="theme-toggle">🌙</button>
       </div>
@@ -381,226 +376,317 @@
 
     <div class="content">
 
-<h1>Attention Mechanism</h1>
+<h1>State Space Models &amp; Mamba</h1>
 <div class="chapter-meta">
   <span class="tag">Chapter 10: Sequence Models &amp; Attention</span>
-  <span class="tag">7 subtopics</span>
+  <span class="tag">Beyond O(n²) · Selective state spaces · The emerging challenger</span>
 </div>
 
 <div class="tldr">
   <div class="tldr-label">TL;DR</div>
-  <p>Seq2seq models crush an entire input sentence into one fixed-size vector — a brutal bottleneck. Attention fixes this by letting the decoder peek back at every encoder hidden state at every step, computing a weighted average that highlights the most relevant input words. Bahdanau attention (additive) scores relevance with a small neural network; Luong attention (multiplicative) uses dot products for speed. The resulting attention weights are interpretable — you can literally see which source words the model focused on. Attention isn't just a seq2seq trick: it's a general-purpose information routing mechanism that became the foundation of Transformers.</p>
+  <p>Transformers pay O(n²) for attention — painful at long sequence lengths. State space models (SSMs) borrow from control theory to process sequences with linear complexity. The trick: the same math can run as a <strong>convolution</strong> during training (parallel, GPU-friendly) and as a <strong>recurrence</strong> during inference (O(1) per step, constant memory). Mamba adds input-dependent selectivity — the model learns <em>what to remember and what to forget</em> based on content, not just position. The result is transformer-quality modeling at a fraction of the cost for long sequences. The field is young, moving fast, and increasingly converging toward hybrid architectures.</p>
 </div>
 
-<h2>The Information Bottleneck Problem</h2>
+<h2>The Transformer's Achilles' Heel</h2>
 
-<p>Here's the fundamental problem that plagued early seq2seq models. You have an encoder RNN that reads an entire input sentence — maybe 30 words, maybe 80 — and compresses it into a single fixed-size vector. That final hidden state is the <em>only</em> thing the decoder gets to work with. Every nuance, every word, every relationship in the input must survive that compression.</p>
+<p>Self-attention is powerful because every token can look at every other token. But that power has a cost: for a sequence of length <em>n</em>, attention computes an <em>n × n</em> matrix of scores. Double the sequence length, quadruple the compute. That's O(n²) in both time and memory.</p>
 
-<p>Think about how absurd that is. It's like asking someone to read a full page of text, then summarize everything they learned into a single number. Short sentences? Fine. But try compressing "The government of the Federal Republic of Germany announced on Tuesday that trade negotiations with the European Union regarding agricultural subsidies have been postponed until next quarter" into one vector of 256 floats. The early words get overwritten as the RNN processes later words. By the time you reach the period, "government" is a fading echo buried under layers of matrix multiplications.</p>
+<p>For a 512-token input, this is fine. For a 100K-token context window — the kind you need for an entire codebase or a full novel — it's brutal. Modern LLMs use clever tricks to cope: FlashAttention for memory efficiency, KV caches, sliding windows, sparse attention patterns. But these are band-aids on a fundamentally quadratic algorithm.</p>
 
-<p>This isn't a theoretical worry. Researchers observed it directly: seq2seq translation quality collapsed on sentences longer than about 20 words. The <strong>information bottleneck</strong> was real and measurable. BLEU scores dropped off a cliff as sentence length grew. The encoder's final hidden state simply couldn't hold enough information.</p>
+<p>Which raises a question: is there a model that processes sequences <strong>without</strong> the quadratic bottleneck, while still capturing long-range dependencies?</p>
 
-<p>The decoder needs more than a summary. When it's generating the third output word, it doesn't need the entire input — it needs to know which specific part of the input is relevant <em>right now</em>. When translating "The cat sat on the mat" to French and generating "chat" (cat), the decoder should be looking hard at the word "cat," not at "mat" or "the." The decoder needs to <em>look back</em> at specific positions in the input, differently at each step.</p>
+<h2>State Space Models — The Core Idea</h2>
 
-<h2>The Core Idea: Dynamic Context Vectors</h2>
+<p>The answer comes from an unexpected place: <strong>control theory</strong>. Engineers have modeled dynamic systems for decades using state space equations. A satellite tracking system, a thermostat, an aircraft autopilot — all described by the same math:</p>
 
-<p>The <strong>attention mechanism</strong> solves the bottleneck with an elegant idea: instead of one fixed context vector, compute a <em>different</em> context vector for each decoder time step. Each context vector is a weighted sum of <em>all</em> encoder hidden states. The weights tell the decoder which input words to pay attention to at this particular moment.</p>
+<pre><code class="language-python"># Continuous-time state space model (the math, not code)
+# x'(t) = A x(t) + B u(t)    ← state update: how the hidden state evolves
+# y(t)  = C x(t) + D u(t)    ← output: what we observe
 
-<p>Let's say your encoder processes "The cat sat on the mat" and produces hidden states h₁, h₂, h₃, h₄, h₅, h₆ — one for each word. In a vanilla seq2seq model, only h₆ (the last one) gets passed to the decoder. With attention, every h₁ through h₆ stays accessible. At each decoder step, the model computes a relevance score between the current decoder state and every encoder hidden state, normalizes those scores into a probability distribution, and takes a weighted average. The result is a context vector that's custom-built for that specific decoding step.</p>
+# x(t) is the hidden state (what the system "remembers")
+# u(t) is the input signal
+# y(t) is the output signal
+# A governs state dynamics, B maps input to state,
+# C maps state to output, D is a skip connection
+</code></pre>
 
-<p>When generating "chat," the attention weights might be [0.02, 0.85, 0.03, 0.02, 0.01, 0.07] — heavily concentrated on h₂ (the hidden state for "cat"). When generating "assis" (sat), the weights shift to concentrate on h₃. The decoder dynamically routes information from exactly where it's needed.</p>
+<p>The key insight: this is a <strong>continuous-time recurrence</strong>. The hidden state <code>x(t)</code> summarizes everything the system has seen so far, and it evolves smoothly over time based on the current input. Sound familiar? It's conceptually similar to an RNN's hidden state — but grounded in a mathematical framework with 70+ years of theory behind it.</p>
 
-<h2>Bahdanau (Additive) Attention</h2>
+<p>To use this for discrete sequences (like tokens), you <strong>discretize</strong> the equations. Pick a step size Δ, and convert the continuous A, B into discrete versions Ā, B̄ using standard techniques (zero-order hold, bilinear transform). Now you have:</p>
 
-<p>The first attention mechanism was proposed by Bahdanau, Cho, and Bengio in their 2014 paper. It's called <strong>additive attention</strong> because the score function adds the decoder state and encoder state together (after linear transformations) before passing through a tanh nonlinearity.</p>
+<pre><code class="language-python"># Discretized state space model
+# x_k = Ā x_{k-1} + B̄ u_k    ← recurrence: process one token at a time
+# y_k = C x_k                  ← (D term often dropped for simplicity)
 
-<p>Here's how it works, step by step. At decoder time step i, you have the decoder's current hidden state sᵢ and the full set of encoder hidden states h₁, h₂, ..., hₜ. The score between sᵢ and each encoder state hⱼ is:</p>
+# This looks exactly like an RNN! But there's a crucial difference...
+</code></pre>
 
-<p><code>score(sᵢ, hⱼ) = vᵀ tanh(W₁sᵢ + W₂hⱼ)</code></p>
+<h2>The Dual Nature: Convolution + Recurrence</h2>
 
-<p>W₁ and W₂ are learned weight matrices that project the decoder state and encoder state into a common space. The tanh squashes the sum. Then v (a learned vector) collapses it to a single scalar — the attention score. This is essentially a tiny one-hidden-layer neural network that answers: "How relevant is encoder position j to the current decoding step i?"</p>
+<p>Here's where SSMs get clever. That recurrence above? If you unroll it across the entire sequence, something beautiful happens. The output at each position is a <strong>weighted combination of all previous inputs</strong> — and the weights form a fixed kernel determined by A, B, C. In other words, the recurrence can be rewritten as a <strong>convolution</strong>.</p>
 
-<p>Let's walk through a concrete example. We're translating "The cat sat on the mat" to "Le chat est assis sur le tapis." The encoder (a bidirectional RNN) has produced hidden states h₁ through h₆. The decoder is at step 2, about to generate "chat." Its current hidden state is s₂.</p>
+<pre><code class="language-python"># Unrolling the recurrence reveals a convolution kernel:
+# K = (C B̄, C Ā B̄, C Ā² B̄, ..., C Ā^{L-1} B̄)
+#
+# y = K * u   (where * is convolution)
+#
+# During TRAINING:  use convolution → parallel, O(n log n) via FFT
+# During INFERENCE: use recurrence  → sequential, O(1) per step
 
-<p>The model computes six scores: score(s₂, h₁), score(s₂, h₂), ..., score(s₂, h₆). Suppose after the matrix multiplications and tanh, these come out as [-1.2, 3.8, 0.1, -0.5, -1.0, 0.3]. The score for h₂ ("cat") is by far the highest. Good — the model has learned that when generating the French word for cat, you should look at the English word "cat."</p>
+# Best of both worlds!
+import torch
 
-<p>One subtle detail: Bahdanau attention uses the decoder state from the <em>previous</em> time step (sᵢ₋₁) to compute attention, then feeds the resulting context vector into the current step's RNN cell. This means attention is computed <em>before</em> the RNN update, not after.</p>
+def ssm_convolution(u, A_bar, B_bar, C, L):
+    """Training mode: build kernel, convolve (parallel)."""
+    kernel = []
+    A_power = torch.eye(A_bar.shape[0])
+    for i in range(L):
+        kernel.append(C @ A_power @ B_bar)
+        A_power = A_power @ A_bar
+    K = torch.stack(kernel)  # shape: (L,)
+    return torch.nn.functional.conv1d(
+        u.unsqueeze(0), K.flip(0).unsqueeze(0).unsqueeze(0), padding=L-1
+    )[..., :L]
 
-<pre><code>import torch
+def ssm_recurrence(u, A_bar, B_bar, C):
+    """Inference mode: step-by-step (O(1) memory per step)."""
+    x = torch.zeros(A_bar.shape[0])
+    outputs = []
+    for u_k in u:
+        x = A_bar @ x + B_bar * u_k
+        outputs.append(C @ x)
+    return torch.stack(outputs)
+</code></pre>
+
+<div class="callout callout-info">
+  <div class="callout-label">Why This Matters</div>
+  <p>RNNs can do O(1) per step at inference but are sequential during training — painfully slow. Transformers are parallel during training but O(n²). SSMs get O(n log n) parallel training <strong>and</strong> O(1)-per-step inference. This isn't a compromise — it's genuinely the best of both worlds.</p>
+</div>
+
+<h2>HiPPO: Teaching the State to Remember</h2>
+
+<p>There's a catch. A random matrix A will produce a state that forgets quickly — the recurrence either explodes or decays to zero, just like vanilla RNNs. The model needs to <em>remember</em> long-range dependencies, and that means initializing A very carefully.</p>
+
+<p>This is the <strong>HiPPO</strong> framework (High-order Polynomial Projection Operator). The intuition: at every time step, the hidden state should optimally compress the <em>entire history</em> of inputs it has seen. HiPPO does this by projecting the input history onto a basis of orthogonal polynomials — think of it as fitting a polynomial approximation to everything you've seen so far and updating that approximation efficiently as new inputs arrive.</p>
+
+<p>You don't need to understand the math of Legendre polynomials to get the key takeaway: <strong>HiPPO gives you a specific matrix A that is provably optimal for remembering history</strong>. And it works — models initialized with HiPPO can capture dependencies thousands of steps in the past, where vanilla RNNs and even LSTMs fail completely.</p>
+
+<div class="callout callout-warning">
+  <div class="callout-label">Don't Confuse the A Matrix with Learned Weights</div>
+  <p>In early SSMs, A is <em>initialized</em> with the HiPPO matrix and may be partially learned during training. It's more like a carefully designed inductive bias than a random initialization. This structural prior is what makes SSMs fundamentally different from "just another RNN."</p>
+</div>
+
+<h2>S4: Making SSMs Practical</h2>
+
+<p>The HiPPO matrix has a specific structure — it's a particular kind of low-rank-plus-diagonal matrix. <strong>S4</strong> (Structured State Spaces for Sequence Modeling) exploits this structure to make the computation efficient. Computing the convolution kernel naively for large state dimensions is expensive, but S4 decomposes the problem using techniques from numerical linear algebra — specifically, the connection between the HiPPO matrix and Cauchy kernels — to bring the cost down dramatically.</p>
+
+<p>S4 was the proof-of-concept that SSMs could actually compete. It achieved state-of-the-art results on the Long Range Arena benchmark — a suite of tasks specifically designed to test long-range dependency modeling, where transformers struggled. Sequences of 1K–16K tokens, tasks like classifying documents by their full content or determining if two points in a path are connected. S4 crushed these benchmarks while using a fraction of the compute.</p>
+
+<p>But S4 had limitations. The A, B, C matrices were <strong>fixed</strong> — they didn't change based on what the model was looking at. The model processed "the cat sat" and "important: remember this" with exactly the same dynamics. It couldn't <em>selectively</em> pay attention to content.</p>
+
+<h2>Mamba: The Breakthrough</h2>
+
+<p>This is the big one. <strong>Mamba</strong> (Gu &amp; Dao, 2023) makes a deceptively simple change that transforms SSMs from a niche research curiosity into a genuine transformer competitor: <strong>the matrices B, C, and the step size Δ become functions of the input</strong>.</p>
+
+<pre><code class="language-python"># Standard SSM (S4-style): parameters are fixed
+# x_k = Ā x_{k-1} + B̄ u_k       ← same Ā, B̄ for every token
+
+# Mamba (selective SSM): parameters depend on the input
+# B_k = Linear(u_k)               ← B changes per token
+# C_k = Linear(u_k)               ← C changes per token
+# Δ_k = softplus(Linear(u_k))     ← step size changes per token
+# Ā_k, B̄_k = discretize(A, B_k, Δ_k)
+# x_k = Ā_k x_{k-1} + B̄_k u_k   ← dynamics change based on content!
+
+# Pseudocode for a Mamba block (simplified)
+import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-class BahdanauAttention(nn.Module):
-    def __init__(self, encoder_dim, decoder_dim, attention_dim):
+class SimplifiedMambaBlock(nn.Module):
+    def __init__(self, d_model, d_state, d_conv=4):
         super().__init__()
-        self.W1 = nn.Linear(decoder_dim, attention_dim, bias=False)
-        self.W2 = nn.Linear(encoder_dim, attention_dim, bias=False)
-        self.v = nn.Linear(attention_dim, 1, bias=False)
+        self.d_state = d_state
+        # Input projections
+        self.in_proj = nn.Linear(d_model, 2 * d_model, bias=False)
+        # Local convolution for short-range patterns
+        self.conv1d = nn.Conv1d(d_model, d_model, d_conv,
+                                padding=d_conv - 1, groups=d_model)
+        # Selective parameters — these depend on the input!
+        self.x_proj = nn.Linear(d_model, d_state * 2 + 1, bias=False)
+        # A is still initialized with structure (log-spaced)
+        self.A_log = nn.Parameter(
+            torch.log(torch.arange(1, d_state + 1).float()))
+        self.out_proj = nn.Linear(d_model, d_model, bias=False)
 
-    def forward(self, decoder_state, encoder_outputs):
-        # decoder_state: (batch, decoder_dim)
-        # encoder_outputs: (batch, src_len, encoder_dim)
+    def forward(self, x):
+        # x: (batch, seq_len, d_model)
+        z, x = self.in_proj(x).chunk(2, dim=-1)
 
-        # Project decoder state and add to each encoder output
-        # (batch, 1, attn_dim) + (batch, src_len, attn_dim)
-        score = self.v(
-            torch.tanh(
-                self.W1(decoder_state).unsqueeze(1)
-                + self.W2(encoder_outputs)
-            )
-        )  # (batch, src_len, 1)
+        # Local conv captures short-range patterns
+        x = self.conv1d(x.transpose(1, 2))[..., :x.shape[1]]
+        x = x.transpose(1, 2)
+        x = torch.nn.functional.silu(x)
 
-        score = score.squeeze(-1)           # (batch, src_len)
-        attn_weights = F.softmax(score, dim=-1)  # (batch, src_len)
+        # Input-dependent B, C, Δ — the "selective" part
+        x_dbl = self.x_proj(x)
+        B = x_dbl[..., :self.d_state]
+        C = x_dbl[..., self.d_state:2*self.d_state]
+        delta = torch.nn.functional.softplus(x_dbl[..., -1:])
 
-        # Weighted sum of encoder outputs
-        context = torch.bmm(
-            attn_weights.unsqueeze(1),       # (batch, 1, src_len)
-            encoder_outputs                   # (batch, src_len, encoder_dim)
-        ).squeeze(1)                          # (batch, encoder_dim)
+        # Selective scan (the actual SSM computation)
+        A = -torch.exp(self.A_log)
+        y = self.selective_scan(x, A, B, C, delta)
 
-        return context, attn_weights</code></pre>
+        # Gate and project
+        return self.out_proj(y * torch.nn.functional.silu(z))
+</code></pre>
 
-<p>Notice how W₂ can be precomputed for all encoder states once, since they don't change during decoding. Only W₁ needs recomputation at each step (because the decoder state changes). This is a useful optimization.</p>
+<p>Why does this matter so much? Think about reading a document. Some tokens are important ("The answer is 42"), others are filler ("As previously mentioned in the above paragraph"). A fixed SSM treats them all the same. Mamba's selective mechanism lets the model <strong>open the gate wide</strong> for important tokens (large Δ → write strongly to state) and <strong>close it</strong> for irrelevant ones (small Δ → state barely changes). It's content-based filtering — conceptually similar to what attention does, but with <strong>linear complexity</strong>.</p>
 
-<h2>Context Vector Computation</h2>
-
-<p>Let's formalize what happens after scoring. The raw scores eᵢⱼ = score(sᵢ, hⱼ) are just unnormalized numbers — they could be any real value. We need a proper probability distribution, so we apply softmax across all encoder positions:</p>
-
-<p><code>αᵢⱼ = exp(eᵢⱼ) / Σₖ exp(eᵢₖ)</code></p>
-
-<p>These <strong>attention weights</strong> αᵢⱼ are non-negative and sum to 1 over all source positions j. They form a distribution over the input sequence — a soft pointer that says "here's where to look." The <strong>context vector</strong> for decoder step i is then:</p>
-
-<p><code>cᵢ = Σⱼ αᵢⱼ hⱼ</code></p>
-
-<p>This is just a weighted average of the encoder hidden states. If α is peaked on one position, the context vector is essentially that one encoder state. If α is spread out, the context blends information from multiple positions. The decoder then uses this context vector (typically concatenated with its own state or the previous embedding) to predict the next output token.</p>
-
-<p>The beauty is that this entire pipeline — scoring, softmax, weighted sum — is differentiable. Gradients flow straight through, so the model learns <em>what</em> to attend to purely from the translation loss. Nobody hand-codes attention patterns. The model figures out on its own that "chat" should attend to "cat."</p>
-
-<h2>Luong (Multiplicative) Attention</h2>
-
-<p>A year after Bahdanau, Luong et al. (2015) proposed simpler scoring functions. The key insight: you don't necessarily need a neural network to compute the score. A dot product can work just as well and is <em>much</em> faster.</p>
-
-<p><strong>Luong attention</strong> comes in three flavors:</p>
-
-<p><strong>Dot</strong>: <code>score(sᵢ, hⱼ) = sᵢᵀ hⱼ</code>. Just the dot product. No learned parameters at all in the scoring function. This only works if sᵢ and hⱼ have the same dimensionality. It's blazingly fast because dot products are highly optimized on GPUs.</p>
-
-<p><strong>General</strong>: <code>score(sᵢ, hⱼ) = sᵢᵀ Wₐ hⱼ</code>. A single learned matrix Wₐ sits between the two vectors. This handles different dimensionalities and adds expressiveness. The matrix learns which dimensions of the decoder state should align with which dimensions of the encoder state.</p>
-
-<p><strong>Concat</strong>: <code>score(sᵢ, hⱼ) = vᵀ tanh(Wₐ [sᵢ; hⱼ])</code>. Concatenate the two vectors, then use a Bahdanau-style scoring. This is the most expressive but also the slowest.</p>
-
-<p>Another difference from Bahdanau: Luong attention computes attention using the decoder state at the <em>current</em> step (after the RNN update), not the previous step. The context vector is then combined with the current decoder state to produce the prediction. This is a subtle but important architectural difference.</p>
-
-<pre><code>class LuongDotAttention(nn.Module):
-    """Luong dot-product attention.
-    Requires encoder_dim == decoder_dim.
-    """
-    def __init__(self, hidden_dim):
-        super().__init__()
-        # Combines decoder state + context into an attentional hidden state
-        self.combine = nn.Linear(hidden_dim * 2, hidden_dim, bias=False)
-
-    def forward(self, decoder_state, encoder_outputs):
-        # decoder_state: (batch, hidden_dim)
-        # encoder_outputs: (batch, src_len, hidden_dim)
-
-        # Dot-product scores
-        scores = torch.bmm(
-            encoder_outputs,                     # (batch, src_len, hidden)
-            decoder_state.unsqueeze(2)           # (batch, hidden, 1)
-        ).squeeze(2)                             # (batch, src_len)
-
-        attn_weights = F.softmax(scores, dim=-1)
-
-        # Context vector via weighted sum
-        context = torch.bmm(
-            attn_weights.unsqueeze(1),           # (batch, 1, src_len)
-            encoder_outputs                       # (batch, src_len, hidden)
-        ).squeeze(1)                              # (batch, hidden)
-
-        # Attentional hidden state: combine context + decoder state
-        combined = torch.cat([context, decoder_state], dim=-1)
-        attentional_state = torch.tanh(self.combine(combined))
-
-        return attentional_state, attn_weights</code></pre>
-
-<p>In practice, the dot and general variants dominate. The dot product is the ancestor of the scaled dot-product attention used in Transformers — with one crucial addition (the scaling factor 1/√dₖ to prevent softmax saturation in high dimensions).</p>
-
-<h2>Global vs. Local Attention</h2>
-
-<p>Luong's paper also introduced the distinction between <strong>global attention</strong> and <strong>local attention</strong>. Everything we've discussed so far is global attention: at each decoder step, you score <em>every</em> encoder position. For a source sentence of length 100, that's 100 scores per decoder step. For length 1000, it's 1000 scores. The cost is O(source_length) per step.</p>
-
-<p>Global attention is expensive for long sequences. <strong>Local attention</strong> is the compromise. Instead of attending to all positions, you first predict a single alignment position pₜ for the current step. Then you only attend to a window of positions around pₜ — say [pₜ - D, pₜ + D] for some fixed window size D. Only 2D+1 scores to compute instead of the full source length.</p>
-
-<p>How do you predict pₜ? Luong proposed: pₜ = S · sigmoid(vₚᵀ tanh(Wₚ sₜ)), where S is the source length. The sigmoid output is between 0 and 1, scaled to [0, S]. You can also apply a Gaussian bias centered on pₜ to the attention weights so positions farther from pₜ get downweighted even within the window.</p>
-
-<p>Local attention is a middle ground between the hard alignment of traditional statistical MT (which picks exactly one position) and the soft global attention that considers everything. It's particularly useful for tasks where you have a rough prior about alignment being somewhat monotonic — like speech recognition or document summarization.</p>
-
-<h2>Visualizing Attention Weights</h2>
-
-<p>One of the most exciting properties of attention is <strong>interpretability</strong>. The attention weights αᵢⱼ form a matrix of shape (output_length × input_length). Plot this matrix as a heatmap and you can literally see what the model is doing.</p>
-
-<p>For English-to-French translation, you'll see a roughly diagonal pattern — word order is similar between the two languages. But you'll also see where the model deviates: French adjectives often follow nouns, so when generating "chat noir" from "black cat," the attention for "noir" points back to "black" (earlier in the English sentence) while "chat" attends to "cat" (later). The model has learned word reordering without being explicitly taught.</p>
-
-<p>For more distant language pairs — like English to Japanese, where word order is dramatically different — the attention matrix looks far from diagonal. You can trace the model's strategy for handling these structural differences directly from the heatmap.</p>
-
-<p>This interpretability was a breakthrough. Before attention, neural translation models were pure black boxes. With attention, you could debug failures: if the model mistranslates a word, check its attention weights. Is it looking at the right source word? If not, the attention mechanism is the problem. If it's attending correctly but still mistranslating, the issue is downstream. This kind of diagnosis was impossible with fixed-context seq2seq models.</p>
-
-<h2>Soft Attention vs. Hard Attention</h2>
-
-<p>Everything we've described is <strong>soft attention</strong>. The model computes a continuous weighted average of all positions. Every encoder state contributes a little bit (even if its weight is 0.001). This is wonderful for training because the entire computation is differentiable — gradients flow smoothly through the softmax and the weighted sum. Standard backpropagation works perfectly.</p>
-
-<p><strong>Hard attention</strong> takes a different approach: instead of a weighted average, it samples a single position from the attention distribution and uses only that encoder state. The context vector is just hⱼ where j is sampled from the categorical distribution defined by α. This is computationally cheaper at inference time (read one vector instead of summing over all of them) and produces a sparser, more interpretable alignment.</p>
-
-<p>The catch? Sampling is not differentiable. You can't backpropagate through a discrete sampling operation. Hard attention requires reinforcement learning techniques like the REINFORCE algorithm to train. REINFORCE provides unbiased gradient estimates, but they have high variance, making training noisy and unstable. You typically need variance reduction techniques (baselines, multiple samples) to make it work, which adds complexity.</p>
-
-<p>A practical compromise is the <strong>straight-through estimator</strong>: during the forward pass, use hard (argmax) attention, but during the backward pass, pretend you used soft attention and pass gradients through the softmax weights. It's biased but low-variance, and works surprisingly well in practice. Most modern systems just use soft attention, though — the computational savings of hard attention rarely justify the training headaches.</p>
-
-<h2>Cross-Attention vs. Self-Attention</h2>
-
-<p>Everything in this section has been <strong>cross-attention</strong>: the decoder attends to the encoder. The queries come from one sequence (the decoder), and the keys and values come from a different sequence (the encoder). This is the original form of attention, designed to bridge two sequences in tasks like translation, summarization, or image captioning.</p>
-
-<p>There's another flavor: <strong>self-attention</strong>, where a sequence attends to itself. Every position computes attention over every other position in the <em>same</em> sequence. This lets the model capture dependencies within a single sequence — like understanding that "it" in "The animal didn't cross the street because it was too tired" refers to "animal," not "street." Self-attention is the cornerstone of Transformers, and we'll cover it thoroughly in the next section.</p>
-
-<p>The mechanics are identical. The only difference is where the queries, keys, and values come from. In cross-attention: queries from sequence A, keys and values from sequence B. In self-attention: queries, keys, and values all come from the same sequence. The Transformer decoder uses both — self-attention within the output sequence, then cross-attention to the encoder output.</p>
-
-<h2>Monotonic Attention</h2>
-
-<p><strong>Monotonic attention</strong> adds a constraint: the attention pointer can only move forward (left to right) through the source sequence. At each decoder step, it either stays at the current position or advances — never goes backward. This is motivated by tasks where alignment is naturally monotonic: speech recognition (audio frames map sequentially to phonemes), real-time translation (you process input as it arrives), or text-to-speech.</p>
-
-<p>Standard soft attention can't do streaming because it needs the entire source sequence upfront to compute scores over all positions. Monotonic attention enables <strong>online</strong> or <strong>streaming</strong> inference: the decoder can start producing output before the encoder has finished processing input. At each step, the model makes a binary decision — "attend here" or "move forward" — stepping through encoder states one at a time until it decides to stop and emit an output.</p>
-
-<p>Training monotonic attention is tricky because the hard stop/go decisions aren't differentiable. Monotonic Infinite Lookback (MIL) attention and other variants address this by computing the expected attention under the monotonic process, giving you a soft, trainable approximation of the hard monotonic behavior. In practice, monotonic attention has found its niche in simultaneous translation and streaming ASR, where latency matters more than squeezing out the last BLEU point.</p>
-
-<h2>Attention as a General Mechanism</h2>
-
-<p>Step back and see the bigger picture. Attention isn't just a fix for seq2seq translation. It's a fundamentally new way to route information in neural networks.</p>
-
-<p>Think of attention as a <strong>soft lookup table</strong>. You have a query (what you're looking for), a set of keys (what's available), and corresponding values (the information stored at each key). The query is compared to all keys, producing a similarity score for each. These scores become weights over the values. The output is a weighted sum of values — you retrieve a blend of information, weighted by relevance.</p>
-
-<div class="callout">
-  <div class="callout-title">Attention Is Content-Based Addressing</div>
-  <p>Traditional computer memory uses addresses — position 0x7F3A holds a value. Attention uses content — "find me the stored information most similar to this query." It's the difference between looking up a word in a dictionary by page number versus by meaning. This content-based addressing makes attention incredibly flexible: the same mechanism works for translation, image captioning, question answering, graph neural networks, and protein folding.</p>
+<div class="callout callout-info">
+  <div class="callout-label">The Selectivity Trade-off</div>
+  <p>Making B, C, Δ input-dependent breaks the convolution trick — the kernel is no longer fixed, so you can't use FFT. Mamba compensates with a <strong>hardware-aware parallel scan</strong> algorithm that exploits GPU memory hierarchy (registers → SRAM → HBM). This is why Mamba isn't just a math paper — it's also a systems paper. The algorithm is carefully designed to be fast on actual hardware, not just in Big-O notation.</p>
 </div>
 
-<p>Before attention, information flow in neural networks was fixed by architecture. A CNN has a fixed receptive field. An RNN has a fixed path from position 1 to position T (through T-1 sequential steps). Attention breaks this rigidity. Any position can directly access any other position in a single step. Information no longer needs to squeeze through a narrow pipeline. It flows directly from where it's stored to where it's needed, gated by learned relevance scores.</p>
+<h2>Transformer vs. Mamba: Head-to-Head</h2>
 
-<p>This is why attention became the dominant paradigm. It solved the bottleneck problem in seq2seq, but more importantly, it gave neural networks a general-purpose mechanism for dynamic, content-based information routing. When the Transformer architecture later replaced RNNs entirely and built everything out of attention, it wasn't a bolt from the blue. It was the logical conclusion of what Bahdanau started in 2014: if attention is the most powerful part of your model, why not make attention <em>all</em> there is?</p>
+<table>
+  <thead>
+    <tr>
+      <th>Property</th>
+      <th>Transformer</th>
+      <th>Mamba</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Training complexity</strong></td>
+      <td>O(n²) in sequence length</td>
+      <td>O(n) in sequence length</td>
+    </tr>
+    <tr>
+      <td><strong>Inference (per token)</strong></td>
+      <td>O(n) — must attend to all prior tokens via KV cache</td>
+      <td>O(1) — fixed-size state, no cache growth</td>
+    </tr>
+    <tr>
+      <td><strong>Memory at inference</strong></td>
+      <td>KV cache grows linearly with context</td>
+      <td>Constant — state size is fixed</td>
+    </tr>
+    <tr>
+      <td><strong>Long-range dependencies</strong></td>
+      <td>Excellent (direct token-to-token paths)</td>
+      <td>Very good (HiPPO-initialized state compression)</td>
+    </tr>
+    <tr>
+      <td><strong>Content-based routing</strong></td>
+      <td>Yes — full attention over all pairs</td>
+      <td>Yes — selective gating (but compressed into fixed state)</td>
+    </tr>
+    <tr>
+      <td><strong>Training parallelism</strong></td>
+      <td>Fully parallel</td>
+      <td>Parallel (hardware-aware scan)</td>
+    </tr>
+    <tr>
+      <td><strong>In-context learning</strong></td>
+      <td>Strong — explicit retrieval via attention</td>
+      <td>Emerging — less studied, promising results</td>
+    </tr>
+    <tr>
+      <td><strong>Ecosystem maturity</strong></td>
+      <td>Massive — HuggingFace, vLLM, TensorRT, etc.</td>
+      <td>Growing — mamba-ssm, some HF support</td>
+    </tr>
+    <tr>
+      <td><strong>Proven at scale</strong></td>
+      <td>Yes — GPT-4, Claude, Gemini, LLaMA</td>
+      <td>Partially — up to ~3B params convincingly</td>
+    </tr>
+  </tbody>
+</table>
 
+<h2>An Honest Assessment</h2>
 
+<p>Let's be real: <strong>transformers still dominate</strong>. Every frontier model — GPT-4, Claude, Gemini, LLaMA 3 — is a transformer. The ecosystem, the tooling, the training recipes, the years of accumulated engineering wisdom — all built around attention. Mamba isn't replacing transformers tomorrow.</p>
 
+<p>But the results are compelling enough that you can't ignore them. Mamba matches transformer quality at medium scale while being significantly faster for long sequences. For specific use cases — long-document processing, genomics, audio, time series — SSMs already make more sense than transformers.</p>
+
+<div class="callout callout-danger">
+  <div class="callout-label">Don't Bet the Farm</div>
+  <p>If you're starting a production project today, use a transformer. The tooling, community support, and proven scaling properties are unmatched. Follow SSMs/Mamba closely, but don't architect your system around a paradigm that's still proving itself at scale. The time to adopt is when — not if — the ecosystem matures.</p>
+</div>
+
+<p>The research trajectory is moving fast:</p>
+
+<ul>
+  <li><strong>Mamba-2</strong> (2024) — reformulates the selective SSM as structured masked attention, unifying SSM and attention theory. Faster and simpler to implement.</li>
+  <li><strong>Jamba</strong> (AI21 Labs) — a production hybrid mixing Mamba and transformer layers. 256K context window, deployed at scale.</li>
+  <li><strong>RWKV</strong> — a related linear-attention approach with similar O(n) properties, trained at up to 14B parameters.</li>
+  <li><strong>Griffin / Hawk</strong> (Google DeepMind) — recurrence-based models that compete with transformers on standard benchmarks.</li>
+</ul>
+
+<h2>Hybrid Architectures: The Pragmatic Future</h2>
+
+<p>Here's the thing — it probably won't be "transformers vs. Mamba." It'll be <strong>both</strong>.</p>
+
+<p>Jamba is the clearest example. It interleaves transformer layers (for precise, long-range retrieval via attention) with Mamba layers (for efficient sequence compression). You get attention where you need it — tasks like in-context retrieval where exact token lookup matters — and SSM layers where you don't, saving compute on the bulk of sequence processing.</p>
+
+<pre><code class="language-python"># Conceptual hybrid architecture (Jamba-style)
+class HybridBlock(nn.Module):
+    """Alternates between Mamba and Attention layers."""
+    def __init__(self, d_model, n_layers, attention_every=4):
+        super().__init__()
+        self.layers = nn.ModuleList()
+        for i in range(n_layers):
+            if (i + 1) % attention_every == 0:
+                # Every 4th layer: full attention (precise retrieval)
+                self.layers.append(TransformerBlock(d_model))
+            else:
+                # Most layers: Mamba (efficient sequence processing)
+                self.layers.append(MambaBlock(d_model))
+
+    def forward(self, x):
+        for layer in self.layers:
+            x = layer(x)
+        return x
+
+# Ratio matters: Jamba uses ~1 attention layer per 7 Mamba layers
+# This gives most of attention's retrieval ability
+# at a fraction of the compute cost
+</code></pre>
+
+<p>The intuition: attention is a <strong>precise lookup</strong> — "find me exactly the token I need." An SSM is a <strong>compressed summary</strong> — "here's the gist of everything so far." Most of the time, the gist is enough. When it's not, a few attention layers handle the hard cases.</p>
+
+<div class="callout callout-info">
+  <div class="callout-label">The Analogy</div>
+  <p>Think of it like human memory. You don't have perfect recall of every conversation you've ever had (that would be attention over your entire life — O(n²) on your lifespan). Instead, you compress most experiences into general knowledge (SSM-like state), while keeping a few recent or critical memories in vivid detail (attention-like retrieval). Hybrid models work the same way.</p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>What You Should Now Be Able To Do</h2>
+
+<ul>
+  <li>Explain why O(n²) attention is a problem for long sequences and why linear alternatives matter</li>
+  <li>Describe the state space model formulation — state equations, discretization, and why it resembles an RNN with structure</li>
+  <li>Articulate the dual computation trick: convolution for training, recurrence for inference, and why this gives SSMs an edge over both RNNs and transformers</li>
+  <li>Explain the intuition behind HiPPO — optimal history compression via polynomial projection — without needing the full derivation</li>
+  <li>Describe what makes Mamba "selective" and why input-dependent gating is the key innovation over earlier SSMs like S4</li>
+  <li>Compare transformers and Mamba across complexity, maturity, and use cases — and make a sensible recommendation for a new project</li>
+  <li>Sketch the idea behind hybrid architectures (Jamba-style) and explain why mixing attention and SSM layers may outperform either alone</li>
+</ul>
 
       <div class="page-nav">
-        <a href="s04.html">
+        <a class="prev" href="s04.html">
           <span class="label">← Previous</span>
-          <span class="link-title">Sequence-to-Sequence</span>
+          <span class="link-title">BERT & GPT: The Two Paradigms</span>
         </a>
         <a class="next" href="s06.html">
           <span class="label">Next →</span>
-          <span class="link-title">Self-Attention</span>
+          <span class="link-title">Interpretability & Efficient Architectures</span>
         </a>
       </div>
-
     </div>
   </div>
 

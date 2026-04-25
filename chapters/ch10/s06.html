@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Self-Attention — Zero to Hero AI</title>
+  <title>Interpretability &amp; Efficient Architectures — Zero to Hero AI</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="../../css/style.css">
@@ -191,18 +191,13 @@
     <span class="ch-arrow">▶</span>
   </a>
   <div class="nav-sections">
-    <a class="nav-section" data-href="ch10/s01.html">Recurrent Neural Networks</a>
-    <a class="nav-section" data-href="ch10/s02.html">LSTM</a>
-    <a class="nav-section" data-href="ch10/s03.html">GRU</a>
-    <a class="nav-section" data-href="ch10/s04.html">Sequence-to-Sequence</a>
-    <a class="nav-section" data-href="ch10/s05.html">Attention Mechanism</a>
-    <a class="nav-section" data-href="ch10/s06.html">Self-Attention</a>
-    <a class="nav-section" data-href="ch10/s07.html">Transformer Architecture</a>
-    <a class="nav-section" data-href="ch10/s08.html">BERT Internals</a>
-    <a class="nav-section" data-href="ch10/s09.html">GPT Internals</a>
-    <a class="nav-section" data-href="ch10/s10.html">State Space Models &amp; Mamba</a>
-    <a class="nav-section" data-href="ch10/s11.html">Transformer Interpretability &amp; Analysis</a>
-    <a class="nav-section" data-href="ch10/s12.html">Sub-Quadratic Architectures</a>
+    <a class="nav-section" data-href="ch10/s01.html">Recurrent Models: RNN, LSTM, GRU</a>
+    <a class="nav-section" data-href="ch10/s02.html">Seq2Seq &amp; the Birth of Attention</a>
+    <a class="nav-section" data-href="ch10/s03.html">Self-Attention &amp; the Transformer</a>
+    <a class="nav-section" data-href="ch10/s04.html">BERT &amp; GPT: The Two Paradigms</a>
+    <a class="nav-section" data-href="ch10/s05.html">State Space Models &amp; Mamba</a>
+    <a class="nav-section" data-href="ch10/s06.html">Interpretability &amp; Efficient Architectures</a>
+    <a class="nav-section" data-href="ch10/s07.html">Nice to Know</a>
     <a class="nav-section" data-href="ch10/s13.html">Nice to Know</a>
   </div>
   <div class="nav-part">Language &amp; LLMs</div>
@@ -373,7 +368,7 @@
 
   <div class="main">
     <div class="topbar">
-      <div class="breadcrumb"><a href="../../index.html">Home</a><span class="sep">/</span><a href="../../chapters/ch10/index.html">Ch 10</a><span class="sep">/</span><span>Self-Attention</span></div>
+      <div class="breadcrumb"><a href="../../index.html">Home</a><span class="sep">/</span><a href="../../chapters/ch10/index.html">Ch 10</a><span class="sep">/</span><span>Interpretability &amp; Efficient Architectures</span></div>
       <div class="topbar-actions">
         <button class="theme-toggle">🌙</button>
       </div>
@@ -381,330 +376,252 @@
 
     <div class="content">
 
-<h1>Self-Attention</h1>
+<h1>Interpretability &amp; Efficient Architectures</h1>
 <div class="chapter-meta">
   <span class="tag">Chapter 10: Sequence Models &amp; Attention</span>
-  <span class="tag">3 subtopics</span>
+  <span class="tag">What models learn · Flash Attention · KV cache · Making it scale</span>
 </div>
 
 <div class="tldr">
   <div class="tldr-label">TL;DR</div>
-  <p>Self-attention lets every word in a sentence look at every other word to gather context — no recurrence, no sequential bottleneck. Each position produces a Query, Key, and Value vector through learned linear projections. Attention scores are computed as scaled dot products between queries and keys, then used to take a weighted sum of values. Multi-head attention runs several attention functions in parallel so different heads can capture different relationships (syntax, semantics, coreference). This mechanism is the core building block of the Transformer architecture.</p>
+  <p>Two things you need to know exist but don't need to master yet. <strong>Interpretability:</strong> we can peek inside transformers — visualize attention weights, probe what layers encode, even reverse-engineer circuits — but the tools are young and the conclusions are fragile. <strong>Efficient architectures:</strong> standard attention is O(n²) in sequence length, which breaks at long contexts. Flash Attention (exact, memory-efficient) is the dominant fix in practice. Sparse attention, linear attention, and KV cache tricks handle the rest. Most modern LLMs stack several of these together.</p>
 </div>
 
-<h2>From Cross-Attention to Self-Attention</h2>
+<h2>Part 1: What Is the Model Actually Doing?</h2>
 
-<p>In the previous section we saw cross-attention: the decoder attended to the encoder's output. The query came from one sequence, and the keys and values came from a different sequence. That's useful for tasks like translation where you need to bridge two languages.</p>
+<p>You've trained a transformer. It works. But <em>why</em> does it work? What did it learn? Interpretability research tries to answer that, and it ranges from "easy to try, easy to misread" to "cutting-edge research that might eventually let us audit AI systems." Here's the landscape.</p>
 
-<p><strong>Self-attention</strong> flips that idea inward. Instead of attending to a different sequence, a sequence attends to <em>itself</em>. Every word looks at every other word — including itself — to build a richer representation. Take the sentence "The cat sat on the mat." When processing "sat," the model can directly look at "cat" to understand <em>who</em> sat, and at "mat" to understand <em>where</em>. No need to pass information step-by-step through a chain of hidden states like an RNN. Every word talks to every other word in a single operation.</p>
+<h2>Attention Visualization</h2>
 
-<p>This is a big deal. RNNs forced information to travel through a bottleneck: word 1 → word 2 → word 3 → ... → word n. By the time you reached word 50, the signal from word 1 was diluted. Self-attention gives you a direct connection between <em>any</em> two positions, regardless of distance. Word 1 can talk to word 50 just as easily as word 49 can.</p>
+<p>The most obvious thing to try: plot the attention weights. Each attention head produces an n×n matrix showing how much each token "looks at" every other token. You can visualize this as a heatmap or a set of arcs connecting tokens. When translating "the cat sat on the mat," you might see the decoder's attention lighting up on "cat" when generating "chat." Intuitive. Satisfying. And dangerously easy to over-interpret.</p>
 
-<h2>Why Self-Attention?</h2>
-
-<p>Consider this sentence: "The animal didn't cross the street because <em>it</em> was too tired." What does "it" refer to? The animal, obviously — if you're a human. But for a model, "it" is seven words away from "animal" and only four words from "street." An RNN processing left to right would have a fading memory of "animal" by the time it reaches "it."</p>
-
-<p>Self-attention solves this cleanly. When the model processes "it," it computes an attention score against every other word. If the model has learned the right weights, "animal" will get a high score because the context ("was too tired") is a property that makes sense for animals, not streets. The model directly connects "it" to "animal" in a single step.</p>
-
-<p>This is also why self-attention shines at capturing long-range dependencies. The computational path between any two positions is O(1) — one matrix multiplication, not O(n) sequential steps. And because all positions are processed in parallel, training is dramatically faster than with RNNs.</p>
-
-<h2>Query, Key, Value: The Library Analogy</h2>
-
-<p>Imagine you walk into a library looking for information about "neural network optimization." You have a <strong>query</strong> — the thing you're searching for. Every book on the shelf has a <strong>key</strong> — a label on its spine describing what's inside. And every book has a <strong>value</strong> — the actual content you'd read if you pulled it off the shelf.</p>
-
-<p>You compare your query against every key. Some keys match well ("Gradient Descent Methods"), some match poorly ("19th Century Poetry"). You then read more from the books that matched well and ignore the rest. The final answer you walk away with is a weighted combination of all the values, where the weights reflect how well each key matched your query.</p>
-
-<p>In self-attention, <em>every word plays all three roles</em>. Each word generates its own query ("what am I looking for?"), its own key ("what do I contain?"), and its own value ("what information do I provide if someone attends to me?"). These come from three separate learned linear projections of the same input:</p>
-
-<pre><code>Q = X @ Wq    # (seq_len, d_model) @ (d_model, d_k) → (seq_len, d_k)
-K = X @ Wk    # (seq_len, d_model) @ (d_model, d_k) → (seq_len, d_k)
-V = X @ Wv    # (seq_len, d_model) @ (d_model, d_v) → (seq_len, d_v)</code></pre>
-
-<p>The key insight: Q, K, and V all come from the <em>same</em> input X, just projected through different weight matrices. The model learns what to ask for (Wq), what to advertise (Wk), and what to provide (Wv) — all through backpropagation.</p>
-
-<h2>Scaled Dot-Product Attention</h2>
-
-<p>The full formula is:</p>
-
-<pre><code>Attention(Q, K, V) = softmax(Q @ K.T / sqrt(d_k)) @ V</code></pre>
-
-<p>Let's break this down step by step.</p>
-
-<h3>Step 1: Compute Similarity Scores (QKᵀ)</h3>
-
-<p>Multiply Q by the transpose of K. This gives you a matrix of shape (seq_len, seq_len) where entry (i, j) is the dot product between query i and key j. A high dot product means "position i is looking for something that position j has." This is a full pairwise similarity matrix — every position compared against every other position.</p>
-
-<h3>Step 2: Scale by √dₖ</h3>
-
-<p>Why divide by the square root of the key dimension? Dot products grow with the number of dimensions. If each element of Q and K is drawn from a standard normal distribution and d_k = 64, the expected magnitude of each dot product is around √64 = 8. Large dot products push softmax into regions where it has extremely small gradients — one score dominates and everything else gets squashed to near zero. Dividing by √dₖ keeps the variance at roughly 1, so softmax operates in a useful range where gradients flow well.</p>
-
-<h3>Step 3: Softmax</h3>
-
-<p>Apply softmax row-wise. Each row now sums to 1 and represents the <strong>attention weights</strong> for one query position. Position i's row tells you how much it should attend to every other position. These are non-negative weights that form a probability distribution.</p>
-
-<h3>Step 4: Weighted Sum of Values</h3>
-
-<p>Multiply the attention weight matrix by V. Each output row is a weighted combination of all value vectors, where the weights are the attention scores. Position i's output is: a little bit of value 0, plus a lot of value 3, plus some of value 5, etc. — whatever the attention weights dictate.</p>
-
-<h2>Worked Numerical Example</h2>
-
-<p>Let's trace through a complete self-attention computation with actual numbers. We'll use a 3-word sentence with d_model = 4, so our input X is a (3 × 4) matrix. Think of the three rows as embeddings for "The", "cat", "sat".</p>
-
-<pre><code>import torch
-
-# Input: 3 words, each a 4-dimensional embedding
-X = torch.tensor([
-    [1.0, 0.0, 1.0, 0.0],   # "The"
-    [0.0, 2.0, 0.0, 2.0],   # "cat"
-    [1.0, 1.0, 1.0, 1.0],   # "sat"
-])
-
-# Weight matrices (4x4) — normally learned, we'll set them manually
-Wq = torch.tensor([
-    [1.0, 0.0, 1.0, 0.0],
-    [0.0, 1.0, 0.0, 1.0],
-    [1.0, 0.0, 0.0, 1.0],
-    [0.0, 1.0, 1.0, 0.0],
-])
-
-Wk = torch.tensor([
-    [0.0, 1.0, 1.0, 0.0],
-    [1.0, 0.0, 0.0, 1.0],
-    [0.0, 1.0, 0.0, 1.0],
-    [1.0, 0.0, 1.0, 0.0],
-])
-
-Wv = torch.tensor([
-    [1.0, 0.0, 0.0, 1.0],
-    [0.0, 1.0, 1.0, 0.0],
-    [1.0, 1.0, 0.0, 0.0],
-    [0.0, 0.0, 1.0, 1.0],
-])
-
-# Step 1: Compute Q, K, V
-Q = X @ Wq
-K = X @ Wk
-V = X @ Wv
-
-print("Q =\n", Q)
-# Q = [[2, 0, 1, 1],    "The" asks: what's related to me?
-#      [0, 4, 2, 2],    "cat" asks: what's related to me?
-#      [2, 2, 2, 2]]    "sat" asks: what's related to me?
-
-print("K =\n", K)
-# K = [[0, 2, 1, 1],    "The" advertises: here's what I have
-#      [4, 0, 2, 2],    "cat" advertises: here's what I have
-#      [2, 2, 2, 2]]    "sat" advertises: here's what I have
-
-print("V =\n", V)
-# V = [[2, 1, 0, 1],    "The" provides: here's my content
-#      [0, 2, 4, 2],    "cat" provides: here's my content
-#      [2, 2, 2, 2]]    "sat" provides: here's my content
-
-# Step 2: QK^T — pairwise similarity scores
-scores = Q @ K.T
-print("QK^T =\n", scores)
-# scores = [[ 0+0+1+1,  8+0+2+2, 4+0+2+2],
-#            [ 0+0+2+2, 0+0+4+4, 0+0+4+4],
-#            [ 0+4+2+2, 8+0+4+4, 4+4+4+4]]
-#         = [[2,  12,  8],
-#            [4,   8,  8],
-#            [8,  16, 16]]
-
-# Step 3: Scale by sqrt(d_k), d_k = 4, sqrt(4) = 2
-import math
-d_k = 4
-scaled = scores / math.sqrt(d_k)
-print("Scaled scores =\n", scaled)
-# scaled = [[1.0,  6.0,  4.0],
-#            [2.0,  4.0,  4.0],
-#            [4.0,  8.0,  8.0]]
-
-# Step 4: Softmax (row-wise)
-weights = torch.softmax(scaled, dim=-1)
-print("Attention weights =\n", weights)
-# Row 0 ("The"):  softmax([1.0, 6.0, 4.0])
-#   ≈ [0.006, 0.880, 0.114]  → "The" attends mostly to "cat"
-# Row 1 ("cat"):  softmax([2.0, 4.0, 4.0])
-#   ≈ [0.035, 0.483, 0.483]  → "cat" attends equally to itself and "sat"
-# Row 2 ("sat"):  softmax([4.0, 8.0, 8.0])
-#   ≈ [0.002, 0.499, 0.499]  → "sat" attends equally to "cat" and itself
-
-# Step 5: Multiply by V — weighted combination of values
-output = weights @ V
-print("Output =\n", output)
-# Each row is now a context-aware representation:
-# "The" ≈ 0.006*[2,1,0,1] + 0.880*[0,2,4,2] + 0.114*[2,2,2,2]
-#        ≈ [0.24, 1.99, 3.75, 1.99]
-# "cat" ≈ 0.035*[2,1,0,1] + 0.483*[0,2,4,2] + 0.483*[2,2,2,2]
-#        ≈ [1.04, 1.97, 2.90, 1.97]
-# "sat" ≈ 0.002*[2,1,0,1] + 0.499*[0,2,4,2] + 0.499*[2,2,2,2]
-#        ≈ [1.00, 2.00, 3.00, 2.00]</code></pre>
-
-<p>Notice what happened. "The" — originally <code>[1, 0, 1, 0]</code> — now has a representation of approximately <code>[0.24, 1.99, 3.75, 1.99]</code>. It absorbed information heavily from "cat" (weight 0.88). The output for each word is no longer just about that word — it's a blend of the entire sentence, weighted by relevance.</p>
-
-<div class="callout">
-  <div class="callout-title">Why the Scaling Matters</div>
-  <p>Without dividing by √dₖ, the scores in our example would be [2, 12, 8] for the first row. Softmax of that gives [0.00005, 0.982, 0.018] — almost all weight on one position. With scaling, we get [0.006, 0.880, 0.114] — still peaked, but the gradient flows to more positions. In real models with d_k=64, the effect is even more dramatic.</p>
+<div class="callout callout-warning">
+  <div class="callout-label">Attention ≠ Explanation</div>
+  <p>There's a famous debate here. Jain &amp; Wallace (2019) showed that attention weights often don't correlate with gradient-based importance measures, and you can find completely different attention distributions that produce the same predictions. Wiegreffe &amp; Pinter (2019) pushed back with nuance. The consensus: attention weights tell you <em>where</em> the model routed information, not <em>what</em> information mattered for the output. They're a useful debugging signal, not a faithful explanation. Treat them like X-rays, not like proofs.</p>
 </div>
 
-<h2>Self-Attention in PyTorch</h2>
+<h2>Probing Classifiers</h2>
 
-<p>Here's a clean, reusable implementation:</p>
+<p>Probing answers a more precise question: <em>what information is encoded in the model's internal representations?</em> The recipe is simple:</p>
 
-<pre><code>import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import math
+<ul>
+  <li>Freeze the model — don't change any weights</li>
+  <li>Extract hidden states from a specific layer for your dataset</li>
+  <li>Train a small, simple classifier (usually linear) on those hidden states to predict some linguistic property</li>
+  <li>If the probe succeeds, that information is <em>accessible</em> in that layer's representations</li>
+</ul>
 
-class SelfAttention(nn.Module):
-    def __init__(self, d_model, d_k=None, d_v=None):
-        super().__init__()
-        d_k = d_k or d_model
-        d_v = d_v or d_model
-        self.d_k = d_k
+<p>Researchers have used this to map out what different layers encode. Typical findings: early layers capture surface features (word identity, POS tags), middle layers capture syntax (dependency relations, constituent structure), and later layers capture semantics (coreference, sentiment, entity types). It's like an MRI for neural networks — you can see which brain regions light up for different tasks.</p>
 
-        self.W_q = nn.Linear(d_model, d_k, bias=False)
-        self.W_k = nn.Linear(d_model, d_k, bias=False)
-        self.W_v = nn.Linear(d_model, d_v, bias=False)
-
-    def forward(self, x, mask=None):
-        # x: (batch, seq_len, d_model)
-        Q = self.W_q(x)   # (batch, seq_len, d_k)
-        K = self.W_k(x)   # (batch, seq_len, d_k)
-        V = self.W_v(x)   # (batch, seq_len, d_v)
-
-        # Scaled dot-product attention
-        scores = Q @ K.transpose(-2, -1) / math.sqrt(self.d_k)
-
-        if mask is not None:
-            scores = scores.masked_fill(mask == 0, float('-inf'))
-
-        weights = F.softmax(scores, dim=-1)  # (batch, seq_len, seq_len)
-        output = weights @ V                  # (batch, seq_len, d_v)
-
-        return output, weights</code></pre>
-
-<p>The optional <code>mask</code> parameter is important. In a decoder, you don't want position i to attend to future positions j &gt; i — that would be cheating during training. Setting those entries to <code>-inf</code> before softmax makes them zero after softmax.</p>
-
-<h2>Multi-Head Attention</h2>
-
-<p>One attention function captures one type of relationship. But language is rich — you might need to simultaneously track who did what (syntactic), what something means (semantic), and what refers to what (coreference). <strong>Multi-head attention</strong> solves this by running <em>h</em> parallel attention functions, each on a different learned projection of the input.</p>
-
-<p>The formula:</p>
-
-<pre><code>MultiHead(Q, K, V) = Concat(head_1, ..., head_h) @ W_O
-
-where head_i = Attention(Q @ W_i^Q, K @ W_i^K, V @ W_i^V)</code></pre>
-
-<p>Instead of doing one attention with d_model dimensions, you split into h heads, each operating on d_model/h dimensions. With d_model = 512 and h = 8, each head works in 64 dimensions. The heads run independently and in parallel, then their outputs are concatenated and projected back to d_model dimensions through Wᴼ.</p>
-
-<h3>Why Multiple Heads?</h3>
-
-<p>Think of it this way. In "The cat sat on the mat because it was soft," one head might learn to connect "it" → "mat" (coreference). Another head might connect "sat" → "cat" (subject-verb). A third might connect "soft" → "mat" (adjective-noun). Each head operates in its own <strong>representation subspace</strong> — a different 64-dimensional slice of the 512-dimensional space — and can specialize in a different linguistic relationship.</p>
-
-<p>If you had only one head, it would need to cram all these different relationship types into a single set of attention weights. That's a lot to ask of one softmax distribution over positions. Multiple heads let the model hedge its bets.</p>
-
-<h3>Choosing the Number of Heads</h3>
-
-<p>The standard Transformer uses 8 heads with d_model = 512, giving 64 dimensions per head. Larger models like GPT-3 use more: 96 heads with d_model = 12288, giving 128 per head. The tradeoff is straightforward — more heads means more diverse attention patterns, but each head has fewer dimensions to work with. In practice, 8 or 16 heads works well for most settings. The total computation stays roughly the same regardless of how many heads you use, because each head is proportionally smaller.</p>
-
-<h3>Multi-Head Attention in PyTorch</h3>
-
-<pre><code>class MultiHeadAttention(nn.Module):
-    def __init__(self, d_model, num_heads):
-        super().__init__()
-        assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
-
-        self.d_model = d_model
-        self.num_heads = num_heads
-        self.d_k = d_model // num_heads
-
-        self.W_q = nn.Linear(d_model, d_model, bias=False)
-        self.W_k = nn.Linear(d_model, d_model, bias=False)
-        self.W_v = nn.Linear(d_model, d_model, bias=False)
-        self.W_o = nn.Linear(d_model, d_model, bias=False)
-
-    def forward(self, x, mask=None):
-        batch_size, seq_len, _ = x.shape
-
-        # Project and reshape into (batch, num_heads, seq_len, d_k)
-        Q = self.W_q(x).view(batch_size, seq_len, self.num_heads, self.d_k).transpose(1, 2)
-        K = self.W_k(x).view(batch_size, seq_len, self.num_heads, self.d_k).transpose(1, 2)
-        V = self.W_v(x).view(batch_size, seq_len, self.num_heads, self.d_k).transpose(1, 2)
-
-        # Scaled dot-product attention per head
-        scores = Q @ K.transpose(-2, -1) / math.sqrt(self.d_k)
-
-        if mask is not None:
-            scores = scores.masked_fill(mask == 0, float('-inf'))
-
-        weights = F.softmax(scores, dim=-1)
-        attn_output = weights @ V  # (batch, num_heads, seq_len, d_k)
-
-        # Concatenate heads and project
-        attn_output = attn_output.transpose(1, 2).contiguous().view(
-            batch_size, seq_len, self.d_model
-        )
-        output = self.W_o(attn_output)
-
-        return output, weights</code></pre>
-
-<p>The trick is in the <code>view</code> and <code>transpose</code> calls. We project the full d_model dimensions, then reshape so that each head gets its d_k slice. After attention, we undo the reshape and apply the final projection Wᴼ. Computationally, this is equivalent to running h separate attention functions — but batching it into tensor operations is much faster on a GPU.</p>
-
-<h3>Running the Multi-Head Example</h3>
-
-<pre><code># Quick demo
-torch.manual_seed(42)
-
-d_model = 8
-num_heads = 2   # each head gets d_k = 4
-seq_len = 3
-batch_size = 1
-
-mha = MultiHeadAttention(d_model, num_heads)
-x = torch.randn(batch_size, seq_len, d_model)
-
-output, attn_weights = mha(x)
-print(f"Input shape:            {x.shape}")        # [1, 3, 8]
-print(f"Output shape:           {output.shape}")    # [1, 3, 8]
-print(f"Attention weights shape: {attn_weights.shape}")  # [1, 2, 3, 3]
-
-# attn_weights[0, 0] = head 0's 3x3 attention matrix
-# attn_weights[0, 1] = head 1's 3x3 attention matrix
-print("\nHead 0 attention:\n", attn_weights[0, 0].detach())
-print("Head 1 attention:\n", attn_weights[0, 1].detach())
-# Different heads, different attention patterns — that's the point</code></pre>
-
-<div class="callout">
-  <div class="callout-title">The Efficiency Argument</div>
-  <p>Multi-head attention with h heads and d_k = d_model/h per head has the same total computational cost as single-head attention with full d_model dimensions. You're not paying more — you're reorganizing the same computation to be more expressive. The concatenation + Wᴼ projection is the only added cost, and it's a single matrix multiply.</p>
+<div class="callout callout-info">
+  <div class="callout-label">The Probing Caveat</div>
+  <p>If your probe is too powerful (say, a deep MLP instead of a linear classifier), it might <em>learn</em> the property rather than <em>detect</em> it. A sufficiently complex probe can extract patterns from random noise. Keep probes simple — the whole point is that if a <em>linear</em> classifier can find the information, it must be represented in a fairly accessible way.</p>
 </div>
 
-<h2>Connection to the Transformer</h2>
+<h2>Mechanistic Interpretability</h2>
 
-<p>Self-attention is <em>the</em> core mechanism of the Transformer architecture, which we'll build in the next chapter. But it's worth previewing why this matters so much.</p>
+<p>This is the ambitious frontier — trying to reverse-engineer what individual neurons, attention heads, and <em>circuits</em> (combinations of components) actually compute. The Anthropic team and researchers like Neel Nanda have made striking discoveries:</p>
 
-<p>RNNs process tokens one at a time. To compute the hidden state at position t, you need the hidden state at position t-1. This sequential dependency kills parallelism — you can't use all those GPU cores sitting idle. Self-attention processes all positions simultaneously. The (seq_len × seq_len) attention matrix is computed in one batched matrix multiplication. Training a Transformer on a sequence of length 512 doesn't take 512 sequential steps — it takes one parallel step (plus a few layers).</p>
+<ul>
+  <li><strong>Induction heads:</strong> pairs of attention heads that implement a copy-paste pattern. If "Harry Potter" appeared earlier in the context, an induction head helps predict "Potter" after seeing "Harry" again. These form reliably during training and are a key mechanism for in-context learning.</li>
+  <li><strong>Superposition:</strong> individual neurons don't encode single clean features. Instead, models pack more features than they have neurons by encoding them in overlapping, almost-orthogonal directions. One neuron might respond to both "academic writing" and "the color blue" — not a bug, but a compression trick.</li>
+</ul>
 
-<p>The tradeoff is memory. That attention matrix is O(n²) in sequence length. For a 512-token sequence, that's 262,144 entries per head per layer — manageable. For a 100,000-token sequence, it's 10 billion entries — that's a problem, and it's why researchers have spent years on efficient attention variants. But for most practical sequence lengths, the parallelism win far outweighs the memory cost.</p>
+<p>Mechanistic interpretability is intellectually exciting and potentially critical for AI safety. It's also painstaking, manual, and doesn't yet scale to the largest models. Think of it as the particle physics of deep learning — important findings, but don't expect to use it in your next sprint.</p>
 
-<p>In the next chapter, we'll stack self-attention layers with feed-forward networks, add positional encodings (since self-attention has no built-in notion of word order), and build the complete Transformer. Self-attention is the engine. Everything else is plumbing.</p>
+<h2>Practical Tools (Quick Reference)</h2>
 
+<table>
+  <thead>
+    <tr>
+      <th>Tool</th>
+      <th>What It Does</th>
+      <th>When to Reach for It</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>BertViz</strong></td>
+      <td>Interactive attention visualization for any HuggingFace model</td>
+      <td>Quick debugging — "what is this head looking at?"</td>
+    </tr>
+    <tr>
+      <td><strong>TransformerLens</strong></td>
+      <td>Neel Nanda's library for mechanistic interpretability — hook into any component, ablate heads, patch activations</td>
+      <td>Research-grade circuit analysis</td>
+    </tr>
+    <tr>
+      <td><strong>Baukit</strong></td>
+      <td>David Bau's toolkit for causal tracing and neuron-level interventions</td>
+      <td>Locating where specific facts are stored</td>
+    </tr>
+  </tbody>
+</table>
 
+<h2>Part 2: Making Attention Scale</h2>
 
+<p>Now for the engineering side. Standard self-attention computes a score between <em>every pair</em> of tokens. That's O(n²) in sequence length. Let's make the pain concrete:</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Sequence Length</th>
+      <th>Attention Entries</th>
+      <th>Vibe Check</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>1,000</td>
+      <td>1 million</td>
+      <td>Fine</td>
+    </tr>
+    <tr>
+      <td>8,000</td>
+      <td>64 million</td>
+      <td>Manageable</td>
+    </tr>
+    <tr>
+      <td>32,000</td>
+      <td>1 billion</td>
+      <td>Getting uncomfortable</td>
+    </tr>
+    <tr>
+      <td>100,000</td>
+      <td>10 billion</td>
+      <td>GPU says no</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>Context length is capability — a model reading 4K tokens handles a conversation, one reading 128K can digest an entire codebase. Every technique below attacks that quadratic wall from a different angle.</p>
+
+<h2>Sparse Attention</h2>
+
+<p>The simplest idea: don't attend to everything. Most attention weights are near-zero anyway, so skip the pairs that don't matter. The patterns people use:</p>
+
+<ul>
+  <li><strong>Local window:</strong> each token attends only to its w nearest neighbors. O(n·w) — linear in n. Information propagates across layers, so 32 layers × 512 window = reach across 16K tokens.</li>
+  <li><strong>Strided:</strong> attend to every k-th token, giving a coarse global view.</li>
+  <li><strong>Global tokens:</strong> designate a few tokens (like [CLS] or start-of-sequence) that attend to everything and that everything attends to. Cheap global information routing.</li>
+  <li><strong>Random:</strong> randomly sample some attention connections. Surprisingly effective as a complement to local patterns.</li>
+</ul>
+
+<p><strong>Longformer</strong> combines local + global. <strong>BigBird</strong> adds random connections on top. Both achieve near-full-attention quality at a fraction of the cost for long documents.</p>
+
+<h2>Linear Attention</h2>
+
+<p>The math trick: standard attention computes <code>softmax(QK<sup>T</sup>)V</code>, which forces you to build the n×n matrix first. But if you replace softmax with a decomposable kernel — writing <code>softmax(q·k) ≈ φ(q)·φ(k)</code> — you can rearrange the multiplication order:</p>
+
+<pre><code># Standard: (Q @ K.T) @ V  → build n×n matrix first, then multiply by V
+# Linear:   Q @ (K.T @ V)  → build d×d matrix first (much smaller!), then multiply by Q</code></pre>
+
+<p>The associativity of matrix multiplication lets you compute <code>K<sup>T</sup>V</code> first — that's d×d instead of n×n, where d is the head dimension (64 or 128). Complexity drops to O(n·d²). The <strong>Performer</strong> and <strong>Random Feature Attention</strong> use this approach with different kernel approximations. The catch: the approximation isn't free — you lose some quality, especially on tasks where precise token-to-token attention patterns matter.</p>
+
+<h2>Flash Attention</h2>
+
+<div class="callout callout-info">
+  <div class="callout-label">This Is What Actually Won</div>
+  <p>Flash Attention is not an approximation. It computes <em>exact</em> standard attention — same math, same outputs, bit-for-bit identical. The trick is entirely about <em>how</em> the computation is organized on the GPU.</p>
+</div>
+
+<p>The problem it solves: to compute <code>softmax(QK<sup>T</sup>)V</code> naively, you materialize the full n×n attention matrix in GPU high-bandwidth memory (HBM). HBM is large but slow. GPU SRAM is tiny but fast. Flash Attention <strong>tiles</strong> the computation — it processes the attention matrix in small blocks that fit in SRAM, never writing the full n×n matrix to HBM. It uses an online softmax trick to compute exact softmax without needing all the values at once.</p>
+
+<p>Results: 2–4× wall-clock speedup, dramatically less memory, and you can train with much longer sequences on the same hardware. Flash Attention (and its successor FlashAttention-2) is what actually runs under the hood of essentially every modern LLM. If you only remember one efficiency technique, make it this one.</p>
+
+<h2>Multi-Query &amp; Grouped-Query Attention</h2>
+
+<p>Standard multi-head attention gives each head its own Q, K, and V projections. That means during autoregressive generation, you have to cache separate K and V tensors for every head. With 32 heads across 80 layers, the KV cache gets enormous.</p>
+
+<ul>
+  <li><strong>Multi-Query Attention (MQA):</strong> all query heads share a <em>single</em> set of K and V heads. Slashes KV cache by the number of heads (e.g., 32×). Used in PaLM, Falcon.</li>
+  <li><strong>Grouped-Query Attention (GQA):</strong> a middle ground — group query heads and share K/V within each group. 8 KV heads serving 32 query heads gives a 4× reduction. Used in Llama 2, Mistral, Gemma. This is the current sweet spot — most of MQA's memory savings with almost no quality loss.</li>
+</ul>
+
+<h2>KV Cache</h2>
+
+<p>During autoregressive generation (producing one token at a time), the model runs attention over the entire sequence at each step. But all the previous tokens' keys and values haven't changed — only the new token is new. So you <strong>cache</strong> the K and V vectors from all previous steps and only compute Q, K, V for the new token.</p>
+
+<p>Without KV cache: generating token 1000 recomputes all 1000 keys and values. With KV cache: you compute 1 new key and 1 new value, then attend over the 1000 cached ones. The speedup is massive — it's why LLM inference is feasible at all. The tradeoff: memory scales linearly with sequence length × number of layers × number of KV heads × head dimension. For a 70B model at 128K context, the KV cache alone can consume tens of gigabytes. That's why MQA/GQA matter so much — they shrink the thing that actually dominates inference memory.</p>
+
+<div class="callout callout-danger">
+  <div class="callout-label">The Real Bottleneck</div>
+  <p>For serving LLMs in production, KV cache memory is often the binding constraint — not compute, not model weights, but the per-request cache for long conversations. Techniques like PagedAttention (used in vLLM) treat KV cache like virtual memory pages to reduce fragmentation. If you ever deploy LLMs at scale, you'll spend more time thinking about KV cache management than about model architecture.</p>
+</div>
+
+<h2>Comparison: Efficient Attention Approaches</h2>
+
+<table>
+  <thead>
+    <tr>
+      <th>Approach</th>
+      <th>Complexity</th>
+      <th>Exact?</th>
+      <th>Practical Status</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Standard attention</td>
+      <td>O(n²)</td>
+      <td>Yes</td>
+      <td>Baseline — still used for short sequences</td>
+    </tr>
+    <tr>
+      <td>Sparse (Longformer, BigBird)</td>
+      <td>O(n·w)</td>
+      <td>No (subset)</td>
+      <td>Good for long docs; less common in LLMs</td>
+    </tr>
+    <tr>
+      <td>Linear (Performer)</td>
+      <td>O(n·d²)</td>
+      <td>No (approx)</td>
+      <td>Research interest; quality gap remains</td>
+    </tr>
+    <tr>
+      <td>Flash Attention</td>
+      <td>O(n²) math, O(n) memory</td>
+      <td>Yes</td>
+      <td><strong>Dominant in practice</strong> — used everywhere</td>
+    </tr>
+    <tr>
+      <td>MQA / GQA</td>
+      <td>Same compute, less memory</td>
+      <td>Yes</td>
+      <td>Standard in Llama 2, Mistral, Gemma</td>
+    </tr>
+    <tr>
+      <td>KV Cache</td>
+      <td>O(1) per new token</td>
+      <td>Yes</td>
+      <td>Universal — every autoregressive model</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>What You Should Now Be Able To Do</h2>
+
+<ul>
+  <li>Explain why attention weights are useful for debugging but shouldn't be treated as explanations of model behavior</li>
+  <li>Describe what a probing classifier does and what it tells you about a layer's representations</li>
+  <li>Name the key ideas of mechanistic interpretability — induction heads, superposition — and know when this line of research matters (safety, auditing)</li>
+  <li>Explain why standard attention is O(n²) and why that becomes a problem beyond ~8K tokens</li>
+  <li>Distinguish Flash Attention (exact, memory-efficient) from sparse and linear attention (approximate, complexity-efficient) — and know which one actually won</li>
+  <li>Explain what the KV cache is, why it exists, and why GQA helps shrink it</li>
+  <li>Look at the efficient attention table above and have an opinion on which approach matters for a given scenario (training vs. inference, short vs. long context)</li>
+</ul>
 
       <div class="page-nav">
-        <a href="s05.html">
+        <a class="prev" href="s05.html">
           <span class="label">← Previous</span>
-          <span class="link-title">Attention Mechanism</span>
+          <span class="link-title">State Space Models & Mamba</span>
         </a>
         <a class="next" href="s07.html">
           <span class="label">Next →</span>
-          <span class="link-title">Transformer Architecture</span>
+          <span class="link-title">Nice to Know</span>
         </a>
       </div>
-
     </div>
   </div>
 

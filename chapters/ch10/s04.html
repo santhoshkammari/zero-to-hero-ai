@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Sequence-to-Sequence — Zero to Hero AI</title>
+  <title>BERT &amp; GPT: The Two Paradigms — Zero to Hero AI</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="../../css/style.css">
@@ -191,18 +191,13 @@
     <span class="ch-arrow">▶</span>
   </a>
   <div class="nav-sections">
-    <a class="nav-section" data-href="ch10/s01.html">Recurrent Neural Networks</a>
-    <a class="nav-section" data-href="ch10/s02.html">LSTM</a>
-    <a class="nav-section" data-href="ch10/s03.html">GRU</a>
-    <a class="nav-section" data-href="ch10/s04.html">Sequence-to-Sequence</a>
-    <a class="nav-section" data-href="ch10/s05.html">Attention Mechanism</a>
-    <a class="nav-section" data-href="ch10/s06.html">Self-Attention</a>
-    <a class="nav-section" data-href="ch10/s07.html">Transformer Architecture</a>
-    <a class="nav-section" data-href="ch10/s08.html">BERT Internals</a>
-    <a class="nav-section" data-href="ch10/s09.html">GPT Internals</a>
-    <a class="nav-section" data-href="ch10/s10.html">State Space Models &amp; Mamba</a>
-    <a class="nav-section" data-href="ch10/s11.html">Transformer Interpretability &amp; Analysis</a>
-    <a class="nav-section" data-href="ch10/s12.html">Sub-Quadratic Architectures</a>
+    <a class="nav-section" data-href="ch10/s01.html">Recurrent Models: RNN, LSTM, GRU</a>
+    <a class="nav-section" data-href="ch10/s02.html">Seq2Seq &amp; the Birth of Attention</a>
+    <a class="nav-section" data-href="ch10/s03.html">Self-Attention &amp; the Transformer</a>
+    <a class="nav-section" data-href="ch10/s04.html">BERT &amp; GPT: The Two Paradigms</a>
+    <a class="nav-section" data-href="ch10/s05.html">State Space Models &amp; Mamba</a>
+    <a class="nav-section" data-href="ch10/s06.html">Interpretability &amp; Efficient Architectures</a>
+    <a class="nav-section" data-href="ch10/s07.html">Nice to Know</a>
     <a class="nav-section" data-href="ch10/s13.html">Nice to Know</a>
   </div>
   <div class="nav-part">Language &amp; LLMs</div>
@@ -373,7 +368,7 @@
 
   <div class="main">
     <div class="topbar">
-      <div class="breadcrumb"><a href="../../index.html">Home</a><span class="sep">/</span><a href="../../chapters/ch10/index.html">Ch 10</a><span class="sep">/</span><span>Sequence-to-Sequence</span></div>
+      <div class="breadcrumb"><a href="../../index.html">Home</a><span class="sep">/</span><a href="../../chapters/ch10/index.html">Ch 10</a><span class="sep">/</span><span>BERT &amp; GPT: The Two Paradigms</span></div>
       <div class="topbar-actions">
         <button class="theme-toggle">🌙</button>
       </div>
@@ -381,252 +376,595 @@
 
     <div class="content">
 
-<h1>Sequence-to-Sequence</h1>
+<h1>BERT &amp; GPT: The Two Paradigms</h1>
 <div class="chapter-meta">
   <span class="tag">Chapter 10: Sequence Models &amp; Attention</span>
-  <span class="tag">4 subtopics</span>
+  <span class="tag">Encoder vs decoder · MLM vs next-token · When to use which</span>
 </div>
 
 <div class="tldr">
   <div class="tldr-label">TL;DR</div>
-  <p>When input and output sequences have different lengths — translation, summarization, dialogue — you need an encoder to read the source and a decoder to write the target. The encoder compresses the input into a context vector; the decoder unrolls from that vector one token at a time. Training uses teacher forcing (feed ground-truth tokens) for speed, but beam search and sampling strategies handle the messiness of generation at inference time.</p>
+  <p>BERT reads text bidirectionally and learns by filling in blanks — it's an encoder that builds deep representations for understanding tasks like classification and NER. GPT reads text left-to-right and learns by predicting the next token — it's a decoder that generates text autoregressively. BERT is a master of understanding; GPT is a master of generation. Both are Transformers under the hood, but their masking strategies create fundamentally different models. BERT-style models dominate when you have labeled data and need precise, fast inference. GPT-style models dominate when you want flexible, zero-shot generation. The trend line favors GPT, but the story isn't over.</p>
 </div>
 
-<p>Think about translating "The cat sat on the mat" into French: "Le chat s'est assis sur le tapis." Six English words become seven French words. The word order shifts. Some concepts that take one English word need multiple French words. You can't just map position 1 → position 1, position 2 → position 2. The input and output are <em>different lengths</em>, and the alignment between them is non-trivial. This is the core problem that <strong>sequence-to-sequence</strong> (seq2seq) models solve.</p>
+<p>Every modern NLP system traces its lineage back to one of two papers: Google's BERT (2018) or OpenAI's GPT (2018). Same year, same underlying architecture (the Transformer), wildly different design choices. Those choices created two paradigms that define how we build language AI today.</p>
 
-<p>Translation isn't the only task with this shape. Summarization takes a long document and produces a short one. Dialogue systems take a user's message and generate a response of unpredictable length. Question answering takes a paragraph and a question and produces an answer span. Any time your output sequence length doesn't match your input sequence length, you're in seq2seq territory.</p>
+<p>The split comes down to a single question: <strong>which tokens can attend to which?</strong> Let every token see every other token, and you get BERT. Restrict each token to only see tokens before it, and you get GPT. That's the fork in the road. Everything else — training objectives, downstream uses, scaling behavior — flows from that one decision.</p>
 
-<h2>The Encoder-Decoder Architecture</h2>
+<!-- ============================================================ -->
+<!--                         BERT                                  -->
+<!-- ============================================================ -->
 
-<p>The original seq2seq idea, published by Sutskever et al. in 2014, is elegant. Split the model into two halves: an <strong>encoder</strong> and a <strong>decoder</strong>. The encoder's job is to read the entire input sequence and compress it into a single fixed-length vector. The decoder's job is to take that vector and generate the output sequence, one token at a time.</p>
+<h2>BERT: The Bidirectional Encoder</h2>
 
-<p>Here's how it works concretely with our translation example. The encoder — typically an LSTM or GRU — processes "The", "cat", "sat", "on", "the", "mat" one token at a time. At each step it updates its hidden state. After processing the last token "mat", its final hidden state is a vector that (in theory) captures the meaning of the entire English sentence. This final hidden state is the <strong>context vector</strong>.</p>
+<h3>Architecture</h3>
 
-<p>The decoder is a separate RNN. It receives the context vector as its initial hidden state. Then it starts generating: it takes a special start-of-sequence token as its first input, produces "Le" as its first output, then feeds "Le" back in as input to produce "chat", feeds "chat" back in to produce "s'est", and so on until it produces an end-of-sequence token. Each step, the decoder picks one token and feeds it forward.</p>
+<p>BERT is an <strong>encoder-only</strong> Transformer. Strip away the decoder, throw away the causal mask, and stack encoder layers. Every token in the input attends to every other token — both left and right context, simultaneously. When BERT processes the word "bank" in "I sat on the river <em>bank</em>", it sees "river" to the left <em>and</em> whatever comes after to the right. It builds a representation that fuses information from the entire sequence at once.</p>
 
-<pre><code>import torch
-import torch.nn as nn
+<p>This is a major departure from GPT-style models. In a left-to-right model, the representation of "bank" can only incorporate tokens that came before it. BERT doesn't have that limitation. Every layer of self-attention lets every token talk to every other token. By the time you reach the final layer, each token's representation is deeply informed by the entire input context.</p>
 
-class Encoder(nn.Module):
-    def __init__(self, vocab_size, embed_dim, hidden_dim, num_layers=1):
-        super().__init__()
-        self.embedding = nn.Embedding(vocab_size, embed_dim)
-        self.rnn = nn.LSTM(embed_dim, hidden_dim,
-                           num_layers=num_layers, batch_first=True)
-
-    def forward(self, src):
-        # src: (batch, src_len)
-        embedded = self.embedding(src)          # (batch, src_len, embed_dim)
-        outputs, (hidden, cell) = self.rnn(embedded)
-        # hidden: (num_layers, batch, hidden_dim) — the context vector
-        return hidden, cell
-
-
-class Decoder(nn.Module):
-    def __init__(self, vocab_size, embed_dim, hidden_dim, num_layers=1):
-        super().__init__()
-        self.embedding = nn.Embedding(vocab_size, embed_dim)
-        self.rnn = nn.LSTM(embed_dim, hidden_dim,
-                           num_layers=num_layers, batch_first=True)
-        self.fc_out = nn.Linear(hidden_dim, vocab_size)
-
-    def forward(self, token, hidden, cell):
-        # token: (batch,) — single token at current time step
-        token = token.unsqueeze(1)              # (batch, 1)
-        embedded = self.embedding(token)        # (batch, 1, embed_dim)
-        output, (hidden, cell) = self.rnn(embedded, (hidden, cell))
-        prediction = self.fc_out(output.squeeze(1))  # (batch, vocab_size)
-        return prediction, hidden, cell
-
-
-class Seq2Seq(nn.Module):
-    def __init__(self, encoder, decoder, device):
-        super().__init__()
-        self.encoder = encoder
-        self.decoder = decoder
-        self.device = device
-
-    def forward(self, src, trg, teacher_forcing_ratio=0.5):
-        # src: (batch, src_len), trg: (batch, trg_len)
-        batch_size = src.shape[0]
-        trg_len = trg.shape[1]
-        trg_vocab_size = self.decoder.fc_out.out_features
-
-        outputs = torch.zeros(batch_size, trg_len, trg_vocab_size).to(self.device)
-        hidden, cell = self.encoder(src)
-
-        # First decoder input is the start-of-sequence token (index 1)
-        input_token = trg[:, 0]
-
-        for t in range(1, trg_len):
-            prediction, hidden, cell = self.decoder(input_token, hidden, cell)
-            outputs[:, t] = prediction
-            # Teacher forcing: use ground-truth or model's own prediction
-            if torch.rand(1).item() < teacher_forcing_ratio:
-                input_token = trg[:, t]       # ground-truth token
-            else:
-                input_token = prediction.argmax(dim=1)  # model's best guess
-        return outputs
-</code></pre>
-
-<p>Notice how the <code>Seq2Seq</code> model's forward pass loops through the target length. At each step it decides whether to feed the decoder the real next token or its own prediction. That decision is controlled by <code>teacher_forcing_ratio</code>, which we'll dig into shortly.</p>
-
-<h2>The Bottleneck Problem</h2>
-
-<p>There's a fundamental flaw in this design. The entire meaning of "The cat sat on the mat" gets squeezed into one fixed-size vector — say, 256 or 512 floats. For a short sentence, that's fine. But what about a paragraph? A legal document? A chapter of a novel? You're asking one vector to remember everything.</p>
-
-<p>Imagine you had to read an entire book, close it, and then recite it from memory using only a single sticky note of reminders. That's the <strong>bottleneck problem</strong>. Information gets lost, especially details from the beginning of long sequences. The encoder's hidden state gets overwritten as it processes later tokens, and early information fades.</p>
-
-<p>Empirically, researchers found that seq2seq performance degrades sharply on sentences longer than about 20-30 tokens. The model just can't pack enough signal into that one vector. This limitation directly motivated the invention of attention mechanisms, which we'll cover in the next section. Attention lets the decoder peek back at <em>all</em> of the encoder's hidden states — not just the final one — so it can focus on the relevant parts of the input at each decoding step.</p>
-
-<div class="callout">
-  <div class="callout-title">Why Not Just Make the Vector Bigger?</div>
-  <p>You could increase the hidden dimension from 512 to 4096. But bigger vectors mean more parameters, slower training, and diminishing returns. The problem isn't the vector's size — it's the compression itself. A 1000-word paragraph has too much structure to capture in any single point, regardless of dimension. You need a fundamentally different approach, and that's attention.</p>
+<div class="callout callout-info">
+  <div class="callout-label">Why "Bidirectional" Matters</div>
+  <p>Consider the word "crane" in two sentences: "The construction <strong>crane</strong> lifted the beam" vs. "The <strong>crane</strong> flew over the lake." A left-to-right model processing "crane" hasn't yet seen "lifted" or "flew" — it can't disambiguate. BERT sees the full sentence in every layer, so by layer 2 or 3, the representations of "crane" in these two sentences have already diverged into completely different regions of embedding space. This is why BERT excels at understanding tasks.</p>
 </div>
 
-<h2>Teacher Forcing</h2>
+<h3>Pre-Training Objective 1: Masked Language Modeling (MLM)</h3>
 
-<p>Training a seq2seq model without any tricks is painfully slow. Here's why: the decoder at step <em>t</em> uses its own prediction from step <em>t-1</em> as input. Early in training, those predictions are garbage — essentially random tokens. So the decoder is trying to learn from inputs that are nonsensical, which makes the gradients noisy and convergence sluggish.</p>
+<p>You can't train a bidirectional model with standard language modeling. If every token can see every other token, and you ask it to predict token 5, it can just... <em>look at</em> token 5. There's no challenge. The model would learn nothing.</p>
 
-<p><strong>Teacher forcing</strong> is the fix. During training, instead of feeding the decoder its own (bad) prediction, you feed it the ground-truth token from the target sequence. Translating to "Le chat s'est assis sur le tapis"? At step 2, you feed the decoder "Le" regardless of what it actually predicted. At step 3, you feed it "chat". And so on. The decoder always gets perfect context, so it can focus on learning the mapping from correct context to the next correct token.</p>
+<p>BERT's solution: <strong>mask</strong> some tokens and ask the model to predict them. Take a sentence, randomly select 15% of the tokens, corrupt them, and train the model to recover the originals. This is <strong>Masked Language Modeling</strong> (MLM) — essentially a fill-in-the-blank task at industrial scale.</p>
 
-<p>The speedup is dramatic — often 2-5× faster convergence. But there's a catch. During training the decoder <em>never</em> sees its own mistakes. It always gets perfect input. At inference time, there's no teacher. The decoder must eat its own cooking, and if it makes one wrong prediction, the error cascades. It's never practiced recovering from errors. This gap between training and inference is called <strong>exposure bias</strong>.</p>
+<p>But there's a subtlety. If you always replace selected tokens with <code>[MASK]</code>, you create a mismatch between pre-training and fine-tuning. During fine-tuning, the model never sees <code>[MASK]</code> tokens — real inputs don't have blanks in them. The model might learn to only activate its "prediction machinery" when it sees <code>[MASK]</code>, and be confused by normal tokens.</p>
 
-<p>Exposure bias causes real problems. A translation model might produce fluent-sounding output for the first few tokens, then suddenly derail into incoherent text because one early mistake pushed it into a region of input space it never encountered during training.</p>
+<p>The fix is the <strong>80/10/10 rule</strong>. Of the 15% selected tokens:</p>
 
-<h2>Scheduled Sampling</h2>
+<ul>
+  <li><strong>80%</strong> are replaced with <code>[MASK]</code> — the straightforward case</li>
+  <li><strong>10%</strong> are replaced with a random token from the vocabulary</li>
+  <li><strong>10%</strong> are left unchanged</li>
+</ul>
 
-<p><strong>Scheduled sampling</strong> is the pragmatic middle ground. Instead of always using teacher forcing or never using it, you start training with heavy teacher forcing and gradually reduce it. Early on, when the model's predictions are useless, you use ground-truth tokens most of the time. As training progresses and predictions improve, you increasingly let the model use its own output.</p>
+<p>The random replacements force the model to maintain a good representation of <em>every</em> token position, not just masked ones — it can never be sure which tokens have been tampered with, so it has to keep an accurate internal model of every position. The unchanged tokens prevent the model from learning that "if the input looks normal, don't bother predicting." The model must always be ready to produce an accurate prediction for any token.</p>
 
-<p>A common schedule is linear decay: start with a teacher forcing probability of 1.0 and decrease it by a small amount each epoch until you reach something like 0.25. Others use exponential decay or inverse sigmoid schedules. The key idea is the same — train with a curriculum that gently transitions from "always correct input" to "mostly your own predictions."</p>
+<pre><code class="language-python"># MLM masking logic — what happens during BERT pre-training
+import torch
+import random
 
-<p>Scheduled sampling doesn't fully eliminate exposure bias, but it substantially reduces it. The model gets practice handling its own imperfect outputs while still getting enough ground-truth signal to learn efficiently.</p>
+def create_mlm_targets(token_ids, vocab_size, mask_token_id, mask_prob=0.15):
+    """Apply the 80/10/10 masking strategy."""
+    labels = token_ids.clone()
+    masked_input = token_ids.clone()
 
-<h2>Decoding Strategies</h2>
+    # Probability matrix — which tokens get selected
+    prob_matrix = torch.full(token_ids.shape, mask_prob)
+    selected = torch.bernoulli(prob_matrix).bool()
 
-<p>Once the model is trained, you need to actually generate output sequences. How you do this matters enormously. The decoder produces a probability distribution over the vocabulary at each time step. The question is: how do you pick from that distribution?</p>
+    # Tokens NOT selected get label -100 (ignored in loss)
+    labels[~selected] = -100
 
-<h3>Greedy Decoding</h3>
+    # 80% of selected → [MASK]
+    mask_80 = torch.bernoulli(torch.full(token_ids.shape, 0.8)).bool() & selected
+    masked_input[mask_80] = mask_token_id
 
-<p>The simplest approach: at each step, pick the token with the highest probability. <strong>Greedy decoding</strong> is fast — one forward pass per token, just take the argmax. But it's myopic. It doesn't consider that choosing the second-best token now might lead to a much better overall sequence later. Greedy decoding can get stuck in locally optimal but globally poor translations.</p>
+    # 10% of selected → random token
+    random_10 = (
+        torch.bernoulli(torch.full(token_ids.shape, 0.5)).bool()
+        & selected & ~mask_80
+    )
+    random_tokens = torch.randint(0, vocab_size, token_ids.shape)
+    masked_input[random_10] = random_tokens[random_10]
 
-<p>For our example: greedy decoding might pick "Le" (correct), then "chat" (correct), but then maybe "était" instead of "s'est" because "était" has slightly higher probability in isolation, even though "s'est assis" is the correct phrase as a whole.</p>
+    # Remaining 10% → unchanged (already correct in masked_input)
+    return masked_input, labels</code></pre>
 
-<h3>Beam Search</h3>
+<h3>Pre-Training Objective 2: Next Sentence Prediction (NSP)</h3>
 
-<p><strong>Beam search</strong> is the standard workaround. Instead of keeping only the single best candidate, you keep the top <em>k</em> candidates at every step. This parameter <em>k</em> is called the <strong>beam width</strong>. At each time step, you expand all <em>k</em> candidates by one token, score the resulting <em>k × V</em> possibilities (where V is the vocabulary size), and keep only the top <em>k</em>. At the end, you pick the highest-scoring complete sequence.</p>
+<p>BERT's second pre-training task: given two sentences A and B, predict whether B actually follows A in the original text, or whether B is a random sentence. The idea was that understanding inter-sentence relationships matters for tasks like question answering and natural language inference.</p>
 
-<p>Beam width is a knob. Beam width 1 is greedy decoding. Beam width 5 is typical for machine translation. Beam width 10-20 can improve quality but slows decoding proportionally. Beyond 20, improvements are usually negligible. The tradeoff is clear: wider beams explore more of the search space but cost more computation.</p>
+<p>50% of training pairs are real consecutive sentences (label: <code>IsNext</code>), and 50% are sentence A paired with a random sentence B (label: <code>NotNext</code>). The model learns to predict this binary label using the <code>[CLS]</code> token representation.</p>
 
-<pre><code>import torch
+<div class="callout callout-warning">
+  <div class="callout-label">NSP: A Good Idea That Didn't Pan Out</div>
+  <p>It turns out NSP was mostly useless — and possibly harmful. RoBERTa (2019) showed that removing NSP and training with longer sequences actually <em>improved</em> performance on downstream tasks. The problem: distinguishing "real next sentence" from "random sentence" is too easy. A random sentence is usually from a completely different topic, so the model just learns topic matching, not deep discourse reasoning. Later models like ALBERT and DeBERTa all dropped NSP.</p>
+</div>
+
+<h3>Input Representation</h3>
+
+<p>BERT's input pipeline has several moving parts that work together:</p>
+
+<p><strong>WordPiece tokenization.</strong> BERT doesn't operate on whole words. It uses WordPiece, a subword tokenizer that breaks rare words into known pieces. "Unhappiness" becomes <code>["un", "##happi", "##ness"]</code>. The <code>##</code> prefix means "this continues the previous token." This gives BERT a fixed vocabulary (~30,000 tokens) that can represent any word, including words it's never seen before.</p>
+
+<p><strong>Special tokens.</strong> Every input starts with <code>[CLS]</code> (classification token) and uses <code>[SEP]</code> to separate sentences. For a single sentence: <code>[CLS] The cat sat . [SEP]</code>. For a sentence pair: <code>[CLS] Sentence A [SEP] Sentence B [SEP]</code>. The final hidden state of <code>[CLS]</code> is used as the aggregate sequence representation for classification tasks.</p>
+
+<p><strong>Three embedding layers added together:</strong></p>
+
+<ul>
+  <li><strong>Token embeddings</strong> — the learned vector for each WordPiece token</li>
+  <li><strong>Segment embeddings</strong> — indicates sentence A vs. sentence B (a learned embedding for each)</li>
+  <li><strong>Position embeddings</strong> — learned (not sinusoidal) embeddings for positions 0 through 511</li>
+</ul>
+
+<pre><code class="language-python"># BERT input representation — what actually gets fed to the model
+# Input: "The cat sat . [SEP] It was happy ."
+
+tokens   = ["[CLS]", "The", "cat", "sat", ".", "[SEP]", "It", "was", "happy", ".", "[SEP]"]
+token_ids = [  101,  1996, 4937, 2938, 1012,   102, 2009, 2001, 3407, 1012,   102]
+segment   = [    0,     0,    0,    0,    0,     0,    1,    1,    1,    1,     1]
+position  = [    0,     1,    2,    3,    4,     5,    6,    7,    8,    9,    10]
+
+# Final input = token_embedding[token_ids]
+#             + segment_embedding[segment]
+#             + position_embedding[position]</code></pre>
+
+<h3>Fine-Tuning BERT</h3>
+
+<p>Pre-training gives BERT general language understanding. Fine-tuning adapts it to your specific task. The recipe is dead simple: take the pre-trained model, slap a task-specific head on top, and train on your labeled data for a few epochs with a small learning rate.</p>
+
+<p>The head you add depends on the task:</p>
+
+<ul>
+  <li><strong>Classification</strong> (sentiment, spam, intent): Take the <code>[CLS]</code> token's final hidden state → linear layer → softmax over classes</li>
+  <li><strong>Token classification</strong> (NER, POS tagging): Take each token's final hidden state → linear layer → softmax per token</li>
+  <li><strong>Question answering</strong> (extractive): Take each token's hidden state → predict start and end positions of the answer span</li>
+  <li><strong>Sentence pair tasks</strong> (NLI, paraphrase): Encode both sentences with segment embeddings → use <code>[CLS]</code> for classification</li>
+</ul>
+
+<pre><code class="language-python">from transformers import BertForSequenceClassification, BertTokenizer
+from transformers import Trainer, TrainingArguments
+
+# Load pre-trained BERT + add classification head
+model = BertForSequenceClassification.from_pretrained(
+    "bert-base-uncased",
+    num_labels=3  # e.g., positive / neutral / negative
+)
+tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+
+# Tokenize your data
+def tokenize(examples):
+    return tokenizer(
+        examples["text"],
+        padding="max_length",
+        truncation=True,
+        max_length=128
+    )
+
+# Fine-tune with HuggingFace Trainer
+training_args = TrainingArguments(
+    output_dir="./results",
+    num_train_epochs=3,
+    per_device_train_batch_size=16,
+    learning_rate=2e-5,       # Small LR — don't destroy pre-trained weights
+    weight_decay=0.01,
+    warmup_steps=500,
+    evaluation_strategy="epoch"
+)
+
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=train_dataset,   # your HuggingFace Dataset
+    eval_dataset=val_dataset
+)
+trainer.train()</code></pre>
+
+<div class="callout callout-info">
+  <div class="callout-label">The Learning Rate Matters More Than You Think</div>
+  <p>BERT fine-tuning is notoriously sensitive to learning rate. The sweet spot is usually <code>2e-5</code> to <code>5e-5</code>. Go higher and you catastrophically forget the pre-trained knowledge. Go lower and you never adapt to the task. Three epochs is typically enough — beyond that you start overfitting on small datasets. These aren't arbitrary numbers; they're the result of thousands of practitioners finding the same narrow range independently.</p>
+</div>
+
+<h3>BERT Variants: The Family Tree</h3>
+
+<p>BERT spawned an entire family of models, each fixing a different limitation:</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Model</th>
+      <th>Parameters</th>
+      <th>Key Innovation</th>
+      <th>Why It Matters</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>BERT-base</strong></td>
+      <td>110M</td>
+      <td>The original — 12 layers, 768 hidden, 12 heads</td>
+      <td>Established the paradigm</td>
+    </tr>
+    <tr>
+      <td><strong>BERT-large</strong></td>
+      <td>340M</td>
+      <td>24 layers, 1024 hidden, 16 heads</td>
+      <td>Better performance, 3× the compute</td>
+    </tr>
+    <tr>
+      <td><strong>RoBERTa</strong></td>
+      <td>355M</td>
+      <td>Drops NSP, more data, longer training, dynamic masking</td>
+      <td>Showed BERT was undertrained — same architecture, way better results</td>
+    </tr>
+    <tr>
+      <td><strong>ALBERT</strong></td>
+      <td>12M–235M</td>
+      <td>Cross-layer parameter sharing, factorized embeddings</td>
+      <td>80% fewer parameters with competitive performance</td>
+    </tr>
+    <tr>
+      <td><strong>DistilBERT</strong></td>
+      <td>66M</td>
+      <td>Knowledge distillation — 6 layers trained to mimic BERT-base's 12</td>
+      <td>60% the size, 97% the performance, 60% faster</td>
+    </tr>
+    <tr>
+      <td><strong>DeBERTa</strong></td>
+      <td>134M–1.5B</td>
+      <td>Disentangled attention (content and position attend separately)</td>
+      <td>Surpassed human baseline on SuperGLUE. Currently the strongest BERT-style model</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>RoBERTa's contribution deserves special attention. It didn't change the architecture at all. It just trained BERT <em>properly</em>: 10× more data, removed NSP, used dynamic masking (re-randomize mask each epoch instead of fixing it), trained for much longer. The result was massive improvements across every benchmark. The lesson: the original BERT paper left performance on the table by not training hard enough. Architecture matters, but so does training discipline.</p>
+
+<h3>Sentence Embeddings: The [CLS] Trap</h3>
+
+<p>Here's a common mistake: people take BERT's <code>[CLS]</code> token output and use it directly as a sentence embedding for similarity search. It doesn't work well. The <code>[CLS]</code> token was trained for NSP — a binary classification task — not to produce a meaningful geometric representation where similar sentences are close together in vector space.</p>
+
+<p>If you compute cosine similarity between <code>[CLS]</code> embeddings of "I love dogs" and "I adore puppies," you might get a <em>lower</em> score than between "I love dogs" and "The stock market crashed." The embedding space isn't organized for similarity.</p>
+
+<p><strong>Sentence-BERT</strong> (SBERT) fixes this. It fine-tunes BERT with a Siamese network structure: pass two sentences through the same BERT model, pool the outputs (mean pooling works better than <code>[CLS]</code>), and train with a contrastive or triplet loss that explicitly pushes similar sentences together and dissimilar sentences apart. The result: sentence embeddings where cosine similarity actually reflects semantic similarity.</p>
+
+<pre><code class="language-python">from sentence_transformers import SentenceTransformer
+
+# Sentence-BERT — meaningful sentence embeddings out of the box
+model = SentenceTransformer("all-MiniLM-L6-v2")  # fast, good quality
+
+sentences = [
+    "The cat sat on the mat.",
+    "A kitten rested on the rug.",
+    "Stock prices surged on Monday."
+]
+
+embeddings = model.encode(sentences)
+
+# Now cosine similarity actually works
+from sklearn.metrics.pairwise import cosine_similarity
+sims = cosine_similarity(embeddings)
+# sims[0][1] ≈ 0.78 — cat/kitten sentences are similar
+# sims[0][2] ≈ 0.08 — cat/stocks sentences are not
+print(sims)</code></pre>
+
+<div class="callout callout-danger">
+  <div class="callout-label">Don't Use Raw BERT for Semantic Search</div>
+  <p>If you're building a semantic search system — retrieving documents by meaning rather than keywords — raw BERT <code>[CLS]</code> embeddings will give you terrible results. Use Sentence-BERT or a model from the sentence-transformers library. This is one of the most common BERT mistakes in production systems, and it's entirely avoidable.</p>
+</div>
+
+<!-- ============================================================ -->
+<!--                          GPT                                  -->
+<!-- ============================================================ -->
+
+<h2>GPT: The Autoregressive Decoder</h2>
+
+<h3>Architecture</h3>
+
+<p>GPT flips the design. It's a <strong>decoder-only</strong> Transformer with <strong>causal masking</strong>. When generating the 5th token, it can only attend to tokens 1 through 4. Token 6? Doesn't exist yet. Token 5 has to be predicted from what came before, and <em>only</em> what came before.</p>
+
+<p>This is enforced by the causal attention mask — a triangular matrix that blocks attention to future positions. The upper triangle is filled with <code>-inf</code> before the softmax, so future tokens get zero attention weight. It's the same self-attention mechanism as BERT, but with this one constraint layered on top.</p>
+
+<pre><code class="language-python">import torch
 import torch.nn.functional as F
 
-def beam_search(decoder, hidden, cell, start_token, end_token,
-                max_len=50, beam_width=5):
-    """
-    Beam search decoding for a trained LSTM decoder.
-    Returns the highest-scoring complete sequence.
-    """
-    # Each beam: (log_prob, token_sequence, hidden_state, cell_state)
-    beams = [(0.0, [start_token], hidden, cell)]
-    completed = []
+def causal_self_attention(Q, K, V):
+    """Self-attention with causal mask — the core of GPT."""
+    d_k = Q.size(-1)
+    scores = Q @ K.transpose(-2, -1) / (d_k ** 0.5)
 
-    for _ in range(max_len):
-        all_candidates = []
+    # Create causal mask: block attention to future tokens
+    seq_len = scores.size(-1)
+    causal_mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=1).bool()
+    scores = scores.masked_fill(causal_mask, float('-inf'))
 
-        for log_prob, seq, h, c in beams:
-            last_token = torch.tensor([seq[-1]])
-            prediction, new_h, new_c = decoder(last_token, h, c)
-            log_probs = F.log_softmax(prediction, dim=-1).squeeze(0)
+    weights = F.softmax(scores, dim=-1)
+    return weights @ V
 
-            # Expand this beam with top-k tokens
-            topk_log_probs, topk_indices = log_probs.topk(beam_width)
+# Example: sequence of 4 tokens
+# Token 1 attends to: [1]
+# Token 2 attends to: [1, 2]
+# Token 3 attends to: [1, 2, 3]
+# Token 4 attends to: [1, 2, 3, 4]</code></pre>
 
-            for i in range(beam_width):
-                token = topk_indices[i].item()
-                new_log_prob = log_prob + topk_log_probs[i].item()
-                new_seq = seq + [token]
+<p>Why this design? Because generation is inherently sequential. When you write a sentence, you don't get to peek at words you haven't written yet. GPT mirrors that process: it generates text one token at a time, left to right, each token conditioned on all previous tokens. The training objective and the generation process are identical — predict the next token. This elegant alignment between training and inference is one of GPT's biggest strengths.</p>
 
-                if token == end_token:
-                    # Normalize by length to avoid short-sequence bias
-                    length_penalty = len(new_seq) ** 0.6
-                    normalized_score = new_log_prob / length_penalty
-                    completed.append((normalized_score, new_seq))
-                else:
-                    all_candidates.append(
-                        (new_log_prob, new_seq, new_h, new_c)
-                    )
+<h3>Training Objective: Next-Token Prediction</h3>
 
-        if not all_candidates:
-            break
+<p>GPT's training objective is almost comically simple. Given a sequence of tokens <code>[t₁, t₂, ..., tₙ]</code>, maximize the probability of each token given all preceding tokens:</p>
 
-        # Keep top-k beams by log probability
-        all_candidates.sort(key=lambda x: x[0], reverse=True)
-        beams = all_candidates[:beam_width]
+<p><strong>L = −Σ log P(tᵢ | t₁, t₂, ..., tᵢ₋₁)</strong></p>
 
-    # If no sequence completed, take the best partial beam
-    if not completed:
-        best = max(beams, key=lambda x: x[0])
-        return best[1]
+<p>That's it. Standard cross-entropy loss over the vocabulary at each position. No masking tricks, no auxiliary objectives, no sentence-pair classification. Just: read what came before, predict what comes next.</p>
 
-    # Return the highest-scoring completed sequence
-    best = max(completed, key=lambda x: x[0])
-    return best[1]
-</code></pre>
+<p>The insight that makes this work: predicting the next token in a massive, diverse text corpus requires understanding grammar, facts, reasoning, style, sentiment, code structure, mathematical logic, and more. The objective is simple. The capability required to do it well is not.</p>
 
-<h3>Length Normalization</h3>
+<pre><code class="language-python">import torch.nn as nn
 
-<p>Notice the <code>length_penalty</code> in the beam search code above. Without it, beam search has a systematic bias toward shorter sequences. Why? Sequence scores are products of probabilities (or sums of log-probabilities). Every additional token multiplies in another probability less than 1, which makes the total score smaller. A three-token translation will almost always outscore a seven-token translation, even if the longer one is correct.</p>
+class GPTLanguageModel(nn.Module):
+    def __init__(self, vocab_size, d_model, n_heads, n_layers, max_seq_len):
+        super().__init__()
+        self.token_emb = nn.Embedding(vocab_size, d_model)
+        self.pos_emb = nn.Embedding(max_seq_len, d_model)
+        self.layers = nn.ModuleList([
+            TransformerDecoderBlock(d_model, n_heads) for _ in range(n_layers)
+        ])
+        self.ln_f = nn.LayerNorm(d_model)
+        self.head = nn.Linear(d_model, vocab_size, bias=False)
 
-<p><strong>Length normalization</strong> fixes this by dividing the log-probability score by a function of the sequence length. The simplest version divides by <code>len(sequence)</code>. A softer version uses <code>len(sequence) ^ α</code>, where α is typically between 0.6 and 1.0. Google's Neural Machine Translation system popularized using α = 0.6. If α = 0, there's no normalization. If α = 1, you're computing the average log-probability per token. Values in between provide a gentler correction.</p>
+    def forward(self, idx, targets=None):
+        B, T = idx.shape
+        tok_emb = self.token_emb(idx)
+        pos_emb = self.pos_emb(torch.arange(T, device=idx.device))
+        x = tok_emb + pos_emb
 
-<h3>Top-K Sampling</h3>
+        for layer in self.layers:
+            x = layer(x)      # each layer applies causal self-attention + FFN
 
-<p>Beam search works well for translation, where there's usually one correct output. But for open-ended generation — writing stories, dialogue, creative text — beam search produces text that's fluent but boring. It gravitates toward generic, high-probability phrases. "I don't know" is always more probable than a creative response.</p>
+        x = self.ln_f(x)
+        logits = self.head(x)  # (B, T, vocab_size)
 
-<p><strong>Top-K sampling</strong> takes a different approach. At each step, instead of picking the best token, you sample randomly from the top <em>k</em> most probable tokens. You zero out everything outside the top <em>k</em> and renormalize the remaining probabilities. With <em>k</em> = 50, the model can choose from 50 reasonable options, introducing variety while avoiding the tail of truly bizarre tokens.</p>
+        loss = None
+        if targets is not None:
+            # Standard next-token prediction loss
+            loss = nn.functional.cross_entropy(
+                logits.view(-1, logits.size(-1)),
+                targets.view(-1)
+            )
+        return logits, loss</code></pre>
 
-<h3>Nucleus (Top-P) Sampling</h3>
+<h3>The GPT Evolution: A Scaling Story</h3>
 
-<p>The problem with top-K is that <em>k</em> is fixed. Sometimes the model is very confident and puts 95% of its probability mass on two tokens — sampling from 50 tokens adds unnecessary noise. Other times the distribution is flat and 50 tokens isn't enough diversity. <strong>Nucleus sampling</strong> (also called <strong>top-p sampling</strong>) adapts dynamically. Instead of picking a fixed number of tokens, you pick the smallest set of tokens whose cumulative probability exceeds a threshold <em>p</em> (typically 0.9 or 0.95). When the model is confident, the nucleus is tiny. When it's uncertain, the nucleus expands.</p>
+<p>GPT's history is a story about what happens when you scale a simple idea relentlessly.</p>
 
-<p>In practice, top-p sampling produces more natural, varied text than beam search or top-K for open-ended generation. Most modern language model APIs expose a <code>top_p</code> parameter for exactly this reason.</p>
+<p><strong>GPT-1 (2018, 117M parameters).</strong> Proved that unsupervised pre-training on text followed by supervised fine-tuning works. Trained on BookCorpus (~7,000 unpublished books). The key contribution wasn't the model — it was the paradigm: pre-train on lots of text, then fine-tune on your task. Sound familiar? It's the same recipe as BERT, published a few months later. GPT-1 used fine-tuning for downstream tasks, just like BERT would.</p>
 
-<div class="callout">
-  <div class="callout-title">Which Decoding Strategy When?</div>
-  <p>Machine translation and summarization: beam search with length normalization (beam width 4-6). You want the single most accurate output. Open-ended dialogue and creative writing: top-p sampling (p = 0.9-0.95) with a temperature parameter to control randomness. You want diverse, interesting output. Greedy decoding: only when speed matters more than quality, such as real-time autocomplete.</p>
+<p><strong>GPT-2 (2019, 1.5B parameters).</strong> The "too dangerous to release" model. OpenAI initially withheld the full model, claiming it could generate misleading text too effectively. The technical contribution: GPT-2 showed that a large enough model could perform tasks <em>without any fine-tuning</em> — just from the prompt. Ask it a question in the right format, and it answers. Give it a translation example, and it translates. Zero-shot task performance from a language model. This was the first hint that scale unlocks qualitatively new capabilities.</p>
+
+<p><strong>GPT-3 (2020, 175B parameters).</strong> The model that changed everything. GPT-3 demonstrated <strong>few-shot learning</strong>: put a few examples in the prompt, and the model learns the pattern on the fly. No weight updates. No gradient descent. Just pattern matching at an unprecedented scale. It could write essays, generate code, translate between languages, do arithmetic (sometimes), and carry on conversations — all from a model trained only to predict the next token. GPT-3 trained on 300 billion tokens and cost an estimated $4.6 million.</p>
+
+<p><strong>GPT-4 (2023, architecture undisclosed).</strong> Multimodal (text + images), dramatically better reasoning, passes the bar exam. OpenAI stopped publishing architecture details, but the capabilities spoke for themselves: GPT-4 can understand images, write nuanced long-form content, reason through complex multi-step problems, and follow intricate instructions. It likely uses a mixture-of-experts architecture, though OpenAI hasn't confirmed this.</p>
+
+<div class="callout callout-info">
+  <div class="callout-label">What Changed at Each Scale</div>
+  <p>The pattern is consistent: GPT-1 proved pre-training works. GPT-2 proved zero-shot works. GPT-3 proved few-shot works. GPT-4 proved multimodal reasoning works. Each generation didn't just do old things better — it unlocked capabilities that smaller models <em>simply could not do</em>, no matter how clever the prompting. This is the scaling story: more parameters + more data = qualitatively new behaviors.</p>
 </div>
 
-<h2>Applications</h2>
+<h3>Emergent Abilities</h3>
 
-<h3>Machine Translation</h3>
+<p>Some abilities appear out of nowhere as models get bigger. A 1-billion-parameter model can't do three-digit arithmetic. A 10-billion-parameter model still can't. A 100-billion-parameter model suddenly can. This isn't gradual improvement — it's a phase transition.</p>
 
-<p>The original killer app. Seq2seq with attention (and later, Transformers) powers Google Translate, DeepL, and every modern translation system. The encoder reads the source language; the decoder writes the target language. Billions of parallel sentence pairs scraped from the web serve as training data. Even today, the encoder-decoder structure persists — the Transformer is still an encoder-decoder model at its core.</p>
+<p><strong>In-context learning</strong> is the poster child. Put a few examples in the prompt, and the model generalizes to new inputs — without any weight updates. This wasn't a training objective. Nobody optimized for it. It emerged from scale and the next-token prediction objective. The model learned to be a "meta-learner" because that's what predicting the next token in a diverse corpus requires.</p>
 
-<h3>Text Summarization</h3>
+<p><strong>Chain-of-thought reasoning</strong> is another emergent ability. Add "Let's think step by step" to a prompt, and large models start breaking problems into intermediate steps. Small models just produce gibberish reasoning chains. Large models produce correct ones. The ability to decompose problems into steps wasn't explicitly trained — it was present in the training data (humans write step-by-step explanations) and the model learned to leverage it, but only at sufficient scale.</p>
 
-<p>Feed in an article, get out a summary. <strong>Abstractive summarization</strong> uses a seq2seq model to generate new sentences rather than just extracting existing ones. The encoder reads the full document; the decoder produces a condensed version. The challenge is that summaries must be factually consistent with the source — a problem called hallucination that remains actively researched.</p>
+<div class="callout callout-warning">
+  <div class="callout-label">Are Emergent Abilities Real?</div>
+  <p>There's a genuine debate. Schaeffer et al. (2023) argued that many "emergent" abilities are measurement artifacts: if you use binary exact-match accuracy, you see a sharp jump. Switch to a continuous metric like log-likelihood, and improvement is smooth and gradual all along. The model was getting better continuously — the binary metric just couldn't detect it until a threshold was crossed. This doesn't fully settle the debate, but it's a critical reminder: <em>how you measure determines what you see</em>.</p>
+</div>
 
-<h3>Dialogue Systems</h3>
+<h3>In-Context Learning: The Prompt Is the Program</h3>
 
-<p>Chatbots and virtual assistants are fundamentally seq2seq. The user's message is the input sequence; the response is the output sequence. Early dialogue systems used vanilla seq2seq and produced generic responses ("I don't know", "That's interesting"). Modern systems layer in retrieval, persona conditioning, and reinforcement learning from human feedback, but the underlying generation mechanism is still a decoder producing tokens one at a time.</p>
+<p>This is GPT's killer feature. You don't need to fine-tune. You don't need labeled data. You write instructions and examples directly in the prompt, and the model follows them.</p>
 
-<p>The seq2seq framework is one of those ideas that seems almost too simple — split reading from writing, compress, then expand. Its limitations (the bottleneck problem, exposure bias) are real, but each limitation spawned a targeted solution. Attention mechanisms, which we cover next, address the bottleneck. Scheduled sampling addresses exposure bias. And the encoder-decoder structure itself proved so useful that it survived the transition from RNNs to Transformers. The architecture changed; the fundamental idea didn't.</p>
+<p><strong>Zero-shot:</strong> Describe the task, give no examples.</p>
 
+<pre><code class="language-python"># Zero-shot — just describe what you want
+prompt = """Classify the sentiment of the following review as
+positive, negative, or neutral.
 
+Review: "The battery life is incredible but the screen is dim."
+Sentiment:"""
+# Model outputs: "neutral" or "mixed"</code></pre>
 
+<p><strong>Few-shot:</strong> Give a handful of input-output examples, then present the new input.</p>
+
+<pre><code class="language-python"># Few-shot — examples teach the format and the task
+prompt = """Classify the sentiment:
+
+Review: "Absolutely love this product!" → positive
+Review: "Worst purchase I've ever made." → negative
+Review: "It works fine, nothing special." → neutral
+Review: "The battery life is incredible but the screen is dim." →"""
+# Model outputs: "neutral" or "mixed"</code></pre>
+
+<p><strong>Many-shot:</strong> With long context windows (100K+ tokens), you can stuff dozens or hundreds of examples into the prompt. Performance keeps improving with more examples, approaching fine-tuned model performance for some tasks.</p>
+
+<p>Why does in-context learning work? Two competing theories:</p>
+
+<ul>
+  <li><strong>Implicit gradient descent:</strong> Transformer attention layers can implement a single step of gradient descent in their forward pass. The examples in the prompt act like a mini training set, and the model internally "fits" to them.</li>
+  <li><strong>Task recognition:</strong> The model has seen thousands of task formats during pre-training. Few-shot examples don't teach anything new — they just tell the model <em>which of its existing behaviors to activate</em>.</li>
+</ul>
+
+<p>Both theories have evidence. In practice, it doesn't matter which is right — what matters is that in-context learning makes GPT-style models extraordinarily versatile. One model, infinite tasks.</p>
+
+<h3>Scaling Laws: The Chinchilla Insight</h3>
+
+<p>For years, the strategy was simple: make the model bigger. More parameters = better performance. GPT-3 was 175B parameters trained on 300B tokens. Most of the budget went to parameters.</p>
+
+<p>Then DeepMind's Chinchilla paper (2022) dropped a bomb: <strong>you should scale data and parameters together</strong>. Specifically, the number of training tokens should be roughly 20× the number of parameters. By this rule, GPT-3's 175B parameters needed ~3.5 trillion tokens, not 300 billion. It was massively undertrained.</p>
+
+<p>Chinchilla proved this by training a 70B-parameter model on 1.4 trillion tokens. It outperformed the 280B-parameter Gopher trained on 300B tokens. A model <em>4× smaller</em> won because it saw 4.7× more data. The cost was the same — they just allocated compute differently.</p>
+
+<p>The implication: many of the "scaling breakthroughs" attributed to bigger models were actually about training longer on more data. The optimal strategy isn't "make it bigger" — it's "make it bigger <em>and</em> feed it more data, in proportion."</p>
+
+<!-- ============================================================ -->
+<!--                    THE COMPARISON                             -->
+<!-- ============================================================ -->
+
+<h2>BERT vs. GPT: When to Use Which</h2>
+
+<p>Now for the question that actually matters in practice: which paradigm should you use?</p>
+
+<h3>The Core Trade-off</h3>
+
+<p><strong>BERT sees everything at once.</strong> This makes it excellent at tasks where you need to understand the full input before making a decision. Classification: "Is this email spam?" NER: "Which words are person names?" Semantic similarity: "Do these two sentences mean the same thing?" These are <em>understanding</em> tasks. The full input exists; you just need to analyze it.</p>
+
+<p><strong>GPT sees left-to-right.</strong> This makes it excellent at tasks where you need to generate output one token at a time. Text generation, dialogue, code completion, translation, summarization. These are <em>generation</em> tasks. The output doesn't exist yet; you need to create it.</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Dimension</th>
+      <th>BERT (Encoder)</th>
+      <th>GPT (Decoder)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Architecture</strong></td>
+      <td>Encoder-only Transformer</td>
+      <td>Decoder-only Transformer</td>
+    </tr>
+    <tr>
+      <td><strong>Attention mask</strong></td>
+      <td>Bidirectional (full attention)</td>
+      <td>Causal (left-to-right only)</td>
+    </tr>
+    <tr>
+      <td><strong>Pre-training objective</strong></td>
+      <td>Masked Language Modeling (MLM)</td>
+      <td>Next-token prediction (causal LM)</td>
+    </tr>
+    <tr>
+      <td><strong>Typical use</strong></td>
+      <td>Classification, NER, Q&amp;A extraction, similarity</td>
+      <td>Text generation, chat, code, translation</td>
+    </tr>
+    <tr>
+      <td><strong>Adaptation method</strong></td>
+      <td>Fine-tune on labeled data</td>
+      <td>Prompt engineering / few-shot / fine-tune</td>
+    </tr>
+    <tr>
+      <td><strong>Parameter range</strong></td>
+      <td>66M – 1.5B (practical range)</td>
+      <td>117M – 1.8T+ (and growing)</td>
+    </tr>
+    <tr>
+      <td><strong>Inference speed</strong></td>
+      <td>Fast (single forward pass)</td>
+      <td>Slower (autoregressive, one token at a time)</td>
+    </tr>
+    <tr>
+      <td><strong>Labeled data needed?</strong></td>
+      <td>Yes, for fine-tuning</td>
+      <td>No (zero/few-shot) or yes (for fine-tuning)</td>
+    </tr>
+    <tr>
+      <td><strong>Bidirectional context?</strong></td>
+      <td>Yes — the defining advantage</td>
+      <td>No — sees only past tokens</td>
+    </tr>
+    <tr>
+      <td><strong>Can generate text?</strong></td>
+      <td>Not naturally (fill-mask only)</td>
+      <td>Yes — this is what it's built for</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>The Decision Framework</h3>
+
+<p>Use this mental model:</p>
+
+<ul>
+  <li><strong>You have labeled data + need fast, precise inference on a specific task</strong> → fine-tuned BERT-style model (DeBERTa, RoBERTa, DistilBERT). You'll get a small, fast model that's state-of-the-art for your exact task.</li>
+  <li><strong>You need flexible generation or don't have labeled data</strong> → GPT-style model with prompting. You trade inference speed for versatility and zero-shot capability.</li>
+  <li><strong>You need sentence/document embeddings for search or clustering</strong> → Sentence-BERT or similar bi-encoder model. Neither raw BERT nor GPT does this well out of the box.</li>
+  <li><strong>You need to process input and then generate output</strong> (translation, summarization) → encoder-decoder models like T5 or BART, which combine both paradigms.</li>
+</ul>
+
+<h3>The Trend: GPT Is Eating BERT's Lunch</h3>
+
+<p>Here's the uncomfortable truth for the BERT paradigm: GPT-style models are increasingly competitive on understanding tasks too. GPT-4 does sentiment analysis, NER, and question answering through prompting — no fine-tuning needed. For many tasks, the accuracy gap has closed.</p>
+
+<p>But "closed" isn't "eliminated." For production systems where you need:</p>
+
+<ul>
+  <li>Millisecond-level latency (BERT: one forward pass. GPT: many autoregressive steps)</li>
+  <li>Deterministic, reproducible outputs (BERT fine-tuned models are deterministic. GPT sampling is stochastic)</li>
+  <li>Cheap inference at scale (DistilBERT: 66M params. GPT-4: orders of magnitude larger)</li>
+  <li>Guaranteed format compliance (a classification head outputs exactly one of N labels. GPT can hallucinate anything)</li>
+</ul>
+
+<p>...fine-tuned BERT-style models are still the pragmatic choice. A DistilBERT fine-tuned for sentiment analysis runs in 2ms, costs fractions of a cent per 1000 calls, and never hallucinates. GPT-4 doing the same task through prompting is slower, more expensive, and occasionally returns something unexpected.</p>
+
+<div class="callout callout-info">
+  <div class="callout-label">The Practical Reality in 2024+</div>
+  <p>Many teams use <em>both</em> paradigms. GPT for prototyping, exploration, and tasks where flexibility matters. Fine-tuned BERT-style models for production classification pipelines where latency and cost matter. The paradigms aren't competitors — they're complements. Start with GPT prompting to validate the task is solvable, collect labeled data from the GPT outputs, then distill into a small BERT model for production. Best of both worlds.</p>
+</div>
+
+<pre><code class="language-python"># The hybrid workflow: GPT for prototyping → BERT for production
+
+# Step 1: Use GPT to label data (prototyping phase)
+from openai import OpenAI
+client = OpenAI()
+
+def gpt_classify(text):
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{
+            "role": "user",
+            "content": f"Classify this review sentiment as positive, "
+                       f"negative, or neutral. Reply with one word only.\n\n"
+                       f"Review: {text}"
+        }],
+        temperature=0
+    )
+    return response.choices[0].message.content.strip().lower()
+
+# Step 2: Use GPT labels to fine-tune a small BERT model (production phase)
+from transformers import (
+    AutoModelForSequenceClassification,
+    AutoTokenizer,
+    Trainer,
+    TrainingArguments
+)
+
+model = AutoModelForSequenceClassification.from_pretrained(
+    "distilbert-base-uncased", num_labels=3
+)
+tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased")
+
+# Fine-tune on the GPT-labeled data
+# Result: a 66M-param model that runs in 2ms, matches GPT accuracy
+# on your specific task, and costs 100× less per inference</code></pre>
+
+<h2>What You Should Now Be Able To Do</h2>
+
+<ul>
+  <li>☑ Explain why BERT uses bidirectional attention and why GPT uses causal masking — and what each gains and loses from that choice</li>
+  <li>☑ Describe BERT's MLM objective, including the 80/10/10 masking strategy and <em>why</em> each component exists</li>
+  <li>☑ Explain why NSP was dropped in later models like RoBERTa</li>
+  <li>☑ Diagram BERT's input representation: token embeddings + segment embeddings + position embeddings, and the roles of <code>[CLS]</code> and <code>[SEP]</code></li>
+  <li>☑ Fine-tune a BERT model for classification or NER using HuggingFace, and know the critical hyperparameters (learning rate <code>2e-5</code>, 3 epochs, warmup)</li>
+  <li>☑ Explain why raw BERT <code>[CLS]</code> embeddings are poor sentence embeddings and how Sentence-BERT fixes this</li>
+  <li>☑ Describe GPT's next-token prediction objective and why such a simple objective produces such powerful models</li>
+  <li>☑ Trace the GPT scaling story from GPT-1 to GPT-4 and identify what new capability each scale unlocked</li>
+  <li>☑ Use zero-shot, few-shot, and many-shot prompting with GPT-style models, and understand the two theories for why in-context learning works</li>
+  <li>☑ Apply the Chinchilla scaling insight — scale data and parameters together, not just parameters</li>
+  <li>☑ Choose between BERT-style and GPT-style models for a given production task based on latency, cost, accuracy, and flexibility requirements</li>
+</ul>
 
       <div class="page-nav">
-        <a href="s03.html">
+        <a class="prev" href="s03.html">
           <span class="label">← Previous</span>
-          <span class="link-title">GRU</span>
+          <span class="link-title">Self-Attention & the Transformer</span>
         </a>
         <a class="next" href="s05.html">
           <span class="label">Next →</span>
-          <span class="link-title">Attention Mechanism</span>
+          <span class="link-title">State Space Models & Mamba</span>
         </a>
       </div>
-
     </div>
   </div>
 

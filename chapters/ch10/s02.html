@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>LSTM — Zero to Hero AI</title>
+  <title>Seq2Seq &amp; the Birth of Attention — Zero to Hero AI</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="../../css/style.css">
@@ -191,18 +191,13 @@
     <span class="ch-arrow">▶</span>
   </a>
   <div class="nav-sections">
-    <a class="nav-section" data-href="ch10/s01.html">Recurrent Neural Networks</a>
-    <a class="nav-section" data-href="ch10/s02.html">LSTM</a>
-    <a class="nav-section" data-href="ch10/s03.html">GRU</a>
-    <a class="nav-section" data-href="ch10/s04.html">Sequence-to-Sequence</a>
-    <a class="nav-section" data-href="ch10/s05.html">Attention Mechanism</a>
-    <a class="nav-section" data-href="ch10/s06.html">Self-Attention</a>
-    <a class="nav-section" data-href="ch10/s07.html">Transformer Architecture</a>
-    <a class="nav-section" data-href="ch10/s08.html">BERT Internals</a>
-    <a class="nav-section" data-href="ch10/s09.html">GPT Internals</a>
-    <a class="nav-section" data-href="ch10/s10.html">State Space Models &amp; Mamba</a>
-    <a class="nav-section" data-href="ch10/s11.html">Transformer Interpretability &amp; Analysis</a>
-    <a class="nav-section" data-href="ch10/s12.html">Sub-Quadratic Architectures</a>
+    <a class="nav-section" data-href="ch10/s01.html">Recurrent Models: RNN, LSTM, GRU</a>
+    <a class="nav-section" data-href="ch10/s02.html">Seq2Seq &amp; the Birth of Attention</a>
+    <a class="nav-section" data-href="ch10/s03.html">Self-Attention &amp; the Transformer</a>
+    <a class="nav-section" data-href="ch10/s04.html">BERT &amp; GPT: The Two Paradigms</a>
+    <a class="nav-section" data-href="ch10/s05.html">State Space Models &amp; Mamba</a>
+    <a class="nav-section" data-href="ch10/s06.html">Interpretability &amp; Efficient Architectures</a>
+    <a class="nav-section" data-href="ch10/s07.html">Nice to Know</a>
     <a class="nav-section" data-href="ch10/s13.html">Nice to Know</a>
   </div>
   <div class="nav-part">Language &amp; LLMs</div>
@@ -373,7 +368,7 @@
 
   <div class="main">
     <div class="topbar">
-      <div class="breadcrumb"><a href="../../index.html">Home</a><span class="sep">/</span><a href="../../chapters/ch10/index.html">Ch 10</a><span class="sep">/</span><span>LSTM</span></div>
+      <div class="breadcrumb"><a href="../../index.html">Home</a><span class="sep">/</span><a href="../../chapters/ch10/index.html">Ch 10</a><span class="sep">/</span><span>Seq2Seq &amp; the Birth of Attention</span></div>
       <div class="topbar-actions">
         <button class="theme-toggle">🌙</button>
       </div>
@@ -381,263 +376,451 @@
 
     <div class="content">
 
-<h1>LSTM</h1>
+<h1>Seq2Seq &amp; the Birth of Attention</h1>
 <div class="chapter-meta">
   <span class="tag">Chapter 10: Sequence Models &amp; Attention</span>
-  <span class="tag">4 subtopics</span>
+  <span class="tag">The bottleneck problem · Bahdanau · Luong · Dynamic context</span>
 </div>
 
 <div class="tldr">
   <div class="tldr-label">TL;DR</div>
-  <p>Vanilla RNNs forget things fast because gradients vanish over long sequences. LSTMs fix this with a <em>cell state</em> — a dedicated memory highway that runs through every time step, controlled by three learned gates (forget, input, output). The forget gate erases irrelevant memories, the input gate writes new ones, and the output gate decides what to expose. Because the cell state flows with mostly linear operations, gradients travel back through hundreds of steps without shrinking to zero. That single architectural trick — a gated memory highway — turned sequence models from a research curiosity into a production workhorse.</p>
+  <p>Seq2Seq models encode an input sequence into a single fixed-size vector, then decode it into an output sequence. The problem: that one vector is a brutal bottleneck — long inputs get crushed. Attention fixes this by letting the decoder look back at <em>every</em> encoder hidden state at every generation step, computing a fresh weighted combination each time. Bahdanau attention uses a small neural network to score relevance; Luong attention simplifies it to a dot product. The core mechanic — score, softmax, weighted sum — is the same pattern that later becomes self-attention in Transformers.</p>
 </div>
 
-<p>By the end of the last section you saw the brutal reality of vanilla RNNs: they can't remember anything more than about 10–20 steps back. The gradients either vanish into nothing or explode into infinity. In 1997, Sepp Hochreiter and Jürgen Schmidhuber published a fix that would dominate sequence modelling for almost two decades. Their idea was deceptively simple: give the network an explicit, protected memory channel and let it <em>learn</em> what to remember and what to forget. That's the <strong>Long Short-Term Memory</strong> network — the LSTM.</p>
+<h2>The Encoder-Decoder Architecture</h2>
 
-<h2>The Cell State: A Memory Highway</h2>
+<p>Translation, summarization, question answering — these are all tasks where the input and output are both <em>sequences</em>, but of different lengths. You can't do this with a single RNN that maps one input to one output at each time step. You need two stages: one that <em>reads</em> the input, and one that <em>writes</em> the output.</p>
 
-<p>Here's the key innovation and the one thing you need to understand before anything else. Imagine you're on a long road trip, and you carry a notebook. At every stop, you can scribble new notes, erase old ones, or read from it — but the notebook itself travels with you the entire journey, untouched unless you deliberately modify it. That notebook is the <strong>cell state</strong>, often written as <code>Cₜ</code>.</p>
+<p>That's the <strong>encoder-decoder</strong> (or seq2seq) architecture, introduced by Sutskever et al. (2014) and Cho et al. (2014). Here's the setup:</p>
 
-<p>In a vanilla RNN, all information gets squeezed through the hidden state <code>hₜ</code>, which is rewritten at every step via a tanh activation. That's like being forced to recite your entire memory out loud at every stop, then reconstruct it from what you just said. Lossy doesn't begin to describe it.</p>
+<ul>
+  <li>The <strong>encoder</strong> is an RNN (usually LSTM or GRU) that reads the input sequence token by token. It produces a hidden state at each step, but we only care about the <strong>final hidden state</strong> — a single vector that supposedly summarizes the entire input. This is the <strong>context vector</strong>, often called <code>c</code>.</li>
+  <li>The <strong>decoder</strong> is a separate RNN that takes the context vector as its initial hidden state and generates the output sequence one token at a time. At each step, it predicts the next token, feeds that prediction back in as input, and repeats until it emits a special end-of-sequence token.</li>
+</ul>
 
-<p>The cell state is different. It runs along the top of the network like a conveyor belt. Information on this belt flows from one step to the next through simple element-wise operations — a multiplication here, an addition there. No matrix multiplications squashing things through nonlinearities. This is what gives the LSTM its long-range memory: gradients can flow backward along this belt almost unimpeded. The network then uses three <strong>gates</strong> to control what gets erased from the belt, what gets added, and what gets read off of it.</p>
-
-<h2>The Forget Gate</h2>
-
-<p>First question at every time step: what old information is no longer relevant? Back to the notebook analogy — you're now in Paris, so maybe erase your notes about London restaurant reservations. The <strong>forget gate</strong> handles this.</p>
-
-<p>It looks at the previous hidden state <code>hₜ₋₁</code> (what you just said) and the current input <code>xₜ</code> (what's happening now), concatenates them, runs them through a sigmoid, and produces a vector of values between 0 and 1 — one value for each dimension of the cell state:</p>
-
-<p><code>fₜ = σ(W_f · [hₜ₋₁, xₜ] + b_f)</code></p>
-
-<p>A value of 1 means "keep this memory completely." A value of 0 means "erase it entirely." Anything in between is a partial erase. When we later multiply this vector element-wise with the old cell state, dimensions near zero get wiped and dimensions near one survive. That's the eraser on your notebook — a learned, differentiable eraser.</p>
-
-<h2>The Input Gate</h2>
-
-<p>Next question: what <em>new</em> information should we write down? This happens in two parts, because we need to decide both <em>what</em> to write and <em>how much</em> of it to write.</p>
-
-<p>First, we create a set of <strong>candidate values</strong> — the raw new notes we <em>could</em> write. This uses a tanh activation, which squashes values into the range [-1, 1]:</p>
-
-<p><code>C̃ₜ = tanh(W_c · [hₜ₋₁, xₜ] + b_c)</code></p>
-
-<p>Then, the <strong>input gate</strong> decides how much of each candidate to actually commit to memory. Like the forget gate, it's a sigmoid producing values between 0 and 1:</p>
-
-<p><code>iₜ = σ(W_i · [hₜ₋₁, xₜ] + b_i)</code></p>
-
-<p>Think of it this way: the tanh part drafts a full page of notes, and the sigmoid part highlights which sentences actually matter. Only the highlighted parts get written into the notebook.</p>
-
-<h2>Updating the Cell State</h2>
-
-<p>Now we combine the erasing and writing into one clean update. The new cell state is:</p>
-
-<p><code>Cₜ = fₜ * Cₜ₋₁ + iₜ * C̃ₜ</code></p>
-
-<p>That's it. Multiply the old cell state by the forget gate (erase what's irrelevant), then add the new candidate values scaled by the input gate (write what's relevant). The <code>*</code> here means element-wise multiplication, not matrix multiplication. Every dimension of the cell state is independently gated.</p>
-
-<p>This equation is the heart of the entire LSTM. Stare at it. The old cell state <code>Cₜ₋₁</code> can pass through almost unchanged if <code>fₜ ≈ 1</code> and <code>iₜ ≈ 0</code>. That linear path is exactly why gradients don't vanish — there's no squashing nonlinearity in the way. The gates themselves are nonlinear, but the cell state update is additive. Addition is gradient-friendly.</p>
-
-<h2>The Output Gate</h2>
-
-<p>The cell state now holds your updated notebook. But you don't blurt out your entire notebook at every conversation turn. You decide what's relevant to say right now. That's the <strong>output gate</strong>.</p>
-
-<p>First, a sigmoid decides which parts of the cell state to expose:</p>
-
-<p><code>oₜ = σ(W_o · [hₜ₋₁, xₜ] + b_o)</code></p>
-
-<p>Then we push the cell state through a tanh (to squash values back to [-1, 1]) and multiply element-wise by the output gate:</p>
-
-<p><code>hₜ = oₜ * tanh(Cₜ)</code></p>
-
-<p>The result <code>hₜ</code> is the hidden state — what the LSTM "says out loud" at this time step. It's a filtered, curated version of the full memory. This hidden state gets passed to the next time step and optionally to an output layer for predictions. Notice the asymmetry: the cell state is the full internal memory, while the hidden state is the public-facing summary. The network learns to keep far more in the cell state than it ever reveals.</p>
-
-<h2>Gate Mechanics: Why Sigmoid and Tanh?</h2>
-
-<p>You might wonder why we use sigmoid for gates and tanh for candidate values. It's not arbitrary.</p>
-
-<p><strong>Sigmoid</strong> outputs values in [0, 1]. That's a natural range for "how much to let through" — it acts as a soft switch. Zero means block everything, one means let everything pass. When you multiply a signal by a sigmoid output, you're scaling it between "completely off" and "completely on." Perfect for gating.</p>
-
-<p><strong>Tanh</strong> outputs values in [-1, 1]. Candidate values need to be able to both increase and decrease the cell state. If candidates were only positive, the cell state could only grow — it would never subtract information. The [-1, 1] range lets the network write both positive and negative updates, keeping the cell state centered and numerically stable.</p>
-
-<p>Every operation between gates and the cell state is <strong>element-wise</strong> (Hadamard product). Each dimension of the cell state has its own independent gate value. Dimension 42 might be remembering the subject of a sentence while dimension 137 tracks verb tense. They're gated independently, so the network can forget the subject without losing the tense, or vice versa. This fine-grained control is a big part of why LSTMs work so well in practice.</p>
-
-<h2>LSTM Forward Pass from Scratch</h2>
-
-<p>Let's implement a single LSTM cell to see the gates in action. No magic — just matrix multiplications and activations:</p>
-
-<pre><code>import numpy as np
-
-def sigmoid(x):
-    return 1 / (1 + np.exp(-np.clip(x, -500, 500)))
-
-class LSTMCell:
-    def __init__(self, input_size, hidden_size):
-        self.hidden_size = hidden_size
-        scale = 0.1
-        combined = input_size + hidden_size
-        # One weight matrix for all four gates (efficient)
-        self.W = np.random.randn(4 * hidden_size, combined) * scale
-        self.b = np.zeros(4 * hidden_size)
-
-    def forward(self, x, h_prev, c_prev):
-        combined = np.concatenate([h_prev, x])
-        # Compute all four gates in one matrix multiply
-        gates = self.W @ combined + self.b
-        H = self.hidden_size
-
-        # Split into four gate pre-activations
-        f_gate = sigmoid(gates[0:H])       # forget gate
-        i_gate = sigmoid(gates[H:2*H])     # input gate
-        c_cand = np.tanh(gates[2*H:3*H])   # candidate values
-        o_gate = sigmoid(gates[3*H:4*H])   # output gate
-
-        # Update cell state: erase old, write new
-        c_new = f_gate * c_prev + i_gate * c_cand
-
-        # Compute hidden state: filtered read of cell state
-        h_new = o_gate * np.tanh(c_new)
-
-        return h_new, c_new
-
-# Example usage
-input_size, hidden_size, seq_len = 10, 32, 5
-cell = LSTMCell(input_size, hidden_size)
-
-h = np.zeros(hidden_size)
-c = np.zeros(hidden_size)
-
-# Process a sequence step by step
-for t in range(seq_len):
-    x = np.random.randn(input_size)
-    h, c = cell.forward(x, h, c)
-    print(f"Step {t}: h mean={h.mean():.4f}, c mean={c.mean():.4f}")</code></pre>
-
-<p>Notice how we concatenate all four gates into a single large weight matrix <code>W</code>. In practice, every framework does this. One big matrix multiply is much faster on a GPU than four small ones. We split the result after the multiplication.</p>
-
-<h2>Using PyTorch's nn.LSTM</h2>
-
-<p>In practice, you'll never write the cell from scratch. PyTorch's <code>nn.LSTM</code> handles the math, batching, and GPU optimization. Here's how you'd use it for a simple sequence task:</p>
-
-<pre><code>import torch
+<pre><code class="language-python">import torch
 import torch.nn as nn
 
-class LSTMClassifier(nn.Module):
-    def __init__(self, vocab_size, embed_dim, hidden_dim,
-                 num_classes, num_layers=2, dropout=0.3):
+class Encoder(nn.Module):
+    def __init__(self, vocab_size, embed_dim, hidden_dim, num_layers=1):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, embed_dim)
-        self.lstm = nn.LSTM(
-            input_size=embed_dim,
-            hidden_size=hidden_dim,
-            num_layers=num_layers,
-            batch_first=True,
-            dropout=dropout,
-            bidirectional=True  # read sequence both ways
-        )
-        # bidirectional doubles the hidden dim
-        self.classifier = nn.Linear(hidden_dim * 2, num_classes)
-        self.dropout = nn.Dropout(dropout)
+        self.rnn = nn.LSTM(embed_dim, hidden_dim, num_layers, batch_first=True)
 
-    def forward(self, x):
-        # x shape: (batch, seq_len)
-        embedded = self.dropout(self.embedding(x))
+    def forward(self, src):
+        # src: (batch, src_len)
+        embedded = self.embedding(src)        # (batch, src_len, embed_dim)
+        outputs, (hidden, cell) = self.rnn(embedded)
+        # outputs: all hidden states — we'll need these later for attention
+        # hidden, cell: final states — this is the "context vector"
+        return outputs, hidden, cell
 
-        # lstm_out: (batch, seq_len, hidden_dim * 2)
-        # h_n: (num_layers * 2, batch, hidden_dim)
-        lstm_out, (h_n, c_n) = self.lstm(embedded)
+class Decoder(nn.Module):
+    def __init__(self, vocab_size, embed_dim, hidden_dim, num_layers=1):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, embed_dim)
+        self.rnn = nn.LSTM(embed_dim, hidden_dim, num_layers, batch_first=True)
+        self.fc_out = nn.Linear(hidden_dim, vocab_size)
 
-        # Use the final hidden states from both directions
-        # h_n[-2] is last layer forward, h_n[-1] is last layer backward
-        final_hidden = torch.cat([h_n[-2], h_n[-1]], dim=-1)
+    def forward(self, token, hidden, cell):
+        # token: (batch, 1) — one token at a time
+        embedded = self.embedding(token)      # (batch, 1, embed_dim)
+        output, (hidden, cell) = self.rnn(embedded, (hidden, cell))
+        prediction = self.fc_out(output.squeeze(1))  # (batch, vocab_size)
+        return prediction, hidden, cell</code></pre>
 
-        logits = self.classifier(self.dropout(final_hidden))
-        return logits
+<p>The encoder reads "Je suis étudiant" and compresses it into a vector. The decoder takes that vector and produces "I am a student," one word at a time. Elegant. Simple. And deeply flawed.</p>
 
-# Example
-model = LSTMClassifier(
-    vocab_size=10000, embed_dim=128,
-    hidden_dim=256, num_classes=4
-)
+<h2>The Bottleneck Problem</h2>
 
-# Fake batch: 8 sequences of length 50
-batch = torch.randint(0, 10000, (8, 50))
-output = model(batch)
-print(f"Output shape: {output.shape}")  # (8, 4)</code></pre>
+<p>Here's the flaw. That context vector — the final hidden state of the encoder — is a fixed-size vector. Maybe 256 dimensions. Maybe 1024. Doesn't matter. It's <em>fixed</em>.</p>
 
-<p>A few things to note. The <code>batch_first=True</code> argument makes the input shape <code>(batch, seq_len, features)</code> instead of the default <code>(seq_len, batch, features)</code>. The LSTM returns both the full sequence of hidden states (<code>lstm_out</code>) and the final hidden and cell states (<code>h_n</code>, <code>c_n</code>). For classification, we typically use the final hidden state. For sequence-to-sequence tasks, we'd use the full <code>lstm_out</code>.</p>
+<p>Now imagine translating a 50-word sentence. All 50 words, their relationships, their nuances — crammed into one vector. Now imagine a 200-word paragraph. Same vector size. The model has to compress increasingly more information into the same tiny space. Something has to give.</p>
 
-<h2>Peephole Connections</h2>
-
-<p>In the standard LSTM, the gates look at <code>hₜ₋₁</code> and <code>xₜ</code> to make their decisions. But here's a subtle issue: the gates never directly see the cell state itself. They're deciding what to do with the notebook without actually reading it first.</p>
-
-<p><strong>Peephole connections</strong>, introduced by Gers and Schmidhuber in 2000, fix this by letting the gates peek at the cell state. The forget and input gates look at the <em>previous</em> cell state <code>Cₜ₋₁</code>, and the output gate looks at the <em>current</em> cell state <code>Cₜ</code>:</p>
-
-<p><code>fₜ = σ(W_f · [hₜ₋₁, xₜ] + w_pf ⊙ Cₜ₋₁ + b_f)</code></p>
-<p><code>iₜ = σ(W_i · [hₜ₋₁, xₜ] + w_pi ⊙ Cₜ₋₁ + b_i)</code></p>
-<p><code>oₜ = σ(W_o · [hₜ₋₁, xₜ] + w_po ⊙ Cₜ + b_o)</code></p>
-
-<p>The <code>w_p</code> terms are diagonal weight vectors (not full matrices) — the peephole is element-wise, so each gate dimension peeks at the corresponding cell state dimension. In practice, peepholes help on tasks that require precise timing, like learning to count or generate rhythmic patterns. For most NLP tasks, the improvement is marginal, which is why standard LSTMs without peepholes remain more common.</p>
-
-<h2>Coupled Forget-Input Gate</h2>
-
-<p>Here's an elegant simplification. Think about it: if you're erasing something from memory, you're probably making room to write something new. And if you're not erasing anything, you probably shouldn't be adding much either. The forget and input decisions are naturally coupled.</p>
-
-<p>The <strong>coupled forget-input gate</strong> formalizes this by tying the two gates together:</p>
-
-<p><code>iₜ = 1 − fₜ</code></p>
-
-<p>Now the cell state update becomes:</p>
-
-<p><code>Cₜ = fₜ * Cₜ₋₁ + (1 − fₜ) * C̃ₜ</code></p>
-
-<p>This is a weighted interpolation between the old memory and the new candidate. Whatever fraction you forget, you replace. This reduces the parameter count (one fewer gate's worth of weights) and acts as a form of regularization. The GRU architecture, which we'll cover in the next section, takes this idea even further.</p>
-
-<h2>Bidirectional LSTM</h2>
-
-<p>A standard LSTM reads left to right. At time step <code>t</code>, it only knows about inputs from steps 0 through <code>t</code>. But in many tasks — sentiment analysis, named entity recognition, machine translation — the meaning of a word depends on what comes <em>after</em> it too. "I went to the bank to fish" vs. "I went to the bank to deposit money." You need the end of the sentence to disambiguate "bank."</p>
-
-<p>A <strong>Bidirectional LSTM</strong> runs two separate LSTM layers: one reading the sequence forward, one reading it backward. At each time step, the hidden states from both directions are concatenated to give a representation that captures both past and future context:</p>
-
-<p><code>hₜ = [h⃗ₜ ; h⃖ₜ]</code></p>
-
-<p>This doubles the hidden dimension of the output, which is why you see <code>hidden_dim * 2</code> in the PyTorch code above. The forward and backward LSTMs have completely separate parameters — they learn different things. The forward LSTM might learn that "not" modifies the next adjective, while the backward LSTM learns that "but" signals a contrast with a preceding clause.</p>
-
-<p>The tradeoff is real: bidirectional LSTMs can't be used for autoregressive generation (you can't peek at future tokens if they don't exist yet). They're for tasks where you have the full sequence available upfront — classification, tagging, encoding.</p>
-
-<h2>Why LSTM Solves the Vanishing Gradient</h2>
-
-<p>Let's come back to the fundamental question: why does any of this gating actually fix the vanishing gradient problem?</p>
-
-<p>Recall from the RNN section that gradients vanish because they're repeatedly multiplied by weight matrices and tanh derivatives as they flow backward through time. Each multiplication shrinks the gradient. After 50 steps, the gradient is effectively zero.</p>
-
-<p>Now look at the LSTM's cell state update again:</p>
-
-<p><code>Cₜ = fₜ * Cₜ₋₁ + iₜ * C̃ₜ</code></p>
-
-<p>When we backpropagate through this equation, the gradient with respect to <code>Cₜ₋₁</code> is simply <code>fₜ</code>. Not a weight matrix. Not a tanh derivative. Just the forget gate value. If the network learns to set <code>fₜ ≈ 1</code> (which sigmoid can easily produce), the gradient flows through that time step with almost no attenuation. Chain this over 100 steps and the gradient arriving at step 1 is roughly the product of 100 forget gate values — each close to 1. Compare that with a vanilla RNN, where you'd multiply 100 weight matrices together.</p>
-
-<p>This is the <strong>gradient highway</strong>. The cell state provides an unobstructed path for gradient flow, analogous to skip connections in ResNets (which were inspired partly by LSTMs). The network doesn't have to use this highway for every dimension — some dimensions might have small forget gate values, deliberately letting gradients decay for information that's no longer relevant. The network <em>learns</em> which memories to protect and which to let fade. That's the magic: it's not that gradients never vanish, it's that the network can learn to prevent them from vanishing for the specific information that matters.</p>
-
-<div class="callout">
-  <div class="callout-title">The Honest Tradeoff</div>
-  <p>LSTMs are powerful but not free. Each cell has roughly four times the parameters of a simple RNN cell (four gate weight matrices instead of one). They're sequential by nature — you can't compute step <code>t</code> until step <code>t-1</code> finishes — which means they can't fully exploit GPU parallelism the way convolutional or attention-based models can. For sequences up to a few hundred tokens, LSTMs work great. For sequences of thousands of tokens or more, Transformers (which we'll meet soon) have largely replaced them. But LSTMs remain the right tool when you need low-latency streaming inference — processing one token at a time as it arrives — because their constant memory footprint and fixed per-step cost are hard to beat.</p>
+<div class="callout-danger">
+  <div class="callout-title">The Information Bottleneck</div>
+  <p>BLEU scores on machine translation tasks <em>collapsed</em> as sentence length increased beyond ~20 tokens. The context vector simply couldn't hold enough information. This wasn't a training problem — it was an architectural ceiling. You could train longer, use more data, make the hidden state bigger — but the fundamental issue remained: <strong>one vector is not enough to represent a variable-length sequence</strong>.</p>
 </div>
 
-<p>With the LSTM in your toolkit, you can handle sequences hundreds of steps long. But there's still room to simplify. In the next section, we'll look at the GRU — a streamlined variant that merges some of the LSTM's gates and often achieves comparable performance with fewer parameters.</p>
+<p>Think of it like this. Someone reads you a full page of instructions in French, then you have to recite them in English — but you're only allowed to take one sticky note of fixed size between the reading and the reciting. Short instructions? Fine. A whole page? You're going to lose details.</p>
 
+<p>What you <em>want</em> is to look back at the original French text while you're translating. Not all of it at once — just the relevant parts for whatever word you're currently producing. That's attention.</p>
 
+<h2>Teacher Forcing and Exposure Bias</h2>
 
+<p>Before we get to attention, there's a training detail you need to understand, because it affects every seq2seq model.</p>
+
+<p>During inference, the decoder feeds its own previous prediction as input to the next step. If it predicts "I" at step 1, it feeds "I" into step 2 to predict the next word. But during training, this creates a problem: early in training, the model's predictions are garbage. If it predicts "potato" when it should have said "I," then step 2 receives "potato" as context and has no chance of getting the rest right. Errors compound. Training becomes extremely slow.</p>
+
+<p><strong>Teacher forcing</strong> is the fix: during training, ignore the model's own predictions and feed the <em>ground truth</em> previous token instead. The model always gets the correct previous word, so it can focus on learning to predict the next one. Convergence is dramatically faster.</p>
+
+<div class="callout-warning">
+  <div class="callout-title">Exposure Bias</div>
+  <p>Teacher forcing creates a train/inference mismatch called <strong>exposure bias</strong>. During training, the decoder always sees perfect previous tokens. During inference, it sees its own (imperfect) predictions. The model has never learned to recover from its own mistakes, so a single wrong prediction can derail the entire output sequence. This is especially damaging for long outputs.</p>
+</div>
+
+<p><strong>Scheduled sampling</strong> (Bengio et al., 2015) is the standard compromise. Start training with 100% teacher forcing, then gradually increase the probability of using the model's own predictions. By the end of training, the model has practiced recovering from its own errors. In code, it's just a coin flip at each step:</p>
+
+<pre><code class="language-python">import random
+
+def train_step(decoder, encoder_out, target_seq, teacher_forcing_ratio=0.5):
+    hidden, cell = encoder_out
+    # Start with &lt;SOS&gt; token
+    input_token = target_seq[:, 0:1]
+    outputs = []
+
+    for t in range(1, target_seq.size(1)):
+        prediction, hidden, cell = decoder(input_token, hidden, cell)
+        outputs.append(prediction)
+
+        # Scheduled sampling: sometimes use truth, sometimes use prediction
+        if random.random() < teacher_forcing_ratio:
+            input_token = target_seq[:, t:t+1]          # ground truth
+        else:
+            input_token = prediction.argmax(dim=-1, keepdim=True)  # own prediction
+
+    return torch.stack(outputs, dim=1)</code></pre>
+
+<h2>Decoding Strategies</h2>
+
+<p>At inference time, the decoder needs a strategy for choosing the next token from its probability distribution. This choice matters a lot more than people realize — the same model can produce wildly different outputs depending on how you decode.</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Strategy</th>
+      <th>How It Works</th>
+      <th>Tradeoff</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Greedy</strong></td>
+      <td>Always pick the highest-probability token</td>
+      <td>Fast but misses better sequences that start with lower-probability tokens</td>
+    </tr>
+    <tr>
+      <td><strong>Beam search</strong></td>
+      <td>Keep top-<em>k</em> partial sequences at each step, expand all, prune back to top-<em>k</em></td>
+      <td>Better than greedy; beam width 4–10 is typical. Can produce repetitive, "safe" text</td>
+    </tr>
+    <tr>
+      <td><strong>Top-k sampling</strong></td>
+      <td>Sample from only the top <em>k</em> most likely tokens</td>
+      <td>More diverse than beam search; <em>k</em>=40 is a common default. Fixed <em>k</em> can be too wide or too narrow depending on context</td>
+    </tr>
+    <tr>
+      <td><strong>Nucleus (top-p)</strong></td>
+      <td>Sample from the smallest set of tokens whose cumulative probability ≥ <em>p</em></td>
+      <td>Adapts the candidate set size dynamically. <em>p</em>=0.9–0.95 is typical. Currently the most popular strategy for open-ended generation</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>Beam search dominates when there's one "right" answer (translation). Sampling methods win when you want creativity (story generation, dialogue). Temperature scaling adjusts the distribution's sharpness before sampling — low temperature (0.2–0.5) makes the model more confident; high temperature (1.0+) makes it more random.</p>
+
+<pre><code class="language-python">import torch
+import torch.nn.functional as F
+
+def top_p_sample(logits, p=0.9, temperature=1.0):
+    """Nucleus (top-p) sampling from logits."""
+    logits = logits / temperature
+    sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+    cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+
+    # Zero out tokens beyond the nucleus
+    sorted_mask = cumulative_probs - F.softmax(sorted_logits, dim=-1) >= p
+    sorted_logits[sorted_mask] = float('-inf')
+
+    # Sample from the filtered distribution
+    probs = F.softmax(sorted_logits, dim=-1)
+    sampled_index = torch.multinomial(probs, 1)
+    return sorted_indices.gather(-1, sampled_index)</code></pre>
+
+<h2>Bahdanau Attention: Let the Decoder Look Back</h2>
+
+<p>In 2015, Bahdanau, Cho, and Bengio published <em>"Neural Machine Translation by Jointly Learning to Align and Translate"</em> — one of the most important papers in modern deep learning. The idea was refreshingly simple: instead of forcing the decoder to work from a single context vector, <strong>let it look at all of the encoder's hidden states at every step and decide which ones matter right now</strong>.</p>
+
+<p>Here's how it works. The encoder is bidirectional, producing a hidden state <code>hᵢ</code> for each input position <code>i</code>. At each decoder step <code>t</code>, we compute an <strong>attention score</strong> between the decoder's current state <code>sₜ₋₁</code> and every encoder state <code>hᵢ</code>:</p>
+
+<p><code>eₜᵢ = v<sup>T</sup> tanh(W₁ sₜ₋₁ + W₂ hᵢ)</code></p>
+
+<p>This is a small neural network — two linear projections, a tanh, and a dot product with a learned vector <code>v</code>. It's called <strong>additive attention</strong> (or concat attention) because we add the two projections before the nonlinearity.</p>
+
+<p>Next, we normalize the scores into a probability distribution over the input positions:</p>
+
+<p><code>αₜᵢ = softmax(eₜᵢ) = exp(eₜᵢ) / Σⱼ exp(eₜⱼ)</code></p>
+
+<p>These <code>α</code> values are the <strong>attention weights</strong>. They tell us: "When generating output token <code>t</code>, pay this much attention to input position <code>i</code>." They sum to 1 across all input positions.</p>
+
+<p>Finally, we compute a <strong>weighted sum</strong> of the encoder hidden states:</p>
+
+<p><code>cₜ = Σᵢ αₜᵢ hᵢ</code></p>
+
+<p>This <code>cₜ</code> is the <strong>context vector for step t</strong> — and crucially, it's <em>different</em> for every decoder step. When translating "student" from our French sentence, the model can put most of its attention weight on "étudiant." When producing "am," it focuses on "suis." Each output token gets its own custom view of the input.</p>
+
+<pre><code class="language-python">class BahdanauAttention(nn.Module):
+    def __init__(self, encoder_dim, decoder_dim, attention_dim):
+        super().__init__()
+        self.W1 = nn.Linear(decoder_dim, attention_dim, bias=False)
+        self.W2 = nn.Linear(encoder_dim, attention_dim, bias=False)
+        self.v = nn.Linear(attention_dim, 1, bias=False)
+
+    def forward(self, decoder_state, encoder_outputs):
+        # decoder_state:   (batch, decoder_dim)
+        # encoder_outputs: (batch, src_len, encoder_dim)
+
+        # Project decoder state and broadcast across source positions
+        query = self.W1(decoder_state).unsqueeze(1)   # (batch, 1, attn_dim)
+        keys = self.W2(encoder_outputs)               # (batch, src_len, attn_dim)
+
+        # Additive scoring
+        scores = self.v(torch.tanh(query + keys))     # (batch, src_len, 1)
+        scores = scores.squeeze(-1)                   # (batch, src_len)
+
+        # Normalize to attention weights
+        weights = F.softmax(scores, dim=-1)            # (batch, src_len)
+
+        # Weighted sum of encoder states
+        context = torch.bmm(weights.unsqueeze(1), encoder_outputs)  # (batch, 1, enc_dim)
+        context = context.squeeze(1)                   # (batch, enc_dim)
+
+        return context, weights</code></pre>
+
+<p>The context vector <code>cₜ</code> is then concatenated with the decoder's current input and fed into the decoder RNN. Some implementations concatenate it with the decoder output instead. Either way, the decoder now has direct access to the input — not through a bottleneck, but through a <em>dynamic, content-based lookup</em>.</p>
+
+<h2>Luong Attention: Simpler Scoring</h2>
+
+<p>Later in 2015, Luong et al. published <em>"Effective Approaches to Attention-based Neural Machine Translation"</em> with a streamlined variant. The key difference: instead of a neural network for scoring, just use a <strong>dot product</strong>.</p>
+
+<p>Luong proposed three scoring functions:</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Variant</th>
+      <th>Score Function</th>
+      <th>Parameters</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Dot</strong></td>
+      <td><code>eₜᵢ = sₜ<sup>T</sup> hᵢ</code></td>
+      <td>None — requires encoder and decoder dims to match</td>
+    </tr>
+    <tr>
+      <td><strong>General</strong></td>
+      <td><code>eₜᵢ = sₜ<sup>T</sup> W hᵢ</code></td>
+      <td>One weight matrix <code>W</code></td>
+    </tr>
+    <tr>
+      <td><strong>Concat</strong></td>
+      <td><code>eₜᵢ = v<sup>T</sup> tanh(W[sₜ; hᵢ])</code></td>
+      <td>Equivalent to Bahdanau</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>The dot variant is the most popular because it's fast and has zero additional parameters. It also scales well — which turns out to be important when we get to Transformers.</p>
+
+<p>Another difference: Bahdanau computes attention <em>before</em> the decoder RNN step (using <code>sₜ₋₁</code>). Luong computes it <em>after</em> (using <code>sₜ</code>). The Luong approach feeds the current decoder output through attention, then combines the context with the output to make the prediction. In practice, both work well.</p>
+
+<pre><code class="language-python">class LuongAttention(nn.Module):
+    def __init__(self, method, hidden_dim):
+        super().__init__()
+        self.method = method
+        if method == 'general':
+            self.W = nn.Linear(hidden_dim, hidden_dim, bias=False)
+        elif method == 'concat':
+            self.W = nn.Linear(hidden_dim * 2, hidden_dim, bias=False)
+            self.v = nn.Linear(hidden_dim, 1, bias=False)
+
+    def forward(self, decoder_output, encoder_outputs):
+        # decoder_output:  (batch, hidden_dim)
+        # encoder_outputs: (batch, src_len, hidden_dim)
+
+        if self.method == 'dot':
+            # Simple dot product
+            scores = torch.bmm(
+                encoder_outputs,
+                decoder_output.unsqueeze(2)
+            ).squeeze(2)    # (batch, src_len)
+
+        elif self.method == 'general':
+            energy = self.W(encoder_outputs)   # (batch, src_len, hidden_dim)
+            scores = torch.bmm(
+                energy,
+                decoder_output.unsqueeze(2)
+            ).squeeze(2)
+
+        elif self.method == 'concat':
+            # Broadcast decoder output across source length
+            dec_expanded = decoder_output.unsqueeze(1).expand_as(encoder_outputs)
+            combined = torch.cat([dec_expanded, encoder_outputs], dim=2)
+            scores = self.v(torch.tanh(self.W(combined))).squeeze(2)
+
+        weights = F.softmax(scores, dim=-1)
+        context = torch.bmm(weights.unsqueeze(1), encoder_outputs).squeeze(1)
+        return context, weights</code></pre>
+
+<h2>The Mechanics: A Pattern You'll See Again</h2>
+
+<p>Step back and notice the pattern. Every attention mechanism does exactly three things:</p>
+
+<ol>
+  <li><strong>Score</strong> — compute a scalar relevance between a <em>query</em> (decoder state) and each <em>key</em> (encoder state)</li>
+  <li><strong>Normalize</strong> — softmax over scores to get weights that sum to 1</li>
+  <li><strong>Aggregate</strong> — weighted sum of <em>values</em> (encoder states) using those weights</li>
+</ol>
+
+<p>Query, key, value. Score, softmax, weighted sum. Memorize this pattern. It's the same pattern that shows up in Transformer self-attention, cross-attention, multi-head attention — everywhere. The only things that change are (a) where the queries, keys, and values come from and (b) how you compute the score.</p>
+
+<div class="callout-info">
+  <div class="callout-title">The QKV Connection</div>
+  <p>In Bahdanau/Luong attention, the <strong>query</strong> is the decoder hidden state, the <strong>keys</strong> are the encoder hidden states, and the <strong>values</strong> are also the encoder hidden states (keys = values). In Transformer attention, queries, keys, and values all get their own learned linear projections — but the underlying mechanic is identical. If you understand attention here, you already understand 80% of Transformers.</p>
+</div>
+
+<h2>Attention as Alignment: Visualization</h2>
+
+<p>One beautiful side effect of attention: the weights <code>αₜᵢ</code> form a matrix that you can visualize. Rows are decoder steps (output tokens), columns are encoder steps (input tokens). Each cell's intensity shows how much the decoder focused on that input position when generating that output position.</p>
+
+<p>For translation between languages with similar word order (English → French), you get a roughly diagonal pattern — output word 1 aligns with input word 1, and so on. For languages with different word order (English → Japanese), the alignment matrix shows the structural rearrangement the model has learned. Adjective-noun order flips, verbs move to the end — all visible in the attention pattern.</p>
+
+<pre><code class="language-python">import matplotlib.pyplot as plt
+import numpy as np
+
+def plot_attention(attention_weights, src_tokens, tgt_tokens):
+    """Visualize attention alignment matrix.
+
+    attention_weights: (tgt_len, src_len) numpy array
+    src_tokens: list of source token strings
+    tgt_tokens: list of target token strings
+    """
+    fig, ax = plt.subplots(figsize=(8, 6))
+    cax = ax.matshow(attention_weights, cmap='Blues')
+    fig.colorbar(cax)
+
+    ax.set_xticks(range(len(src_tokens)))
+    ax.set_yticks(range(len(tgt_tokens)))
+    ax.set_xticklabels(src_tokens, rotation=45, ha='left')
+    ax.set_yticklabels(tgt_tokens)
+
+    ax.set_xlabel('Source (encoder)')
+    ax.set_ylabel('Target (decoder)')
+    plt.tight_layout()
+    plt.show()
+
+# Example: French → English attention pattern
+src = ["Je", "suis", "étudiant", "&lt;EOS&gt;"]
+tgt = ["I", "am", "a", "student", "&lt;EOS&gt;"]
+# Simulated attention weights showing soft alignment
+attn = np.array([
+    [0.85, 0.10, 0.03, 0.02],   # "I"       → focuses on "Je"
+    [0.05, 0.82, 0.08, 0.05],   # "am"      → focuses on "suis"
+    [0.04, 0.10, 0.75, 0.11],   # "a"       → focuses on "étudiant" (no French "a")
+    [0.02, 0.05, 0.88, 0.05],   # "student" → focuses on "étudiant"
+    [0.01, 0.02, 0.02, 0.95],   # &lt;EOS&gt;     → focuses on &lt;EOS&gt;
+])
+plot_attention(attn, src, tgt)</code></pre>
+
+<p>These visualizations aren't just pretty — they're a debugging tool. If your translation model is failing on long sentences, plot the attention. If you see it collapsing to uniform weights (everything gets equal attention), the model has given up on aligning. If you see it fixating on a single source token for many output steps, it's probably stuck in a repetition loop.</p>
+
+<h2>Putting It All Together: Seq2Seq with Attention</h2>
+
+<p>Here's a complete encoder-decoder model with Bahdanau attention. The key difference from vanilla seq2seq: the decoder receives a fresh context vector at every step instead of squeezing everything through one initial hidden state.</p>
+
+<pre><code class="language-python">class Seq2SeqWithAttention(nn.Module):
+    def __init__(self, src_vocab, tgt_vocab, embed_dim, hidden_dim, attn_dim):
+        super().__init__()
+        self.encoder = Encoder(src_vocab, embed_dim, hidden_dim)
+        self.attention = BahdanauAttention(hidden_dim, hidden_dim, attn_dim)
+
+        self.decoder_embedding = nn.Embedding(tgt_vocab, embed_dim)
+        self.decoder_rnn = nn.LSTMCell(embed_dim + hidden_dim, hidden_dim)
+        self.output_proj = nn.Linear(hidden_dim * 2, tgt_vocab)
+        self.hidden_dim = hidden_dim
+
+    def forward(self, src, tgt, teacher_forcing_ratio=0.5):
+        batch_size, tgt_len = tgt.size()
+        encoder_outputs, hidden, cell = self.encoder(src)
+        # hidden: (1, batch, hidden_dim) → (batch, hidden_dim)
+        h = hidden.squeeze(0)
+        c = cell.squeeze(0)
+
+        outputs = []
+        input_token = tgt[:, 0]  # &lt;SOS&gt;
+
+        for t in range(1, tgt_len):
+            embedded = self.decoder_embedding(input_token)  # (batch, embed_dim)
+
+            # Attention: query is current decoder state
+            context, attn_weights = self.attention(h, encoder_outputs)
+
+            # Combine embedding + context as decoder input
+            rnn_input = torch.cat([embedded, context], dim=1)
+            h, c = self.decoder_rnn(rnn_input, (h, c))
+
+            # Prediction from decoder state + context
+            prediction = self.output_proj(torch.cat([h, context], dim=1))
+            outputs.append(prediction)
+
+            # Teacher forcing decision
+            if random.random() < teacher_forcing_ratio:
+                input_token = tgt[:, t]
+            else:
+                input_token = prediction.argmax(dim=-1)
+
+        return torch.stack(outputs, dim=1)
+
+# Build and test
+model = Seq2SeqWithAttention(
+    src_vocab=8000, tgt_vocab=6000,
+    embed_dim=256, hidden_dim=512, attn_dim=128
+)
+src_batch = torch.randint(0, 8000, (4, 20))   # 4 sentences, max 20 tokens
+tgt_batch = torch.randint(0, 6000, (4, 25))   # target up to 25 tokens
+out = model(src_batch, tgt_batch)
+print(out.shape)  # (4, 24, 6000) — predictions for each target step</code></pre>
+
+<h2>The Bridge to Self-Attention</h2>
+
+<p>Look at what attention gave us. The decoder no longer relies on a single compressed vector. It has direct access to the encoder's full memory — a dynamic, learned lookup mechanism. And it works beautifully for translation, summarization, and dialogue.</p>
+
+<p>But here's the question that unlocks the next revolution: <strong>what if we applied attention not between an encoder and a decoder, but within a single sequence?</strong></p>
+
+<p>In Bahdanau and Luong attention, the query comes from the decoder and the keys/values come from the encoder — two different sequences. But there's nothing stopping us from making the query, keys, and values all come from the <em>same</em> sequence. Each token attends to every other token in the same sequence. "The cat sat on the mat" — the word "sat" can directly attend to "cat" regardless of how far apart they are. No hidden state needed as a middleman. No recurrence at all.</p>
+
+<p>That's <strong>self-attention</strong>, and it's the foundation of the Transformer. We'll get there in the next sections. But the machinery — score, softmax, weighted sum — is exactly what you just learned. The only change is where the queries, keys, and values come from.</p>
+
+<div class="callout-info">
+  <div class="callout-title">The Historical Arc</div>
+  <p>Seq2Seq (2014) gave us the encoder-decoder framework. Bahdanau attention (2015) eliminated the bottleneck. Luong attention (2015) simplified the scoring. Self-attention (2017) removed the recurrence entirely. Each step is a direct consequence of the one before. If you understand why the fixed context vector was a problem, everything that follows is the natural solution being refined.</p>
+</div>
+
+<h2>What You Should Now Be Able To Do</h2>
+
+<ul>
+  <li>Draw the encoder-decoder architecture and explain why the final hidden state is a bottleneck for long sequences</li>
+  <li>Explain teacher forcing, why it speeds up training, and how exposure bias arises from the train/inference mismatch</li>
+  <li>Compare greedy decoding, beam search, top-k, and nucleus sampling — and know when to use each</li>
+  <li>Write the three attention equations from memory: score → softmax → weighted sum</li>
+  <li>Explain the difference between Bahdanau (additive) and Luong (multiplicative) attention, and when each computes the context vector relative to the decoder RNN step</li>
+  <li>Implement a basic attention module in PyTorch and integrate it into an encoder-decoder model</li>
+  <li>Interpret an attention alignment matrix and use it to diagnose translation failures</li>
+  <li>Explain how cross-attention (encoder-decoder) naturally leads to self-attention (within a single sequence) — the query-key-value pattern is the bridge</li>
+</ul>
 
       <div class="page-nav">
-        <a href="s01.html">
+        <a class="prev" href="s01.html">
           <span class="label">← Previous</span>
-          <span class="link-title">Recurrent Neural Networks</span>
+          <span class="link-title">Recurrent Models: RNN, LSTM, GRU</span>
         </a>
         <a class="next" href="s03.html">
           <span class="label">Next →</span>
-          <span class="link-title">GRU</span>
+          <span class="link-title">Self-Attention & the Transformer</span>
         </a>
       </div>
-
     </div>
   </div>
 
