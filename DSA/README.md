@@ -28,18 +28,55 @@ DSA/
 ├── 03-hashing/
 │   └── hash-maps-and-sets.md
 ├── 04-linked-lists/
+│   ├── singly-linked-list.md
+│   ├── doubly-and-circular.md
+│   └── fast-slow-pointers.md
 ├── 05-stacks-and-queues/
+│   ├── stack-fundamentals.md
+│   ├── queue-and-deque.md
+│   ├── monotonic-stack.md
+│   ├── monotonic-queue.md
+│   └── design-problems.md
 ├── 06-sorting/
+│   ├── comparison-sorts.md
+│   ├── non-comparison-sorts.md
+│   └── custom-sorting.md
 ├── 07-binary-search/
+│   ├── fundamentals.md
+│   ├── advanced-binary-search.md
+│   └── search-on-answer.md
 ├── 08-trees/
+│   ├── binary-tree-basics.md
+│   ├── tree-traversals.md
+│   ├── binary-search-tree.md
+│   └── heap-and-priority-queue.md
 ├── 09-tries/
+│   └── trie.md
 ├── 10-graphs/
+│   ├── graph-basics.md
+│   ├── bfs-and-dfs.md
+│   ├── topological-sort.md
+│   ├── shortest-paths.md
+│   ├── union-find.md
+│   └── minimum-spanning-tree.md
 ├── 11-greedy/
+│   └── greedy-algorithms.md
 ├── 12-backtracking/
+│   └── backtracking.md
 ├── 13-dynamic-programming/
+│   ├── dp-fundamentals.md
+│   ├── 1d-dp.md
+│   ├── 2d-dp.md
+│   ├── dp-on-strings.md
+│   ├── dp-on-subsequences.md
+│   └── dp-on-trees.md
 ├── 14-intervals/
+│   └── interval-problems.md
 ├── 15-bit-manipulation/
+│   └── bit-manipulation.md
 └── 16-advanced/
+    ├── segment-tree.md
+    └── math-and-geometry.md
 ```
 
 ---

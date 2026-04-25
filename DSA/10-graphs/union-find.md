@@ -121,6 +121,8 @@ def findRedundantConnection(edges):
 Group emails that belong to the same person. Emails in the same account are connected. Emails across accounts are connected if they share any email.
 
 ```python
+from collections import defaultdict
+
 def accountsMerge(accounts):
     uf = UnionFind(len(accounts))
     email_to_id = {}

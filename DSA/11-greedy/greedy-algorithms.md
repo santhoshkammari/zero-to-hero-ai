@@ -114,6 +114,8 @@ def canCompleteCircuit(gas, cost):
 "Minimum time to execute all tasks with cooldown n between same tasks."
 
 ```python
+from collections import Counter
+
 def leastInterval(tasks, n):
     freq = Counter(tasks)
     max_freq = max(freq.values())
