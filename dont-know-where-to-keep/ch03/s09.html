@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Exploratory Data Analysis — Zero to Hero AI</title>
+  <title>Data Augmentation — Zero to Hero AI</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="../../css/style.css">
@@ -62,22 +62,20 @@
     <span>Data Fundamentals</span>
     <span class="ch-arrow">▶</span>
   </a>
-  <a class="nav-chapter" data-href="ch03">
-    <span class="ch-num">3</span>
-    <span>Data Fundamentals</span>
-    <span class="ch-arrow">▶</span>
-  </a>
   <div class="nav-sections">
-    <a class="nav-section" data-href="ch03/s01.html">Data Types, Sources &amp; Formats</a>
-    <a class="nav-section" data-href="ch03/s02.html">Exploratory Data Analysis</a>
-    <a class="nav-section" data-href="ch03/s03.html">Data Cleaning &amp; Feature Engineering</a>
-    <a class="nav-section" data-href="ch03/s04.html">Feature Selection</a>
-    <a class="nav-section" data-href="ch03/s05.html">Data Splitting &amp; Sampling</a>
-    <a class="nav-section" data-href="ch03/s06.html">Preprocessing Pipelines</a>
-    <a class="nav-section" data-href="ch03/s07.html">Data Labeling</a>
-    <a class="nav-section" data-href="ch03/s08.html">Data Augmentation</a>
-    <a class="nav-section" data-href="ch03/s09.html">Data Quality &amp; Validation</a>
-    <a class="nav-section" data-href="ch03/s10.html">Nice to Know</a>
+    <a class="nav-section" data-href="ch03/s01.html">Data Types and Sources</a>
+    <a class="nav-section" data-href="ch03/s02.html">Data Labeling and Annotation</a>
+    <a class="nav-section" data-href="ch03/s03.html">Exploratory Data Analysis (EDA)</a>
+    <a class="nav-section" data-href="ch03/s04.html">Data Cleaning</a>
+    <a class="nav-section" data-href="ch03/s05.html">Feature Engineering</a>
+    <a class="nav-section" data-href="ch03/s06.html">Data Splitting and Leakage</a>
+    <a class="nav-section" data-href="ch03/s07.html">Data Visualization for Communication</a>
+    <a class="nav-section" data-href="ch03/s08.html">Handling Imbalanced Datasets</a>
+    <a class="nav-section" data-href="ch03/s09.html">Data Augmentation</a>
+    <a class="nav-section" data-href="ch03/s10.html">SQL for Machine Learning</a>
+    <a class="nav-section" data-href="ch03/s11.html">Data Pipelines and Infrastructure</a>
+    <a class="nav-section" data-href="ch03/s12.html">Data Ethics and Quality</a>
+    <a class="nav-section" data-href="ch03/s13.html">Time Series Preprocessing</a>
   </div>
   <a class="nav-chapter" data-href="ch04">
     <span class="ch-num">4</span>
@@ -374,192 +372,315 @@
 
   <div class="main">
     <div class="topbar">
-      <div class="breadcrumb"><a href="../../index.html">Home</a><span class="sep">/</span><a href="../../chapters/ch03/index.html">Ch 3</a><span class="sep">/</span><span>Exploratory Data Analysis</span></div>
+      <div class="breadcrumb"><a href="../../index.html">Home</a><span class="sep">/</span><a href="../../chapters/ch03/index.html">Ch 3</a><span class="sep">/</span><span>Data Augmentation</span></div>
       <div class="topbar-actions">
         <button class="theme-toggle">🌙</button>
       </div>
     </div>
+
     <div class="content">
 
-<h1>Exploratory Data Analysis</h1>
+<h1>Data Preprocessing Pipelines</h1>
 <div class="chapter-meta">
   <span class="tag">Chapter 3: Data Fundamentals</span>
-  <span class="tag">Section 2 of 10</span>
+  <span class="tag">5 subtopics</span>
 </div>
 
 <div class="tldr">
   <div class="tldr-label">TL;DR</div>
-  <p>EDA is a conversation with your data. You ask questions with code, it answers with numbers and plots, and you decide what to do next. This section is a workflow — the exact sequence of moves you run on any new dataset. Skip it, and you'll spend hours debugging a model only to discover a column was stored as strings.</p>
+  <p>A preprocessing pipeline chains every transformation — scaling, encoding, imputation — into a single object that you fit once on training data and replay identically on test data (or in production). Scikit-learn's <code>Pipeline</code> and <code>ColumnTransformer</code> are the core tools: Pipeline enforces sequential order, ColumnTransformer routes different columns to different transformers in parallel. You can write custom transformers for domain-specific logic, merge parallel feature branches with <code>FeatureUnion</code>, and serialize the entire pipeline with <code>joblib</code> so the exact same preprocessing runs months later without a single line of transformation code in your serving path. Pipelines eliminate an entire class of bugs — the kind where training and inference disagree on how data was prepared.</p>
 </div>
 
-<h2>The EDA Workflow</h2>
+<!-- ═══════════════════════════════════════════ -->
+<h2>Why Pipelines Instead of Loose Code</h2>
 
-<p>Every EDA follows the same arc: <strong>shape → types → missing → distributions → relationships → quality</strong>. Think of it as peeling layers. Each layer reveals problems the next layer needs you to have seen.</p>
+<p>Here's a scenario you'll hit on your first real project. You scale the features, encode the categoricals, train a model, ship it. Three months later someone feeds new data into the model and gets garbage predictions. Why? Because the scaler was fit on the training set but someone forgot to apply it — or applied it with different parameters. The encoding mapped "red" to 0 and "blue" to 1 during training, but the serving code mapped them differently. You didn't have a bug in any single step. You had a bug in the <em>gaps between steps</em>.</p>
 
-<h2>Step 1: Shape, Types, and First Look</h2>
+<p>A <strong>preprocessing pipeline</strong> is an object that bundles every transformation into a single, ordered sequence. You call <code>.fit()</code> once on training data, and every step learns what it needs (means for scaling, category mappings for encoding). Then <code>.transform()</code> replays those exact learned parameters on new data. No gaps. No mismatches. One object to save, one object to load.</p>
 
-<pre><code>import pandas as pd
+<p>Scikit-learn has had pipelines since its early days, and they remain one of the most underused features in the library. Let's build them up from scratch.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2>Sklearn Pipeline and ColumnTransformer</h2>
+
+<p>The simplest pipeline is a chain of steps where each step is a transformer (or an estimator at the end). Think of it like a conveyor belt: data enters, gets modified by step 1, the output feeds into step 2, and so on.</p>
+
+<pre><code>from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+from sklearn.linear_model import LogisticRegression
+
+pipe = Pipeline([
+    ("scaler", StandardScaler()),
+    ("pca", PCA(n_components=5)),
+    ("clf", LogisticRegression())
+])
+
+# fit does: scaler.fit_transform -> pca.fit_transform -> clf.fit
+pipe.fit(X_train, y_train)
+
+# predict does: scaler.transform -> pca.transform -> clf.predict
+pipe.predict(X_test)</code></pre>
+
+<p>Each tuple is a <code>(name, transformer)</code> pair. The name is just a string label — you pick it. Every step except the last must implement <code>.transform()</code>. The last step can be a classifier or regressor (it only needs <code>.fit()</code> and <code>.predict()</code>). When you call <code>pipe.fit(X, y)</code>, scikit-learn calls <code>fit_transform</code> on every intermediate step and <code>fit</code> on the final one. When you call <code>pipe.predict(X)</code>, it calls <code>transform</code> on every intermediate step and <code>predict</code> on the last.</p>
+
+<p>This is already useful, but real datasets have mixed types. You might have numeric columns that need scaling and categorical columns that need one-hot encoding. You can't shove both through the same <code>StandardScaler</code>. That's where <strong>ColumnTransformer</strong> comes in.</p>
+
+<pre><code>from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
+from sklearn.ensemble import RandomForestClassifier
+
+# Define which columns are which
+numeric_features = ["age", "income", "credit_score"]
+categorical_features = ["occupation", "city", "education"]
+
+# Build a mini-pipeline for each column group
+numeric_pipeline = Pipeline([
+    ("imputer", SimpleImputer(strategy="median")),
+    ("scaler", StandardScaler())
+])
+
+categorical_pipeline = Pipeline([
+    ("imputer", SimpleImputer(strategy="most_frequent")),
+    ("encoder", OneHotEncoder(handle_unknown="ignore"))
+])
+
+# ColumnTransformer routes columns to the right pipeline
+preprocessor = ColumnTransformer([
+    ("num", numeric_pipeline, numeric_features),
+    ("cat", categorical_pipeline, categorical_features)
+])
+
+# Full pipeline: preprocess then classify
+full_pipe = Pipeline([
+    ("preprocessor", preprocessor),
+    ("classifier", RandomForestClassifier(n_estimators=100))
+])
+
+full_pipe.fit(X_train, y_train)
+accuracy = full_pipe.score(X_test, y_test)</code></pre>
+
+<p>Each entry in the <code>ColumnTransformer</code> is a <code>(name, transformer, columns)</code> tuple. The columns argument can be a list of column names (if your data is a DataFrame), a list of integer indices, or even a callable that selects columns. Behind the scenes, ColumnTransformer splits the data, sends each slice to its transformer, and horizontally concatenates the results.</p>
+
+<h3>The remainder Parameter</h3>
+
+<p>By default, any column not mentioned in the ColumnTransformer is <em>dropped</em>. That's a quiet data loss bug. If you want unmentioned columns passed through unchanged, set <code>remainder="passthrough"</code>. If you want them explicitly dropped (the default), leave it or set <code>remainder="drop"</code>. You can even pass a transformer — say, <code>remainder=StandardScaler()</code> — to apply something to the leftover columns.</p>
+
+<pre><code>preprocessor = ColumnTransformer(
+    transformers=[
+        ("num", numeric_pipeline, numeric_features),
+        ("cat", categorical_pipeline, categorical_features)
+    ],
+    remainder="passthrough"  # don't silently discard columns
+)</code></pre>
+
+<p>One thing that trips people up: after transformation, the output column order is the concatenation of each transformer's output in the order you listed them, followed by the remainder columns. Your feature names shift. Use <code>preprocessor.get_feature_names_out()</code> in newer scikit-learn versions to see what came out where.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2>Preprocessing Order — Why It Matters</h2>
+
+<p>The order of steps in a pipeline is not arbitrary. It encodes assumptions about your data. Get it wrong and you'll introduce subtle bugs that don't throw errors — they just produce worse models.</p>
+
+<p>Consider imputation and scaling. If you scale first, your missing values (often represented as <code>NaN</code>) will cause the scaler to fail or produce nonsense statistics. So imputation must come before scaling. That's obvious. But here's a less obvious one: if you do feature selection <em>before</em> scaling, the selection algorithm sees unscaled features. Some selection methods (like those based on variance) are sensitive to scale. A feature with values in the thousands will look more "important" than one with values between 0 and 1, even if the small-scale feature is more predictive.</p>
+
+<p>A reasonable default order for most tabular problems looks like this: handle missing values first (imputation), then encode categoricals, then scale numerics, then do any dimensionality reduction, and finally the model. But "reasonable default" doesn't mean "always correct." Domain knowledge should override convention. If you know that outliers are present and you want to clip them, that clipping should happen <em>before</em> the scaler computes means and standard deviations — otherwise the outliers distort the scaling parameters.</p>
+
+<pre><code>from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler, PowerTransformer
+from sklearn.feature_selection import SelectKBest, f_classif
+
+# Order matters: impute -> transform distribution -> scale -> select -> model
+numeric_pipeline = Pipeline([
+    ("imputer", SimpleImputer(strategy="median")),
+    ("power", PowerTransformer(method="yeo-johnson")),
+    ("scaler", StandardScaler()),
+    ("selector", SelectKBest(f_classif, k=10))
+])</code></pre>
+
+<h3>The Data Leakage Trap</h3>
+
+<p>The most dangerous ordering mistake isn't about which transformer comes first. It's about <em>when</em> you fit. If you scale your entire dataset (train + test) and then split, the scaler has seen test data. That's <strong>data leakage</strong> — your test metrics will be optimistically biased because the preprocessing "knows" about the test distribution.</p>
+
+<p>Pipelines prevent this automatically. When you call <code>pipe.fit(X_train, y_train)</code>, every transformer fits only on training data. When you call <code>pipe.transform(X_test)</code>, it uses the parameters learned from training. You don't have to think about it. That's arguably the single biggest reason to use pipelines: they make leakage structurally impossible, not just something you "try to avoid."</p>
+
+<p>This also matters during cross-validation. If you use <code>cross_val_score(pipe, X, y, cv=5)</code>, scikit-learn refits the entire pipeline on each fold's training set. Every scaler, every encoder, every imputer — refitted fresh. Without a pipeline, you'd have to manually refit each step inside each fold, and in practice, people forget.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2>Custom Transformers</h2>
+
+<p>Scikit-learn's built-in transformers handle the common cases. But real projects always have domain-specific transformations. Maybe you need to extract the hour from a datetime column, or compute the ratio of two features, or apply a business rule that clips values at a regulatory threshold. You need a <strong>custom transformer</strong>.</p>
+
+<p>The simplest approach is <code>FunctionTransformer</code>, which wraps a plain function as a transformer:</p>
+
+<pre><code>from sklearn.preprocessing import FunctionTransformer
 import numpy as np
 
-df = pd.read_csv("housing.csv")
+log_transformer = FunctionTransformer(np.log1p, validate=True)
 
-print(df.shape)          # (rows, columns) — how big is this?
-print(df.dtypes)         # a column showing 'object' that should be numeric = dirty data
-df.info()                # non-null counts + dtypes + memory — your one-stop summary
-print(df.sample(5))      # random rows > head() — head can hide patterns</code></pre>
+# Works inside a pipeline like any other transformer
+pipe = Pipeline([
+    ("log", log_transformer),
+    ("scaler", StandardScaler())
+])</code></pre>
 
-<p>A column that <em>should</em> be numeric but shows <code>object</code> almost always contains stray commas, "N/A" strings, or encoding garbage. Catching this here saves you hours downstream.</p>
+<p>That works when your transformation is stateless — it doesn't need to learn anything from the training data. But sometimes your custom step <em>does</em> need to learn. Maybe you want to bin a feature into quantiles based on the training distribution. For that, you write a class that inherits from <code>BaseEstimator</code> and <code>TransformerMixin</code>.</p>
 
-<h2>Step 2: Summary Statistics</h2>
+<pre><code>from sklearn.base import BaseEstimator, TransformerMixin
+import numpy as np
 
-<pre><code>print(df.describe())                 # count, mean, std, min, 25%, 50%, 75%, max
-print(df.describe(include='all'))    # includes categorical columns too</code></pre>
+class OutlierClipper(BaseEstimator, TransformerMixin):
+    """Clips values beyond k standard deviations from the mean.
+    Learns mean and std from training data only."""
 
-<p>What to look for in <code>describe()</code>:</p>
-<ul>
-  <li><strong>min/max sanity</strong> — negative ages? Prices of zero? Future dates in historical data?</li>
-  <li><strong>mean vs. median gap</strong> — large gap = skewed distribution = outliers pulling the mean</li>
-  <li><strong>std relative to mean</strong> — near-zero std = near-constant feature = useless for prediction</li>
-  <li><strong>count &lt; total rows</strong> — you have missing data in that column</li>
-</ul>
+    def __init__(self, k=3.0):
+        self.k = k
 
-<h2>Step 3: Missing Data Patterns</h2>
+    def fit(self, X, y=None):
+        self.mean_ = np.mean(X, axis=0)
+        self.std_ = np.std(X, axis=0)
+        self.lower_ = self.mean_ - self.k * self.std_
+        self.upper_ = self.mean_ + self.k * self.std_
+        return self
 
-<pre><code># Quick missing overview
-print(df.isnull().sum().sort_values(ascending=False))
-print(f"\n% missing:\n{(df.isnull().mean() * 100).sort_values(ascending=False)}")
+    def transform(self, X):
+        return np.clip(X, self.lower_, self.upper_)</code></pre>
 
-# Visual pattern — look for correlated missingness
-import missingno as msno
-msno.matrix(df, figsize=(10, 4), fontsize=8)
-# Columns that go missing together → MAR or MNAR (see Section 3)</code></pre>
+<p>A few rules to follow. The <code>__init__</code> method should only store hyperparameters — no computation. Attributes learned from data should be set in <code>fit()</code> and by convention end with an underscore (<code>mean_</code>, <code>std_</code>). The <code>fit()</code> method must return <code>self</code>. The <code>transform()</code> method must return the transformed data. If you inherit from <code>TransformerMixin</code>, you get <code>fit_transform()</code> for free — it just calls <code>fit</code> then <code>transform</code>.</p>
 
-<p>If two columns always have missing values in the same rows, that's a signal — the missingness is correlated. Understanding <em>why</em> data is missing matters more than how you fill it.</p>
+<p>Inheriting from <code>BaseEstimator</code> gives you <code>get_params()</code> and <code>set_params()</code>, which means your custom transformer works with scikit-learn's grid search. You can tune the <code>k</code> parameter of <code>OutlierClipper</code> just like you'd tune <code>C</code> in an SVM:</p>
 
-<h2>Step 4: Distributions</h2>
+<pre><code>from sklearn.model_selection import GridSearchCV
 
-<h3>Numerical Features</h3>
+pipe = Pipeline([
+    ("clipper", OutlierClipper()),
+    ("scaler", StandardScaler()),
+    ("clf", LogisticRegression())
+])
 
-<pre><code>import matplotlib.pyplot as plt
-import seaborn as sns
+param_grid = {
+    "clipper__k": [2.0, 3.0, 4.0],
+    "clf__C": [0.1, 1.0, 10.0]
+}
 
-# Histograms for all numeric columns — fast first pass
-df.select_dtypes(include=[np.number]).hist(bins=50, figsize=(14, 10))
-plt.tight_layout()
-plt.show()</code></pre>
+search = GridSearchCV(pipe, param_grid, cv=5, scoring="accuracy")
+search.fit(X_train, y_train)
+print(search.best_params_)</code></pre>
 
-<p>What you're looking for: <strong>skewness</strong> (long tails — consider log transform), <strong>multimodality</strong> (multiple peaks — possibly mixed populations), <strong>hard boundaries</strong> (values capped at 500,000 — data was clipped), <strong>spikes</strong> (everyone has exactly 0 or exactly 999 — sentinel values masquerading as real data).</p>
+<p>Notice the double-underscore syntax: <code>clipper__k</code> means "the parameter <code>k</code> of the step named <code>clipper</code>." This works at any nesting depth. If your pipeline has a ColumnTransformer named <code>preprocessor</code> containing a sub-pipeline named <code>num</code> with a step named <code>imputer</code>, you'd write <code>preprocessor__num__imputer__strategy</code> to tune the imputation strategy. It's verbose, but unambiguous.</p>
 
-<h3>Categorical Features</h3>
+<!-- ═══════════════════════════════════════════ -->
+<h2>Feature Union — Parallel Pipelines</h2>
 
-<pre><code>print(df.nunique())                                    # cardinality per column
-print(df["ocean_proximity"].value_counts())             # raw counts
-print(df["ocean_proximity"].value_counts(normalize=True))  # proportions</code></pre>
+<p>A <code>Pipeline</code> is sequential: step 1 feeds into step 2. But sometimes you want to compute two different feature sets from the same input and then concatenate them. For example, you might want both PCA features (which capture global variance) and hand-engineered statistical features (which capture domain knowledge). These two computations are independent — there's no reason one should wait for the other.</p>
 
-<p>A category with 95% of the data gives almost no signal. A column with 50,000 unique values out of 50,001 rows is an ID column, not a feature. Categories appearing &lt;1-2% of the time should likely be bucketed into "Other" to prevent overfitting.</p>
+<p><strong>FeatureUnion</strong> runs multiple transformers in parallel on the same input and horizontally concatenates their outputs. Think of it as "run these side by side, then glue the columns together."</p>
 
-<h2>Step 5: Relationships</h2>
+<pre><code>from sklearn.pipeline import FeatureUnion, Pipeline
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler, FunctionTransformer
+import numpy as np
 
-<h3>Correlation Matrix</h3>
+def statistical_features(X):
+    """Compute row-wise statistics as features."""
+    return np.column_stack([
+        np.mean(X, axis=1),
+        np.std(X, axis=1),
+        np.max(X, axis=1) - np.min(X, axis=1)  # range
+    ])
 
-<pre><code># Pearson (linear) correlation
-corr = df.select_dtypes(include=[np.number]).corr()
+feature_union = FeatureUnion([
+    ("pca", PCA(n_components=5)),
+    ("stats", FunctionTransformer(statistical_features))
+])
 
-plt.figure(figsize=(10, 8))
-sns.heatmap(corr, annot=True, fmt=".2f", cmap="coolwarm", center=0, square=True)
-plt.title("Pearson Correlation")
-plt.tight_layout()
-plt.show()</code></pre>
+pipe = Pipeline([
+    ("scaler", StandardScaler()),
+    ("features", feature_union),
+    ("clf", LogisticRegression())
+])
 
-<p><strong>Pearson</strong> captures linear relationships. <strong>Spearman</strong> captures monotonic (including non-linear). Use Spearman when you suspect curved but still monotonic patterns. Zero correlation ≠ independence — two variables can be perfectly related non-linearly and still show zero Pearson.</p>
+pipe.fit(X_train, y_train)</code></pre>
 
-<h3>Scatter Plots and Box Plots</h3>
+<p>The output of this pipeline's feature step has 5&nbsp;+&nbsp;3&nbsp;=&nbsp;8 columns: five from PCA and three from the statistical function. Both branches received the same scaled input (because <code>scaler</code> runs before <code>features</code> in the outer pipeline), but they computed independently.</p>
 
-<pre><code>fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+<h3>FeatureUnion vs. ColumnTransformer</h3>
 
-# Numeric vs numeric — looking for trends, clusters, outliers
-axes[0].scatter(df["median_income"], df["median_house_value"], alpha=0.1, s=5)
-axes[0].set(xlabel="Median Income", ylabel="House Value", title="Income vs Value")
+<p>These two look similar but solve different problems. <code>ColumnTransformer</code> routes <em>different columns</em> to different transformers — it splits the input vertically. <code>FeatureUnion</code> sends the <em>same input</em> to multiple transformers and concatenates the results — it duplicates and recombines. You'll often use both in the same pipeline: a ColumnTransformer at the top to handle mixed types, and a FeatureUnion further down to combine engineered features.</p>
 
-# Numeric vs categorical — do groups differ?
-sns.boxplot(x="ocean_proximity", y="median_house_value", data=df, ax=axes[1])
-axes[1].tick_params(axis='x', rotation=45)
-plt.tight_layout()
-plt.show()</code></pre>
+<p>In modern scikit-learn (1.0+), you can also use <code>set_output(transform="pandas")</code> on your pipeline to keep DataFrame outputs flowing through, which makes debugging much easier. But be aware that FeatureUnion historically outputs NumPy arrays, so you may lose column names at that stage unless you're on a recent version and configure output explicitly.</p>
 
-<p>If box plots look identical across groups, that categorical feature probably doesn't help predict the numeric one. If they differ dramatically, you've found a useful feature.</p>
+<!-- ═══════════════════════════════════════════ -->
+<h2>Serialization — Saving and Loading Pipelines</h2>
 
-<h3>Grouped Statistics</h3>
+<p>You've built a pipeline. It preprocesses, engineers features, and classifies. It scores well on your test set. Now what? You need to save it so that the serving system — which might be a Flask app, a batch job, or a Lambda function — can load it and call <code>.predict()</code> without reimplementing any transformation logic.</p>
 
-<pre><code>print(df.groupby("ocean_proximity")["median_house_value"].agg(
-    ["mean", "median", "std", "count"]
-))</code></pre>
+<p><strong>Serialization</strong> means converting a Python object into a byte stream you can write to disk and reconstruct later. For scikit-learn pipelines, two tools dominate: <code>joblib</code> and <code>pickle</code>.</p>
 
-<p>This is often more informative than a plot. The numbers tell you exactly how much separation exists between groups.</p>
+<pre><code>import joblib
 
-<h2>Step 6: Duplicates and Data Quality</h2>
+# Save the fitted pipeline
+joblib.dump(full_pipe, "preprocessing_pipeline.joblib")
 
-<pre><code># Exact duplicates
-print(f"Duplicate rows: {df.duplicated().sum()}")
+# Later, in your serving code:
+loaded_pipe = joblib.load("preprocessing_pipeline.joblib")
+predictions = loaded_pipe.predict(new_data)</code></pre>
 
-# Integrity checks — domain-specific
-assert (df["age"] >= 0).all(), "Negative ages found"
-assert df["price"].between(0, 1e8).all(), "Prices outside reasonable range"
+<p><code>joblib</code> is generally preferred over raw <code>pickle</code> for scikit-learn objects because it handles large NumPy arrays more efficiently — it memory-maps them instead of copying. For small models the difference is negligible, but for pipelines that contain a fitted TF-IDF vectorizer with a massive vocabulary matrix, joblib can be noticeably faster.</p>
 
-# Inconsistencies
-# "New York" vs "new york" vs "NY" — standardize before modeling
-print(df["city"].str.lower().nunique(), "vs", df["city"].nunique())</code></pre>
+<p>That said, <code>pickle</code> works fine too and is part of the standard library:</p>
 
-<h2>Step 7: Target Variable</h2>
+<pre><code>import pickle
 
-<p>Always examine the target separately. For classification: check class balance. For regression: check distribution shape (skewed targets often benefit from log transform).</p>
+with open("pipeline.pkl", "wb") as f:
+    pickle.dump(full_pipe, f)
 
-<pre><code># Classification — check balance
-print(df["label"].value_counts(normalize=True))
-# If 98% is one class, you need stratified splitting and weighted metrics
+with open("pipeline.pkl", "rb") as f:
+    loaded_pipe = pickle.load(f)</code></pre>
 
-# Regression — check skew
-print(f"Target skewness: {df['price'].skew():.2f}")
-# Skew > 1: consider log1p transform</code></pre>
+<h3>Versioning and Compatibility Gotchas</h3>
 
-<h2>Automated EDA Tools</h2>
+<p>Here's the honest tradeoff. Pickle-based serialization (including joblib) is tied to the exact versions of your libraries. A pipeline saved with scikit-learn 1.2 may fail to load under scikit-learn 1.4 if internal class structures changed. This isn't a theoretical concern — it happens regularly. Always save the library version alongside the model file. A simple approach is to store metadata:</p>
 
-<p>For a first pass, these generate everything above in one call:</p>
+<pre><code>import sklearn
+import joblib
 
-<pre><code># ydata-profiling — most comprehensive
-from ydata_profiling import ProfileReport
-ProfileReport(df, title="EDA Report", explorative=True).to_file("report.html")
+artifact = {
+    "pipeline": full_pipe,
+    "sklearn_version": sklearn.__version__,
+    "feature_names": list(X_train.columns),
+    "target_name": "churn"
+}
+joblib.dump(artifact, "model_artifact.joblib")
 
-# sweetviz — great for train/test comparison
-import sweetviz as sv
-sv.compare([train, "Train"], [test, "Test"]).show_html("comparison.html")</code></pre>
+# On load, verify versions match
+artifact = joblib.load("model_artifact.joblib")
+assert artifact["sklearn_version"] == sklearn.__version__, (
+    f"Version mismatch: saved with {artifact['sklearn_version']}, "
+    f"running {sklearn.__version__}"
+)</code></pre>
 
-<p>The honest tradeoff: automated tools show you <em>everything</em> but can't tell you what matters for <em>your</em> problem. They also struggle with 1M+ rows. Use them to get oriented, then dig into the specifics manually.</p>
+<p>For production systems with long-lived models, consider ONNX export or similar framework-agnostic formats. But for experimentation, rapid iteration, and internal tooling, joblib is simple and reliable — just pin your dependency versions.</p>
 
-<div class="callout callout-info">
-  <div class="callout-label">The Real Point of EDA</div>
-  <p>EDA isn't a checkbox. It's iterative — inspect, find something odd, investigate, clean, inspect again. The goal isn't a perfect dataset. It's a <em>well-understood</em> dataset. A model built on data you understand will always outperform one built on data you threw at an algorithm and hoped for the best.</p>
-</div>
+<h3>Security Note</h3>
 
-<h2 class="section-title">What You Should Now Be Able To Do</h2>
-<ul>
-  <li>Run the full EDA workflow (shape → types → missing → distributions → relationships → quality) on any dataset</li>
-  <li>Interpret <code>df.describe()</code> to spot skew, outliers, near-constant features, and missing data</li>
-  <li>Choose between Pearson and Spearman correlation based on relationship type</li>
-  <li>Identify class imbalance, sentinel values, and data integrity violations</li>
-  <li>Use automated EDA tools for a first pass and know their limitations</li>
-  <li>Explain why EDA is iterative, not a one-shot step</li>
-</ul>
+<p>Never load a pickle file from an untrusted source. Pickle can execute arbitrary code during deserialization. If someone hands you a <code>.pkl</code> file, it could contain malicious payloads. This is not a hypothetical risk — it's a well-known attack vector. Only load serialized pipelines that you (or your team) created, stored in a controlled environment.</p>
+
+<p>That's the full lifecycle: build a pipeline with <code>Pipeline</code> and <code>ColumnTransformer</code>, order the steps deliberately to avoid leakage and statistical distortion, plug in custom transformers for domain logic, combine parallel feature branches with <code>FeatureUnion</code>, and serialize the whole thing for deployment. One object, fit once, replayed everywhere. It's not glamorous, but it eliminates an entire category of bugs that would otherwise haunt you in production.</p>
+
+
 
 
       <div class="page-nav">
-        <a href="s01.html">
+        <a href="s08.html">
           <span class="label">← Previous</span>
-          <span class="link-title">Data Types, Sources & Formats</span>
+          <span class="link-title">Handling Imbalanced Datasets</span>
         </a>
-        <a class="next" href="s03.html">
+        <a class="next" href="s10.html">
           <span class="label">Next →</span>
-          <span class="link-title">Data Cleaning & Feature Engineering</span>
+          <span class="link-title">SQL for Machine Learning</span>
         </a>
       </div>
 
