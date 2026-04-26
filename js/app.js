@@ -19,9 +19,15 @@
     if (href) el.setAttribute('data-index', basePath + 'chapters/' + href + '/index.html');
   });
 
-  /* ── Theme toggle ── */
-  const saved = localStorage.getItem('theme');
-  if (saved) document.documentElement.setAttribute('data-theme', saved);
+  /* ── Theme toggle (default: dark, persists across pages) ── */
+  const theme = localStorage.getItem('theme') || 'dark';
+  document.documentElement.setAttribute('data-theme', theme);
+  if (!localStorage.getItem('theme')) localStorage.setItem('theme', 'dark');
+
+  // Sync all toggle buttons on page load
+  document.querySelectorAll('.theme-toggle').forEach(btn => {
+    btn.textContent = theme === 'dark' ? '☀️' : '🌙';
+  });
 
   document.addEventListener('click', e => {
     if (e.target.closest('.theme-toggle')) {
@@ -29,8 +35,9 @@
       const next = current === 'dark' ? 'light' : 'dark';
       document.documentElement.setAttribute('data-theme', next);
       localStorage.setItem('theme', next);
-      const btn = e.target.closest('.theme-toggle');
-      btn.textContent = next === 'dark' ? '☀️' : '🌙';
+      document.querySelectorAll('.theme-toggle').forEach(btn => {
+        btn.textContent = next === 'dark' ? '☀️' : '🌙';
+      });
     }
   });
 
