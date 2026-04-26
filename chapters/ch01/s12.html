@@ -297,128 +297,322 @@
 <h1>Scikit-learn</h1>
 <div class="chapter-meta">
   <span class="tag">Chapter 1: Python &amp; Programming Foundations</span>
-  <span class="tag">Concise — Leverage Tool</span>
+  <span class="tag">Deep Dive — The API That Won ML</span>
 </div>
 
-<p>The beautiful thing about scikit-learn is that you learn the API once and you can use any of its 200+ algorithms without reading separate documentation for each one. Every estimator — classifier, regressor, scaler, encoder, decomposition — follows the exact same pattern. That consistency is the real superpower.</p>
+<p>I used scikit-learn for a solid two years before I understood <em>why</em> it works the way it does. I'd call <code>fit()</code>, call <code>predict()</code>, get a number, and move on. The library felt like a black box that happened to be pleasant to use. Why are <code>fit</code> and <code>transform</code> separate calls? Why does every learned attribute end with an underscore? Why does <code>Pipeline</code> exist when I could chain things manually? I never asked. Finally the discomfort of not knowing what's underneath the API grew too great for me. Here is that dive.</p>
 
-<h2>The Universal API Pattern</h2>
+<p>Scikit-learn was born in 2007 as a Google Summer of Code project by David Cournapeau. In 2010, researchers at INRIA (a French research institute) picked it up and shaped it into what it is today. The key paper—Buitinck, Louppe, and others, 2013—laid out an <strong>estimator specification</strong> that became the de facto standard for machine learning in Python. Over 200 algorithms, all following the same three-verb contract.</p>
 
-<p>Every scikit-learn estimator works the same way:</p>
+<p>Before we start, a heads-up. We're going to be building a tiny house-price predictor from scratch, and along the way we'll construct pipelines, write custom transformers, and dig into the internals that make grid search tick. You don't need to know any of it beforehand. We'll add what we need, one piece at a time.</p>
 
-<ul>
-  <li><strong>Models:</strong> <code>.fit(X, y)</code> → <code>.predict(X)</code></li>
-  <li><strong>Transformers:</strong> <code>.fit(X)</code> → <code>.transform(X)</code> (or <code>.fit_transform(X)</code> as a shortcut)</li>
-</ul>
+<p>This isn't a short journey, but I hope you'll be glad you came.</p>
 
-<p>That's it. Whether it's a linear regression, a random forest, a PCA, or a k-means — the interface is identical. Watch what happens when you swap models:</p>
+<div style="margin: 1.5em 0; padding-left: 1.5em; border-left: 3px solid var(--accent, #888); line-height: 1.9;">
+  The Three Verbs<br>
+  The LEGO Principle<br>
+  The Underscore Convention<br>
+  Your First Pipeline<br>
+  ColumnTransformer — Parallel Assembly Lines<br>
+  Building Your Own LEGO Brick<br>
+  Rest Stop<br>
+  Cross-Validation and the Leakage Trap<br>
+  Grid Search — What Happens Under the Hood<br>
+  Production Patterns<br>
+  Where Scikit-learn Ends<br>
+  Resources
+</div>
+
+<h2>The Three Verbs</h2>
+
+<p>Imagine you're building a house-price predictor. You have three houses in your training data: a 1,200 sq ft bungalow that sold for $180k, a 2,400 sq ft colonial at $360k, and a 3,600 sq ft mansion at $540k. You want to predict the price of a new 1,800 sq ft house.</p>
+
+<p>In scikit-learn, every algorithm speaks the same three verbs. The first verb is <code>fit</code>. Fitting is the act of learning from data—computing whatever parameters the algorithm needs. For a linear regression, that means finding the slope and intercept. For a scaler, that means computing the mean and standard deviation. For a random forest, that means growing all its trees. Different algorithms, wildly different internals, but they all respond to the same word.</p>
 
 <pre><code class="language-python">from sklearn.linear_model import LinearRegression
-from sklearn.ensemble import RandomForestRegressor
+import numpy as np
 
-# Version 1: linear regression
+X_train = np.array([[1200], [2400], [3600]])
+y_train = np.array([180000, 360000, 540000])
+
 model = LinearRegression()
+model.fit(X_train, y_train)</code></pre>
+
+<p>After calling <code>fit</code>, the model has learned something. It stored a slope in <code>model.coef_</code> and an intercept in <code>model.intercept_</code>. We can now use the second verb: <code>predict</code>.</p>
+
+<pre><code class="language-python">X_new = np.array([[1800]])
+model.predict(X_new)   # array([270000.])</code></pre>
+
+<p>The third verb is <code>transform</code>. This one belongs to <strong>transformers</strong>—objects that reshape data rather than making predictions. A <code>StandardScaler</code> is a transformer. It learns the mean and standard deviation during <code>fit</code>, then uses those numbers to center and scale data during <code>transform</code>.</p>
+
+<pre><code class="language-python">from sklearn.preprocessing import StandardScaler
+
+scaler = StandardScaler()
+scaler.fit(X_train)             # learns mean=2400, std=980
+X_scaled = scaler.transform(X_train)  # centers and scales</code></pre>
+
+<p>That's the entire contract. <code>fit</code> learns. <code>predict</code> predicts. <code>transform</code> transforms. Three verbs, 200+ algorithms, zero exceptions. This is the design that made scikit-learn the default.</p>
+
+<h2>The LEGO Principle</h2>
+
+<p>Think of scikit-learn estimators as LEGO bricks. Every brick has the same connector system on top and bottom—those little studs and tubes. A 2×4 brick, a wheel, a window frame, a tiny flower—they all snap together the same way. The connector system is the API. The brick's function is the algorithm.</p>
+
+<p>Here's what that means in practice. Suppose our house-price predictor isn't great with linear regression and we want to try a random forest instead. Watch how little changes:</p>
+
+<pre><code class="language-python">from sklearn.ensemble import RandomForestRegressor
+
+model = RandomForestRegressor(n_estimators=100, random_state=42)
 model.fit(X_train, y_train)
-predictions = model.predict(X_test)
+model.predict(X_new)</code></pre>
 
-# Version 2: random forest — literally change one line
-model = RandomForestRegressor(n_estimators=100)
-model.fit(X_train, y_train)
-predictions = model.predict(X_test)</code></pre>
+<p>One line changed. The rest of our evaluation code, our pipeline, our cross-validation—all of it works identically. We swapped the brain of our system without rewiring anything. This is the LEGO principle at work. And it's not an accident. The 2013 API design paper by Buitinck, Louppe, and colleagues explicitly made this a design goal: any estimator should be replaceable by any other estimator that serves the same role.</p>
 
-<p>Nothing else changes. The rest of your code — evaluation, pipeline, cross-validation — all works identically. This is why scikit-learn won.</p>
+<p>I'll be honest—I took this for granted for a long time. It wasn't until I tried using a different ML library that lacked this consistency that I realized how much cognitive load the uniform API was saving me. Every algorithm in that other library had its own method names, its own conventions. It felt like learning a new language for each model. Scikit-learn's consistency is invisible when you have it and agonizing when you don't.</p>
 
-<div class="callout callout-danger">
-  <div class="callout-label">The Golden Rule</div>
-  <p><code>fit()</code> on training data only. <code>transform()</code>/<code>predict()</code> on both train and test. If you fit a scaler on your test data, it learned test-set statistics and your metrics are lying to you. This is data leakage — the most common beginner mistake in ML.</p>
-</div>
+<h2>The Underscore Convention</h2>
 
-<h2>Pipelines — The Production Pattern</h2>
+<p>This next part seemed like a quirk to me for the longest time. Every attribute that scikit-learn learns from data ends with a trailing underscore. <code>coef_</code>. <code>intercept_</code>. <code>mean_</code>. <code>scale_</code>. <code>feature_importances_</code>. Meanwhile, things you set yourself—hyperparameters—have no underscore. <code>n_estimators</code>. <code>C</code>. <code>max_depth</code>.</p>
 
-<p>A <code>Pipeline</code> chains preprocessing steps and a model into a single estimator. Why bother? Three reasons:</p>
+<p>This isn't a style preference. It's load-bearing architecture.</p>
 
-<ul>
-  <li><strong>Prevents data leakage</strong> — when you pass a pipeline to <code>cross_val_score</code>, preprocessing gets refit on each fold's training data automatically. No accidental fitting on test data.</li>
-  <li><strong>Clean code</strong> — one object does everything. No scattered scaler/encoder variables floating around.</li>
-  <li><strong>Easy serialization</strong> — <code>joblib.dump(pipe, 'model.pkl')</code> saves the entire pipeline. Deploy it, and preprocessing + prediction happen in one call.</li>
-</ul>
+<p>Scikit-learn has a function called <code>clone()</code>. It takes a fitted estimator and creates a fresh, unfitted copy with the same hyperparameters. How does it know which attributes are hyperparameters and which are learned state? The underscore. Everything without an underscore gets copied. Everything with an underscore gets dropped. That's how <code>GridSearchCV</code> can try hundreds of hyperparameter combinations—it clones your estimator for each combination, sets new hyperparameters via <code>set_params()</code>, and fits from scratch.</p>
 
-<p>The real-world pattern uses <code>ColumnTransformer</code> because numeric and categorical columns need different preprocessing:</p>
+<pre><code class="language-python">from sklearn.base import clone
 
-<pre><code class="language-python">from sklearn.pipeline import Pipeline, make_pipeline
-from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.impute import SimpleImputer
-from sklearn.ensemble import RandomForestClassifier
+original = RandomForestRegressor(n_estimators=100)
+original.fit(X_train, y_train)
 
-# Different preprocessing for different column types
-num_pipe = make_pipeline(SimpleImputer(strategy='median'), StandardScaler())
-cat_pipe = make_pipeline(SimpleImputer(strategy='most_frequent'),
-                         OneHotEncoder(drop='first', handle_unknown='ignore'))
+fresh = clone(original)
+# fresh.n_estimators → 100 (hyperparameter copied)
+# fresh.feature_importances_ → doesn't exist (learned state dropped)</code></pre>
 
-preprocessor = ColumnTransformer([
-    ('num', num_pipe, ['age', 'salary', 'years_exp']),
-    ('cat', cat_pipe, ['department', 'city'])
+<p>There's a companion pair of methods that makes this machinery work: <code>get_params()</code> and <code>set_params()</code>. Every estimator has them. <code>get_params()</code> returns a dictionary of all hyperparameters. <code>set_params()</code> updates them. These two methods are the engine behind grid search, randomized search, and pipeline parameter access. They're not convenience methods—they're the foundation.</p>
+
+<pre><code class="language-python">model = RandomForestRegressor(n_estimators=100, max_depth=5)
+model.get_params()
+# {'n_estimators': 100, 'max_depth': 5, 'random_state': None, ...}
+
+model.set_params(n_estimators=200)
+# now model.n_estimators == 200, no refitting needed</code></pre>
+
+<p>The convention seemed cosmetic until I understood what depends on it. Now I see it as one of the most elegant design decisions in the library.</p>
+
+<h2>Your First Pipeline</h2>
+
+<p>Back to our house-price predictor. So far we've been working with a single feature—square footage. Real datasets have many features, and most of them need some preparation before a model can use them. Maybe square footage needs scaling. Maybe missing values need filling. Maybe we want to add polynomial features. Each of these steps is a transformer, and we need to run them in sequence before predicting.</p>
+
+<p>You could do this manually. Fit a scaler on training data, transform it, then fit the model on the scaled data. At prediction time, transform the new data with the same scaler, then predict. Two objects to track, two separate calls to coordinate. And if you forget to transform test data with the same scaler you fitted on training data—or worse, if you fit a new scaler on test data—your results are contaminated.</p>
+
+<p>A <code>Pipeline</code> solves this by chaining transformers and a final estimator into a single object. Think of it as an assembly line in a factory. Raw materials go in one end, pass through a sequence of stations, and a finished product comes out the other end. Each station does one thing. The pipeline coordinates the whole flow.</p>
+
+<pre><code class="language-python">from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler, PolynomialFeatures
+
+pipe = Pipeline([
+    ('scaler', StandardScaler()),
+    ('poly', PolynomialFeatures(degree=2)),
+    ('model', LinearRegression())
 ])
 
-# One object: impute → scale/encode → classify
-pipe = Pipeline([('prep', preprocessor), ('clf', RandomForestClassifier())])
+pipe.fit(X_train, y_train)    # scaler fits → poly fits → model fits
+pipe.predict(X_new)           # scaler transforms → poly transforms → model predicts</code></pre>
 
-pipe.fit(X_train, y_train)          # all preprocessing fits on train only
-pipe.predict(X_test)                # transforms test, then predicts</code></pre>
+<p>When you call <code>pipe.fit(X_train, y_train)</code>, the pipeline calls <code>fit_transform</code> on each transformer in sequence, passing the transformed output to the next step. The final estimator gets <code>fit</code> only (no transform—it's a predictor, not a transformer). When you call <code>pipe.predict(X_new)</code>, each transformer calls <code>transform</code> (not fit—it uses what it already learned), and the final estimator calls <code>predict</code>.</p>
 
-<p><code>make_pipeline()</code> is a shorthand that auto-names steps — use it for simple chains where you don't need to reference steps by name.</p>
+<p>This is important enough to say twice: the pipeline ensures that transformers are fitted on training data and applied to test data. It never accidentally re-fits on test data. That single guarantee eliminates an entire class of bugs.</p>
 
-<h2>Preprocessing — Which One When</h2>
+<p>There's a shorthand called <code>make_pipeline()</code> that auto-generates step names so you don't have to come up with them. Use it for quick prototypes. Use the explicit <code>Pipeline</code> constructor when you need to reference steps by name later—which you will, once you start tuning hyperparameters.</p>
 
-<table>
-  <thead>
-    <tr><th>Scaler</th><th>What It Does</th><th>Use When</th></tr>
-  </thead>
-  <tbody>
-    <tr><td><code>StandardScaler</code></td><td>Zero mean, unit variance</td><td>Default choice — SVM, logistic regression, KNN</td></tr>
-    <tr><td><code>MinMaxScaler</code></td><td>Squeezes into [0, 1]</td><td>Bounded values needed — neural nets, image data</td></tr>
-    <tr><td><code>RobustScaler</code></td><td>Uses median/IQR instead of mean/std</td><td>Data has outliers — the other two get wrecked</td></tr>
-  </tbody>
-</table>
+<h2>ColumnTransformer — Parallel Assembly Lines</h2>
 
-<table>
-  <thead>
-    <tr><th>Encoder</th><th>What It Does</th><th>Use When</th></tr>
-  </thead>
-  <tbody>
-    <tr><td><code>OneHotEncoder</code></td><td>Binary column per category</td><td>Nominal features — color, city, department</td></tr>
-    <tr><td><code>OrdinalEncoder</code></td><td>Maps categories to integers</td><td>Ordinal features — S &lt; M &lt; L &lt; XL</td></tr>
-    <tr><td><code>LabelEncoder</code></td><td>Maps labels to integers</td><td>Target variable <code>y</code> only — never for input features</td></tr>
-  </tbody>
-</table>
+<p>Our house-price dataset has grown. We now have square footage (numeric), number of bedrooms (numeric), neighborhood (categorical—"downtown", "suburbs", "rural"), and condition (categorical—"good", "fair", "poor"). Numeric columns need scaling. Categorical columns need encoding. You can't run a single scaler over everything—encoding "downtown" as a z-score doesn't make sense.</p>
 
-<h2>Model Selection</h2>
+<p><code>ColumnTransformer</code> solves this. Think of it as splitting the assembly line into parallel tracks. Numeric features go down one track and get scaled. Categorical features go down another track and get encoded. The outputs merge back together at the end.</p>
 
-<p><strong><code>train_test_split</code></strong> — always do this first. Use <code>stratify=y</code> for classification so class proportions are preserved in both sets. Hold the test set sacred — evaluate on it exactly once, at the very end.</p>
+<pre><code class="language-python">from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import make_pipeline
 
-<p><strong><code>cross_val_score</code></strong> — the honest way to evaluate. Splits training data into folds, trains and evaluates on each. Pass your <em>pipeline</em> (not just the model) so preprocessing gets refit per fold:</p>
+num_pipe = make_pipeline(
+    SimpleImputer(strategy='median'),
+    StandardScaler()
+)
+
+cat_pipe = make_pipeline(
+    SimpleImputer(strategy='most_frequent'),
+    OneHotEncoder(handle_unknown='ignore')
+)
+
+preprocessor = ColumnTransformer([
+    ('num', num_pipe, ['sqft', 'bedrooms']),
+    ('cat', cat_pipe, ['neighborhood', 'condition'])
+])</code></pre>
+
+<p>Each tuple in the <code>ColumnTransformer</code> has three parts: a name, a transformer (or sub-pipeline), and the columns it applies to. The name is arbitrary—pick something descriptive. The columns can be a list of names (if you're working with a DataFrame) or a list of integer indices.</p>
+
+<p>Now we wrap the whole thing into a final pipeline with a model at the end:</p>
+
+<pre><code class="language-python">from sklearn.ensemble import RandomForestRegressor
+
+pipe = Pipeline([
+    ('prep', preprocessor),
+    ('model', RandomForestRegressor(n_estimators=100, random_state=42))
+])
+
+pipe.fit(X_train, y_train)
+pipe.predict(X_test)</code></pre>
+
+<p>One object. Imputation, scaling, encoding, and prediction—all in a single <code>fit</code>/<code>predict</code> call. The LEGO bricks have snapped together into something you can serialize with <code>joblib.dump(pipe, 'model.pkl')</code> and deploy as a single artifact.</p>
+
+<p>For datasets where columns change over time, there's <code>make_column_selector</code>. Instead of hardcoding column names, you select by dtype. <code>make_column_selector(dtype_include=np.number)</code> grabs all numeric columns, whatever they happen to be called. This makes your pipeline resilient to schema changes—a detail that matters a lot once you move past notebooks.</p>
+
+<h2>Building Your Own LEGO Brick</h2>
+
+<p>Sooner or later you'll need a transformation that scikit-learn doesn't provide. Maybe you want to take the log of square footage, or compute a price-per-bedroom feature, or clip outliers. You have two options.</p>
+
+<p>The quick option is <code>FunctionTransformer</code>. It wraps any Python function into a pipeline-compatible transformer:</p>
+
+<pre><code class="language-python">from sklearn.preprocessing import FunctionTransformer
+import numpy as np
+
+log_transformer = FunctionTransformer(np.log1p)</code></pre>
+
+<p>That's now a transformer. It has <code>fit</code> (which does nothing—there's nothing to learn), <code>transform</code> (which applies <code>np.log1p</code>), and it plugs into any pipeline. For stateless transformations—where you don't need to learn anything from training data—this is all you need.</p>
+
+<p>The serious option is a custom class. This is for when your transformation needs to learn something during <code>fit</code>. Inherit from <code>BaseEstimator</code> and <code>TransformerMixin</code>, and you get <code>get_params</code>, <code>set_params</code>, and <code>fit_transform</code> for free.</p>
+
+<pre><code class="language-python">from sklearn.base import BaseEstimator, TransformerMixin
+
+class OutlierClipper(BaseEstimator, TransformerMixin):
+    def __init__(self, factor=1.5):
+        self.factor = factor        # hyperparameter — no underscore
+
+    def fit(self, X, y=None):
+        q1 = np.percentile(X, 25, axis=0)
+        q3 = np.percentile(X, 75, axis=0)
+        iqr = q3 - q1
+        self.lower_ = q1 - self.factor * iqr   # learned — underscore
+        self.upper_ = q3 + self.factor * iqr   # learned — underscore
+        return self                             # always return self
+
+    def transform(self, X):
+        return np.clip(X, self.lower_, self.upper_)</code></pre>
+
+<p>Notice the discipline. The hyperparameter <code>factor</code> is stored in <code>__init__</code> without an underscore. The learned bounds <code>lower_</code> and <code>upper_</code> are set in <code>fit</code> with an underscore. <code>fit</code> returns <code>self</code>. <code>transform</code> uses only the attributes set during <code>fit</code>—it never peeks at the training data directly. These aren't guidelines. They're the contract. Break any of them and <code>clone()</code>, <code>GridSearchCV</code>, and <code>Pipeline</code> will silently misbehave.</p>
+
+<p>I still occasionally get tripped up by when to use <code>FunctionTransformer</code> versus a custom class. The rule I've settled on: if the transformation depends on training data statistics (mean, percentiles, vocabulary), write a class. If it's a pure mathematical function applied element-wise, use <code>FunctionTransformer</code>.</p>
+
+<p>If you want to verify that your custom estimator plays nicely with the entire scikit-learn ecosystem, there's <code>check_estimator()</code>. It runs a battery of tests—does <code>fit</code> return <code>self</code>? Does <code>clone()</code> work? Does it handle sparse input?—and tells you exactly where you violated the contract.</p>
+
+<div class="callout callout-info">
+  <div class="callout-label">Rest Stop</div>
+  <p>Congratulations on making it this far. You can stop here if you want.</p>
+  <p>You now have a solid mental model of scikit-learn: the three-verb contract (<code>fit</code>/<code>predict</code>/<code>transform</code>), the underscore convention that separates what you set from what the model learns, pipelines as assembly lines, <code>ColumnTransformer</code> as parallel tracks, and custom transformers as your own LEGO bricks. That's enough to build, train, and deploy most tabular ML systems.</p>
+  <p>What's ahead: how cross-validation actually prevents data leakage, what grid search does under the hood with <code>clone</code> and <code>set_params</code>, production patterns that matter when your pipeline leaves the notebook, and where scikit-learn's walls are.</p>
+  <p>But if the discomfort of not knowing what's underneath is nagging at you, read on.</p>
+</div>
+
+<h2>Cross-Validation and the Leakage Trap</h2>
+
+<p>I'll be honest—I caused data leakage for months before pipelines clicked for me. I'd fit a <code>StandardScaler</code> on my entire dataset, transform everything, then split into train and test. My test scores looked fantastic. They were also lies.</p>
+
+<p>Here's why. When you fit a scaler on the entire dataset, the scaler computes the mean and standard deviation using <em>all</em> the data—including the test set. When you later evaluate on that test set, the model has already seen the test set's statistical fingerprint baked into the scaled features. The test set is no longer unseen data. Your accuracy estimate is optimistic, sometimes dramatically so.</p>
+
+<p>The fix is to fit transformers on training data only and apply them to test data. This is easy to say and surprisingly easy to mess up when you're doing it by hand across multiple preprocessing steps. Pipelines make it automatic.</p>
+
+<p>When you pass a pipeline to <code>cross_val_score</code>, here's what happens inside each fold: the pipeline gets cloned (fresh copy, same hyperparameters, no learned state), then <code>fit</code> is called on that fold's training split. Every transformer inside the pipeline fits on only the training split's data. Then <code>predict</code> is called on the validation split—transformers <code>transform</code> using what they learned from training, and the model predicts. No leakage. Automatic.</p>
 
 <pre><code class="language-python">from sklearn.model_selection import cross_val_score
 
-scores = cross_val_score(pipe, X_train, y_train, cv=5, scoring='f1')
-print(f"F1: {scores.mean():.3f} ± {scores.std():.3f}")</code></pre>
+scores = cross_val_score(pipe, X_train, y_train, cv=5, scoring='neg_mean_absolute_error')
+print(f"MAE: {-scores.mean():.0f} ± {scores.std():.0f}")</code></pre>
 
-<p><strong><code>GridSearchCV</code> / <code>RandomizedSearchCV</code></strong> — hyperparameter tuning with cross-validation built in. <code>GridSearchCV</code> tries every combination (exhaustive, slow). <code>RandomizedSearchCV</code> samples randomly (faster, usually good enough). Both follow the estimator API — <code>fit()</code>, <code>predict()</code>, <code>best_params_</code>.</p>
+<p>Always pass the pipeline—not the bare model—to <code>cross_val_score</code>. If you pass a bare model and do preprocessing outside, you've re-introduced leakage through the back door.</p>
 
-<p>The workflow: split → build pipeline → cross-validate → tune hyperparameters → evaluate on test set (once). In that order.</p>
+<p>There's a subtler form of leakage that catches even experienced practitioners: feature selection. If you select features based on the full dataset (say, picking the top 10 features by correlation with the target) and then cross-validate, the feature selection saw the validation folds. The fix is the same—put feature selection inside the pipeline so it gets re-done on each fold's training data.</p>
 
-<div class="checklist">
-  <h2>What You Should Now Be Able To Do</h2>
-  <ul>
-    <li>Explain the <code>fit()</code> / <code>predict()</code> / <code>transform()</code> contract and swap any algorithm without changing surrounding code</li>
-    <li>Build a <code>Pipeline</code> with <code>ColumnTransformer</code> that handles numeric and categorical features with zero data leakage</li>
-    <li>Choose the right scaler (<code>Standard</code> vs <code>MinMax</code> vs <code>Robust</code>) and encoder (<code>OneHot</code> vs <code>Ordinal</code> vs <code>Label</code>) for the situation</li>
-    <li>Use <code>cross_val_score</code> with a pipeline for honest evaluation</li>
-    <li>Tune hyperparameters with <code>GridSearchCV</code> or <code>RandomizedSearchCV</code></li>
-    <li>Follow the correct workflow: split → pipeline → cross-validate → tune → test set once</li>
-  </ul>
-</div>
+<p>For time-series data, standard <code>KFold</code> cross-validation is actively dangerous. It shuffles the data, which means future observations can leak into the training set. Use <code>TimeSeriesSplit</code> instead—it respects temporal order, always training on the past and validating on the future.</p>
+
+<h2>Grid Search — What Happens Under the Hood</h2>
+
+<p>Now we can see why those earlier internals—<code>clone()</code>, <code>get_params()</code>, <code>set_params()</code>—exist.</p>
+
+<p><code>GridSearchCV</code> takes an estimator (or pipeline) and a grid of hyperparameters to try. For each combination, it clones the estimator, calls <code>set_params()</code> to inject the new hyperparameters, then runs cross-validation. The combination with the best average score wins. The winning parameters are stored in <code>best_params_</code> and the refitted estimator in <code>best_estimator_</code>.</p>
+
+<pre><code class="language-python">from sklearn.model_selection import GridSearchCV
+
+param_grid = {
+    'model__n_estimators': [50, 100, 200],
+    'model__max_depth': [5, 10, None],
+    'prep__num__simpleimputer__strategy': ['mean', 'median']
+}
+
+search = GridSearchCV(pipe, param_grid, cv=5, scoring='neg_mean_absolute_error')
+search.fit(X_train, y_train)
+
+search.best_params_      # the winning combination
+search.best_estimator_   # the pipeline refitted on all training data with best params</code></pre>
+
+<p>Notice the parameter naming: <code>model__n_estimators</code> means "go into the step named 'model', then set its <code>n_estimators</code> parameter." The double underscore is the path separator. For nested pipelines inside a <code>ColumnTransformer</code>, the path gets deeper: <code>prep__num__simpleimputer__strategy</code> navigates into the preprocessor, then into the numeric sub-pipeline, then into the <code>SimpleImputer</code> step.</p>
+
+<p>This path-based addressing is powered entirely by <code>get_params(deep=True)</code>. Call it on a pipeline and it returns every hyperparameter at every nesting level, fully qualified. That's what <code>GridSearchCV</code> iterates over.</p>
+
+<p><code>RandomizedSearchCV</code> works the same way but samples hyperparameter combinations randomly instead of exhaustively. For large search spaces, it's almost always the better choice—you get 90% of the benefit in a fraction of the time. Pass distributions instead of lists and set <code>n_iter</code> to control how many combinations to try.</p>
+
+<h2>Production Patterns</h2>
+
+<p>A few patterns that don't matter in notebooks but matter a lot once your pipeline serves real traffic.</p>
+
+<p><strong>Serialize the whole pipeline.</strong> Never save the model alone. If you save a <code>RandomForestRegressor</code> without its preprocessing pipeline, you'll need to reconstruct the exact same scaler, imputer, and encoder at serving time—and hope the parameters match. Save the entire pipeline with <code>joblib.dump(pipe, 'pipeline.pkl')</code>. Load it. Call <code>predict</code>. Done.</p>
+
+<p><strong>Handle unseen categories.</strong> In production, your model will encounter categorical values it never saw during training. If your <code>OneHotEncoder</code> doesn't know what to do, it throws an error and your service crashes. Set <code>handle_unknown='ignore'</code> and unseen categories get encoded as all zeros—a graceful degradation that keeps the pipeline running.</p>
+
+<p><strong>Use DataFrame output for debugging.</strong> Since scikit-learn 1.2, you can call <code>.set_output(transform='pandas')</code> on any transformer or pipeline. Instead of getting a NumPy array with mysterious column indices, you get a DataFrame with named columns. This makes it dramatically easier to verify that your preprocessing is doing what you think it's doing. You can also set it globally with <code>sklearn.set_config(transform_output='pandas')</code>.</p>
+
+<p><strong>Transform targets properly.</strong> If you need to log-transform your target variable (common in price prediction—our house-price scenario included), don't do it manually. Use <code>TransformedTargetRegressor</code>. It applies the transformation during <code>fit</code>, trains the model on transformed targets, and automatically inverts the transformation during <code>predict</code>. Keeps the leakage math clean.</p>
+
+<pre><code class="language-python">from sklearn.compose import TransformedTargetRegressor
+
+model = TransformedTargetRegressor(
+    regressor=pipe,
+    func=np.log1p,
+    inverse_func=np.expm1
+)
+model.fit(X_train, y_train)
+model.predict(X_test)  # predictions in original dollar scale</code></pre>
+
+<p><strong>Validate your schema.</strong> In production, the data that arrives at your pipeline may have different column orders, missing columns, or wrong types. Libraries like Pandera or Pydantic can enforce a schema before your pipeline ever sees the data. This catches errors at the API boundary instead of deep inside a transformer where the stack trace is unhelpful.</p>
+
+<h2>Where Scikit-learn Ends</h2>
+
+<p>Scikit-learn is exceptional for tabular data that fits in memory. Most real-world business problems—churn prediction, credit scoring, demand forecasting, fraud detection—are exactly this. If your data lives in a DataFrame with rows and columns, scikit-learn is likely the right tool.</p>
+
+<p>It's not the right tool when your data is images, audio, video, or raw text. Scikit-learn has no concept of convolutional layers, attention mechanisms, or learned embeddings. For those, you need PyTorch or TensorFlow.</p>
+
+<p>It's not the right tool when your dataset doesn't fit in RAM. Scikit-learn loads everything into memory. For datasets with hundreds of millions of rows, you'll need frameworks that support out-of-core processing or distributed training. Some estimators offer <code>partial_fit()</code> for incremental learning—<code>SGDClassifier</code>, <code>MiniBatchKMeans</code>, a handful of others—but the support is patchy and the API is different enough that you lose the pipeline composability.</p>
+
+<p>It's not the right tool when you need GPU acceleration. Everything runs on CPU. For training deep networks or doing inference at scale on GPUs, scikit-learn has nothing to offer.</p>
+
+<p>Knowing where the walls are is as important as knowing what's inside them. Scikit-learn dominates its domain—tabular, in-memory, CPU-based ML—and gracefully gets out of the way when you need to step beyond it.</p>
+
+<p>If you're still with me, thank you. I hope it was worth it.</p>
+
+<p>We started with three houses and three verbs. We discovered that the trailing underscore is load-bearing architecture, not a style choice. We built pipelines that act as assembly lines, split them into parallel tracks with <code>ColumnTransformer</code>, and created custom LEGO bricks that snap into the same system. We saw how <code>clone()</code> and <code>set_params()</code> are the hidden engine behind grid search, and how pipelines make data leakage structurally impossible.</p>
+
+<p>My hope is that the next time you see a scikit-learn pipeline in a codebase, instead of treating it as a black box that happens to work, you'll see the machinery underneath—the contract, the conventions, the design decisions that made one library the default for an entire field.</p>
+
+<h2>Resources</h2>
+
+<p>The <a href="https://arxiv.org/abs/1309.0238">API design paper</a> by Buitinck, Louppe, and others (2013) — the O.G. document that defined the estimator specification. Short, readable, and you'll never look at <code>get_params()</code> the same way.</p>
+
+<p>The <a href="https://scikit-learn.org/stable/developers/develop.html">developer guide for custom estimators</a> — if you're building your own LEGO bricks, this is the blueprint. Covers <code>check_estimator</code>, tags, and every convention.</p>
+
+<p>The <a href="https://scikit-learn.org/stable/auto_examples/compose/plot_column_transformer_mixed_types.html">ColumnTransformer mixed types example</a> — an official example that walks through exactly the pattern we built here. Wildly helpful for real-world pipelines.</p>
+
+<p>The <a href="https://scikit-learn.org/stable/modules/cross_validation.html">cross-validation user guide</a> — goes deep on every splitter, every scorer, and every edge case. Insightful for understanding why <code>TimeSeriesSplit</code> exists and when <code>StratifiedKFold</code> matters.</p>
+
+<p>Andreas Müller's <a href="https://amueller.github.io/">blog and talks</a> — one of the core maintainers. His talks on pipeline design and the future of scikit-learn are unforgettable.</p>
 
 
       <div class="page-nav">
