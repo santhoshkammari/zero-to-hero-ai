@@ -295,269 +295,387 @@
 <h1>Data Exploration</h1>
 <div class="chapter-meta">
   <span class="tag">Chapter 3: Data Fundamentals</span>
-  <span class="tag">Types · Sources · Formats · EDA</span>
+  <span class="tag">Exploration · Profiling · Distributions · Relationships</span>
 </div>
 
-<div class="tldr">
-  <div class="tldr-label">Section Overview</div>
-  <p>This section combines Data Types, Sources &amp; Formats and Exploratory Data Analysis into one comprehensive reference.</p>
+<!-- ═══════════ OPENING ═══════════ -->
+
+<p>I avoided data exploration for an embarrassingly long time. Every time I got a new dataset, I'd load it, glance at <code>.head()</code>, confirm nothing looked obviously broken, and jump straight to modeling. And every time — every single time — I'd end up three days deep in debugging, only to discover the real problem was something I could have caught in the first five minutes: a column full of sentinel values masquerading as real data, or a feature that was secretly encoding the target variable. Finally the discomfort of being burned by my own laziness grew too great. Here is that dive.</p>
+
+<p><strong>Exploratory Data Analysis</strong> — EDA — is the practice of systematically examining a dataset before you do anything else with it. The term was popularized by John Tukey in his 1977 book of the same name, and it remains the single most underrated skill in applied machine learning. It's how you develop intuition about data that no automated pipeline can replace.</p>
+
+<p>Before we start, a heads-up. We're going to talk about distributions, correlations, missing data mechanisms, and statistical profiling. You don't need to know any of it beforehand. We'll add what we need, one piece at a time.</p>
+
+<p>This isn't a short journey, but I hope you'll be glad you came.</p>
+
+<!-- ═══════════ TABLE OF CONTENTS ═══════════ -->
+
+<div class="callout callout-info">
+  <div class="callout-label">What We'll Cover</div>
+  <p style="margin:0;padding:0;">
+    Why exploration matters — the Anscombe warning<br>
+    The thirty-second scan<br>
+    Data types that change modeling decisions<br>
+    File formats — Parquet or regret<br>
+    Summary statistics — and why they lie<br>
+    Distributions — reading the shape of your data<br>
+    Missing data — the three mechanisms<br>
+    Rest stop<br>
+    Relationships and the correlation trap<br>
+    The target variable — leakage, imbalance, and the "too good" model<br>
+    Data quality and integrity<br>
+    Automated profiling in production<br>
+    Wrap-up
+  </p>
 </div>
 
+<!-- ═══════════ WHY EXPLORATION MATTERS ═══════════ -->
 
-<!-- ═══════════ Data Types, Sources &amp; Formats ═══════════ -->
-<h2>Data Types, Sources &amp; Formats</h2>
+<h2>Why Exploration Matters — The Anscombe Warning</h2>
 
-<div class="tldr">
-  <div class="tldr-label">TL;DR</div>
-  <p>You know what CSVs and databases are. This section focuses on what actually matters: which format to use for ML workloads (Parquet, almost always), how to load data without footguns, and the data type distinctions that affect modeling decisions.</p>
-</div>
+<p>Let me start with a story that changed how I think about data. In 1973, a statistician named Francis Anscombe constructed four tiny datasets — each with eleven points. All four had the same mean for both x and y. The same variance. The same correlation coefficient (0.816). The same regression line. By every summary statistic, they were identical twins.</p>
 
-<h3>Data Types That Affect Modeling</h3>
+<p>Then he plotted them.</p>
 
-<p>The structured/unstructured/semi-structured distinction is real but you already know it. What actually bites you in practice are the subtler type decisions.</p>
+<p>One was a clean linear relationship. One was a perfect curve. One was a perfect line with a single outlier yanking the regression away. And one had all its x-values stacked at the same point except for one lonely outlier creating the illusion of a trend. Four datasets. Same numbers. Completely different stories. This is <strong>Anscombe's Quartet</strong>, and it's the reason EDA exists.</p>
 
-<p><strong>Continuous vs. discrete</strong> — linear regression expects continuous targets, Poisson models expect counts. Treating one as the other silently degrades performance.</p>
+<p>In 2017, researchers at Autodesk pushed the idea further with the <strong>Datasaurus Dozen</strong> — thirteen datasets with nearly identical summary statistics that, when plotted, form shapes including a dinosaur, a star, and an X. Same mean, same standard deviation, same correlation. Dinosaur.</p>
 
-<p><strong>Nominal vs. ordinal categorical</strong> — ordinal data has a ranking (education level, satisfaction score). Encoding ordinal as plain integers tells the model the gaps are uniform. They usually aren't. Nominal data (colors, country codes) has no order — one-hot encode it, don't label-encode it into a number line that doesn't exist.</p>
+<p>I'll be honest — when I first saw the Datasaurus, I didn't fully believe it. I downloaded the data and computed the stats myself. They matched. The discomfort of that moment is what made me take exploration seriously. If summary statistics can hide a dinosaur, what are they hiding in your production dataset?</p>
 
-<p><strong>Time series</strong> — order matters. Shuffling rows destroys the signal. Never random-split time series (see Section 5).</p>
+<p>Think of EDA like a medical checkup before surgery. The surgeon doesn't skip the blood work because the patient "looks fine." The blood work reveals problems invisible to the naked eye — elevated markers, unexpected deficiencies, conditions that would make the planned procedure dangerous. Your model is the surgery. Your data is the patient. The checkup is not optional.</p>
 
-<p><strong>Text and images</strong> — unstructured, but featurizable. The important thing: don't reach for a Transformer when a TF-IDF + gradient boosting pipeline solves the problem in 5 minutes. Match model complexity to data complexity.</p>
+<!-- ═══════════ THE 30-SECOND SCAN ═══════════ -->
 
-<h3>Data Sources — What Matters in Practice</h3>
+<h2>The Thirty-Second Scan</h2>
 
-<p>SQL databases, APIs, CSVs from a shared drive, Parquet files in S3, streaming from Kafka — you'll encounter all of them. Two things to internalize:</p>
+<p>Every dataset exploration starts the same way. You open the data and run the equivalent of a vitals check — how big is this thing, what types does it contain, how much of it is actually present. This takes thirty seconds and catches problems that would otherwise waste hours.</p>
 
-<p><strong>Push filtering to the source.</strong> Don't <code>SELECT * FROM orders</code> and filter in Python. Let the database do what it's good at. This is the single biggest performance mistake in data-backed ML pipelines.</p>
-
-<p><strong>Know where your data actually lives in production.</strong> Data warehouses (Snowflake, BigQuery) store clean analytical data. Data lakes (S3, HDFS) store raw everything. Streaming systems (Kafka, Kinesis) deliver real-time events. Most ML training reads from warehouses or lakes. Real-time inference needs streaming.</p>
-
-<h3>File Formats — The Only Decision That Matters</h3>
-
-<table>
-<thead>
-<tr><th>Format</th><th>Use When</th><th>Avoid When</th></tr>
-</thead>
-<tbody>
-<tr><td><strong>CSV</strong></td><td>Sharing with non-technical people, quick exploration</td><td>Anything in a pipeline. Slow, no types, no compression.</td></tr>
-<tr><td><strong>Parquet</strong></td><td>Default for ML data. Columnar, compressed, type-safe, reads only the columns you need.</td><td>You need human-readable files.</td></tr>
-<tr><td><strong>Feather</strong></td><td>Intermediate pipeline files where speed matters more than compression.</td><td>Long-term storage or cross-system interchange.</td></tr>
-<tr><td><strong>HDF5</strong></td><td>Large numerical arrays, scientific computing, model weights.</td><td>Tabular data (Parquet is better).</td></tr>
-<tr><td><strong>JSON</strong></td><td>API responses, config files, semi-structured data.</td><td>Large tabular datasets. Verbose, slow columnar access.</td></tr>
-</tbody>
-</table>
-
-<p>The honest truth: if your data is going into an ML pipeline, use Parquet. A 10 GB CSV becomes 1-2 GB in Parquet, reads 3-5× faster, and preserves type information so "02134" doesn't lose its leading zero.</p>
-
-<pre><code># The three lines that replace CSV in your workflow
-df.to_parquet("data.parquet", engine="pyarrow")
-df = pd.read_parquet("data.parquet", columns=["feature_1", "target"])  # reads ONLY those columns
-
-# Quick format comparison on your own data
-import time, os
-for write_fn, read_fn, path in [
-    (lambda: df.to_csv("d.csv", index=False), lambda: pd.read_csv("d.csv"), "d.csv"),
-    (lambda: df.to_parquet("d.pq"), lambda: pd.read_parquet("d.pq"), "d.pq"),
-]:
-    write_fn()
-    t = time.time(); read_fn(); elapsed = time.time() - t
-    print(f"{path:10s} {os.path.getsize(path)/1e6:.1f} MB  {elapsed:.3f}s")</code></pre>
-
-<h3>Loading Data Without Footguns</h3>
-
-<p>A few patterns that save hours:</p>
-
-<pre><code># Force types on load — prevents silent type coercion
-df = pd.read_csv("data.csv", dtype={"zip_code": str, "quantity": "Int32"})
-
-# Category dtype for low-cardinality strings — 90% memory savings
-df["country"] = df["country"].astype("category")
-
-# Chunked reading for files that don't fit in memory
-chunks = pd.read_csv("huge.csv", chunksize=50_000)
-df = pd.concat([c[c["status"] == "active"] for c in chunks], ignore_index=True)
-
-# SQL — push the WHERE clause down
-from sqlalchemy import create_engine
-engine = create_engine("sqlite:///db.sqlite")
-df = pd.read_sql("SELECT user_id, revenue FROM orders WHERE revenue > 0", engine)</code></pre>
-
-<p>For truly large datasets (tens of gigabytes), switch to <strong>Polars</strong> or <strong>Dask</strong>. Pandas is single-threaded and in-memory — it's the right default until it isn't.</p>
-
-<h2 class="section-title">What You Should Now Be Able To Do</h3>
-<ul>
-  <li>Choose Parquet over CSV for any ML pipeline without hesitation</li>
-  <li>Explain why ordinal encoding integers can mislead a model</li>
-  <li>Load a CSV with explicit dtypes to prevent silent type coercion</li>
-  <li>Push filtering to SQL rather than loading everything into Python</li>
-  <li>Know when to reach for Polars/Dask vs. Pandas</li>
-</ul>
-<!-- ═══════════ Exploratory Data Analysis ═══════════ -->
-<h2>Exploratory Data Analysis</h2>
-
-<div class="tldr">
-  <div class="tldr-label">TL;DR</div>
-  <p>EDA is a conversation with your data. You ask questions with code, it answers with numbers and plots, and you decide what to do next. This section is a workflow — the exact sequence of moves you run on any new dataset. Skip it, and you'll spend hours debugging a model only to discover a column was stored as strings.</p>
-</div>
-
-<h3>The EDA Workflow</h3>
-
-<p>Every EDA follows the same arc: <strong>shape → types → missing → distributions → relationships → quality</strong>. Think of it as peeling layers. Each layer reveals problems the next layer needs you to have seen.</p>
-
-<h3>Step 1: Shape, Types, and First Look</h3>
+<p>Imagine we've been handed a small e-commerce dataset. Eight customers, six columns: <code>user_id</code>, <code>age</code>, <code>city</code>, <code>purchase_amount</code>, <code>signup_date</code>, and <code>churned</code>. In a real dataset, you'd have hundreds of thousands of rows and dozens of columns. The workflow is the same — you scale it, you don't skip it.</p>
 
 <pre><code>import pandas as pd
 import numpy as np
 
-df = pd.read_csv("housing.csv")
+df = pd.read_csv("customers.csv")
 
-print(df.shape)          # (rows, columns) — how big is this?
-print(df.dtypes)         # a column showing 'object' that should be numeric = dirty data
-df.info()                # non-null counts + dtypes + memory — your one-stop summary
-print(df.sample(5))      # random rows > head() — head can hide patterns</code></pre>
+print(df.shape)            # (8, 6) — rows, columns
+print(df.dtypes)           # the single most revealing line
+df.info()                  # non-null counts + dtypes + memory usage
+print(df.sample(3))        # random rows, not head() — head hides patterns</code></pre>
 
-<p>A column that <em>should</em> be numeric but shows <code>object</code> almost always contains stray commas, "N/A" strings, or encoding garbage. Catching this here saves you hours downstream.</p>
+<p>The <code>dtypes</code> output is where most surprises live. A column called <code>purchase_amount</code> showing <code>object</code> instead of <code>float64</code> means something non-numeric snuck in — a dollar sign, a comma separator, the string "N/A" instead of an actual null. A column called <code>churned</code> showing <code>float64</code> instead of <code>bool</code> or <code>int</code> means it probably contains NaN values, because pandas upcasts integer columns to float when nulls are present.</p>
 
-<h3>Step 2: Summary Statistics</h3>
+<p>Use <code>sample()</code> instead of <code>head()</code>. Sorted or ordered data at the top of the file will fool you into thinking the data is cleaner than it is. Random sampling shows you what the data actually looks like.</p>
 
-<pre><code>print(df.describe())                 # count, mean, std, min, 25%, 50%, 75%, max
-print(df.describe(include='all'))    # includes categorical columns too</code></pre>
+<p>That's the thirty-second scan. It tells you the dimensions of the problem and whether your types are trustworthy. The limitation is obvious: it tells you nothing about what's <em>inside</em> those columns.</p>
 
-<p>What to look for in <code>describe()</code>:</p>
-<ul>
-  <li><strong>min/max sanity</strong> — negative ages? Prices of zero? Future dates in historical data?</li>
-  <li><strong>mean vs. median gap</strong> — large gap = skewed distribution = outliers pulling the mean</li>
-  <li><strong>std relative to mean</strong> — near-zero std = near-constant feature = useless for prediction</li>
-  <li><strong>count &lt; total rows</strong> — you have missing data in that column</li>
-</ul>
+<!-- ═══════════ DATA TYPES THAT CHANGE MODELING ═══════════ -->
 
-<h3>Step 3: Missing Data Patterns</h3>
+<h2>Data Types That Change Modeling Decisions</h2>
 
-<pre><code># Quick missing overview
-print(df.isnull().sum().sort_values(ascending=False))
-print(f"\n% missing:\n{(df.isnull().mean() * 100).sort_values(ascending=False)}")
+<p>The structured-versus-unstructured distinction is real but it's not what catches you in practice. What catches you are the subtler type distinctions within structured data — distinctions that directly determine how you encode features and which models are appropriate.</p>
 
-# Visual pattern — look for correlated missingness
-import missingno as msno
-msno.matrix(df, figsize=(10, 4), fontsize=8)
-# Columns that go missing together → MAR or MNAR (see Section 3)</code></pre>
+<p><strong>Continuous</strong> features take any value in a range. Age, temperature, revenue. Linear regression expects continuous targets. Feed it discrete counts and you'll get predictions like 3.7 purchases — which might be fine, or might be nonsensical, depending on your problem.</p>
 
-<p>If two columns always have missing values in the same rows, that's a signal — the missingness is correlated. Understanding <em>why</em> data is missing matters more than how you fill it.</p>
+<p><strong>Discrete</strong> features come in countable steps. Number of items purchased, number of clicks. Poisson regression and negative binomial models are built for these. Treating counts as continuous works until it doesn't — and it usually doesn't when counts cluster near zero.</p>
 
-<h3>Step 4: Distributions</h3>
+<p><strong>Nominal categorical</strong> features have no natural order. City names, product categories, color codes. One-hot encode these. If you label-encode "red=1, blue=2, green=3" you've told the model that green is three times as much as red and that blue is between them. That's an invented number line that doesn't exist, and the model will happily learn from it anyway — learning garbage.</p>
 
-<h4>Numerical Features</h4>
+<p><strong>Ordinal categorical</strong> features have a meaningful ranking but unknown spacing. Education level (high school, bachelor's, master's, PhD) has a clear order. But the "distance" between high school and bachelor's is not the same as between master's and PhD. Encoding these as 1, 2, 3, 4 implies uniform gaps. Sometimes that's acceptable. Often it isn't. Target encoding or treating them as nominal are safer defaults until you have a reason to believe the spacing is meaningful.</p>
+
+<p><strong>Temporal</strong> features are ordered, and that order is sacred. Shuffling rows of a time series destroys the signal. Never random-split time data — always split by time, because your model can't peek into the future in production, so it shouldn't during training either.</p>
+
+<p>The limitation of this type-level thinking: it tells you how to encode, but not whether a feature is actually useful. For that, we need to look at distributions.</p>
+
+<!-- ═══════════ FILE FORMATS ═══════════ -->
+
+<h2>File Formats — Parquet or Regret</h2>
+
+<p>Before we get deeper into exploration, a practical detour. The format your data lives in affects how fast you can explore it, and whether types survive the round trip from storage to memory.</p>
+
+<p>CSV is the format everyone knows and the format that causes the most pain. It has no type information — everything is a string until your reader guesses otherwise. It has no compression. It reads every column even if you only need two. A 10 GB CSV file will take minutes to load, consume 10+ GB of memory, and silently turn your zip code "02134" into the integer 2134.</p>
+
+<p><strong>Parquet</strong> is a columnar format that solves all of these problems. It stores type metadata, so "02134" stays a string. It compresses data (that 10 GB CSV becomes 1-2 GB). It supports <strong>column pruning</strong> — reading only the columns you ask for — and <strong>predicate pushdown</strong> — filtering rows at the storage layer before they ever touch Python memory. Switching from CSV to Parquet is the single highest-impact, lowest-effort improvement most teams can make.</p>
+
+<pre><code># The swap that changes your life
+df.to_parquet("data.parquet", engine="pyarrow")
+df = pd.read_parquet("data.parquet", columns=["age", "churned"])  # reads ONLY those two columns</code></pre>
+
+<p>A quick reference for when someone asks you about other formats:</p>
+
+<table>
+<thead>
+<tr><th>Format</th><th>Reach For It When</th><th>Walk Away When</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>CSV</strong></td><td>Sharing with non-technical humans, quick one-off exploration</td><td>Anything in a pipeline — slow, typeless, uncompressed</td></tr>
+<tr><td><strong>Parquet</strong></td><td>Default for ML data — columnar, compressed, type-safe</td><td>You need a file a human can open in Notepad</td></tr>
+<tr><td><strong>Feather/Arrow IPC</strong></td><td>Intermediate pipeline files where read speed matters more than compression</td><td>Long-term storage or cross-system interchange</td></tr>
+<tr><td><strong>HDF5</strong></td><td>Large numerical arrays, scientific computing, model weight checkpoints</td><td>Tabular data — Parquet is better in every way</td></tr>
+<tr><td><strong>JSON / JSONL</strong></td><td>API responses, nested semi-structured data, config files</td><td>Large tabular datasets — verbose and slow</td></tr>
+</tbody>
+</table>
+
+<p>For truly large datasets — tens of gigabytes or more — consider Polars or Dask instead of Pandas. Pandas is single-threaded and in-memory. That's the right default until your data outgrows it, at which point the medical checkup analogy applies again: you wouldn't run the same blood test on a patient who weighs 50 kg and one who weighs 500 kg using the same equipment.</p>
+
+<pre><code># Force types on load — prevents silent type coercion
+df = pd.read_csv("data.csv", dtype={"zip_code": str, "quantity": "Int32"})
+
+# Category dtype for low-cardinality strings — up to 90% memory savings
+df["city"] = df["city"].astype("category")
+
+# SQL — always push the WHERE clause to the database
+from sqlalchemy import create_engine
+engine = create_engine("sqlite:///shop.db")
+df = pd.read_sql("SELECT user_id, revenue FROM orders WHERE revenue > 0", engine)</code></pre>
+
+<!-- ═══════════ SUMMARY STATISTICS ═══════════ -->
+
+<h2>Summary Statistics — And Why They Lie</h2>
+
+<p>Now we look inside the columns. The instinct is to run <code>describe()</code> and move on. After the Anscombe warning, you know why that instinct is dangerous. But <code>describe()</code> is still a useful starting point — as long as you know exactly what to look for and exactly where it can deceive you.</p>
+
+<pre><code>print(df.describe())                  # count, mean, std, min, 25%, 50%, 75%, max
+print(df.describe(include="all"))     # adds categorical columns: unique, top, freq</code></pre>
+
+<p>Back to our e-commerce customers. The <code>describe()</code> output for <code>purchase_amount</code> shows a mean of $142 and a median (the 50th percentile) of $87. That gap — $142 vs $87 — is your first clue. When the mean is substantially higher than the median, the distribution is right-skewed. A few high-spending customers are pulling the average up while most customers spend modestly. If you were to use the mean as a "typical" customer's spending, you'd overestimate most customers and underestimate the whales.</p>
+
+<p>Here's what to hunt for in every <code>describe()</code> output:</p>
+
+<p>The <strong>min and max</strong> are your sanity check. Negative ages? Prices of zero in a dataset where free items don't exist? A <code>signup_date</code> in the year 2097? These are data entry errors, sentinel values, or upstream pipeline bugs. Every impossible value is a conversation you need to have with whoever generated the data.</p>
+
+<p>The <strong>standard deviation relative to the mean</strong> tells you about spread. A feature with near-zero std is nearly constant — it carries almost no information for prediction. A feature where std is larger than the mean usually has extreme outliers or a heavy-tailed distribution.</p>
+
+<p>The <strong>count</strong> value is supposed to equal the number of rows. When it doesn't, you have missing data in that column. How much is missing and why — that's a whole topic we'll get to shortly.</p>
+
+<p>The summary statistics told us something useful. They also hid the shape, the clusters, and the outliers. To see those, we need to look at distributions directly.</p>
+
+<!-- ═══════════ DISTRIBUTIONS ═══════════ -->
+
+<h2>Distributions — Reading the Shape of Your Data</h2>
+
+<p>A distribution is the answer to the question: if I pick a random value from this column, what am I likely to get? Histograms are the workhorse visualization for this. Each bar represents a range (a "bin"), and the height shows how many values fall in that range.</p>
 
 <pre><code>import matplotlib.pyplot as plt
 import seaborn as sns
 
-# Histograms for all numeric columns — fast first pass
+# Histograms for every numeric column — the fastest first pass
 df.select_dtypes(include=[np.number]).hist(bins=50, figsize=(14, 10))
 plt.tight_layout()
 plt.show()</code></pre>
 
-<p>What you're looking for: <strong>skewness</strong> (long tails — consider log transform), <strong>multimodality</strong> (multiple peaks — possibly mixed populations), <strong>hard boundaries</strong> (values capped at 500,000 — data was clipped), <strong>spikes</strong> (everyone has exactly 0 or exactly 999 — sentinel values masquerading as real data).</p>
+<p>When you stare at a histogram, you're looking for four things.</p>
 
-<h4>Categorical Features</h4>
+<p><strong>Skewness</strong> — a long tail in one direction. Income data is almost always right-skewed: most people earn within a range, a few earn enormously more. <strong>Skewness</strong> is a number that quantifies this asymmetry. Positive skewness means a right tail. Negative means a left tail. Close to zero means roughly symmetric. When skewness is large (say, above 1), log transforms often pull the tail back toward the center, making the feature friendlier for models that assume normality.</p>
 
-<pre><code>print(df.nunique())                                    # cardinality per column
-print(df["ocean_proximity"].value_counts())             # raw counts
-print(df["ocean_proximity"].value_counts(normalize=True))  # proportions</code></pre>
+<p><strong>Multimodality</strong> — multiple peaks. A histogram of <code>purchase_amount</code> with two humps might indicate two distinct customer segments mixed together: casual browsers making small purchases and power users making large ones. Multimodality is a signal that your data might benefit from segmentation — either explicitly (separate models per segment) or implicitly (adding a segment feature).</p>
 
-<p>A category with 95% of the data gives almost no signal. A column with 50,000 unique values out of 50,001 rows is an ID column, not a feature. Categories appearing &lt;1-2% of the time should likely be bucketed into "Other" to prevent overfitting.</p>
+<p><strong>Hard boundaries</strong> — values capped at a suspiciously round number. If every house in your dataset costs at most $500,000 exactly, the data was clipped. The real distribution continues beyond that boundary, and your model will never learn what happens past it. This is called <strong>censoring</strong>, and it requires specialized handling.</p>
 
-<h3>Step 5: Relationships</h3>
+<p><strong>Spikes</strong> — an unexpected concentration at a single value. If 40% of your customers have a <code>purchase_amount</code> of exactly zero, that spike isn't a statistical anomaly — it's likely a sentinel value (someone encoded "no purchase" as 0 rather than null) or a genuinely interesting subgroup (people who signed up but never bought). Either way, modeling it as "a regular number that happens to be zero" is a mistake. Separate it out.</p>
 
-<h4>Correlation Matrix</h4>
+<p>There's a companion number to skewness called <strong>kurtosis</strong>, which measures tail heaviness rather than asymmetry. High kurtosis means more extreme outliers than a normal distribution would predict. I'm still developing my intuition for when kurtosis is actionable versus when it's a curiosity, but the practical rule I've landed on: if kurtosis is above 7, you almost certainly have outliers that will dominate any squared-error metric, and robust scaling or Winsorization deserves consideration.</p>
 
-<pre><code># Pearson (linear) correlation
-corr = df.select_dtypes(include=[np.number]).corr()
+<pre><code># Skewness and kurtosis for all numeric columns
+print(df.select_dtypes(include=[np.number]).skew())
+print(df.select_dtypes(include=[np.number]).kurtosis())</code></pre>
 
-plt.figure(figsize=(10, 8))
-sns.heatmap(corr, annot=True, fmt=".2f", cmap="coolwarm", center=0, square=True)
-plt.title("Pearson Correlation")
+<p>For categorical features, the equivalent of a histogram is a value count:</p>
+
+<pre><code>print(df["city"].value_counts())
+print(df["city"].value_counts(normalize=True))  # proportions</code></pre>
+
+<p>A category holding 95% of the data gives almost no signal — it's nearly constant. A column with as many unique values as rows is an ID column pretending to be a feature. Categories appearing in less than 1-2% of rows should probably be bucketed into "Other" to prevent overfitting on rare groups the model will never see enough of to learn from.</p>
+
+<p>Distributions told us what individual columns look like. The limitation: they told us nothing about how columns relate to each other. But before we go there, there's a topic we've been avoiding.</p>
+
+<!-- ═══════════ MISSING DATA ═══════════ -->
+
+<h2>Missing Data — The Three Mechanisms</h2>
+
+<p>Every production dataset has missing values. The question isn't whether data is missing — it's <em>why</em> it's missing. And the "why" determines everything about how you should handle it.</p>
+
+<p>There are three mechanisms of missingness, formalized by statisticians Rubin and Little. I'll walk through each using our e-commerce dataset.</p>
+
+<p><strong>Missing Completely At Random (MCAR)</strong> means the probability of a value being missing has nothing to do with any data — observed or unobserved. A server crash randomly dropped 3% of rows from the <code>purchase_amount</code> column. The missingness is pure accident. You can verify MCAR (roughly) by checking whether the distribution of other columns looks the same for rows where <code>purchase_amount</code> is present versus missing. If they match, MCAR is plausible. With MCAR, even simple imputation (mean, median) is unbiased — you lose some statistical power, but you don't introduce systematic error.</p>
+
+<p><strong>Missing At Random (MAR)</strong> is trickier. The missingness depends on <em>observed</em> variables but not on the missing value itself. In our dataset, maybe younger customers are less likely to fill in their <code>age</code> — but within each age group, the missingness is random. You can detect MAR by building a quick logistic regression: create a binary indicator (1 = missing, 0 = observed) for the suspect column and model it as a function of other features. If other features significantly predict missingness, you're likely in MAR territory. The fix: use model-based imputation (KNN, iterative imputation) that leverages those observed relationships.</p>
+
+<p><strong>Missing Not At Random (MNAR)</strong> is the hardest case. The probability of missing depends on the missing value itself. High-income customers don't report their income. Severely ill patients drop out of clinical trials. The data that's missing is missing <em>because</em> of what it would have been. You generally can't detect MNAR from data alone — it requires domain knowledge. And no standard imputation method can fully correct for it, because the information needed to estimate the missing values is… the missing values. I still get tripped up distinguishing MAR from MNAR in practice. The honest answer is that in ambiguous cases, you document your assumption, use the best imputation available, and test whether your model's conclusions change under different assumptions. That's called a <strong>sensitivity analysis</strong>, and it's what experienced practitioners do when certainty isn't available.</p>
+
+<pre><code># Step 1: How much is missing?
+print(df.isnull().sum().sort_values(ascending=False))
+print(f"\n% missing:\n{(df.isnull().mean() * 100).sort_values(ascending=False)}")
+
+# Step 2: Visualize missingness patterns
+import missingno as msno
+msno.matrix(df, figsize=(10, 4), fontsize=8)
+# Columns that go missing TOGETHER suggest correlated missingness — investigate
+
+# Step 3: Test whether missingness is related to other columns
+from sklearn.linear_model import LogisticRegression
+missing_indicator = df["age"].isnull().astype(int)
+other_features = df[["purchase_amount", "churned"]].dropna()
+# If this model has high accuracy, missingness is NOT random</code></pre>
+
+<p>The medical checkup analogy applies here too. A missing lab result is different from a patient who refused the test. The first is a clerical error (MCAR). The second might be because they already know the result is bad (MNAR). The treatment plan — your imputation strategy — depends on knowing the difference.</p>
+
+<!-- ═══════════ REST STOP ═══════════ -->
+
+<div class="callout callout-info">
+  <div class="callout-label">Rest Stop</div>
+  <p>Congratulations on making it this far. You can stop here if you want.</p>
+  <p>You now have a mental model for exploring any dataset: scan the shape and types, check summary statistics while remembering they can lie, plot distributions to see what the numbers hide, and investigate missing data with an understanding of the three mechanisms. That's a genuinely useful toolkit — you could run this workflow on any new dataset and catch 80% of the problems that would otherwise blindside you during modeling.</p>
+  <p>But it doesn't tell the complete story. We haven't looked at how columns relate to each other, where correlation analysis goes wrong, how to examine the target variable for leakage, or how to automate all of this in a production pipeline.</p>
+  <p>The short version: always plot relationships (not rely on correlation coefficients alone), always suspect a model that's "too good," and automate your EDA checks so they run on every new batch of data. There. You're 80% of the way.</p>
+  <p>But if the discomfort of not knowing what's underneath is nagging at you, read on.</p>
+</div>
+
+<!-- ═══════════ RELATIONSHIPS ═══════════ -->
+
+<h2>Relationships and the Correlation Trap</h2>
+
+<p>We've been looking at columns in isolation. The real power of EDA comes from examining how columns interact. The standard tool for this is the correlation matrix — and it's the tool that deceives more practitioners than any other.</p>
+
+<p><strong>Pearson correlation</strong> measures the strength of a <em>linear</em> relationship between two variables. It ranges from -1 (perfect negative linear) to +1 (perfect positive linear), with 0 meaning no linear relationship. The critical word is "linear." Two variables can be perfectly related — say, y = x² — and show a Pearson correlation near zero. The relationship is there, clear as day in a scatter plot. Pearson doesn't see it because it only looks for straight lines.</p>
+
+<p><strong>Spearman correlation</strong> is the fix for monotonic relationships. It doesn't care about linearity — only about whether one variable tends to increase (or decrease) as the other increases. If your relationship is curved but still one-directional, Spearman catches it where Pearson misses it. Use Spearman as your default unless you have a specific reason to need Pearson.</p>
+
+<pre><code># Both correlation methods side by side
+pearson_corr = df.select_dtypes(include=[np.number]).corr(method="pearson")
+spearman_corr = df.select_dtypes(include=[np.number]).corr(method="spearman")
+
+fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+sns.heatmap(pearson_corr, annot=True, fmt=".2f", cmap="coolwarm", center=0, ax=axes[0])
+axes[0].set_title("Pearson (linear only)")
+sns.heatmap(spearman_corr, annot=True, fmt=".2f", cmap="coolwarm", center=0, ax=axes[1])
+axes[1].set_title("Spearman (monotonic)")
 plt.tight_layout()
 plt.show()</code></pre>
 
-<p><strong>Pearson</strong> captures linear relationships. <strong>Spearman</strong> captures monotonic (including non-linear). Use Spearman when you suspect curved but still monotonic patterns. Zero correlation ≠ independence — two variables can be perfectly related non-linearly and still show zero Pearson.</p>
+<p>Now for the trap. Correlation does not imply causation — everyone knows that phrase. Fewer people know the specific ways correlation actively misleads.</p>
 
-<h4>Scatter Plots and Box Plots</h4>
+<p><strong>Simpson's Paradox</strong> is the most unsettling. A trend that appears in several subgroups of your data can <em>reverse</em> when you combine them. The classic example: UC Berkeley was sued for gender bias in admissions because the overall acceptance rate was higher for men. When researchers broke the data down by department, they found that women were actually admitted at a higher rate in most departments. The overall trend reversed because women disproportionately applied to more competitive departments. The aggregated correlation was the opposite of the truth.</p>
+
+<p>I'll be honest — the first time I encountered Simpson's Paradox in my own data, I spent an hour convinced my aggregation code had a bug. It didn't. The data was doing exactly what data does when a confounding variable hides in the background.</p>
+
+<p><strong>Spurious correlation</strong> is the other hazard. Ice cream sales and drowning deaths are correlated — not because ice cream causes drowning, but because summer heat drives both. In high-dimensional datasets (many features), spurious correlations are <em>guaranteed</em> to appear. With 100 random features, you'll find pairs with correlations of 0.3+ by pure chance. The more features you have, the more ghosts show up in your correlation matrix.</p>
+
+<p>For categorical features, Pearson and Spearman don't apply. Use <strong>Cramér's V</strong> — a measure of association for categorical-categorical pairs based on the chi-squared statistic, normalized to fall between 0 and 1.</p>
+
+<p>The defense against all of this: never trust a correlation number alone. Always make the scatter plot. Always check subgroups. Always ask whether a third variable could explain the relationship.</p>
 
 <pre><code>fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
-# Numeric vs numeric — looking for trends, clusters, outliers
-axes[0].scatter(df["median_income"], df["median_house_value"], alpha=0.1, s=5)
-axes[0].set(xlabel="Median Income", ylabel="House Value", title="Income vs Value")
+# Scatter plot — the correlation matrix can't show you clusters or outliers
+axes[0].scatter(df["age"], df["purchase_amount"], alpha=0.4, s=15)
+axes[0].set(xlabel="Age", ylabel="Purchase Amount", title="Age vs Spending")
 
-# Numeric vs categorical — do groups differ?
-sns.boxplot(x="ocean_proximity", y="median_house_value", data=df, ax=axes[1])
-axes[1].tick_params(axis='x', rotation=45)
+# Boxplot — how does a numeric variable differ across groups?
+sns.boxplot(x="city", y="purchase_amount", data=df, ax=axes[1])
+axes[1].tick_params(axis="x", rotation=45)
 plt.tight_layout()
-plt.show()</code></pre>
+plt.show()
 
-<p>If box plots look identical across groups, that categorical feature probably doesn't help predict the numeric one. If they differ dramatically, you've found a useful feature.</p>
+# Grouped statistics — sometimes more informative than any plot
+print(df.groupby("city")["purchase_amount"].agg(["mean", "median", "std", "count"]))</code></pre>
 
-<h4>Grouped Statistics</h4>
+<p>If box plots look identical across groups, that categorical feature probably doesn't help predict the numeric one. If they differ dramatically, you've found a feature worth investigating further.</p>
 
-<pre><code>print(df.groupby("ocean_proximity")["median_house_value"].agg(
-    ["mean", "median", "std", "count"]
-))</code></pre>
+<!-- ═══════════ TARGET VARIABLE ═══════════ -->
 
-<p>This is often more informative than a plot. The numbers tell you exactly how much separation exists between groups.</p>
+<h2>The Target Variable — Leakage, Imbalance, and the "Too Good" Model</h2>
 
-<h3>Step 6: Duplicates and Data Quality</h3>
+<p>The target variable deserves its own examination, separate from everything else. Two problems live here that can silently invalidate your entire project.</p>
 
-<pre><code># Exact duplicates
+<p><strong>Class imbalance</strong> in classification tasks. If 98% of your dataset is one class, a model that predicts the majority class every single time achieves 98% accuracy. It has learned nothing. It is useless. Check the class distribution before building anything.</p>
+
+<pre><code># Classification — check the balance
+print(df["churned"].value_counts(normalize=True))
+# 0.95 / 0.05 split means you need stratified splitting, weighted losses,
+# and metrics that care about the minority class (precision, recall, F1, PR-AUC)
+
+# Regression — check the shape
+print(f"Target skewness: {df['purchase_amount'].skew():.2f}")
+# Skew > 1: seriously consider log1p transform to normalize the target</code></pre>
+
+<p><strong>Target leakage</strong> is the more dangerous problem because it hides behind great performance. I once spent a week debugging a churn model that had an AUC of 0.99. Every metric was spectacular. It turned out one of the features — "days since last login" — was computed using data from <em>after</em> the churn event. The model wasn't predicting churn; it was reading the answer key.</p>
+
+<p>Red flags that suggest leakage: a single feature with extreme importance, an AUC that seems too high for the problem domain (real-world prediction problems rarely exceed 0.95), or a feature whose definition only makes sense if the outcome is already known. The remedy is simple in principle and difficult in practice: trace every feature's lineage and ask, "would this value be available at the moment I need to make this prediction in production?"</p>
+
+<p>There's a brute-force detection method that works surprisingly well: shuffle the target column randomly and retrain. If your model still performs well on the shuffled target, you have leakage — the features contain information about the target's position in the dataset rather than its value.</p>
+
+<!-- ═══════════ DATA QUALITY ═══════════ -->
+
+<h2>Data Quality and Integrity</h2>
+
+<p>By this point you've profiled types, distributions, missing values, correlations, and the target. The final layer is integrity — the domain-specific checks that no automated tool can do for you because they require knowledge of what the data is supposed to represent.</p>
+
+<pre><code># Exact duplicates — surprisingly common in production
 print(f"Duplicate rows: {df.duplicated().sum()}")
+print(f"Duplicate user_ids: {df['user_id'].duplicated().sum()}")
 
-# Integrity checks — domain-specific
+# Domain assertions
 assert (df["age"] >= 0).all(), "Negative ages found"
-assert df["price"].between(0, 1e8).all(), "Prices outside reasonable range"
+assert (df["age"] <= 120).all(), "Unrealistic ages found"
+assert df["purchase_amount"].between(0, 1e6).all(), "Purchases outside sane range"
 
-# Inconsistencies
-# "New York" vs "new york" vs "NY" — standardize before modeling
-print(df["city"].str.lower().nunique(), "vs", df["city"].nunique())</code></pre>
+# String inconsistencies — the silent killer
+print(df["city"].nunique(), "unique cities")
+print(df["city"].str.strip().str.lower().nunique(), "after normalization")
+# "New York" vs "new york" vs " New York " — three entries, one city</code></pre>
 
-<h3>Step 7: Target Variable</h3>
+<p>In production systems, these checks belong in code, not in notebooks. Tools like <strong>Great Expectations</strong> and <strong>Pandera</strong> let you define expectations as schemas — "this column is never null, always positive, has at most 50 unique values" — and validate every incoming batch automatically. When a check fails, the pipeline halts before bad data reaches your model. This is the difference between a medical checkup performed by a doctor (manual EDA) and a continuous monitoring system that beeps when vitals go abnormal (automated validation). You need both.</p>
 
-<p>Always examine the target separately. For classification: check class balance. For regression: check distribution shape (skewed targets often benefit from log transform).</p>
+<!-- ═══════════ AUTOMATED PROFILING ═══════════ -->
 
-<pre><code># Classification — check balance
-print(df["label"].value_counts(normalize=True))
-# If 98% is one class, you need stratified splitting and weighted metrics
+<h2>Automated Profiling in Production</h2>
 
-# Regression — check skew
-print(f"Target skewness: {df['price'].skew():.2f}")
-# Skew > 1: consider log1p transform</code></pre>
+<p>Everything we've done so far — shape, types, distributions, correlations, missing patterns — can be generated in a single function call. That's worth knowing, with a caveat.</p>
 
-<h3>Automated EDA Tools</h3>
-
-<p>For a first pass, these generate everything above in one call:</p>
-
-<pre><code># ydata-profiling — most comprehensive
+<pre><code># ydata-profiling — the most comprehensive automated report
 from ydata_profiling import ProfileReport
-ProfileReport(df, title="EDA Report", explorative=True).to_file("report.html")
+report = ProfileReport(df, title="Customer EDA", explorative=True)
+report.to_file("customer_report.html")
 
-# sweetviz — great for train/test comparison
+# sweetviz — best for comparing train vs test distributions
 import sweetviz as sv
-sv.compare([train, "Train"], [test, "Test"]).show_html("comparison.html")</code></pre>
+sv.compare([train, "Train"], [test, "Test"]).show_html("comparison.html")
 
-<p>The honest tradeoff: automated tools show you <em>everything</em> but can't tell you what matters for <em>your</em> problem. They also struggle with 1M+ rows. Use them to get oriented, then dig into the specifics manually.</p>
+# whylogs — lightweight profiling designed for production pipelines
+import whylogs as why
+result = why.log(df)
+result.writer("local").write()  # generates a statistical profile you can diff over time</code></pre>
 
-<div class="callout callout-info">
-  <div class="callout-label">The Real Point of EDA</div>
-  <p>EDA isn't a checkbox. It's iterative — inspect, find something odd, investigate, clean, inspect again. The goal isn't a perfect dataset. It's a <em>well-understood</em> dataset. A model built on data you understand will always outperform one built on data you threw at an algorithm and hoped for the best.</p>
-</div>
+<p>The honest tradeoff: automated tools show you everything but can't tell you what matters for <em>your</em> problem. They generate hundreds of plots and statistics with no sense of priority. They also struggle with datasets larger than about a million rows. Use them to get oriented on a new dataset. Then dig into the specifics manually — the specifics that matter to your modeling decision.</p>
 
-<h2 class="section-title">What You Should Now Be Able To Do</h3>
-<ul>
-  <li>Run the full EDA workflow (shape → types → missing → distributions → relationships → quality) on any dataset</li>
-  <li>Interpret <code>df.describe()</code> to spot skew, outliers, near-constant features, and missing data</li>
-  <li>Choose between Pearson and Spearman correlation based on relationship type</li>
-  <li>Identify class imbalance, sentinel values, and data integrity violations</li>
-  <li>Use automated EDA tools for a first pass and know their limitations</li>
-  <li>Explain why EDA is iterative, not a one-shot step</li>
-</ul>
+<p>In a production pipeline, the real power of profiling tools isn't the one-time report. It's running them on every data refresh and <strong>diffing</strong> the profiles over time. When the mean of a feature shifts by 20% between this week and last week, that's <strong>data drift</strong> — and it's one of the most common reasons a deployed model's performance degrades. Tools like <strong>EvidentlyAI</strong> and <strong>whylogs</strong> are built for exactly this: continuous monitoring that catches drift before your users notice.</p>
+
+<!-- ═══════════ WRAP-UP ═══════════ -->
+
+<h2>Wrap-Up</h2>
+
+<p>If you're still with me, thank you. I hope it was worth it.</p>
+
+<p>We started with a warning from Anscombe — that identical statistics can hide wildly different data — and used it to motivate exploring every dataset before modeling. We built a workflow: scan the shape and types, compute summary statistics while remembering their blindspots, plot distributions to catch skew and spikes and sentinel values, investigate missing data through the lens of three mechanisms, examine relationships while watching for Simpson's Paradox and spurious correlations, scrutinize the target for imbalance and leakage, and enforce domain integrity checks. Then we automated what could be automated and acknowledged what couldn't.</p>
+
+<p>My hope is that the next time you receive a new dataset, instead of jumping straight into <code>model.fit()</code> and debugging mysterious failures three days later, you'll spend those first thirty minutes with the data — running the medical checkup, reading the distributions, checking the types — having a pretty good mental model of what you're working with before you ask any algorithm to learn from it.</p>
+
+<!-- ═══════════ RESOURCES ═══════════ -->
+
+<h3>Resources and Credits</h3>
+
+<p><strong>Exploratory Data Analysis</strong> by John W. Tukey (1977) — the O.G. The book that invented the field. Dense but endlessly quotable.</p>
+
+<p><strong>The Datasaurus Dozen</strong> by Matejka &amp; Fitzmaurice (2017) — the paper that made Anscombe's point unforgettable by hiding a dinosaur in summary statistics.</p>
+
+<p><strong>Statistical Analysis with Missing Data</strong> by Little &amp; Rubin — the definitive reference on MCAR/MAR/MNAR. Rigorous but worth the effort for the missing-data chapters alone.</p>
+
+<p><strong>EvidentlyAI documentation</strong> — wildly helpful for understanding production data monitoring and drift detection.</p>
+
+<p><strong>Great Expectations documentation</strong> — insightful if you want to treat data validation like software testing. The "expectations" paradigm changes how you think about data quality.</p>
+
+<p><strong>Spurious Correlations</strong> by Tyler Vigen (tylervigen.com) — a website and book cataloging absurd real correlations (US spending on science vs suicides by hanging). Equal parts hilarious and sobering.</p>
 
       <div class="page-nav">
         <span></span>
