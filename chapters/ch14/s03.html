@@ -295,378 +295,439 @@
 <h1>Probabilistic Models &amp; Inference</h1>
 <div class="chapter-meta">
   <span class="tag">Chapter 14: Probabilistic &amp; Bayesian ML</span>
-  <span class="tag">Graphical Models · VI · MCMC</span>
+  <span class="tag">Graphical Models &middot; VI &middot; MCMC</span>
 </div>
 
-<div class="tldr">
-  <div class="tldr-label">Section Overview</div>
-  <p>This section combines Graphical Models &amp; Inference and Approximate Inference: VI &amp; MCMC into one comprehensive reference.</p>
+<p>I avoided graphical models for longer than I&rsquo;d like to admit. Every time I saw one of those diagrams with circles and arrows and Greek letters stuffed inside rectangles, I&rsquo;d nod along in the meeting and then Google the concept again thirty minutes later. The nodes, the edges, the plates, the d-separation rules &mdash; it all felt like an elaborate notation system designed to keep outsiders out. Finally the discomfort of not knowing what was actually going on under the hood grew too great for me. Here is that dive.</p>
+
+<p>Probabilistic graphical models are a way to represent joint probability distributions using graphs. They were introduced in earnest through Judea Pearl&rsquo;s work in the 1980s and became the dominant framework for structured reasoning under uncertainty long before deep learning took over. Today they&rsquo;re the backbone of causal inference, medical diagnosis systems, probabilistic programming languages, and even the latent-variable structure inside VAEs.</p>
+
+<p>Before we start, a heads-up. We&rsquo;re going to be working with probability distributions, conditional independence, and a bit of calculus when we get to variational inference. You don&rsquo;t need to know any of it beforehand. We&rsquo;ll add the concepts we need one at a time, with explanation.</p>
+
+<p>This isn&rsquo;t a short journey, but I hope you&rsquo;ll be glad you came.</p>
+
+<div style="margin: 2em 0; padding-left: 1.5em; border-left: 3px solid var(--accent, #888); line-height: 1.9;">
+  The problem with giant probability tables<br>
+  Drawing the story: Bayesian networks<br>
+  When there&rsquo;s no arrow direction: Markov random fields<br>
+  Plate notation: handling repetition without losing your mind<br>
+  D-separation: reading independence off the graph<br>
+  Asking questions: exact inference<br>
+  Rest stop and an off-ramp<br>
+  When exact answers are too expensive: the approximation fork<br>
+  The sampling path: MCMC<br>
+  Metropolis-Hastings: the random walk<br>
+  Gibbs sampling: one variable at a time<br>
+  Hamiltonian Monte Carlo: physics to the rescue<br>
+  The optimization path: variational inference<br>
+  The ELBO: the quantity that makes it all work<br>
+  Mean-field: the crudest possible approximation<br>
+  Amortized inference: teaching a neural network to do inference<br>
+  Choosing your path: when to use which<br>
+  Resources and credits
 </div>
 
 
-<!-- ═══════════ Graphical Models &amp; Inference ═══════════ -->
-<h2>Graphical Models &amp; Inference</h2>
+<!-- ═══════════════════════════════════════════════ -->
+<h2 id="giant-tables">The Problem with Giant Probability Tables</h2>
 
-<div class="tldr">
-  <div class="tldr-label">TL;DR</div>
-  <p>Graphical models use graphs to represent joint probability distributions compactly. Bayesian networks (directed) encode generative stories; Markov random fields (undirected) encode correlations. D-separation tells you what&rsquo;s conditionally independent. Exact inference (variable elimination, belief propagation) computes posteriors when the graph structure allows it. Before deep learning, graphical models were THE framework for structured prediction.</p>
-</div>
+<p>Let&rsquo;s start with something concrete. Imagine you&rsquo;re building a diagnostic system for a small clinic. The clinic sees patients who might have one of three conditions: a <strong>cold</strong>, the <strong>flu</strong>, or <strong>allergies</strong>. The doctor observes four symptoms: <strong>fever</strong>, <strong>cough</strong>, <strong>runny nose</strong>, and <strong>fatigue</strong>. Each variable is binary &mdash; present or absent.</p>
 
-<p>Before deep learning ate everything, graphical models were the dominant paradigm for structured probabilistic reasoning. They&rsquo;re less fashionable now, but understanding them is essential: conditional independence, message passing, and factor graphs underpin modern methods from VAEs to attention mechanisms. And in domains like healthcare, causal reasoning, and robotics, graphical models remain irreplaceable.</p>
+<p>The honest, brute-force way to represent every possible combination of diseases and symptoms is to write down a joint probability table. Seven binary variables means 2<sup>7</sup> = 128 possible combinations, each needing its own probability. Subtract one (because probabilities sum to one) and you need 127 numbers.</p>
+
+<p>That&rsquo;s manageable. But think about what happens as the clinic grows. Add ten diseases and twenty symptoms. Now you have 30 binary variables and 2<sup>30</sup> &minus; 1 &approx; one billion entries. For a realistic hospital system with hundreds of variables, the table is larger than the number of atoms in the observable universe.</p>
+
+<p>This is the fundamental problem. Joint probability distributions are exponentially large. We need a way to compress them. And the key insight is that most variables in the world don&rsquo;t directly interact with most other variables. Your fever depends on whether you have the flu. It doesn&rsquo;t directly depend on whether the hospital parking lot is full. If we can write down <em>which</em> variables directly influence <em>which</em> other variables, we can factor this giant table into many small tables.</p>
+
+<p>That&rsquo;s what graphical models are. They&rsquo;re a map &mdash; a literal picture &mdash; of which variables talk to which. And once you have that map, the math becomes tractable.</p>
+
 
 <!-- ═══════════════════════════════════════════════ -->
-<h2 id="bayesian-networks">Bayesian Networks (Directed Graphical Models)</h3>
+<h2 id="bayesian-networks">Drawing the Story: Bayesian Networks</h2>
 
-<p>A Bayesian network is a directed acyclic graph (DAG) where each node is a random variable and edges encode conditional dependencies. The joint distribution factors according to the graph:</p>
+<p>A <strong>Bayesian network</strong> is a directed acyclic graph &mdash; a DAG &mdash; where each node is a random variable and each arrow points from cause to effect. &ldquo;Directed&rdquo; means the arrows have direction. &ldquo;Acyclic&rdquo; means you can&rsquo;t follow the arrows in a circle back to where you started. Think of it as a family tree for variables: parents influence children, but children don&rsquo;t influence parents.</p>
 
-<pre><code class="language-text">P(X1, X2, ..., Xn) = ∏ P(Xi | Parents(Xi))
+<p>Back to our clinic. A cold can cause a cough and a runny nose. The flu can cause a fever, a cough, and fatigue. Allergies can cause a runny nose and fatigue. We draw that as a graph:</p>
+
+<pre><code class="language-text">  Cold          Flu         Allergies
+   │ \          / | \          / |
+   │  \        /  |  \        /  |
+   │   ↓      ↓   ↓   ↓     ↓   ↓
+   │  Cough  Fever │  Fatigue  Runny Nose
+   │    ↑          │    ↑        ↑
+   └────┘          └────┘        │
+                                 │
+   (Cold also causes Cough)   (Allergies also cause Runny Nose)
 </code></pre>
 
-<p>Each node only needs to know its parents. A network with 10 binary variables could require 2<sup>10</sup> - 1 = 1023 parameters for a full joint table. With the right graph structure, you might need only 20-30. That&rsquo;s the power of conditional independence assumptions.</p>
+<p>The power of this picture is in what it lets us write down. The full joint distribution over all seven variables factors into a product of small conditional probability tables, one per node:</p>
 
-<pre><code class="language-python"># Classic example: Alarm network
-# Burglary -> Alarm <- Earthquake
-# Alarm -> JohnCalls
-# Alarm -> MaryCalls
-#
-# Joint: P(B,E,A,J,M) = P(B) P(E) P(A|B,E) P(J|A) P(M|A)
-# 5 small tables instead of one giant table with 32 entries
+<pre><code class="language-text">P(Cold, Flu, Allergies, Fever, Cough, Runny, Fatigue)
 
-# With pgmpy (pip install pgmpy)
-from pgmpy.models import BayesianNetwork
-from pgmpy.factors.discrete import TabularCPD
-
-model = BayesianNetwork([
-    ('Burglary', 'Alarm'), ('Earthquake', 'Alarm'),
-    ('Alarm', 'JohnCalls'), ('Alarm', 'MaryCalls')
-])
-
-cpd_b = TabularCPD('Burglary', 2, [[0.999], [0.001]])
-cpd_e = TabularCPD('Earthquake', 2, [[0.998], [0.002]])
-cpd_a = TabularCPD('Alarm', 2,
-    [[0.999, 0.71, 0.06, 0.05],
-     [0.001, 0.29, 0.94, 0.95]],
-    evidence=['Burglary', 'Earthquake'], evidence_card=[2, 2])
-cpd_j = TabularCPD('JohnCalls', 2,
-    [[0.95, 0.10], [0.05, 0.90]],
-    evidence=['Alarm'], evidence_card=[2])
-cpd_m = TabularCPD('MaryCalls', 2,
-    [[0.99, 0.30], [0.01, 0.70]],
-    evidence=['Alarm'], evidence_card=[2])
-
-model.add_cpds(cpd_b, cpd_e, cpd_a, cpd_j, cpd_m)
-print(f"Model valid: {model.check_model()}")
+  = P(Cold) × P(Flu) × P(Allergies)
+    × P(Fever | Flu)
+    × P(Cough | Cold, Flu)
+    × P(Runny | Cold, Allergies)
+    × P(Fatigue | Flu, Allergies)
 </code></pre>
 
+<p>Each node&rsquo;s probability depends only on its <em>parents</em> in the graph. That&rsquo;s the factoring rule for Bayesian networks. Instead of 127 numbers for the full joint table, we need: 1 number for P(Cold), 1 for P(Flu), 1 for P(Allergies), 1 for P(Fever | Flu), 3 for P(Cough | Cold, Flu), 3 for P(Runny | Cold, Allergies), and 3 for P(Fatigue | Flu, Allergies). That&rsquo;s 13 numbers instead of 127. The savings grow exponentially as you add more variables.</p>
+
+<p>I&rsquo;ll be honest &mdash; when I first saw this factoring trick, I didn&rsquo;t trust it. How can throwing away all those joint probabilities be okay? The answer is conditional independence. By drawing the arrows the way we did, we&rsquo;re asserting that, for instance, once you know whether someone has the flu, their fever is independent of their allergy status. That&rsquo;s a modeling assumption, and it better be roughly right, but when it is, the compression is dramatic.</p>
+
+<p>Each little table &mdash; P(Fever | Flu), P(Cough | Cold, Flu), and so on &mdash; is called a <strong>conditional probability table</strong>, or CPT. The CPT for each node lists the probability of each outcome for every combination of its parents. The node with no parents (like Cold, Flu, Allergies) has an even simpler table: a single probability.</p>
+
+
 <!-- ═══════════════════════════════════════════════ -->
-<h2 id="markov-random-fields">Markov Random Fields (Undirected Graphical Models)</h3>
+<h2 id="markov-random-fields">When There&rsquo;s No Arrow Direction: Markov Random Fields</h2>
 
-<p>Markov random fields (MRFs) use <em>undirected</em> edges. Instead of conditional probability tables, they use <strong>potential functions</strong> that score how &ldquo;compatible&rdquo; neighboring variable assignments are. The joint distribution is a normalized product of potentials:</p>
+<p>Bayesian networks work beautifully when you can tell a causal story &mdash; diseases cause symptoms, rain causes wet grass, a burglar causes an alarm. But sometimes relationships are symmetric. Neighboring pixels in an image tend to have similar colors, but neither pixel &ldquo;causes&rdquo; the other. Amino acids that sit near each other in a protein interact, but there&rsquo;s no direction to that interaction.</p>
 
-<pre><code class="language-text">P(X1, ..., Xn) = (1/Z) ∏ ψ_c(X_c)
+<p>For these situations, we use a <strong>Markov random field</strong> (MRF), also called an undirected graphical model. The edges have no arrows. Instead of conditional probability tables, MRFs use <strong>potential functions</strong> &mdash; also called <strong>factors</strong> &mdash; that score how &ldquo;compatible&rdquo; neighboring variable assignments are. A high score means those values like being together. A low score means they don&rsquo;t.</p>
+
+<p>The joint distribution in an MRF looks like this:</p>
+
+<pre><code class="language-text">P(X₁, ..., Xₙ) = (1/Z) × ∏ ψ_c(X_c)
+                            cliques c
 </code></pre>
 
-<p>where Z is the partition function (normalization constant, often intractable) and each &psi;<sub>c</sub> is a potential over a clique of variables.</p>
+<p>Each &psi;<sub>c</sub> is a potential function over a <strong>clique</strong> &mdash; a group of variables that are all connected to each other. And Z is the <strong>partition function</strong>, the normalizing constant that makes all the probabilities sum to one.</p>
 
-<p>MRFs are natural for <strong>image segmentation</strong> (neighboring pixels tend to have the same label), <strong>protein structure</strong> (nearby amino acids interact), and any problem where you have <em>correlations</em> rather than <em>causal</em> relationships. The Ising model from physics is an MRF.</p>
+<p>Z is where the trouble starts. To compute Z, you&rsquo;d have to sum the product of all potentials over every possible configuration of every variable. For n binary variables, that&rsquo;s 2<sup>n</sup> terms. This is why computing exact probabilities in an MRF is generally intractable &mdash; and why we&rsquo;ll need the approximate inference methods we&rsquo;ll build up to later.</p>
 
-<!-- ═══════════════════════════════════════════════ -->
-<h2 id="d-separation">D-Separation: Reading Independence from the Graph</h3>
+<p>Think of the difference this way. A Bayesian network tells a <em>generative story</em>: first the disease happens, then the symptoms appear. You can simulate data by following the arrows forward. An MRF describes <em>correlations</em>: these variables tend to agree with each other, without saying who caused whom. Bayesian networks are natural for diagnosis and causal reasoning. MRFs are natural for images, spatial data, and physics. The Ising model from statistical mechanics &mdash; the granddaddy of all undirected models &mdash; is an MRF.</p>
 
-<p>D-separation is the algorithm for determining whether two variables are conditionally independent given a set of observed variables. Three fundamental patterns:</p>
-
-<p><strong>Chain: A &rarr; B &rarr; C.</strong> A and C are dependent. But given B, they&rsquo;re independent. Knowing the middle node &ldquo;blocks&rdquo; the information flow. <em>Example: exam score &rarr; grade &rarr; job offer. Knowing the grade makes the exam score irrelevant for predicting the job offer.</em></p>
-
-<p><strong>Fork: A &larr; B &rarr; C.</strong> A and C are dependent (they share a common cause). Given B, they&rsquo;re independent. <em>Example: sprinkler &larr; rain &rarr; wet grass. If you know it rained, the sprinkler tells you nothing new about the grass.</em></p>
-
-<p><strong>Collider: A &rarr; B &larr; C.</strong> This one is counterintuitive. A and C are <em>independent</em>. But given B, they become <em>dependent</em>! This is the &ldquo;explaining away&rdquo; effect. <em>Example: talent &rarr; success &larr; luck. Talent and luck are independent. But if you know someone is successful, learning they&rsquo;re not talented makes you think they must be lucky.</em></p>
-
-<div class="callout"><strong>Why this matters beyond graphical models:</strong> Naive Bayes assumes all features are conditionally independent given the class (a star-shaped BN). The attention mechanism in Transformers can be seen as learning conditional dependencies dynamically. Understanding when things are independent &mdash; and when they&rsquo;re not &mdash; is fundamental to ML, not just graphical models.</div>
 
 <!-- ═══════════════════════════════════════════════ -->
-<h2 id="exact-inference">Exact Inference</h3>
+<h2 id="plate-notation">Plate Notation: Handling Repetition Without Losing Your Mind</h2>
 
-<p>Given observed evidence, how do you compute the posterior over unobserved variables? For small or tree-structured graphs, exact inference is tractable.</p>
+<p>Let&rsquo;s go back to our clinic. Suppose we see not one patient but a thousand. Each patient has their own diseases and symptoms, but they all share the same underlying disease prevalence rates and the same symptom-disease relationships. Drawing a thousand copies of the same graph would be absurd.</p>
 
-<p><strong>Variable Elimination:</strong> Sum out (marginalize) variables one at a time. The order matters &mdash; a bad elimination order creates enormous intermediate factors. Finding the optimal order is NP-hard, but good heuristics exist (min-fill, min-weight).</p>
+<p><strong>Plate notation</strong> solves this with a rectangle. You draw the variables for one patient, wrap them in a box (the &ldquo;plate&rdquo;), and write &ldquo;N = 1000&rdquo; in the corner. Everything inside the plate gets repeated N times. Everything outside the plate is shared across all repetitions.</p>
 
-<p><strong>Belief Propagation:</strong> Message passing on the graph. Each node sends &ldquo;messages&rdquo; to its neighbors summarizing what it knows. On <em>trees</em>, belief propagation is exact and runs in two passes (leaves &rarr; root, root &rarr; leaves). On graphs with loops, &ldquo;loopy belief propagation&rdquo; isn&rsquo;t exact but often works surprisingly well in practice.</p>
-
-<p><strong>Junction Tree Algorithm:</strong> The general-case exact algorithm. Transform the graph into a tree of cliques (a &ldquo;junction tree&rdquo;) and run belief propagation on it. Exact but exponential in the treewidth of the graph &mdash; for grid-structured MRFs, treewidth is too large for practical use.</p>
-
-<pre><code class="language-python"># Exact inference with pgmpy
-from pgmpy.inference import VariableElimination
-
-# Using the alarm network defined above
-infer = VariableElimination(model)
-
-# Query: P(Burglary | JohnCalls=1, MaryCalls=1)
-result = infer.query(
-    variables=['Burglary'],
-    evidence={'JohnCalls': 1, 'MaryCalls': 1}
-)
-print(result)
-# Even though both called, P(Burglary) is still relatively low
-# because earthquakes can also cause alarms
+<pre><code class="language-text">   θ  ← disease prevalence (shared across all patients)
+   │
+   ↓
+ ┌──────────────────────┐
+ │  Disease_i            │
+ │     │                 │  N = 1000
+ │     ↓                 │
+ │  Symptoms_i           │
+ └──────────────────────┘
 </code></pre>
 
-<p>When the graph is too large or too densely connected for exact inference, you need the approximate methods in the next section &mdash; variational inference and MCMC.</p>
+<p>The parameter &theta; sits outside the plate &mdash; there&rsquo;s only one copy, shared by everyone. Each patient&rsquo;s disease and symptoms sit inside &mdash; they get their own independent copy. This is how you represent a model with a thousand data points using a diagram the size of a napkin sketch.</p>
+
+<p>Plates can nest. If your clinic has multiple departments, each with its own patients, you&rsquo;d have an outer plate for departments and an inner plate for patients within each department. The notation scales to arbitrarily complex hierarchical models &mdash; which is exactly the kind of model that probabilistic programming languages like PyMC and Stan are built to handle.</p>
+
+<p>When I first encountered plate notation, I kept confusing &ldquo;inside the plate&rdquo; with &ldquo;outside the plate.&rdquo; The rule is: if a variable is specific to each data point, it goes inside. If it&rsquo;s shared across data points (a parameter you&rsquo;re trying to learn), it goes outside. Shaded nodes mean observed data. Unshaded nodes mean latent (hidden) variables. That&rsquo;s the entire visual vocabulary.</p>
+
 
 <!-- ═══════════════════════════════════════════════ -->
-<h2 id="modern-relevance">Modern Relevance</h3>
+<h2 id="d-separation">D-Separation: Reading Independence Off the Graph</h2>
 
-<p>Graphical models aren&rsquo;t a historical curiosity. They&rsquo;re alive in:</p>
-<ul>
-  <li><strong>Causal inference</strong> &mdash; DAGs are the language of causality (Pearl, Rubin). If you want to know &ldquo;what happens if I intervene?&rdquo; you need a causal graph.</li>
-  <li><strong>Probabilistic programming</strong> (Section 6) &mdash; PPLs like PyMC and Stan are essentially specifying graphical models in code.</li>
-  <li><strong>VAEs</strong> &mdash; the encoder-decoder structure is a graphical model with latent variables.</li>
-  <li><strong>Healthcare / clinical trials</strong> &mdash; regulatory bodies often require interpretable probabilistic models, not black boxes.</li>
-  <li><strong>Knowledge graphs</strong> &mdash; representing and reasoning over structured knowledge.</li>
-</ul>
+<p>Here&rsquo;s the part that makes graphical models genuinely powerful, not merely pretty diagrams. Given a graph, you can determine which variables are conditionally independent of which other variables <em>by looking at the picture</em>. No math required. The algorithm for doing this is called <strong>d-separation</strong>.</p>
 
-<!-- ═══════════════════════════════════════════════ -->
-<h3>What You Should Now Be Able To Do</h3>
-<ul>
-  <li>Construct a Bayesian network and write down its factored joint distribution</li>
-  <li>Apply d-separation to determine conditional independence from graph structure</li>
-  <li>Explain the &ldquo;explaining away&rdquo; effect (colliders) and why it&rsquo;s counterintuitive</li>
-  <li>Describe variable elimination and belief propagation at a high level</li>
-  <li>Know when exact inference is tractable (tree-structured, low treewidth) vs. when you need approximations</li>
-</ul>
-<!-- ═══════════ Approximate Inference: VI &amp; MCMC ═══════════ -->
-<h2>Approximate Inference: VI &amp; MCMC</h2>
+<p>There are three fundamental connection patterns, and everything else is built from these three. Let&rsquo;s walk through each one using our clinic.</p>
 
-<div class="tldr">
-  <div class="tldr-label">TL;DR</div>
-  <p>When the posterior has no closed form (which is most of the time), you have two families of solutions. <strong>Variational inference (VI)</strong> turns inference into optimization &mdash; find a simple distribution close to the true posterior. Fast, scalable, but biased. <strong>MCMC</strong> draws correlated samples from the posterior by constructing a clever Markov chain. Asymptotically exact, but slow. VI for speed, MCMC for accuracy. Know both.</p>
-</div>
+<p><strong>The Chain.</strong> Flu &rarr; Fever &rarr; HospitalVisit. The flu causes a fever, and the fever causes a hospital visit. Without knowing anything else, learning someone has the flu tells you something about whether they went to the hospital. But once you know they have a fever, learning about the flu doesn&rsquo;t give you any <em>additional</em> information about the hospital visit. The fever &ldquo;screens off&rdquo; the flu from the hospital visit. Observing the middle variable blocks the flow of information.</p>
 
-<p>Conjugate models give you closed-form posteriors. Everything else &mdash; neural networks, mixture models, hierarchical models, basically anything interesting &mdash; requires approximation. Two competing philosophies have dominated for decades, and understanding when to use which is a core skill in probabilistic ML.</p>
+<p><strong>The Fork.</strong> Cough &larr; Cold &rarr; RunnyNose. The cold is a common cause of both symptoms. If you see someone coughing, you might guess they also have a runny nose (because both suggest a cold). But if you already know they have a cold, the cough tells you nothing new about the runny nose. The common cause, once known, makes its effects independent.</p>
+
+<p><strong>The Collider.</strong> This is the one that trips everyone up. Cold &rarr; Cough &larr; Flu. Both a cold and the flu can cause a cough. Normally, having a cold tells you nothing about whether someone has the flu &mdash; they&rsquo;re independent. But now suppose you observe that the patient is coughing. If you then learn they <em>don&rsquo;t</em> have a cold, that <em>increases</em> your belief that they have the flu. Observing the common <em>effect</em> creates a dependency between causes that wasn&rsquo;t there before. This is called the <strong>explaining away</strong> effect.</p>
+
+<p>I still occasionally get tripped up by colliders. The intuition is: when you see an effect with multiple possible causes, ruling out one cause makes the other causes more likely. It&rsquo;s the reason why conditioning on a collider (or any descendant of a collider) can introduce bias in statistical analyses &mdash; a critical insight for causal inference.</p>
+
+<p>The full d-separation algorithm amounts to checking whether every path between two variables is &ldquo;blocked&rdquo; by the set of observed variables, using these three patterns as building blocks. If every path is blocked, the variables are conditionally independent given the observations. If even one path is unblocked, they&rsquo;re dependent.</p>
+
 
 <!-- ═══════════════════════════════════════════════ -->
-<!-- VARIATIONAL INFERENCE -->
-<!-- ═══════════════════════════════════════════════ -->
-<h2 id="vi-core">Variational Inference: Turning Inference into Optimization</h3>
+<h2 id="exact-inference">Asking Questions: Exact Inference</h2>
 
-<p>The core idea is elegant: you can&rsquo;t compute the true posterior p(&theta;|D), so pick a <em>family</em> of simple distributions Q and find the member q(&theta;) that&rsquo;s closest to the true posterior. &ldquo;Closest&rdquo; measured by KL divergence.</p>
+<p>A graphical model is a map. Inference is using that map to answer questions. The most common question: given some observed evidence (the patient has a fever and a cough), what is the probability of each unobserved variable (do they have the flu)?</p>
 
-<p>You want to minimize KL(q || p), but computing this requires knowing p(&theta;|D) &mdash; which is the thing you can&rsquo;t compute. The trick: instead of minimizing KL directly, maximize a <em>lower bound</em> on the log-evidence. This bound is called the <strong>ELBO</strong> (Evidence Lower BOund):</p>
+<p>For small or nicely structured graphs, we can answer this exactly.</p>
 
-<pre><code class="language-text">ELBO(q) = E_q[log p(D, θ)] - E_q[log q(θ)]
-         = E_q[log p(D|θ)] - KL(q(θ) || p(θ))
-           ├────────────┘     └────────────────┘
-           expected likelihood   KL from prior
-</code></pre>
+<p><strong>Variable elimination</strong> works by summing out (marginalizing) one variable at a time. The idea is simple: if you don&rsquo;t care about a variable, sum over all its possible values. Let&rsquo;s trace through a tiny example with our clinic.</p>
 
-<p>Maximizing the ELBO simultaneously does two things: make q(&theta;) explain the data well (first term) while staying close to the prior (second term). Sound familiar? It&rsquo;s the same regularization-vs-fit tradeoff, just expressed probabilistically.</p>
+<p>Say we want P(Flu | Cough=yes). We need to eliminate (sum out) Cold, Allergies, Fever, RunnyNose, and Fatigue. We pick an elimination order and process each variable. For each one, we multiply together all the factors that mention it, sum over its values, and produce a new, smaller factor. When all the unwanted variables are gone, we normalize what&rsquo;s left.</p>
 
-<div class="callout"><strong>Why &ldquo;lower bound&rdquo;?</strong> Because log p(D) = ELBO(q) + KL(q || p). Since KL &ge; 0, ELBO &le; log p(D). Maximizing ELBO is equivalent to minimizing KL(q || p). The tighter the bound, the better q approximates the true posterior.</div>
+<p>The catch: the order in which you eliminate variables matters enormously. A bad order can produce intermediate factors that are exponentially large. Finding the optimal elimination order is NP-hard. In practice, heuristics like &ldquo;eliminate the variable that creates the smallest new factor&rdquo; work well enough.</p>
 
-<!-- ═══════════════════════════════════════════════ -->
-<h3 id="mean-field">Mean-Field Approximation</h4>
+<p><strong>Belief propagation</strong> takes a different approach: message passing. Each node sends &ldquo;messages&rdquo; to its neighbors summarizing what it believes. On <strong>trees</strong> &mdash; graphs with no loops &mdash; this is exact. Messages flow from leaves to root, then from root back to leaves. Two passes, and every node knows its marginal probability. This is the sum-product algorithm, and it&rsquo;s elegant: each node only needs to talk to its neighbors, and the whole thing converges in linear time.</p>
 
-<p>The simplest variational family: assume all latent variables are <em>independent</em>. The variational distribution factors as q(&theta;) = &prod; q<sub>i</sub>(&theta;<sub>i</sub>). Each factor is optimized in turn using coordinate ascent (CAVI).</p>
+<p>On graphs with loops (which is most real-world graphs), belief propagation isn&rsquo;t exact anymore. But &ldquo;loopy belief propagation&rdquo; &mdash; running the same message-passing rules on a loopy graph and hoping for the best &mdash; often works surprisingly well. It has no convergence guarantee, and sometimes it oscillates or diverges. But in practice, for things like error-correcting codes (turbo codes, LDPC codes) and image segmentation, loopy BP has been wildly successful.</p>
 
-<p>This is crude &mdash; the true posterior might have strong correlations between parameters. Mean-field misses those entirely. But it&rsquo;s fast and often gives reasonable point estimates even when the uncertainty estimates are too narrow.</p>
+<p>There&rsquo;s also the <strong>junction tree algorithm</strong>, which transforms any graph into a tree of cliques and then runs exact belief propagation on that tree. It&rsquo;s the general-purpose exact inference algorithm. The cost is exponential in the <strong>treewidth</strong> of the graph &mdash; a measure of how &ldquo;tree-like&rdquo; the graph is. For chain-shaped or tree-shaped graphs, treewidth is small and inference is fast. For densely connected graphs like grid-shaped MRFs over images, treewidth is too large for practical use.</p>
+
+<p>And that&rsquo;s the fundamental tension. Exact inference is beautiful when it works. But for most interesting models, the graph is too big, too loopy, or too densely connected. We need approximations.</p>
+
 
 <!-- ═══════════════════════════════════════════════ -->
-<h3 id="amortized-vi">Amortized VI &mdash; The VAE Connection</h4>
+<h2 id="rest-stop">Rest Stop and an Off-Ramp</h2>
 
-<p>Standard VI optimizes variational parameters for each data point separately. <strong>Amortized VI</strong> trains a neural network (the &ldquo;encoder&rdquo; or &ldquo;recognition network&rdquo;) to predict variational parameters from the input data directly. This is <em>exactly</em> how Variational Autoencoders work:</p>
+<p>Congratulations on making it this far. If you need to stop, you can.</p>
 
-<pre><code class="language-text">VAE encoder: x → q(z|x) = N(μ(x), σ²(x))   ← amortized VI
-VAE decoder: z → p(x|z)                       ← generative model
-Training loss: -ELBO = reconstruction loss + KL(q(z|x) || p(z))
-</code></pre>
+<p>You now have a mental model for the entire first half of probabilistic modeling. You know that graphical models &mdash; Bayesian networks and Markov random fields &mdash; represent joint distributions compactly by encoding which variables directly influence which others. You know how to read conditional independence from the graph using d-separation. You know that exact inference works by eliminating variables or passing messages, and that it&rsquo;s tractable for tree-structured graphs but breaks down when the graph gets too complex.</p>
 
-<p>Every time you train a VAE, you&rsquo;re doing amortized variational inference. The encoder learns to perform inference in a single forward pass &mdash; no iterative optimization at test time.</p>
+<p>That&rsquo;s a genuinely useful mental model. If someone mentions a &ldquo;Bayesian network&rdquo; or &ldquo;belief propagation&rdquo; or &ldquo;explaining away,&rdquo; you know what they&rsquo;re talking about.</p>
 
-<!-- ═══════════════════════════════════════════════ -->
-<h3 id="stochastic-vi">Stochastic VI for Scalability</h4>
+<p>The short version of what comes next: when exact inference is too expensive (which is most of the time in real applications), you have two families of approximation. One draws samples from the posterior (MCMC). The other finds the closest simple distribution to the posterior by optimizing a clever objective (variational inference). MCMC is accurate but slow. VI is fast but biased. There. You&rsquo;re 80% of the way there.</p>
 
-<p>Traditional CAVI requires a full pass over the data per update. <strong>Stochastic VI</strong> uses minibatches: subsample data, compute a noisy ELBO gradient, take a step. This scales to millions of data points and is the backbone of modern VI. Combine with the reparameterization trick (sample z = &mu; + &sigma; &times; &epsilon;, where &epsilon; ~ N(0,1)) to get low-variance gradient estimates.</p>
+<p>But if the discomfort of not knowing what&rsquo;s underneath those approximations is nagging at you, read on.</p>
+
 
 <!-- ═══════════════════════════════════════════════ -->
-<h3 id="vi-strengths-weaknesses">VI: Strengths and Weaknesses</h4>
+<h2 id="approximation-fork">When Exact Answers Are Too Expensive: The Approximation Fork</h2>
 
-<p><strong>Strengths:</strong> fast convergence (especially with SGD), deterministic optimization, scales to large datasets, GPU-friendly.</p>
+<p>For our clinic model with seven variables, exact inference is instant. For a hospital network with a few hundred variables, it&rsquo;s intractable. For the continuous latent variables in a VAE or a Gaussian process, exact inference isn&rsquo;t even on the table.</p>
 
-<p><strong>Weaknesses:</strong> biased (the true posterior might not be in your variational family). Mean-field tends to <em>underestimate</em> posterior variance. KL(q||p) is <em>mode-seeking</em> &mdash; if the posterior is multimodal, VI tends to collapse onto one mode and ignore the rest. You never know how far your approximation is from the truth.</p>
+<p>This is where the field has split into two philosophies for decades, and understanding both is a core skill in probabilistic ML.</p>
+
+<p>The <strong>sampling philosophy</strong> says: we can&rsquo;t write down the posterior in closed form, but we can draw samples from it. If we draw enough samples, we can estimate any quantity we care about &mdash; the mean, the variance, the probability that a parameter is positive, anything. This family of methods is called <strong>Markov chain Monte Carlo</strong> (MCMC).</p>
+
+<p>The <strong>optimization philosophy</strong> says: forget about getting the true posterior. Pick a family of simple distributions, and find the one that&rsquo;s closest to the true posterior. Turn an inference problem into an optimization problem. This family of methods is called <strong>variational inference</strong> (VI).</p>
+
+<p>Think of it like finding a mountain&rsquo;s height. The sampling approach is like sending a thousand hikers with altimeters to wander the mountain and averaging their readings. Slow but accurate. The optimization approach is like fitting a nice smooth surface to satellite images of the mountain. Fast but it misses the craggy details.</p>
+
+<p>Let&rsquo;s walk through each family, starting with sampling.</p>
+
 
 <!-- ═══════════════════════════════════════════════ -->
-<!-- MCMC -->
+<h2 id="mcmc">The Sampling Path: MCMC</h2>
+
+<p>The idea behind MCMC is one of the most beautiful in computational statistics. We construct a <strong>Markov chain</strong> &mdash; a sequence of random states where each state depends only on the previous one &mdash; whose long-run behavior (its <strong>stationary distribution</strong>) is exactly the posterior we want to sample from. Run the chain long enough, and the samples we collect will be distributed according to p(&theta;|D), the true posterior.</p>
+
+<p>The word &ldquo;Monte Carlo&rdquo; refers to using random sampling to estimate quantities. &ldquo;Markov chain&rdquo; describes the mechanism that generates those samples. Together, MCMC means: &ldquo;we&rsquo;re generating random samples by running a carefully designed chain of random steps.&rdquo;</p>
+
+<p>Let&rsquo;s make this concrete. Back to our clinic, but now with a continuous parameter: we want to estimate &theta;, the true prevalence of the flu in our patient population, given that we observed 12 flu cases out of 100 patients.</p>
+
+
 <!-- ═══════════════════════════════════════════════ -->
-<h2 id="mcmc-core">MCMC: Sampling from the Posterior</h3>
+<h2 id="metropolis-hastings">Metropolis-Hastings: The Random Walk</h2>
 
-<p>The alternative philosophy: instead of approximating the posterior with a simple distribution, draw <em>samples</em> from it. With enough samples, you can approximate any expectation. The magic of MCMC is constructing a Markov chain whose stationary distribution is the posterior &mdash; run the chain long enough, and the samples will be distributed according to p(&theta;|D).</p>
+<p>The <strong>Metropolis-Hastings</strong> algorithm is the foundational MCMC method, published in 1953 &mdash; making it older than most of computer science. Here&rsquo;s how it works.</p>
 
-<!-- ═══════════════════════════════════════════════ -->
-<h3 id="metropolis-hastings">Metropolis-Hastings</h4>
+<p>Imagine you&rsquo;re standing on a landscape where the height at every point represents the posterior probability. You want to explore this landscape in a way that spends more time in the high regions (likely parameter values) and less time in the low regions (unlikely values). You can&rsquo;t see the whole landscape at once. You can only measure the height directly under your feet.</p>
 
-<p>The foundational MCMC algorithm (1953). At each step:</p>
-<ol>
-  <li>Propose a new state &theta;&rsquo; from a proposal distribution q(&theta;&rsquo;|&theta;)</li>
-  <li>Compute the acceptance ratio: &alpha; = min(1, p(&theta;&rsquo;|D) q(&theta;|&theta;&rsquo;) / p(&theta;|D) q(&theta;&rsquo;|&theta;))</li>
-  <li>Accept the proposal with probability &alpha;; otherwise stay at &theta;</li>
-</ol>
+<p>The algorithm goes like this. You&rsquo;re standing at some point &theta;. You propose a random step &mdash; say, move a small random distance in a random direction. That gives you a candidate point &theta;&prime;. Now you check: is the proposed point higher or lower than where you are?</p>
 
-<p>The beauty: you only need the posterior <em>up to a constant</em>. The ratio p(&theta;&rsquo;|D)/p(&theta;|D) cancels the evidence. You just need the unnormalized posterior, which is likelihood &times; prior.</p>
+<p>If &theta;&prime; is higher (more probable), you move there. Always. If &theta;&prime; is lower, you <em>might</em> still move there, with a probability proportional to how much lower it is. If it&rsquo;s only slightly lower, you&rsquo;ll probably accept. If it&rsquo;s dramatically lower, you&rsquo;ll almost certainly reject and stay where you are.</p>
+
+<p>The acceptance probability is: &alpha; = min(1, p(&theta;&prime;|D) / p(&theta;|D)). And here&rsquo;s the beautiful part: computing this ratio <em>cancels the normalizing constant</em>. You never need to compute the intractable denominator in Bayes&rsquo; theorem. The ratio of unnormalized posteriors is enough.</p>
 
 <pre><code class="language-python">import numpy as np
 
-def metropolis_hastings(log_posterior, initial, n_samples=10000, proposal_std=0.5):
-    """Simple MH sampler for 1D posterior."""
+def metropolis_hastings(log_target, initial, n_samples, proposal_std):
+    """MH sampler: the random walk through posterior space."""
     samples = np.zeros(n_samples)
     current = initial
-    current_lp = log_posterior(current)
+    current_lp = log_target(current)
     accepted = 0
 
     for i in range(n_samples):
+        # Propose: take a random step
         proposed = current + np.random.normal(0, proposal_std)
-        proposed_lp = log_posterior(proposed)
+        proposed_lp = log_target(proposed)
 
-        # Log acceptance ratio (symmetric proposal, so q cancels)
-        log_alpha = proposed_lp - current_lp
-
-        if np.log(np.random.uniform()) < log_alpha:
+        # Accept/reject: compare heights
+        # (Working in log space for numerical stability)
+        if np.log(np.random.uniform()) < (proposed_lp - current_lp):
             current = proposed
             current_lp = proposed_lp
             accepted += 1
 
         samples[i] = current
 
-    print(f"Acceptance rate: {accepted/n_samples:.1%}")
+    print(f"Acceptance rate: {accepted / n_samples:.1%}")
     return samples
-
-# Example: sample from a mixture of Gaussians (multimodal!)
-def log_posterior(theta):
-    """Log of 0.3 * N(-2, 0.5) + 0.7 * N(3, 1)"""
-    from scipy.stats import norm
-    return np.log(0.3 * norm.pdf(theta, -2, 0.5) +
-                  0.7 * norm.pdf(theta, 3, 1) + 1e-300)
-
-samples = metropolis_hastings(log_posterior, initial=0.0, n_samples=50000)
-# With enough samples, MH explores both modes
 </code></pre>
 
-<p>The problem: MH with a random walk proposal is slow in high dimensions. The chain takes tiny steps and needs many samples to explore the space. For 100+ parameters, basic MH is impractical.</p>
+<p>That&rsquo;s the entire algorithm. Propose, compare, accept or reject, repeat. After enough iterations, the histogram of collected samples approximates the posterior distribution.</p>
+
+<p>The problem is that &ldquo;enough iterations&rdquo; can be a very large number. In one dimension, a random walk explores the space reasonably fast. In ten dimensions, it&rsquo;s sluggish. In a hundred dimensions, it&rsquo;s nearly useless. The random walk takes tiny steps, and each step only changes the parameter value by a small amount. In high-dimensional spaces, the chance of proposing a point that&rsquo;s actually in a high-probability region becomes vanishingly small.</p>
+
+<p>We need smarter ways to move through the space.</p>
+
 
 <!-- ═══════════════════════════════════════════════ -->
-<h3 id="gibbs">Gibbs Sampling</h4>
+<h2 id="gibbs">Gibbs Sampling: One Variable at a Time</h2>
 
-<p>Instead of proposing all parameters at once, Gibbs samples each variable <em>conditioned on all others</em>. If these full conditional distributions have nice forms (they often do in conjugate models), every proposal is accepted. No tuning required.</p>
+<p>One idea: instead of proposing all parameters at once, update them one at a time. For each parameter &theta;<sub>i</sub>, sample its new value from the conditional distribution p(&theta;<sub>i</sub> | everything else). If these conditional distributions have nice closed forms &mdash; which they do in many conjugate models &mdash; every proposal is automatically accepted. No rejection, no wasted steps.</p>
 
-<p>Gibbs was the workhorse of Bayesian ML for decades (BUGS/JAGS software). It&rsquo;s still useful for models with lots of conjugacy (e.g., LDA topic models). But it struggles when variables are strongly correlated &mdash; the chain gets stuck because each variable can only move along one axis at a time.</p>
+<p>This is <strong>Gibbs sampling</strong>, and for decades it was the workhorse of Bayesian computation. Software packages like BUGS and JAGS were built entirely around it. Latent Dirichlet Allocation (the topic model) was made practical by Gibbs sampling.</p>
+
+<p>The weakness shows up when variables are strongly correlated. Imagine the posterior has a long, narrow diagonal ridge &mdash; like a tilted ellipse. Gibbs can only move horizontally or vertically, one variable at a time. It takes many tiny steps to crawl along that diagonal. It&rsquo;s like trying to walk diagonally across a city that only has a north-south/east-west grid. You can get there, but it takes a lot of zigzagging.</p>
+
+<p>For models with many strongly correlated parameters (which includes most interesting models), we need something that can take big, informed steps along the contours of the posterior.</p>
+
 
 <!-- ═══════════════════════════════════════════════ -->
-<h3 id="hmc-nuts">Hamiltonian Monte Carlo &amp; NUTS</h4>
+<h2 id="hmc">Hamiltonian Monte Carlo: Physics to the Rescue</h2>
 
-<p>HMC is the game-changer. Instead of random-walking through parameter space, HMC simulates a physical system where &theta; is a particle&rsquo;s position and the negative log-posterior is the &ldquo;potential energy.&rdquo; An auxiliary &ldquo;momentum&rdquo; variable is introduced, and the particle follows Hamilton&rsquo;s equations:</p>
+<p>This is the method that made modern Bayesian inference actually work on real problems, and I&rsquo;ll be honest &mdash; the physics connection took me a while to internalize.</p>
 
-<pre><code class="language-text">dθ/dt = ∂H/∂p = p
-dp/dt = -∂H/∂θ = -∇ log p(θ|D)   ← uses the gradient!
+<p>Here&rsquo;s the key insight. Instead of a random walk, we give our explorer a physical body. The negative log-posterior becomes a landscape &mdash; specifically, a <strong>potential energy surface</strong>. High-probability regions are valleys (low potential energy) and low-probability regions are peaks (high potential energy). We place a ball on this surface and give it a random kick. The ball rolls, gaining speed in the valleys and slowing down on the hills, following the laws of Hamiltonian mechanics.</p>
+
+<p>The ball needs a <strong>momentum</strong> &mdash; a velocity in parameter space. At each step of HMC, we do two things: randomly sample a new momentum (a random kick), then simulate the ball rolling along the surface for a fixed number of steps. The final position becomes our proposed sample. Because the ball follows the gradient of the posterior &mdash; rolling downhill into high-probability regions &mdash; the proposals tend to be far away <em>and</em> in high-probability areas.</p>
+
+<pre><code class="language-text">The physics:
+  Position θ     ↔  parameter values
+  Potential energy U(θ)  ↔  -log p(θ|D)
+  Momentum p     ↔  auxiliary variable (sampled fresh each step)
+  Total energy H(θ,p) = U(θ) + K(p)  ↔  potential + kinetic
+
+Hamilton's equations:
+  dθ/dt = p           (position changes according to momentum)
+  dp/dt = -∇U(θ)      (momentum changes according to gradient)
+         = ∇ log p(θ|D)   ← this is the crucial ingredient
 </code></pre>
 
-<p>The particle rolls along the posterior surface, making large moves in high-probability regions. This is dramatically more efficient than random-walk MH in high dimensions.</p>
+<p>The gradient &mdash; the slope of the posterior surface &mdash; is what makes HMC dramatically more efficient than random-walk methods. In 100 dimensions, a random walk doesn&rsquo;t know which direction to go. HMC follows the gradient, rolling along the posterior&rsquo;s contours like a marble in a bowl.</p>
 
-<p><strong>NUTS (No-U-Turn Sampler)</strong> automates HMC&rsquo;s two finicky hyperparameters (step size and number of leapfrog steps). It runs the simulation until the trajectory starts to double back, then stops. NUTS is the default sampler in Stan and PyMC &mdash; and the reason modern Bayesian inference actually works on real problems.</p>
+<p>But HMC has two hyperparameters that need tuning: the step size (how finely we simulate the physics) and the number of leapfrog steps (how long we let the ball roll before stopping). Get these wrong, and HMC can be worse than a random walk.</p>
 
-<div class="callout"><strong>Expert note:</strong> HMC requires the gradient of the log-posterior, which means your model must be differentiable. This is why probabilistic programming languages built on automatic differentiation (PyMC/Aesara, NumPyro/JAX, Stan/AD) are so powerful &mdash; they compute gradients for free.</div>
+<p><strong>NUTS</strong> &mdash; the <strong>No-U-Turn Sampler</strong> &mdash; eliminates this tuning problem. It runs the simulation forward and backward in time, building a tree of possible trajectories, and stops when the trajectory starts to double back on itself (a &ldquo;U-turn&rdquo;). NUTS is what makes Stan and PyMC practical for working scientists. It&rsquo;s HMC without the hand-tuning, and it works remarkably well across a wide range of models.</p>
+
+<p>One important requirement: HMC needs the gradient of the log-posterior. Your model must be differentiable. This is exactly why modern probabilistic programming languages are built on automatic differentiation engines &mdash; PyMC on Aesara/PyTensor, NumPyro on JAX, Stan on its own AD system. They compute the gradient for free, so you write the model and the sampler handles the physics.</p>
+
+<p>I&rsquo;m still developing my intuition for <em>why</em> the physics simulation preserves the right distribution. The formal answer involves Hamiltonian dynamics being volume-preserving (Liouville&rsquo;s theorem) and time-reversible, which guarantees detailed balance. But the visceral understanding &mdash; a ball rolling on the posterior surface &mdash; is the mental image that made it click for me.</p>
+
 
 <!-- ═══════════════════════════════════════════════ -->
-<h3 id="mcmc-diagnostics">MCMC Diagnostics: Has the Chain Converged?</h4>
+<h2 id="variational-inference">The Optimization Path: Variational Inference</h2>
 
-<p>MCMC doesn&rsquo;t tell you when it&rsquo;s done. You have to check. Key diagnostics:</p>
+<p>MCMC gives you the true posterior &mdash; eventually. But &ldquo;eventually&rdquo; might mean hours or days of sampling. If you have millions of data points, or need an answer in milliseconds, or want to train a deep generative model end-to-end with gradient descent, sampling is too slow.</p>
 
-<ul>
-  <li><strong>Trace plots:</strong> Plot parameter values vs. iteration. A well-mixed chain looks like a &ldquo;hairy caterpillar&rdquo; &mdash; no trends, no getting stuck.</li>
-  <li><strong>R&#x302; (R-hat):</strong> Run multiple chains from different starting points. R&#x302; measures whether they&rsquo;ve converged to the same distribution. R&#x302; &lt; 1.01 is the modern standard (used to be 1.1).</li>
-  <li><strong>Effective Sample Size (ESS):</strong> How many <em>independent</em> samples your chain is equivalent to, accounting for autocorrelation. ESS/chain should be at least 100 for reliable estimates, 400+ for tail probabilities.</li>
-  <li><strong>Divergences (HMC/NUTS):</strong> Numerical integration errors. Even a single divergence is a warning. If you see divergences, increase <code>target_accept</code> or reparameterize your model.</li>
-</ul>
+<p>Variational inference takes a completely different approach. Instead of sampling from the true posterior, we <em>approximate</em> it. We choose a family of simple, tractable distributions &mdash; maybe Gaussians, maybe something else &mdash; and find the member of that family that&rsquo;s closest to the true posterior. We&rsquo;ve turned an inference problem into an optimization problem, and optimization is something we know how to do fast.</p>
 
-<pre><code class="language-python"># Checking diagnostics with ArviZ (works with PyMC, Stan, NumPyro)
-import arviz as az
+<p>The analogy from earlier: MCMC sends hikers to explore every ridge and valley of the mountain. VI takes a satellite photo and fits the smoothest surface that matches the data. It&rsquo;s faster, but it might smooth over the interesting craggy bits.</p>
 
-# Assuming 'trace' is an InferenceData object from PyMC
-# az.summary(trace)     # R-hat, ESS, mean, sd, HDI
-# az.plot_trace(trace)  # Trace plots + posterior density
-# az.plot_rank(trace)   # Rank plots (better than trace for checking mixing)
+<p>&ldquo;Closest&rdquo; is measured by <strong>KL divergence</strong>, which quantifies how different one probability distribution is from another. We want to minimize KL(q || p) &mdash; the divergence from our simple approximation q(&theta;) to the true posterior p(&theta;|D). But computing this KL divergence requires knowing p(&theta;|D), which is the thing we can&rsquo;t compute. We seem stuck.</p>
+
+<p>This is where the ELBO comes in.</p>
+
+
+<!-- ═══════════════════════════════════════════════ -->
+<h2 id="elbo">The ELBO: The Quantity That Makes It All Work</h2>
+
+<p>There&rsquo;s a mathematical identity that saves us. The log-evidence &mdash; log p(D), the total probability of the observed data &mdash; can be decomposed as:</p>
+
+<pre><code class="language-text">log p(D) = ELBO(q) + KL(q || p)
 </code></pre>
 
+<p>The left side is a fixed constant (it doesn&rsquo;t depend on q). The KL divergence on the right is always non-negative. That means the ELBO is always less than or equal to log p(D) &mdash; it&rsquo;s a <strong>lower bound</strong> on the log-evidence. ELBO stands for <strong>Evidence Lower BOund</strong>.</p>
+
+<p>Here&rsquo;s the trick: since log p(D) is constant, maximizing the ELBO is <em>exactly equivalent</em> to minimizing KL(q || p). We can&rsquo;t compute the KL divergence directly, but we can maximize the ELBO, and it achieves the same thing.</p>
+
+<p>The ELBO itself decomposes into two terms we can actually compute:</p>
+
+<pre><code class="language-text">ELBO(q) = E_q[log p(D|θ)]  −  KL(q(θ) || p(θ))
+           ─────────────────    ──────────────────
+           "How well does θ     "How far is q from
+            explain the data?"   the prior?"
+</code></pre>
+
+<p>The first term rewards q for concentrating on parameter values that explain the data well. The second term penalizes q for straying too far from the prior. Sound familiar? It&rsquo;s the same fit-versus-regularization tradeoff that appears everywhere in machine learning, expressed in the language of probability.</p>
+
+<p>I won&rsquo;t pretend the algebra that derives the ELBO is the insightful part. The insight is this: we wanted to do something impossible (minimize KL to the true posterior), and we found a surrogate objective (the ELBO) that achieves the same thing and that we <em>can</em> compute. That&rsquo;s the entire intellectual move.</p>
+
+
 <!-- ═══════════════════════════════════════════════ -->
-<h2 id="vi-vs-mcmc">VI vs. MCMC: The Decision</h3>
+<h2 id="mean-field">Mean-Field: The Crudest Possible Approximation</h2>
+
+<p>We need to choose a family of distributions for q. The most dramatic simplification is the <strong>mean-field approximation</strong>: assume all latent variables are independent. The variational distribution factors as:</p>
+
+<pre><code class="language-text">q(θ₁, θ₂, ..., θₙ) = q₁(θ₁) × q₂(θ₂) × ... × qₙ(θₙ)
+</code></pre>
+
+<p>Each variable gets its own little distribution, optimized independently. The optimization algorithm &mdash; <strong>coordinate ascent variational inference</strong> (CAVI) &mdash; cycles through the variables one at a time, updating each q<sub>i</sub> while holding the others fixed, until convergence.</p>
+
+<p>This is crude. The true posterior might have strong correlations between parameters &mdash; maybe &theta;<sub>1</sub> and &theta;<sub>2</sub> are tightly coupled, so knowing one tells you a lot about the other. Mean-field ignores this entirely. It treats them as independent, which typically <em>underestimates the posterior uncertainty</em>. The marginal distributions might be centered in the right place, but they&rsquo;re too narrow and too confident.</p>
+
+<p>There&rsquo;s a deeper problem. KL(q || p) is <strong>mode-seeking</strong>. When the true posterior has multiple peaks (modes), q tends to collapse onto a single peak and pretend the others don&rsquo;t exist. It finds one good explanation and ignores alternatives. For a multimodal posterior &mdash; common in mixture models, multi-layer neural networks, and other models with symmetries &mdash; mean-field VI gives a misleadingly simple picture of the uncertainty.</p>
+
+<p>Despite these limitations, mean-field is fast, GPU-friendly, and often gives reasonable point estimates. For many applications &mdash; especially when you need a quick answer and the uncertainty isn&rsquo;t critical &mdash; it&rsquo;s good enough. The key is knowing what it gets wrong.</p>
+
+<p>Modern approaches improve on mean-field by using richer variational families. <strong>Full-rank Gaussian</strong> approximations capture correlations. <strong>Normalizing flows</strong> can represent complex, multimodal distributions. Each step toward a richer family gives a tighter ELBO bound and a better approximation, at the cost of more computation.</p>
+
+
+<!-- ═══════════════════════════════════════════════ -->
+<h2 id="amortized">Amortized Inference: Teaching a Neural Network to Do Inference</h2>
+
+<p>Standard VI optimizes variational parameters separately for each data point. If you have a million images and each one has its own latent variable z, that&rsquo;s a million separate optimization problems. Slow.</p>
+
+<p><strong>Amortized inference</strong> solves this by training a neural network &mdash; the <strong>encoder</strong> or <strong>recognition network</strong> &mdash; to predict the variational parameters directly from the data. Instead of optimizing q(z|x) for each x individually, you learn a function that maps any x to the parameters of q(z|x) in a single forward pass.</p>
+
+<p>This is <em>exactly</em> what a Variational Autoencoder does. The VAE encoder takes an image x and outputs the mean &mu;(x) and variance &sigma;&sup2;(x) of a Gaussian q(z|x). The decoder takes a sample from that Gaussian and reconstructs the image. The training loss is the negative ELBO:</p>
+
+<pre><code class="language-text">VAE loss = -ELBO
+         = reconstruction error  +  KL(q(z|x) || p(z))
+           ──────────────────────    ──────────────────
+           "How good is the          "How far is the
+            reconstruction?"          posterior from the prior?"
+</code></pre>
+
+<p>Every time you train a VAE, you&rsquo;re doing amortized variational inference. The encoder has learned to perform approximate inference in a single forward pass &mdash; no iterative optimization at test time. The &ldquo;amortization&rdquo; is that the cost of learning to do inference is spread across the entire training set, and once learned, inference for a new data point is nearly free.</p>
+
+<p>There&rsquo;s one technical detail that makes this trainable: the <strong>reparameterization trick</strong>. We can&rsquo;t backpropagate through a sampling operation (sampling z from q(z|x) is non-differentiable). The trick is to rewrite the sampling as: z = &mu;(x) + &sigma;(x) &times; &epsilon;, where &epsilon; is random noise sampled from a standard Gaussian N(0,1). Now &epsilon; is independent of the network parameters, and we can backpropagate through &mu;(x) and &sigma;(x). The randomness is factored out. The gradient flows through.</p>
+
+
+<!-- ═══════════════════════════════════════════════ -->
+<h2 id="choosing">Choosing Your Path: When to Use Which</h2>
+
+<p>After all of this, the practical question: which method should you actually use?</p>
+
+<p>Here is how I think about it. Start with the data size. If you have millions of data points and need results in minutes, VI is almost certainly the right choice. MCMC can&rsquo;t process a million-row dataset without specialized tricks (stochastic MCMC exists but is still an active research area). For datasets with hundreds to tens of thousands of observations, both approaches are viable.</p>
+
+<p>Next, ask how much you trust the uncertainty estimates. If you&rsquo;re building a recommendation system and the uncertainty is nice-to-have, VI is fine. If you&rsquo;re making medical decisions, or if your scientific paper will be judged on the faithfulness of its posterior estimates, use MCMC (specifically NUTS). Reviewers in Bayesian statistics will expect convergence diagnostics: R&#x302; &lt; 1.01, effective sample sizes above 400, no divergent transitions, and trace plots that look like hairy caterpillars.</p>
+
+<p>For deep generative models (VAEs, normalizing flows, diffusion models with latent variables), amortized VI is the standard. These models have too many latent variables and too much data for MCMC to be feasible. The entire training loop is built around optimizing the ELBO.</p>
+
+<p>A pattern I&rsquo;ve found useful in practice: start with VI to prototype quickly. Get the model structure right, check that the results are sensible. Then, for the final analysis, validate with MCMC on a representative subset. If the VI and MCMC posteriors agree, you can trust the VI results on the full dataset. If they disagree, the MCMC results are the ones to trust.</p>
+
+<p>My favorite thing about this whole landscape is that MCMC and VI aren&rsquo;t really competitors &mdash; they&rsquo;re complementary tools for different regimes. The field spent years arguing about which was better. The answer, like most things in engineering, is: it depends.</p>
 
 <table>
   <thead>
-    <tr><th>Criterion</th><th>Variational Inference</th><th>MCMC</th></tr>
+    <tr><th>Consideration</th><th>MCMC (NUTS)</th><th>Variational Inference</th></tr>
   </thead>
   <tbody>
-    <tr><td>Speed</td><td>Fast (optimization)</td><td>Slow (sampling)</td></tr>
-    <tr><td>Scalability</td><td>Excellent (minibatch)</td><td>Limited (full data per step)</td></tr>
-    <tr><td>Accuracy</td><td>Biased approximation</td><td>Asymptotically exact</td></tr>
-    <tr><td>Multimodal posteriors</td><td>Poor (mode-seeking)</td><td>Can explore (but slow)</td></tr>
-    <tr><td>Uncertainty quality</td><td>Often underestimates</td><td>Faithful (if converged)</td></tr>
-    <tr><td>Convergence check</td><td>ELBO plateau</td><td>R&#x302;, ESS, trace plots</td></tr>
-    <tr><td>Gradient required?</td><td>Yes (for SVI)</td><td>Yes for HMC, no for MH/Gibbs</td></tr>
-    <tr><td>When to use</td><td>Large data, speed matters, exploration-phase</td><td>Small/medium data, accuracy matters, publication</td></tr>
+    <tr><td>Speed</td><td>Slow (minutes to hours)</td><td>Fast (seconds to minutes)</td></tr>
+    <tr><td>Scalability</td><td>Small/medium data</td><td>Millions of data points</td></tr>
+    <tr><td>Accuracy</td><td>Asymptotically exact</td><td>Biased approximation</td></tr>
+    <tr><td>Multimodal posteriors</td><td>Can explore (slowly)</td><td>Tends to collapse to one mode</td></tr>
+    <tr><td>Uncertainty quality</td><td>Faithful (when converged)</td><td>Often underestimates</td></tr>
+    <tr><td>Gradient needed?</td><td>Yes (for HMC/NUTS)</td><td>Yes (for stochastic VI)</td></tr>
+    <tr><td>Best for</td><td>Publication, medical, safety-critical</td><td>Prototyping, production, deep generative models</td></tr>
   </tbody>
 </table>
 
-<div class="callout"><strong>Practical advice:</strong> Start with VI to prototype quickly. If the uncertainty estimates matter for your application (medical, safety-critical), validate with MCMC. For production A/B testing or recommendation systems, VI is usually fine. For a scientific paper, reviewers will expect MCMC convergence diagnostics.</div>
 
 <!-- ═══════════════════════════════════════════════ -->
-<h2 id="both-on-same-problem">Code: Both Approaches on the Same Problem</h3>
+<h2 id="wrap-up">Wrap-Up</h2>
 
-<pre><code class="language-python">import pymc as pm
-import numpy as np
-import arviz as az
+<p>If you&rsquo;re still with me, thank you. I hope it was worth it.</p>
 
-# Generate data: linear regression with known parameters
-np.random.seed(42)
-true_w, true_b, true_sigma = 2.5, -1.0, 0.8
-X = np.random.randn(100)
-y = true_w * X + true_b + np.random.normal(0, true_sigma, 100)
+<p>We started with a simple observation: joint probability tables are exponentially large, and graphical models compress them by encoding which variables directly influence which others. We learned two flavors &mdash; Bayesian networks for causal stories, Markov random fields for undirected correlations &mdash; and picked up plate notation and d-separation along the way. We saw that exact inference works beautifully on trees but collapses on complex graphs, which pushed us into the two great families of approximation: MCMC (explore the posterior by building a random walk that converges to it) and variational inference (find the closest simple distribution by optimizing the ELBO). And we saw how amortized inference collapses the VI optimization into a single neural network forward pass, which is how VAEs work under the hood.</p>
 
-# --- MCMC (NUTS) ---
-with pm.Model() as mcmc_model:
-    w = pm.Normal('w', mu=0, sigma=10)
-    b = pm.Normal('b', mu=0, sigma=10)
-    sigma = pm.HalfNormal('sigma', sigma=5)
-    y_obs = pm.Normal('y_obs', mu=w * X + b, sigma=sigma, observed=y)
+<p>My hope is that the next time you encounter a plate diagram, a discussion of d-separation, or a debate about MCMC versus VI, instead of that familiar urge to nod along and Google it later, you&rsquo;ll have a pretty darn good mental model of what&rsquo;s going on under the hood.</p>
 
-    trace_mcmc = pm.sample(2000, tune=1000, cores=2, random_seed=42)
-
-print("MCMC results:")
-print(az.summary(trace_mcmc, var_names=['w', 'b', 'sigma']))
-
-# --- Variational Inference (ADVI) ---
-with pm.Model() as vi_model:
-    w = pm.Normal('w', mu=0, sigma=10)
-    b = pm.Normal('b', mu=0, sigma=10)
-    sigma = pm.HalfNormal('sigma', sigma=5)
-    y_obs = pm.Normal('y_obs', mu=w * X + b, sigma=sigma, observed=y)
-
-    approx = pm.fit(method='advi', n=30000, random_seed=42)
-    trace_vi = approx.sample(2000)
-
-print("\nVI results:")
-print(az.summary(trace_vi, var_names=['w', 'b', 'sigma']))
-# Compare: means should be similar, but VI uncertainty is often narrower
-</code></pre>
 
 <!-- ═══════════════════════════════════════════════ -->
-<h3>What You Should Now Be Able To Do</h3>
-<ul>
-  <li>Explain the ELBO and why maximizing it approximates the posterior</li>
-  <li>Describe mean-field VI and its limitations (independence assumption, mode-seeking)</li>
-  <li>Connect amortized VI to VAEs and explain why the VAE loss is the negative ELBO</li>
-  <li>Implement a simple Metropolis-Hastings sampler and explain the accept/reject logic</li>
-  <li>Explain why HMC/NUTS is dramatically better than random-walk MH in high dimensions</li>
-  <li>Check MCMC convergence using R&#x302;, ESS, trace plots, and divergences</li>
-  <li>Choose between VI and MCMC based on dataset size, accuracy needs, and computational budget</li>
-  <li>Use PyMC to run both NUTS and ADVI on the same model</li>
-</ul>
+<h2 id="resources">Resources and Credits</h2>
+
+<p><strong>Koller &amp; Friedman, <em>Probabilistic Graphical Models</em> (2009).</strong> The 1,200-page bible. Exhaustive, rigorous, and the definitive reference. Not a weekend read, but wildly comprehensive.</p>
+
+<p><strong>Bishop, <em>Pattern Recognition and Machine Learning</em>, Chapters 8 &amp; 10.</strong> The most readable introduction to graphical models and variational inference in a textbook. Still the one I recommend first.</p>
+
+<p><strong>Blei, Kucukelbir &amp; McAuliffe, &ldquo;Variational Inference: A Review for Statisticians&rdquo; (2017).</strong> The clearest exposition of modern VI I&rsquo;ve found. Connects the classical ideas to stochastic VI and amortized inference.</p>
+
+<p><strong>Betancourt, &ldquo;A Conceptual Introduction to Hamiltonian Monte Carlo&rdquo; (2017).</strong> The single best explanation of HMC. Makes the physics intuition visceral. If you read one paper on MCMC, make it this one.</p>
+
+<p><strong>Kingma &amp; Welling, &ldquo;Auto-Encoding Variational Bayes&rdquo; (2013).</strong> The O.G. VAE paper. Where amortized inference meets deep learning. Remarkably concise for how influential it&rsquo;s been.</p>
+
+<p><strong>McElreath, <em>Statistical Rethinking</em> (2020).</strong> A warm, opinionated introduction to Bayesian modeling with extensive use of MCMC. The accompanying lectures on YouTube are unforgettable.</p>
 
       <div class="page-nav">
         <span></span>
