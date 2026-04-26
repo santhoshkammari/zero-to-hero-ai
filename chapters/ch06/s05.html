@@ -300,258 +300,313 @@
 </div>
 
 <!-- ════════════════════════════════════════════ -->
-<h2>The Labeled Data Bottleneck</h2>
+<h2>The Uncomfortable Truth About Labels</h2>
 
-<p>Here's the dirty secret of supervised learning: it's <em>incredibly</em> expensive to get labels. ImageNet took years and millions of dollars to annotate 14 million images. Medical imaging? You need board-certified radiologists at $400/hour. Legal documents? Domain experts who charge even more. Meanwhile, the internet produces roughly 2.5 quintillion bytes of <em>unlabeled</em> data every day.</p>
+<p>I avoided self-supervised learning for longer than I'd like to admit. Every time someone mentioned contrastive losses or momentum encoders, I'd nod along and change the subject. I'd been comfortable in the supervised world — hand me labeled data, train a model, check the metrics. But then I started noticing that every major breakthrough in the past five years — BERT, GPT, DINO, the foundation models everyone keeps talking about — all started with self-supervised pretraining. The discomfort of not understanding what was happening under the hood finally grew too great. Here is that dive.</p>
 
-<p>Self-supervised learning flips the script. Instead of begging humans for labels, you design tasks where the data labels <em>itself</em>. Hide a word, predict it. Rotate an image, guess the angle. The model doesn't care about your made-up puzzle — what matters are the <strong>representations</strong> it learns along the way. This is exactly how BERT and GPT are pretrained, and it's the reason modern AI works as well as it does.</p>
+<p>Self-supervised learning is a family of techniques where the model generates its own training signal from raw, unlabeled data. Instead of asking a human "is this a cat?", you hide part of the data and ask the model to reconstruct it. The idea has roots going back to autoencoders in the 1980s, but it became the dominant paradigm in AI starting around 2018 with BERT, and has since spread from language to vision, audio, and beyond.</p>
+
+<p>Before we start, a heads-up. We're going to cover contrastive losses, momentum encoders, cross-correlation matrices, and a whole zoo of acronyms. You don't need to know any of it beforehand. We'll add what we need, one piece at a time.</p>
+
+<p>This isn't a short journey, but I hope you'll be glad you came.</p>
 
 <!-- ════════════════════════════════════════════ -->
-<h2>Pretext Tasks: Labels for Free</h2>
+<h2>The Map We'll Follow</h2>
 
-<p>A <strong>pretext task</strong> is any task where you can generate the supervision signal automatically from the data itself. You're not trying to solve the task — you're trying to force the model to learn useful features in the process. Think of it like learning to cook by reading recipes: you don't care about memorizing the recipe, you care about the knife skills and flavor intuitions you develop.</p>
-
-<h3>The Greatest Hits</h3>
-
-<table>
-  <thead>
-    <tr><th>Pretext Task</th><th>Domain</th><th>What It Does</th></tr>
-  </thead>
-  <tbody>
-    <tr><td><strong>Masked Language Modeling</strong></td><td>NLP</td><td>Hide 15% of tokens, predict them (BERT)</td></tr>
-    <tr><td><strong>Next Token Prediction</strong></td><td>NLP</td><td>Given all previous tokens, predict the next one (GPT)</td></tr>
-    <tr><td><strong>Rotation Prediction</strong></td><td>Vision</td><td>Rotate image by 0°/90°/180°/270°, classify the angle</td></tr>
-    <tr><td><strong>Jigsaw Puzzles</strong></td><td>Vision</td><td>Shuffle 3×3 image patches, predict the permutation</td></tr>
-    <tr><td><strong>Colorization</strong></td><td>Vision</td><td>Convert to grayscale, predict original colors</td></tr>
-    <tr><td><strong>Masked Autoencoders</strong></td><td>Vision</td><td>Mask 75% of image patches, reconstruct them (MAE)</td></tr>
-  </tbody>
-</table>
-
-<p>The pattern is always the same: corrupt or hide part of the input, then train the model to recover it. To recover masked words, BERT must understand grammar, semantics, and world knowledge. To predict the next token, GPT must model everything from syntax to reasoning. The pretext task is the excuse; the representation is the prize.</p>
-
-<div class="callout">
-  <strong>Why pretext tasks got eclipsed:</strong> They're hand-designed, and the features optimal for "guess the rotation" don't always transfer well to "detect tumors." Contrastive methods mostly replaced them in vision because they learn more general features. But in NLP, pretext tasks (masked LM, next-token prediction) still reign supreme — they just happen to be <em>really good</em> pretext tasks.
+<div style="padding-left:1.5em; line-height:2; margin-bottom:1.5em;">
+  Why labels are the bottleneck<br>
+  What a representation actually is<br>
+  Pretext tasks — making data supervise itself<br>
+  The similarity game — contrastive learning from scratch<br>
+  SimCLR — elegant but expensive<br>
+  MoCo — the queue that changed everything<br>
+  Rest stop<br>
+  Dropping negatives — BYOL and the collapse problem<br>
+  Barlow Twins — redundancy reduction<br>
+  DINO — when a model learns to see without being told what to look at<br>
+  MAE — the BERT of images<br>
+  Using representations — linear probes and fine-tuning<br>
+  The full picture
 </div>
 
 <!-- ════════════════════════════════════════════ -->
-<h2>Word2Vec &amp; GloVe: The OG Self-Supervised Methods</h2>
+<h2>Why Labels Are the Bottleneck</h2>
 
-<p>Before anyone used the phrase "self-supervised learning," Word2Vec (2013) was already doing it. The <strong>skip-gram</strong> model takes a center word and predicts its context words — that's literally a pretext task. The learned word vectors turned out to capture remarkable semantic structure: <code>king - man + woman ≈ queen</code>.</p>
+<p>Imagine you're building a photo organizing app. You want it to group similar photos together — all the beach sunsets here, all the birthday parties there, all the dogs over in that corner. The supervised approach says: hire people to tag a million photos, then train a classifier. ImageNet went that route. It took years, cost millions of dollars, and required tens of thousands of annotators to label 14 million images across a thousand categories.</p>
 
-<p><strong>GloVe</strong> (2014) achieved similar results by factorizing the global word co-occurrence matrix instead of using local context windows. Both methods proved the same point: if you force a model to predict structure in raw text, it learns representations that encode meaning. This was the proof of concept that made BERT and GPT conceptually possible.</p>
+<p>Medical imaging is worse. You need board-certified radiologists who charge hundreds of dollars per hour to label chest X-rays. Legal documents need lawyers. Satellite imagery needs geospatial experts. Meanwhile, the internet generates roughly 2.5 quintillion bytes of <em>unlabeled</em> data every single day. There's a staggering mismatch between how much data exists and how much of it has been labeled by a human.</p>
 
-<pre><code class="language-python">from gensim.models import Word2Vec
-
-sentences = [["the", "cat", "sat", "on", "the", "mat"],
-             ["the", "dog", "lay", "on", "the", "rug"]]
-
-# sg=1 → skip-gram (the original pretext task)
-model = Word2Vec(sentences, vector_size=100, window=5, min_count=1, sg=1)
-print(model.wv.most_similar("cat"))
-# → [('dog', 0.92), ...]  — similar contexts → similar vectors</code></pre>
+<p>Self-supervised learning grew out of a practical frustration: we're drowning in data but starving for labels. The insight was this — what if the data could label itself?</p>
 
 <!-- ════════════════════════════════════════════ -->
-<h2>Contrastive Learning: The Big Idea</h2>
+<h2>What a Representation Actually Is</h2>
 
-<p>Contrastive learning asks a deceptively simple question: can we learn representations just by knowing what's <em>similar</em> and what's <em>different</em>? Take a photo of a cat. Create two augmented views — one cropped, one color-jittered. These form a <strong>positive pair</strong> (same content, different appearance). Every other image in your batch forms <strong>negative pairs</strong>. Train the model to pull positives together and push negatives apart in embedding space.</p>
+<p>Before we go further, we need to be precise about one word that gets thrown around a lot: <strong>representation</strong>. When a neural network processes an image or a sentence, each layer transforms the raw input into a new set of numbers — a vector. That vector is a representation. It's a compressed summary of the input, as seen through the lens of whatever the network has learned to care about.</p>
 
-<p>The loss function that makes this work is <strong>InfoNCE</strong> — essentially a softmax over cosine similarities. For a positive pair (i, j) in a batch of N images (2N augmented views):</p>
+<p>Think of it like a cartographer drawing a map. The physical terrain — mountains, rivers, roads — is the raw data. The map is the representation. A hiking map emphasizes trails and elevation. A road map emphasizes highways and cities. Same terrain, different maps, because different tasks need different features highlighted. A good representation is a map that happens to be useful for many tasks at once — one where the important features are easy to read off and the irrelevant details have been stripped away.</p>
+
+<p>Our photo organizing app, for instance, doesn't need a representation that preserves every pixel. It needs one where photos of the same kind of scene end up with similar vectors, and photos of different scenes end up far apart. The entire field of self-supervised learning is ultimately about building the best possible map without anyone telling the cartographer what the important landmarks are.</p>
+
+<p>We'll come back to this cartography analogy. It keeps paying off.</p>
+
+<!-- ════════════════════════════════════════════ -->
+<h2>Pretext Tasks — Making Data Supervise Itself</h2>
+
+<p>Here's the trick. You take unlabeled data, deliberately damage it in some known way, and then train a model to undo the damage. The model doesn't care about your vandalism. What matters is that in order to fix the damage, it has to understand the structure of the data — and that understanding is exactly the representation we want.</p>
+
+<p>A <strong>pretext task</strong> is the name for this kind of artificial puzzle. Let's walk through a tiny example to see why it works.</p>
+
+<p>Take three photos from our organizing app: a dog on a beach, a cat on a couch, and a bird in a tree. Now rotate each photo by a random amount — 0°, 90°, 180°, or 270°. Show the model the rotated photo and ask: how much was this rotated? That's a pretext task called <strong>rotation prediction</strong>. To get the answer right, the model has to understand what "upright" means for dogs, couches, trees, and beaches. It has to learn about gravity, object orientation, and scene structure. None of that was in the labels — it emerged from the task.</p>
+
+<p>The same pattern appears everywhere. In NLP, BERT hides 15% of the words in a sentence and asks the model to fill in the blanks — that's <strong>masked language modeling</strong>. To predict that "The cat sat on the ___" should end with "mat," the model has to learn grammar, semantics, even some world knowledge. GPT does something even more direct: given all the words so far, predict the next one. That's <strong>next token prediction</strong>, and it turned out to be so powerful that it bootstrapped the entire large language model revolution.</p>
+
+<p>In vision, you can shuffle the patches of an image like a jigsaw puzzle and ask the model to figure out the original arrangement. You can convert a color photo to grayscale and ask the model to predict the original colors. Each of these tasks forces the model to internalize something meaningful about the data.</p>
+
+<p>The pretext task is the excuse. The representation — the map the model builds internally — is the actual prize.</p>
+
+<p>There's a catch, though. These tasks are hand-designed, and the features that are optimal for "guess the rotation angle" don't always transfer well to "detect tumors in a chest X-ray." The rotation-predicting model might learn a lot about which way gravity points but not much about texture differences between healthy and cancerous tissue. This limitation is what pushed the field toward a more general approach.</p>
+
+<!-- ════════════════════════════════════════════ -->
+<h2>The Similarity Game — Contrastive Learning from Scratch</h2>
+
+<p>Instead of designing a clever puzzle, what if we asked the model to answer an even more fundamental question: which things are similar, and which things are different?</p>
+
+<p>Let's make this concrete with our photo app. Take the dog-on-beach photo. Create two augmented versions of it — one randomly cropped to show mostly the dog, the other color-jittered to make the beach look sunset-orange. These two versions still show the same content, the same scene. They form what's called a <strong>positive pair</strong>. Now take the cat photo and the bird photo. These are different content entirely — they form <strong>negative pairs</strong> with our dog views.</p>
+
+<p>The idea behind <strong>contrastive learning</strong> is to train the model so that the representations of the two dog views end up close together in the vector space, while the representations of the dog and the cat (and the dog and the bird) end up far apart. If the model can do this reliably across thousands of images, the representations it builds will capture what makes each image unique — and that's a map useful for almost any downstream task.</p>
+
+<p>The loss function that drives this is called <strong>InfoNCE</strong>, introduced by van den Oord and colleagues in 2018. It works like a softmax over cosine similarities. For each positive pair, we want their similarity to be high relative to all the negative pairs in the batch. The math looks dense, but the intuition is clean: maximize the similarity score of the positive pair while minimizing the scores of all the negatives.</p>
 
 <pre><code class="language-python">import torch
 import torch.nn.functional as F
 
 def info_nce_loss(z_i, z_j, temperature=0.07):
-    """InfoNCE loss — the workhorse of contrastive learning."""
     batch_size = z_i.shape[0]
-    z = torch.cat([z_i, z_j], dim=0)          # (2N, D)
+    z = torch.cat([z_i, z_j], dim=0)
     z = F.normalize(z, dim=1)
 
-    sim = z @ z.T / temperature                # (2N, 2N) cosine sim matrix
+    # cosine similarity between all pairs, scaled by temperature
+    sim = z @ z.T / temperature
 
-    # mask out self-similarity (diagonal)
+    # don't let an image match with itself
     mask = torch.eye(2 * batch_size, dtype=torch.bool)
     sim.masked_fill_(mask, -1e9)
 
-    # positive pairs: (i, i+N) and (i+N, i)
+    # each image's positive is its augmented partner
     labels = torch.cat([torch.arange(batch_size, 2 * batch_size),
                         torch.arange(0, batch_size)])
 
     return F.cross_entropy(sim, labels)</code></pre>
 
-<p>The temperature τ controls how hard the model concentrates on difficult negatives. Lower temperature = sharper distribution = the model works harder to distinguish similar-but-different examples.</p>
+<p>That <code>temperature</code> parameter is worth pausing on. It controls how sharply the model distinguishes between positives and negatives. A low temperature (like 0.07) produces a very peaked distribution — the model puts almost all its probability mass on the positive pair and almost none on the negatives. This forces it to work harder on the difficult cases where a negative happens to look similar to the positive. A higher temperature softens the distribution, making the model more forgiving. Most contrastive methods use a temperature between 0.05 and 0.2.</p>
 
-<h3>SimCLR: Simple but Hungry</h3>
+<p>Wang and Isola formalized why contrastive learning works in a 2020 paper. They showed that a good contrastive loss does two things simultaneously: <strong>alignment</strong> (pulling positive pairs together) and <strong>uniformity</strong> (spreading all representations evenly across the surface of a hypersphere). Alignment alone would collapse everything to a single point. Uniformity alone would give you random noise. The tension between the two is what produces useful structure.</p>
 
-<p><strong>SimCLR</strong> (Chen et al., 2020) distilled contrastive learning to its essence: augment → encode → project → contrast. Three discoveries made it work. First, <strong>strong augmentations</strong> (random crop + color jitter) matter more than architecture choices. Second, a <strong>projection head</strong> (small MLP) on top of the encoder is critical — you train on the projected features but <em>use</em> the encoder features for downstream tasks. Third, you need <strong>large batch sizes</strong> (4096+) to get enough negatives.</p>
-
-<p>That third point was SimCLR's Achilles' heel. You need 128 TPU cores to train it properly. That limitation sparked the next wave of innovation.</p>
-
-<h3>MoCo: Decoupling Negatives from Batch Size</h3>
-
-<p><strong>MoCo</strong> (He et al., 2020) asked: why should the number of negatives be limited by your batch size? Its solution: maintain a <strong>queue</strong> of recent embeddings (65,536 negatives!) and use a <strong>momentum encoder</strong> that updates slowly via exponential moving average. The momentum encoder ensures keys in the queue stay consistent — they all come from nearly the same model version.</p>
-
-<pre><code class="language-python"># MoCo's momentum update — the key trick
-momentum = 0.999
-for p_q, p_k in zip(query_encoder.parameters(), key_encoder.parameters()):
-    p_k.data = momentum * p_k.data + (1 - momentum) * p_q.data</code></pre>
-
-<p>MoCo was the first method to match supervised ImageNet features — on a single 8-GPU machine. MoCo v2 later borrowed SimCLR's augmentations and projection head, combining the best of both.</p>
+<p>That's the core idea. But making it work in practice required solving some engineering problems that turned into research problems. Two groups solved them in very different ways.</p>
 
 <!-- ════════════════════════════════════════════ -->
-<h2>Non-Contrastive Methods: No Negatives Required</h2>
+<h2>SimCLR — Elegant but Expensive</h2>
 
-<p>Here's where things get surprising. What if you don't need negative pairs at all?</p>
+<p><strong>SimCLR</strong>, published by Ting Chen and colleagues at Google in 2020, stripped contrastive learning down to its bare essentials: augment the image, encode it, project it, contrast it. That's the entire method. No memory banks, no special architecture, no tricks. The name stands for "Simple Framework for Contrastive Learning of Visual Representations," and for once, the name is honest.</p>
 
-<h3>BYOL: Bootstrap Your Own Latent</h3>
+<p>But SimCLR's elegance came with three hard-won insights that weren't obvious until they ran the experiments.</p>
 
-<p><strong>BYOL</strong> (Grill et al., 2020) dropped the negatives and <em>outperformed</em> SimCLR and MoCo. It uses two networks: an <strong>online network</strong> (encoder + projector + predictor) and a <strong>target network</strong> (encoder + projector only, updated via momentum EMA). The online network predicts the target's output for a different augmented view of the same image.</p>
+<p>The first was that <strong>augmentation quality matters more than architecture</strong>. Random cropping combined with aggressive color jittering turned out to be the single most important design choice — more important than the choice of encoder, the depth of the network, or the dimensionality of the embeddings. The reason is intuitive once you think about it: if the two views of the same image look too similar, the task is too easy and the model learns nothing. It needs views that are genuinely different in appearance but still contain the same semantic content.</p>
 
-<p>Why doesn't it collapse to a constant? Without negatives, what stops every input from mapping to the same vector (zero loss, nothing learned)? The answer is <strong>architectural asymmetry</strong>. The extra predictor head in the online network, combined with the stop-gradient on the target network, creates an information bottleneck that makes the trivial solution unreachable. The slow-moving target acts like a stable reference point that the online network chases.</p>
+<p>The second insight was the <strong>projection head</strong>. SimCLR adds a small two-layer MLP on top of the encoder. The contrastive loss is computed on the output of this projection head, but when it's time to use the features for downstream tasks, you throw the projection head away and use the encoder's output directly. I'll be honest — when I first read that, I didn't believe it could matter that much. But it turned out that the projection head absorbs information about the augmentations (it "learns" what color jitter is), freeing the encoder to focus on semantic content. The difference in downstream accuracy is substantial — sometimes 10 percentage points.</p>
 
-<pre><code class="language-python"># BYOL training step (simplified)
-view1, view2 = augment(image), augment(image)
+<p>The third insight was also SimCLR's biggest limitation: you need a <strong>very large batch size</strong>. In contrastive learning, every other image in the batch is a negative. More negatives means a harder, more informative task. SimCLR's best results used batches of 4,096 images (8,192 augmented views), which required 128 TPUs to train. That's not a lab experiment — that's a Google-sized budget.</p>
 
-pred1, pred2 = online_net(view1), online_net(view2)  # encoder + projector + predictor
+<p>This was the pain point. SimCLR proved that contrastive learning works beautifully in principle, but made it impractical for anyone who didn't have a warehouse full of TPUs. And that pain motivated the next breakthrough.</p>
 
+<!-- ════════════════════════════════════════════ -->
+<h2>MoCo — The Queue That Changed Everything</h2>
+
+<p><strong>MoCo</strong>, short for Momentum Contrast, was published by Kaiming He and colleagues at Facebook AI around the same time as SimCLR. It asked a pointed question: why should the number of negatives be shackled to the batch size?</p>
+
+<p>The answer was a <strong>queue</strong>. MoCo maintains a rolling buffer of recent embeddings — 65,536 of them in the original paper. Each training step, the new batch's embeddings get pushed onto the queue, and the oldest ones get popped off. For the contrastive loss, each image is compared not against the other images in its batch, but against every entry in this enormous queue. Suddenly you have tens of thousands of negatives without needing to fit them all in GPU memory at once.</p>
+
+<p>But there's a subtlety that took me a while to appreciate. If the encoder changes rapidly during training (as it does with gradient descent), the embeddings in the queue come from different versions of the model. The oldest entries might have been computed by a model that looked very different from the current one. Comparing against stale, inconsistent embeddings degrades the quality of the learning signal.</p>
+
+<p>MoCo's solution was the <strong>momentum encoder</strong>. Instead of using the same encoder for both the query (current image) and the keys (queue entries), MoCo uses two encoders. The query encoder is updated normally by gradient descent. The key encoder is updated slowly, as an exponential moving average of the query encoder.</p>
+
+<pre><code class="language-python"># the key encoder drifts slowly, keeping queue entries consistent
+momentum = 0.999
+for param_q, param_k in zip(query_encoder.parameters(),
+                             key_encoder.parameters()):
+    param_k.data = momentum * param_k.data + (1 - momentum) * param_q.data</code></pre>
+
+<p>That momentum of 0.999 means the key encoder changes very slowly — each update is 99.9% the old weights and only 0.1% the new ones. This ensures that the embeddings sitting in the queue, even the ones computed many steps ago, are all from approximately the same model. Consistency preserved.</p>
+
+<p>MoCo was the first self-supervised method to match the performance of supervised pretraining on ImageNet — and it did it on a single machine with 8 GPUs. No TPU warehouse required. MoCo v2 later borrowed SimCLR's augmentation strategy and projection head, combining the best ideas from both camps. The field was converging.</p>
+
+<p>Going back to our cartography analogy: SimCLR said "to draw a good map, compare every landmark against every other landmark in a huge survey." MoCo said "keep a reference library of past surveys, and compare new landmarks against the library." Both produce good maps. MoCo's approach is much cheaper.</p>
+
+<!-- ════════════════════════════════════════════ -->
+<h2>Rest Stop</h2>
+
+<p>If you've made it this far, congratulations. You can stop here if you want.</p>
+
+<p>You now have a mental model of the core self-supervised learning pipeline: take unlabeled data, create an artificial task (predicting masks, contrasting augmented views), train a model on that task, and harvest the learned representations for downstream use. You understand that contrastive learning works by pulling similar things together and pushing different things apart, and you know two major implementations — SimCLR (simple but expensive) and MoCo (efficient via a momentum-updated queue).</p>
+
+<p>That's enough to follow most conversations about self-supervised learning and to understand why pretrained models work the way they do. You're about 60% of the way through the full picture.</p>
+
+<p>What this mental model doesn't yet explain is why some of the best methods don't use negative pairs at all, how a model can learn to segment objects without ever being shown a segmentation label, and why masking 75% of an image produces better representations than masking 25%. Those are the questions that drove the next wave of research — and they're genuinely surprising.</p>
+
+<p>But if the discomfort of not knowing what's underneath is nagging at you, read on.</p>
+
+<!-- ════════════════════════════════════════════ -->
+<h2>Dropping Negatives — BYOL and the Collapse Problem</h2>
+
+<p>Everything we've built so far relies on negative pairs. We pull positive pairs together, and we need negatives to push against — otherwise, why wouldn't the model collapse everything to a single point? If the loss only rewards similarity, the trivial solution is to make everything identical. Zero loss, nothing learned. This failure mode is called <strong>representation collapse</strong>, and it haunted the early self-supervised learning literature.</p>
+
+<p>So when <strong>BYOL</strong> — Bootstrap Your Own Latent — was published by DeepMind in 2020, and the authors claimed it worked <em>without any negative pairs</em> and <em>outperformed</em> both SimCLR and MoCo, the reaction from the community was something between fascination and suspicion.</p>
+
+<p>BYOL uses two networks. The <strong>online network</strong> has an encoder, a projector, and a predictor. The <strong>target network</strong> has the same encoder and projector, but no predictor. The target network's weights are updated slowly via exponential moving average of the online network — exactly like MoCo's momentum encoder. During training, both networks see different augmented views of the same image. The online network's job is to predict what the target network will output for the other view.</p>
+
+<pre><code class="language-python">view_a, view_b = augment(image), augment(image)
+
+# online network has the extra predictor head
+prediction_a = online_net(view_a)
+prediction_b = online_net(view_b)
+
+# target network: no predictor, no gradients
 with torch.no_grad():
-    targ1, targ2 = target_net(view1), target_net(view2)  # encoder + projector only
+    target_a = target_net(view_a)
+    target_b = target_net(view_b)
 
-loss = cosine_loss(pred1, targ2) + cosine_loss(pred2, targ1)
+# predict each view from the other
+loss = cosine_distance(prediction_a, target_b) + cosine_distance(prediction_b, target_a)
 loss.backward()
+
+# target drifts slowly behind the online network
 ema_update(online_net, target_net, momentum=0.996)</code></pre>
 
-<h3>Barlow Twins: Redundancy Reduction</h3>
+<p>Why doesn't this collapse? I'll be honest — I'm still developing my full intuition for it, and I'm not alone. The research community has debated this extensively. But the consensus points to three things working together.</p>
 
-<p><strong>Barlow Twins</strong> (Zbontar et al., 2021) takes an entirely different angle, inspired by neuroscientist Horace Barlow's hypothesis that sensory neurons minimize redundancy. Compute the cross-correlation matrix between embeddings of two views across a batch. The goal: make it the <strong>identity matrix</strong>. Diagonal = 1 means each feature captures the same invariant content across views. Off-diagonal = 0 means different features capture different information.</p>
+<p>First, the <strong>predictor head</strong> in the online network breaks the symmetry. It means the two networks aren't doing the same computation, so the trivial solution where both output constants isn't actually a stable minimum of the loss landscape — it's more like balancing a ball on top of a hill. Technically reachable, practically unreachable.</p>
 
-<pre><code class="language-python">def barlow_twins_loss(z1, z2, lambd=0.005):
-    """Push cross-correlation toward the identity matrix."""
-    z1 = (z1 - z1.mean(0)) / z1.std(0)
-    z2 = (z2 - z2.mean(0)) / z2.std(0)
-    c = (z1.T @ z2) / z1.shape[0]  # cross-correlation (D × D)
+<p>Second, the <strong>stop-gradient</strong> on the target network means gradients only flow through the online network. The target can't "cooperate" with the online network to find a shortcut. It's a moving reference point that the online network chases, but it moves slowly enough to provide a stable signal.</p>
 
-    on_diag = ((1 - c.diagonal()) ** 2).sum()
-    off_diag = (c[~torch.eye(c.shape[0], dtype=bool)] ** 2).sum()
-    return on_diag + lambd * off_diag</code></pre>
+<p>Third, the <strong>EMA update</strong> creates a kind of temporal ensembling. The target network is an average over many recent snapshots of the online network, which smooths out noise and provides a richer signal than any single snapshot would.</p>
 
-<p>No negatives. No momentum encoder. No asymmetric architecture. Just a clean correlation objective. It's competitive with BYOL and easier to reason about.</p>
+<p>Think of it this way, using our cartography analogy. The online network is an apprentice cartographer, and the target network is the mentor. The apprentice draws a map, shows it to the mentor, and the mentor says "that's close to what I see, but here's where you're off." The mentor's own map changes slowly over time as they learn from the same terrain. The apprentice can't cheat by drawing a blank map because the mentor's map isn't blank — and the mentor can't be fooled because they have their own independent view.</p>
+
+<p>Chen and He later published <strong>SimSiam</strong> (2021), which stripped BYOL even further — removing the momentum encoder entirely and relying solely on the stop-gradient and predictor asymmetry. It still worked. That was a strong signal that the architectural asymmetry, not the momentum, was doing the heavy lifting against collapse.</p>
+
+<!-- ════════════════════════════════════════════ -->
+<h2>Barlow Twins — Redundancy Reduction</h2>
+
+<p>While BYOL solved the collapse problem through architectural tricks, <strong>Barlow Twins</strong> (Zbontar et al., 2021) took an entirely different road. It was inspired by a 60-year-old idea from neuroscience.</p>
+
+<p>In 1961, neuroscientist Horace Barlow proposed the <strong>redundancy reduction hypothesis</strong>: that the goal of sensory processing in the brain is to produce a neural code where different neurons carry different, non-redundant information about the world. Your visual cortex doesn't have a thousand neurons all encoding "is it bright?" — that would be wasteful. Instead, each neuron captures a distinct aspect of the scene.</p>
+
+<p>Barlow Twins translates this directly into a loss function. Take two augmented views of the same image, encode them both, and compute the <strong>cross-correlation matrix</strong> between the two sets of embeddings across the batch. This matrix has shape D × D, where D is the embedding dimension. Each entry tells you how correlated one feature in view A is with one feature in view B.</p>
+
+<p>The objective is to push this matrix toward the <strong>identity matrix</strong>. Diagonal entries should be 1 — meaning each feature captures the same invariant content regardless of which augmentation was applied. Off-diagonal entries should be 0 — meaning different features capture different, non-redundant information.</p>
+
+<pre><code class="language-python">def barlow_twins_loss(z_a, z_b, trade_off=0.005):
+    # normalize each feature across the batch
+    z_a = (z_a - z_a.mean(dim=0)) / z_a.std(dim=0)
+    z_b = (z_b - z_b.mean(dim=0)) / z_b.std(dim=0)
+
+    # cross-correlation matrix (D × D)
+    correlation = (z_a.T @ z_b) / z_a.shape[0]
+
+    # diagonal: each feature should agree across views
+    invariance = ((1 - correlation.diagonal()) ** 2).sum()
+
+    # off-diagonal: different features should be independent
+    off_diag_mask = ~torch.eye(correlation.shape[0], dtype=bool)
+    redundancy = (correlation[off_diag_mask] ** 2).sum()
+
+    return invariance + trade_off * redundancy</code></pre>
+
+<p>No negatives. No momentum encoder. No asymmetric architecture. No stop-gradient. The collapse prevention is explicit and built into the loss itself — if features become redundant (correlated), the off-diagonal penalty catches it. If features become invariant to the actual content (all zeros), the diagonal penalty catches it.</p>
+
+<p><strong>VICReg</strong> (Bardes et al., 2022) later formalized this even further with three explicit terms: Variance (prevent collapse by ensuring each feature has sufficient spread), Invariance (pull positive pairs together), and Covariance (decorrelate features). Same family of ideas, made even more transparent.</p>
+
+<p>I find Barlow Twins satisfying in a way the other methods aren't. There's no mystery about why it doesn't collapse — the loss function explicitly penalizes the two ways collapse could happen. It's the kind of method where reading the paper once is enough to fully understand it, which is rare in this field.</p>
+
+<!-- ════════════════════════════════════════════ -->
+<h2>DINO — When a Model Learns to See Without Being Told What to Look At</h2>
+
+<p><strong>DINO</strong> — Self-Distillation with No Labels — was published by Caron and colleagues at Facebook AI in 2021, and it produced what I consider the most visually striking result in self-supervised learning.</p>
+
+<p>The architecture is conceptually close to BYOL: a student network and a teacher network (the teacher is an EMA of the student), both processing different augmented views. DINO adds a twist — it uses a Vision Transformer (ViT) as the backbone instead of a CNN, and it uses a centering and sharpening operation on the teacher's output to prevent collapse (an alternative to the predictor head used in BYOL).</p>
+
+<p>But what made DINO famous wasn't the architecture. It was what emerged from the trained model. When you visualize the self-attention maps of a DINO-trained ViT, you see something remarkable: the attention heads learn to segment objects from their backgrounds. A dog stands out sharply from the grass. A car separates cleanly from the street. <em>No segmentation labels were ever provided during training.</em> The model discovered object boundaries purely from the statistical structure of images and the self-supervised objective.</p>
+
+<p>My favorite thing about this result is that, aside from high-level explanations about how contrastive-style objectives encourage the model to focus on "the thing that's consistent across augmentations," no one is completely certain why it works so well. The emergent segmentation wasn't designed into the method. It appeared.</p>
+
+<p><strong>DINOv2</strong> (2023, Meta AI) scaled this up dramatically — larger models, more diverse training data, better augmentation — and produced what many consider the best general-purpose visual feature extractor available today. DINOv2 features transfer well to classification, detection, segmentation, and depth estimation, often matching or beating supervised models trained specifically for those tasks. The cartographer has drawn a genuinely universal map.</p>
+
+<!-- ════════════════════════════════════════════ -->
+<h2>MAE — The BERT of Images</h2>
+
+<p>While contrastive and non-contrastive methods were battling over how to use pairs of augmented views, Kaiming He (who also developed MoCo) took a step back and asked: what if we borrowed BERT's approach directly? In language, masking words and predicting them produced extraordinary representations. Could the same idea work for images?</p>
+
+<p><strong>MAE</strong> — Masked Autoencoders Are Scalable Vision Learners — was published in 2022, and the answer was a resounding yes, but with a twist. Where BERT masks 15% of tokens, MAE masks <strong>75%</strong> of image patches. Three quarters of the image is hidden, and the model has to reconstruct the missing patches from the visible 25%.</p>
+
+<p>The architecture has two parts. A Vision Transformer <strong>encoder</strong> processes only the visible patches — the masked patches aren't fed to it at all, which makes encoding very efficient (you're processing a quarter of the usual input). Then a lightweight <strong>decoder</strong> takes the encoded patches plus learnable mask tokens for the missing positions and reconstructs the full image. The loss is mean squared error on the pixel values of the masked patches only.</p>
+
+<p>Why 75%? I'll be honest — the exact optimal masking ratio is still somewhat empirical. But the intuition is that images have much more spatial redundancy than text. If you mask 15% of an image, a model can fill in the gaps through local interpolation without understanding the global structure. Hide a small patch of sky, and you can guess it's blue from the neighboring patches. But mask 75%? Now the model needs to understand what a dog looks like, what a beach looks like, how they relate spatially — it has to build an actual understanding of the scene to hallucinate three quarters of the image from a few scattered fragments.</p>
+
+<p>MAE is remarkably efficient to train — processing only 25% of patches means the encoder runs four times faster than it would on the full image. It also produces excellent representations that transfer well to downstream tasks, though its strength relative to DINO-style methods varies by task and evaluation protocol.</p>
+
+<!-- ════════════════════════════════════════════ -->
+<h2>Using Representations — Linear Probes and Fine-Tuning</h2>
+
+<p>All the methods we've covered share the same endgame: you get a pretrained encoder that turns raw inputs into useful feature vectors. The question is how to use it. There are two main approaches, and the choice between them reveals something important about the quality of the representations.</p>
+
+<p>A <strong>linear probe</strong> freezes the encoder entirely — no gradient updates — and trains only a single linear layer on top. If this works well, it means the representations are already organized in a way that makes classes linearly separable. Think of our cartography analogy: the map is so well drawn that you can separate neighborhoods with straight lines. Linear probes are the gold standard for evaluating representation quality in research papers.</p>
+
+<p><strong>Fine-tuning</strong> unfreezes the encoder and trains everything end-to-end with a small learning rate. This allows the representations to adapt to the specific task. It almost always gives better downstream performance, but it's more expensive and requires more labeled data. The gap between linear probe accuracy and fine-tuning accuracy tells you how much the representation still needs to be reshaped for the task at hand. A small gap means the self-supervised method learned something close to universally useful.</p>
+
+<p>Yoshua Bengio and colleagues formalized the properties of good representations in a 2013 survey paper. The key properties are: <strong>invariance</strong> to things that don't matter (lighting changes, camera angle, background clutter), <strong>sensitivity</strong> to things that do (object identity, scene type, semantic content), and <strong>disentanglement</strong> — different features capturing different independent factors of variation. Self-supervised methods learn these properties implicitly. Contrastive learning enforces invariance through augmentation. Masking enforces sensitivity to global structure. The cross-correlation objective in Barlow Twins explicitly encourages disentanglement.</p>
+
+<!-- ════════════════════════════════════════════ -->
+<h2>The Full Picture</h2>
+
+<p>If you're still with me, thank you. I hope it was worth it.</p>
+
+<p>We started with a simple problem: labels are expensive, and we wanted to learn useful representations from raw data. We saw how pretext tasks — hiding words, rotating images — were the first approach, clever but limited by hand design. Contrastive learning generalized the idea: learn by knowing what's similar and what's different, driven by the InfoNCE loss. SimCLR made it work elegantly but demanded enormous compute. MoCo decoupled the number of negatives from the batch size with a queue and a momentum encoder, making contrastive learning practical. Then BYOL shocked the field by dropping negatives entirely, relying on architectural asymmetry to prevent collapse. Barlow Twins simplified further, turning collapse prevention into an explicit redundancy-reduction objective. DINO showed that self-supervised ViTs develop emergent segmentation abilities that nobody designed in. And MAE proved that masking 75% of an image and reconstructing it — the simplest possible self-supervised task — produces representations that rival the best contrastive methods.</p>
+
+<p>The progression from SimCLR to MAE looks inevitable in hindsight, but I can assure you it didn't feel that way in real time. Each step was a genuine surprise. That's worth remembering the next time a new method comes along that seems like it shouldn't work.</p>
+
+<p>My hope is that the next time you see someone mention self-supervised pretraining, or representation learning, or contrastive loss, or any of these acronyms — instead of nodding along and changing the subject like I used to — you'll have a pretty solid mental model of what's happening under the hood, why it works, and what the tradeoffs are.</p>
 
 <div class="callout">
-  <strong>The self-supervised progression:</strong> SimCLR proved contrastive learning works at scale (needs huge batches) → MoCo decoupled negatives from batch size (queue + momentum) → BYOL proved negatives aren't needed at all (asymmetry prevents collapse) → Barlow Twins simplified to a pure correlation objective. Each solved a specific limitation of its predecessor.
+  <strong>The self-supervised progression in one breath:</strong> Pretext tasks (hand-designed puzzles) → Contrastive learning via SimCLR (needs massive batches for negatives) → MoCo (queue + momentum decouples negatives from batch size) → BYOL (no negatives needed, asymmetry prevents collapse) → Barlow Twins (explicit redundancy reduction, no tricks) → DINO (self-distillation, emergent segmentation in ViTs) → MAE (mask and reconstruct, the BERT of images). Each method solved a concrete limitation of its predecessor.
 </div>
 
 <!-- ════════════════════════════════════════════ -->
-<h2>Representation Learning: The Actual Goal</h2>
+<h2>Resources</h2>
 
-<p>Everything above is in service of one goal: <strong>learning representations that transfer</strong>. You don't care about predicting masked words or distinguishing augmented cats. You care about getting a feature extractor that works well on tasks you actually care about — sentiment analysis, object detection, medical diagnosis — with minimal labeled data.</p>
+<p>A few things that helped me build the understanding I tried to share above:</p>
 
-<h3>Frozen Features vs. Fine-Tuning</h3>
-
-<p>Once you have a pretrained encoder, there are two ways to use it:</p>
-
-<table>
-  <thead>
-    <tr><th>Strategy</th><th>What You Do</th><th>When to Use</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><strong>Linear probe</strong> (frozen)</td>
-      <td>Freeze encoder, train a linear classifier on top</td>
-      <td>Evaluating representation quality; very small labeled sets</td>
-    </tr>
-    <tr>
-      <td><strong>Fine-tuning</strong></td>
-      <td>Unfreeze encoder, train everything end-to-end with a small learning rate</td>
-      <td>Maximum downstream performance; moderate labeled data</td>
-    </tr>
-  </tbody>
-</table>
-
-<p>The linear probe is the gold standard for measuring how good your representations are. If a linear model can separate classes using only frozen features, those features have captured something genuinely meaningful. The gap between linear probe accuracy and fine-tuning accuracy tells you how much task-specific adaptation the representation still needs.</p>
-
-<p>Good representations tend to be <em>invariant</em> to things that don't matter (lighting, background, camera angle) and <em>sensitive</em> to things that do (object identity, scene type, semantic content). Self-supervised methods learn these properties implicitly through their training objectives — augmentation invariance in contrastive learning, context prediction in language models.</p>
-
-<!-- ════════════════════════════════════════════ -->
-<h2>The Big Picture: Pretrain → Fine-Tune</h2>
-
-<p>Self-supervised pretraining followed by supervised fine-tuning is now the <strong>dominant paradigm</strong> in modern AI. This isn't a niche technique — it's how the most capable systems in the world are built.</p>
-
-<table>
-  <thead>
-    <tr><th>Method</th><th>Key Idea</th><th>Domain</th><th>When to Use</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><strong>Word2Vec / GloVe</strong></td>
-      <td>Predict context words / factorize co-occurrence</td>
-      <td>NLP</td>
-      <td>Lightweight word embeddings, limited compute</td>
-    </tr>
-    <tr>
-      <td><strong>BERT</strong></td>
-      <td>Masked language modeling (bidirectional)</td>
-      <td>NLP</td>
-      <td>Understanding tasks: classification, NER, QA</td>
-    </tr>
-    <tr>
-      <td><strong>GPT</strong></td>
-      <td>Next token prediction (autoregressive)</td>
-      <td>NLP</td>
-      <td>Generation tasks: text, code, dialogue</td>
-    </tr>
-    <tr>
-      <td><strong>SimCLR</strong></td>
-      <td>Contrastive learning with large batches</td>
-      <td>Vision</td>
-      <td>When you have massive compute (TPU pods)</td>
-    </tr>
-    <tr>
-      <td><strong>MoCo</strong></td>
-      <td>Momentum encoder + queue of negatives</td>
-      <td>Vision</td>
-      <td>Contrastive learning on a realistic GPU budget</td>
-    </tr>
-    <tr>
-      <td><strong>BYOL</strong></td>
-      <td>No negatives — asymmetric architecture</td>
-      <td>Vision</td>
-      <td>Small batches, robust to augmentation choices</td>
-    </tr>
-    <tr>
-      <td><strong>Barlow Twins</strong></td>
-      <td>Redundancy reduction via cross-correlation</td>
-      <td>Vision</td>
-      <td>Simplicity; no momentum, no negatives, no asymmetry</td>
-    </tr>
-    <tr>
-      <td><strong>DINO / DINOv2</strong></td>
-      <td>Self-distillation with no labels</td>
-      <td>Vision</td>
-      <td>State-of-the-art vision features; emergent segmentation</td>
-    </tr>
-    <tr>
-      <td><strong>MAE</strong></td>
-      <td>Masked autoencoding (75% patches masked)</td>
-      <td>Vision</td>
-      <td>Efficient pretraining; BERT-style for images</td>
-    </tr>
-  </tbody>
-</table>
-
-<p>In NLP, the pretrain → fine-tune pipeline has been dominant since 2018. In vision, DINO and MAE showed that self-supervised ViTs produce features that rival or beat supervised pretraining — with emergent properties like object segmentation appearing without any segmentation labels. The walls between "unsupervised" and "supervised" are dissolving. Self-supervised learning isn't an alternative to supervised learning. It's the <em>foundation</em> that makes supervised learning work with less data, less cost, and more generalization.</p>
+<ul>
+  <li><strong>Ting Chen et al., "A Simple Framework for Contrastive Learning of Visual Representations" (2020)</strong> — the SimCLR paper. Uncommonly well-written for a research paper, and the ablation studies are worth reading on their own.</li>
+  <li><strong>Kaiming He et al., "Momentum Contrast for Unsupervised Visual Representation Learning" (2020)</strong> — the MoCo paper. The queue idea is one of those things that feels obvious once you hear it and brilliant because nobody did it before.</li>
+  <li><strong>Jean-Bastien Grill et al., "Bootstrap Your Own Latent" (2020)</strong> — the BYOL paper. Read this for the moment when you realize negatives might not be necessary.</li>
+  <li><strong>Mathilde Caron et al., "Emerging Properties in Self-Supervised Vision Transformers" (2021)</strong> — the DINO paper. The attention map visualizations alone are worth the read.</li>
+  <li><strong>Kaiming He et al., "Masked Autoencoders Are Scalable Vision Learners" (2022)</strong> — the MAE paper. Delightfully simple, and the efficiency argument is compelling.</li>
+  <li><strong>Tongzhou Wang and Phillip Isola, "Understanding Contrastive Representation Learning through Alignment and Uniformity on the Hypersphere" (2020)</strong> — the theory paper that finally made contrastive learning click for me.</li>
+</ul>
 
 <!-- ════════════════════════════════════════════ -->
 <h2>What You Should Now Be Able To Do</h2>
 
 <ul class="checklist">
-  <li>Explain why self-supervised learning exists — the labeled data bottleneck — and how it creates supervision from data structure</li>
-  <li>Describe what a pretext task is and give examples in both NLP (masked LM, next-token prediction) and vision (rotation, jigsaw, MAE)</li>
-  <li>Explain contrastive learning: positive pairs, negative pairs, and the InfoNCE loss</li>
-  <li>Compare SimCLR (large batches) vs. MoCo (momentum encoder + queue) and articulate why MoCo was needed</li>
-  <li>Explain how BYOL works without negatives and why asymmetry prevents representation collapse</li>
-  <li>State the Barlow Twins insight: push the cross-correlation matrix toward the identity</li>
-  <li>Distinguish frozen features (linear probe) from fine-tuning and know when to use each</li>
-  <li>Articulate the pretrain → fine-tune paradigm and connect it to BERT, GPT, DINO, and MAE</li>
+  <li>Explain why self-supervised learning exists — the labeled data bottleneck — and how pretext tasks generate supervision from data structure alone</li>
+  <li>Describe what a representation is, and articulate the properties that make one useful: invariance, sensitivity, and disentanglement</li>
+  <li>Walk through contrastive learning from scratch: positive pairs, negative pairs, InfoNCE loss, and why temperature matters</li>
+  <li>Compare SimCLR (large batches, simple architecture) vs. MoCo (momentum encoder + queue) and explain why the queue was necessary</li>
+  <li>Explain how BYOL works without negatives, what representation collapse is, and why the predictor head plus stop-gradient prevents it</li>
+  <li>Describe Barlow Twins' cross-correlation objective and how it prevents collapse explicitly through redundancy reduction</li>
+  <li>Explain what DINO and MAE do, and why emergent segmentation in DINO and 75% masking in MAE were surprising results</li>
+  <li>Distinguish linear probes from fine-tuning as evaluation strategies and know what the gap between them reveals</li>
+  <li>Articulate the full pretrain → fine-tune paradigm and trace the progression from pretext tasks through contrastive methods to modern approaches</li>
 </ul>
 
 <div class="page-nav">
