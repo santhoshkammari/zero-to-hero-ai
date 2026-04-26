@@ -301,226 +301,298 @@
 
 <div class="tldr">
   <div class="tldr-label">TL;DR</div>
-  <p>Probability is the language ML models think in. Every prediction is a probability distribution. Every loss function is a negative log-likelihood in disguise. Bayes' theorem tells you how to update beliefs when new data arrives — and its mechanics underpin everything from spam filters to large language models. Distributions are your toolkit: Gaussians dominate because of the Central Limit Theorem, Beta and Dirichlet distributions are your go-to priors, and understanding when to reach for each one separates fluent practitioners from people who just call <code>sklearn.fit()</code>. MLE gives you point estimates by maximizing likelihood; MAP adds a prior and gives you regularization for free (Gaussian prior = L2, Laplace prior = L1). Hypothesis testing tells you whether your model improvement is real or noise. This section is the probabilistic backbone that holds together everything else in this book.</p>
+  <p>Probability is the language your ML models are actually thinking in — you may not realize it, but every prediction is a distribution and every loss function is a negative log-likelihood wearing a costume. Bayes' theorem tells you how to update beliefs as data arrives, and it runs everything from spam filters to GPT. Distributions are your toolkit: learn which one to reach for and you stop being someone who calls <code>model.fit()</code> and starts being someone who understands what happens inside. MLE derives your loss functions. MAP gives you regularization. The CLT explains why SGD works. This section is the probabilistic backbone that holds the rest of the book together.</p>
 </div>
+
+<!-- ═══════ Opening ═══════ -->
+
+<h2 id="opening">The Topic I Kept Putting Off</h2>
+
+<p>I'll be honest with you. I avoided probability for a long time.</p>
+
+<p>I could train models. I could tune hyperparameters. I could read papers and nod along at the math. But when someone asked me to derive a loss function from first principles, or explain why L2 regularization corresponds to a Gaussian prior, I'd change the subject. I had memorized formulas without understanding where they came from. That worked fine until it didn't — until a colleague asked me why our fraud detector's 99.5% accuracy was meaningless, and I couldn't explain it without hand-waving.</p>
+
+<p>So I sat down and actually learned this material. Not from a textbook cover-to-cover — I tried that and bounced off. I learned it the way practitioners learn things: by running into a wall, backing up, finding the piece of math that explains the wall, and then moving forward again. That's what we're going to do here.</p>
+
+<p><b>Probability</b> is the mathematics of uncertainty. <b>Statistics</b> is the practice of drawing conclusions from data in the face of that uncertainty. Together, they form the foundation that ML is built on. Every model output is a probability distribution. Every loss function is a likelihood in disguise. Every regularization term is a prior belief about parameters. Every training run is an optimization over a probabilistic objective. You can use ML without knowing any of this — plenty of people do — but you will hit ceilings that you cannot break through without it.</p>
+
+<p>A heads-up on prerequisites: we'll assume comfort with basic Python, NumPy, and the mathematical notation from earlier sections. If you know what a derivative is and what a matrix does, you're ready. Everything else we define as we go.</p>
+
+<p>We're going to thread a single running example through this entire section: building a <b>spam filter</b>. We'll start with three emails and gradually make it smarter. Every concept we introduce earns its place by making our filter better. By the end, you'll see how a few probability rules connect to loss functions, regularization, Bayesian inference, and even the architecture of GPT. Let's go.</p>
+
+<p><b>What we'll cover:</b></p>
+<ul>
+  <li><a href="#probability-fundamentals">The Language of Uncertainty</a> — sample spaces, events, and two philosophies</li>
+  <li><a href="#conditional-probability">Conditional Probability</a> — where the mistakes live</li>
+  <li><a href="#bayes-theorem">Bayes' Theorem</a> — the one equation</li>
+  <li><a href="#rest-stop">Rest Stop</a> — permission to breathe</li>
+  <li><a href="#random-variables">Random Variables</a> — turning events into numbers</li>
+  <li><a href="#distributions">The Distribution Toolkit</a> — which one and why</li>
+  <li><a href="#expectation-variance">Expectation, Variance, and Friends</a></li>
+  <li><a href="#key-theorems">The Two Theorems That Make ML Work</a></li>
+  <li><a href="#mle-map">MLE and MAP</a> — where loss functions come from</li>
+  <li><a href="#bayesian-inference">Bayesian Inference</a> — the full picture</li>
+  <li><a href="#hypothesis-testing">Hypothesis Testing and A/B Testing</a></li>
+  <li><a href="#descriptive-statistics">Descriptive Statistics and Resampling</a></li>
+  <li><a href="#concentration-inequalities">Concentration Inequalities</a></li>
+  <li><a href="#gmm">Gaussian Mixture Models</a></li>
+  <li><a href="#causal-inference">Causal Inference</a></li>
+  <li><a href="#wrap-up">Wrap-Up</a></li>
+</ul>
 
 <!-- ═══════ 1. Probability Fundamentals ═══════ -->
 
-<h2 id="probability-fundamentals">Probability Fundamentals</h2>
+<h2 id="probability-fundamentals">The Language of Uncertainty</h2>
 
-<p>The <b>sample space</b> Ω is the set of all possible outcomes of an experiment. An <b>event</b> is a subset of the sample space. Probability assigns a number between 0 and 1 to each event, following three axioms: (1) P(A) &gt;= 0 for any event A, (2) P(Ω) = 1, and (3) for mutually exclusive events, P(A ∪ B) = P(A) + P(B). Everything else in probability theory is built on these three axioms. If you have ever wondered why probabilities must add to one — it is axiom 2. If you have wondered why P(not A) = 1 - P(A) — it follows from axioms 2 and 3.</p>
+<p>Let's start with three emails sitting in an inbox. One is from a friend. One is a newsletter. One is trying to sell discount pharmaceuticals. We want to build a classifier that labels each one as spam or not-spam. To do that, we need a language for talking about uncertain outcomes — and that language is probability.</p>
 
-<h3 id="frequentist-vs-bayesian">Frequentist vs Bayesian</h3>
+<h3 id="sample-space-events">Sample Space, Events, and Probabilities</h3>
 
-<p>Two camps interpret probability differently. <b>Frequentists</b> say probability is the long-run frequency of an event: flip a coin a million times, the fraction of heads converges to the probability of heads. <b>Bayesians</b> say probability is a degree of belief: before flipping the coin at all, you can assign a probability to heads based on your prior knowledge about the coin. In ML, this distinction matters. MLE is frequentist — it finds the parameters that best explain the observed data. MAP and full Bayesian inference are Bayesian — they incorporate prior beliefs and produce distributions over parameters, not point estimates. Most modern ML is pragmatic: use whichever interpretation gives you a better model.</p>
+<p>The <b>sample space</b> Ω is the set of all things that could happen. For a single email, our sample space is {spam, not-spam}. For three emails, it's every possible combination of labels — eight possibilities in total. An <b>event</b> is any subset of the sample space: "at least one email is spam" is an event, "all three are spam" is another.</p>
 
-<h3 id="conditional-probability">Conditional Probability</h3>
+<p>Probability assigns a number between 0 and 1 to each event. Three axioms govern everything: probabilities are non-negative, the probability of the entire sample space is 1, and the probability of mutually exclusive events adds up. That's it. Every theorem we'll see — Bayes' theorem, the law of total probability, everything — is a consequence of these three rules. The entire edifice stands on a foundation you can state in one sentence.</p>
 
-<p>This is where probability gets interesting and where most mistakes happen. The <b>conditional probability</b> P(A|B) is the probability of event A given that event B has occurred. The formula is:</p>
+<p>If we know that roughly 45% of all email is spam (a real-world estimate), we can assign P(spam) = 0.45 for a random email. But what does that number <i>mean</i>? That depends on who you ask.</p>
 
-<p>P(A|B) = P(A ∩ B) / P(B)</p>
+<h3 id="frequentist-vs-bayesian">Two Philosophies: Frequentist and Bayesian</h3>
 
-<p>Read it as: out of all the worlds where B happened, what fraction also had A? That denominator P(B) is doing critical work — it restricts the universe to only the outcomes where B is true. This is exactly what happens when you condition on data in ML. You have a model with parameters θ, you observe data D, and you want P(θ|D) — what should I believe about my parameters given what I have seen?</p>
+<p>A <b>frequentist</b> says P(spam) = 0.45 means: if you drew a billion random emails, about 45% would be spam. Probability is a long-run frequency. You don't get to assign probabilities to one-time events — asking "what's the probability this specific email is spam?" doesn't make sense in a strict frequentist worldview because it either is or it isn't.</p>
 
-<p>Here is the trap that catches even experienced practitioners. P(A|B) is not the same as P(B|A). The probability that a person has a fever given they have the flu is high. The probability that a person has the flu given they have a fever is much lower — fevers have many causes. Confusing the two is called the <b>prosecutor's fallacy</b>, and it has literally sent innocent people to prison. In ML terms: the probability of observing your data given a particular model (the likelihood) is not the same as the probability of the model given the data (the posterior). Bayes' theorem is what converts between them.</p>
+<p>A <b>Bayesian</b> says P(spam) = 0.45 means: given everything I know right now, my degree of belief that this email is spam is 0.45. Probability is a state of knowledge, not a physical frequency. This lets you reason about one-off events, update beliefs as evidence arrives, and put probability distributions over model parameters.</p>
+
+<p>In ML, the divide matters. MLE is frequentist — it finds parameters that best explain the observed data, full stop. MAP and full Bayesian inference are Bayesian — they fold in prior beliefs and produce distributions over parameters. Most practitioners are pragmatic: they use whichever interpretation produces a better model. I lean Bayesian because it gives me a natural framework for regularization and uncertainty, but I use MLE every day. The math is the same either way.</p>
+
+<p>Back to our spam filter. We have three emails. We've observed some features: whether the email contains the word "free," whether it has an attachment, whether the sender is in our contacts. Now we need to talk about what happens when we have partial information — when we know something about the email and want to update our beliefs. That's conditional probability.</p>
+
+<!-- ═══════ 2. Conditional Probability ═══════ -->
+
+<h2 id="conditional-probability">Conditional Probability — Where the Mistakes Live</h2>
+
+<p>Suppose we know an email contains the word "free." Does that change our belief about whether it's spam? It should. Emails with "free" are more likely to be spam than emails without it. <b>Conditional probability</b> formalizes this: P(A|B) is the probability of A given that B has happened.</p>
+
+<p>The definition: P(A|B) = P(A ∩ B) / P(B). Read it as: out of all the scenarios where B occurred, what fraction also had A? The denominator P(B) restricts the universe to only the outcomes where B is true. It's a simple ratio, but it's the workhorse of all probabilistic reasoning.</p>
+
+<p>For our spam filter: P(spam | "free") = P(spam AND "free") / P("free"). If 40% of all emails are spam-with-"free" and 50% of all emails contain "free," then P(spam | "free") = 0.40 / 0.50 = 0.80. Knowing the email contains "free" pushed our spam belief from 0.45 to 0.80. That's conditioning in action.</p>
+
+<h3 id="the-swap-trap">The Trap: P(A|B) ≠ P(B|A)</h3>
+
+<p>I'll be honest — I confused P(A|B) with P(B|A) for years. Not in a "I don't know the definitions" way. In a "my gut instinct keeps swapping them" way. And I'm not alone. This confusion has a name: the <b>prosecutor's fallacy</b>, and it has sent innocent people to prison.</p>
+
+<p>P(contains "free" | spam) is high — spammers love the word "free." But P(spam | contains "free") is a different question entirely. Plenty of legitimate emails also use the word "free" — free trials, free shipping, "feel free to reach out." The probability of seeing a feature given a class is the <b>likelihood</b>. The probability of a class given a feature is the <b>posterior</b>. These are not the same thing, and Bayes' theorem is what converts between them.</p>
+
+<p>In ML terms: P(data | model) is the likelihood — easy to compute from your model. P(model | data) is the posterior — what you actually want. Every time you train a model, you're wrestling with this distinction.</p>
 
 <div class="callout callout-warning">
-  <b>The Conditioning Trap:</b> Whenever you see P(A|B), ask yourself: "Am I sure I'm not accidentally thinking about P(B|A)?" This single confusion causes more errors in probabilistic reasoning than any other mistake.
+  <b>The swap test:</b> Whenever you see P(A|B), pause and ask: "Am I sure I'm not accidentally thinking about P(B|A)?" This single error causes more broken probabilistic reasoning than anything else. It shows up in medical diagnoses, legal proceedings, spam filters, and ML model evaluation.
 </div>
 
-<h3 id="independence">Independence</h3>
+<h3 id="independence">Independence and Conditional Independence</h3>
 
-<p>Two events A and B are <b>independent</b> if knowing that one occurred gives you no information about the other: P(A|B) = P(A), or equivalently, P(A ∩ B) = P(A) * P(B). Flipping two separate fair coins gives independent events. Independence is a strong assumption, and ML uses it constantly. Naive Bayes assumes all features are conditionally independent given the class label — obviously false for most real data, yet it works surprisingly well because the classification boundary is robust even when the probability estimates are poor.</p>
+<p>Two events A and B are <b>independent</b> if knowing one tells you nothing about the other: P(A|B) = P(A), or equivalently P(A ∩ B) = P(A) · P(B). Flipping two coins gives independent events. Knowing the first landed heads tells you nothing about the second.</p>
 
-<p><b>Conditional independence</b> is more nuanced: A and B are conditionally independent given C if P(A ∩ B | C) = P(A|C) * P(B|C). Two symptoms might be correlated in the general population but conditionally independent given the underlying disease. Graphical models (Bayesian networks) are built entirely on conditional independence assumptions — they factor a joint distribution into smaller, manageable pieces.</p>
+<p>ML uses independence assumptions aggressively. Naive Bayes — the algorithm behind many early spam filters — assumes all features are <b>conditionally independent</b> given the class label. That is: P(has "free", has attachment, not in contacts | spam) = P(has "free" | spam) · P(has attachment | spam) · P(not in contacts | spam). This is a wild assumption. The word "free" and having an attachment are absolutely correlated in spam. Yet Naive Bayes works surprisingly well because it gets the classification boundary roughly right even when the probability estimates are garbage.</p>
 
-<h3 id="bayes-theorem">Bayes' Theorem</h3>
+<p><b>Conditional independence</b> is subtler: A and B are conditionally independent given C if P(A, B | C) = P(A|C) · P(B|C). Two symptoms might be correlated in the general population but conditionally independent given the disease. Bayesian networks are built entirely on conditional independence — they factor enormous joint distributions into small, tractable pieces.</p>
 
-<p>Bayes' theorem is arguably the single most important equation in machine learning. It combines conditional probability with the law of total probability to reverse the direction of conditioning:</p>
+<h3 id="chain-rule-probability">The Chain Rule and Autoregressive Models</h3>
 
-<p>P(θ|D) = P(D|θ) * P(θ) / P(D)</p>
+<p>The <b>chain rule of probability</b> decomposes any joint distribution into a product of conditionals: P(A, B, C) = P(A) · P(B|A) · P(C|A, B). For n variables: P(x₁, x₂, ..., xₙ) = P(x₁) · P(x₂|x₁) · P(x₃|x₁,x₂) · ... · P(xₙ|x₁,...,xₙ₋₁). This isn't an assumption — it's a mathematical identity. It always holds.</p>
 
-<p>Each piece has a name and a role:</p>
+<p>This is exactly how GPT works. It factors the probability of a text sequence as: P(token₁) · P(token₂|token₁) · P(token₃|token₁,token₂) · ... Each token is predicted conditioned on all previous tokens. The chain rule guarantees this factorization is exact — no information lost. The model's job is to estimate each conditional well. WaveNet does the same for audio. PixelCNN for images. Autoregressive models are the chain rule turned into neural network architecture.</p>
+
+<p>Our spam filter could use the chain rule too. Instead of assuming features are independent (Naive Bayes), we could model P(has "free", has attachment, not in contacts | spam) = P(has "free" | spam) · P(has attachment | has "free", spam) · P(not in contacts | has "free", has attachment, spam). That's more accurate, but we need exponentially more data to estimate all those conditionals. The Naive Bayes independence assumption is wrong, but it keeps us from drowning in data requirements. Every modeling choice is a tradeoff like this.</p>
+
+<!-- ═══════ 3. Bayes' Theorem ═══════ -->
+
+<h2 id="bayes-theorem">Bayes' Theorem — The One Equation</h2>
+
+<p>We've been building to this. We know P(A|B) = P(A ∩ B) / P(B). We also know P(B|A) = P(A ∩ B) / P(A). Both expressions share P(A ∩ B) in the numerator. Set them equal and rearrange:</p>
+
+<p><b>P(A|B) = P(B|A) · P(A) / P(B)</b></p>
+
+<p>That's Bayes' theorem. It tells you how to flip a conditional — how to go from P(B|A) to P(A|B). In ML notation, with parameters θ and data D:</p>
+
+<p><b>P(θ|D) = P(D|θ) · P(θ) / P(D)</b></p>
 
 <table>
 <thead>
-<tr><th>Term</th><th>Name</th><th>What It Represents</th></tr>
+<tr><th>Term</th><th>Name</th><th>Role</th></tr>
 </thead>
 <tbody>
-<tr><td>P(θ|D)</td><td><b>Posterior</b></td><td>What you believe about θ after seeing data D</td></tr>
+<tr><td>P(θ|D)</td><td><b>Posterior</b></td><td>What you believe about θ after seeing data</td></tr>
 <tr><td>P(D|θ)</td><td><b>Likelihood</b></td><td>How probable the data is under a specific θ</td></tr>
-<tr><td>P(θ)</td><td><b>Prior</b></td><td>What you believed about θ before seeing any data</td></tr>
-<tr><td>P(D)</td><td><b>Evidence</b></td><td>Total probability of data across all possible θ (normalizing constant)</td></tr>
+<tr><td>P(θ)</td><td><b>Prior</b></td><td>What you believed about θ before seeing data</td></tr>
+<tr><td>P(D)</td><td><b>Evidence (marginal likelihood)</b></td><td>Normalizing constant — sum of likelihood × prior over all θ</td></tr>
 </tbody>
 </table>
 
-<p>The posterior is proportional to the likelihood times the prior. The evidence P(D) is just a normalizing constant that ensures the posterior integrates to one. In many applications, you never compute it explicitly — you work with the unnormalized posterior and normalize at the end (or avoid normalization entirely, as in MAP estimation).</p>
+<h3 id="courtroom-analogy">The Courtroom Analogy</h3>
 
-<p>Here is the deep intuition. The prior encodes what you knew before the experiment. The likelihood encodes what the data tells you. The posterior is their compromise. With little data, the prior dominates — your beliefs barely budge. With lots of data, the likelihood dominates — the data overwhelms your prior. This is exactly the behavior you want: be cautious with small samples, be data-driven with large ones.</p>
+<p>Think of a courtroom. The <b>prior</b> is "innocent until proven guilty" — your starting assumption before any evidence is presented. The <b>likelihood</b> is the testimony: given that the defendant committed the crime, how probable is this evidence? The <b>posterior</b> is the jury's verdict: given all the evidence, how confident are we in guilt? Bayes' theorem is the rational process of moving from the presumption of innocence to a verdict, weighted by the strength of the evidence.</p>
 
-<p>Let us make this concrete with the classic medical test example, which illustrates the <b>base rate fallacy</b> — one of the most counterintuitive results in all of probability.</p>
+<p>With little evidence, the prior dominates — the jury should lean toward innocence. With overwhelming evidence, the likelihood dominates — the data overwhelms the prior. This is exactly the behavior we want in ML: be cautious with small datasets, be data-driven with large ones.</p>
 
-<p>Scenario: a disease affects 1 in 1,000 people. A test for the disease has 99% sensitivity (P(positive|disease) = 0.99) and 95% specificity (P(negative|no disease) = 0.95). You test positive. What is the probability you actually have the disease?</p>
+<p>I keep coming back to this analogy. Weather forecasting works the same way: your prior is yesterday's forecast, the evidence is today's satellite data, and the posterior is the updated forecast. Every time you check the weather app and see the rain probability change from 30% to 70% after new radar data, you're watching Bayes' theorem in action.</p>
 
-<p>Most people guess 99% or 95%. The real answer is about 2%. Let us see why.</p>
+<h3 id="base-rate-fallacy">The Medical Test Example (Base Rate Fallacy)</h3>
+
+<p>This is the example that made Bayes' theorem click for me — and the result genuinely shocked me the first time I worked through it.</p>
+
+<p>A disease affects 1 in 1,000 people. A test has 99% sensitivity (P(positive|disease) = 0.99) and 95% specificity (P(negative|no disease) = 0.95). You test positive. What's the probability you actually have the disease?</p>
+
+<p>Most people — doctors included, studies have shown — guess 95% or 99%. The real answer is about 2%.</p>
 
 <pre><code>import numpy as np
 
-# --- Bayes' theorem: medical test example ---
-prevalence = 0.001           # P(disease) — the prior (base rate)
+# Bayes' theorem: the medical test that humbles everyone
+prevalence = 0.001           # P(disease) — the base rate
 sensitivity = 0.99           # P(positive | disease) — true positive rate
-specificity = 0.95           # P(negative | no disease) — true negative rate
+specificity = 0.95           # P(negative | no disease)
 false_positive_rate = 1 - specificity  # P(positive | no disease) = 0.05
 
-# P(positive) — total probability of testing positive (the evidence)
+# Law of total probability: P(positive)
 p_positive = (sensitivity * prevalence) + (false_positive_rate * (1 - prevalence))
-# = 0.99 * 0.001 + 0.05 * 0.999
-# = 0.00099 + 0.04995
-# = 0.05094
 
 # Bayes' theorem: P(disease | positive)
 p_disease_given_positive = (sensitivity * prevalence) / p_positive
 
-print(f"P(positive)        = {p_positive:.5f}")
+print(f"P(positive)         = {p_positive:.5f}")
 print(f"P(disease|positive) = {p_disease_given_positive:.4f}")
 # P(disease|positive) ≈ 0.0194 — less than 2%!
 
-# Why? Out of 100,000 people:
+# The counting approach makes it vivid:
 n = 100_000
-sick = int(n * prevalence)          # 100 actually have the disease
-healthy = n - sick                   # 99,900 are healthy
-true_positives = int(sick * sensitivity)        # 99 correctly flagged
+sick = int(n * prevalence)                        # 100 actually sick
+healthy = n - sick                                 # 99,900 healthy
+true_positives = int(sick * sensitivity)           # 99 caught correctly
 false_positives = int(healthy * false_positive_rate)  # 4,995 false alarms
 
 print(f"\nOut of {n:,} people:")
-print(f"  True positives:  {true_positives}")
-print(f"  False positives: {false_positives}")
-print(f"  Total positives: {true_positives + false_positives}")
-print(f"  Precision:       {true_positives / (true_positives + false_positives):.4f}")</code></pre>
+print(f"  Actually sick who test positive:  {true_positives}")
+print(f"  Healthy who test positive:        {false_positives}")
+print(f"  Total positive tests:             {true_positives + false_positives}")
+print(f"  Chance you're actually sick:      {true_positives/(true_positives+false_positives):.1%}")</code></pre>
 
-<p>The key insight: when the base rate (prior) is very low, even a highly accurate test produces far more false positives than true positives. Out of ~5,094 positive tests, only ~99 actually have the disease. The false alarms swamp the real cases. This is exactly why you should not train a fraud detection model on data where fraud is 0.01% of transactions and then celebrate 99% accuracy — the model could be predicting "not fraud" for everything.</p>
+<p>The intuition: the disease is so rare that the 5% false positive rate on the huge healthy population generates far more positive tests than the 99% true positive rate on the tiny sick population. The false alarms swamp the real cases. The <b>base rate</b> (prior prevalence) matters enormously, and ignoring it is called the <b>base rate fallacy</b>.</p>
 
-<div class="callout callout-info">
-  <b>In ML terms:</b> Base rate fallacy is why class imbalance destroys naive accuracy metrics. A spam filter with 0.1% spam prevalence can hit 99.9% accuracy by never predicting spam. Precision and recall exist precisely to combat this — they are Bayesian reasoning applied to classifier evaluation.
-</div>
+<p>Now bring it back to our spam filter. If only 0.1% of emails are spam in some corporate inbox, a filter with 99% precision still generates mountains of false positives. This is why class imbalance destroys naive accuracy metrics. A model that predicts "not spam" for everything hits 99.9% accuracy. Precision and recall exist to combat exactly this problem — they are Bayesian reasoning applied to classifier evaluation.</p>
 
-<h3 id="law-of-total-probability">Law of Total Probability</h3>
+<h3 id="law-of-total-probability">The Law of Total Probability</h3>
 
-<p>If you have a set of mutually exclusive, exhaustive events B1, B2, ..., Bn (they partition the sample space), then for any event A:</p>
+<p>We used it above without naming it. If events B₁, B₂, ..., Bₙ partition the sample space (they're mutually exclusive and exhaustive), then for any event A:</p>
 
-<p>P(A) = P(A|B1)*P(B1) + P(A|B2)*P(B2) + ... + P(A|Bn)*P(Bn)</p>
+<p>P(A) = P(A|B₁)·P(B₁) + P(A|B₂)·P(B₂) + ... + P(A|Bₙ)·P(Bₙ)</p>
 
-<p>This is what we used in the denominator of Bayes' theorem above — P(positive) was computed by summing over the two cases: have the disease and do not have the disease. The law of total probability lets you break a complicated probability into simpler conditional pieces. In ML, you use it when marginalizing: P(y) = Σ_x P(y|x)*P(x) for discrete variables, or the integral for continuous ones. Every time you sum out a latent variable, you are applying this law.</p>
+<p>We computed P(positive) by summing over two cases: sick and healthy. That's the law of total probability. In ML, this shows up every time you marginalize: P(y) = Σₓ P(y|x)·P(x). Every time you sum out a latent variable — in EM, in VAEs, in mixture models — you're applying this law.</p>
 
-<h3 id="chain-rule-probability">Chain Rule of Probability</h3>
+<!-- ═══════ Rest Stop ═══════ -->
 
-<p>The <b>chain rule</b> (not to be confused with the calculus chain rule) lets you decompose any joint probability into a product of conditionals:</p>
+<h2 id="rest-stop">Rest Stop</h2>
 
-<p>P(A, B, C) = P(A) * P(B|A) * P(C|A, B)</p>
+<p>Take a breath. We've covered a lot of ground.</p>
 
-<p>For n variables: P(x1, x2, ..., xn) = P(x1) * P(x2|x1) * P(x3|x1,x2) * ... * P(xn|x1,...,xn-1). This is not an assumption — it is a mathematical identity that always holds. The magic happens when you choose a smart ordering.</p>
+<p>If you stopped right here, you'd know: what probability is and the two philosophies behind it. How to compute conditional probabilities and avoid the deadly P(A|B) ≠ P(B|A) swap. Bayes' theorem and why base rates matter. The chain rule that powers autoregressive models like GPT. The law of total probability that drives marginalization in every latent variable model.</p>
 
-<p>This is exactly how <b>autoregressive models</b> work. GPT generates text by factoring the probability of a sequence as: P(token1) * P(token2|token1) * P(token3|token1,token2) * ... Each token is predicted conditioned on all previous tokens. The chain rule guarantees this factorization is exact — no information is lost. The model just needs to be good at estimating each conditional. WaveNet does the same for audio. PixelCNN does it for images, predicting each pixel conditioned on all previously generated pixels.</p>
+<p>That's a genuine foundation. If you need to take a break, take a break. Everything after this builds on what you've already learned, but nothing before this point requires what comes next. You have a complete, self-contained toolkit for reasoning under uncertainty.</p>
 
-<!-- ═══════ 2. Random Variables ═══════ -->
+<p>What's ahead: we'll turn events into numbers (random variables), meet the family of distributions that every model assumes, see where loss functions and regularization really come from, and learn to test whether our model improvements are real or noise. The second half is where the ML connections get dense. Ready? Let's keep going.</p>
 
-<h2 id="random-variables">Random Variables</h2>
+<!-- ═══════ 4. Random Variables ═══════ -->
 
-<p>A <b>random variable</b> is a function that maps outcomes in the sample space to numbers. It is the bridge between abstract probability (events like "the coin lands heads") and the numbers we actually compute with. <b>Discrete</b> random variables take on countable values (number of heads in 10 flips). <b>Continuous</b> random variables take on uncountable values in an interval (the exact weight of a randomly chosen person).</p>
+<h2 id="random-variables">Random Variables — Turning Events into Numbers</h2>
+
+<p>Our spam filter currently thinks in events: "this email is spam." But to do computation — to optimize, to differentiate, to train a model — we need numbers. A <b>random variable</b> is the bridge: it's a function that assigns a number to each outcome. X = 1 if spam, X = 0 if not-spam. Now we can do math.</p>
+
+<h3 id="discrete-vs-continuous">Discrete vs. Continuous</h3>
+
+<p><b>Discrete</b> random variables take countable values: the number of spam emails in a batch, the number of heads in 10 coin flips. <b>Continuous</b> random variables take uncountably many values in an interval: the spam probability output of a logistic regression model (any number in [0, 1]), or the loss on a single training example (any non-negative real number).</p>
 
 <h3 id="pmf-pdf-cdf">PMF, PDF, CDF</h3>
 
-<p>A discrete random variable is described by its <b>probability mass function</b> (PMF): P(X = x) for each possible value x. The values are non-negative and sum to one. A continuous random variable is described by its <b>probability density function</b> (PDF): f(x). The PDF is <i>not</i> a probability — it can be greater than 1. Probabilities come from integrating the PDF over an interval: P(a &lt; X &lt; b) = ∫[a,b] f(x) dx. The probability of any single exact value is zero for continuous variables.</p>
+<p>A discrete random variable is described by its <b>probability mass function</b> (PMF): P(X = x) for each possible value x. Values are non-negative and sum to one. Our spam/not-spam variable has a two-point PMF: P(X=1) = 0.45, P(X=0) = 0.55.</p>
 
-<p>The <b>cumulative distribution function</b> (CDF) works for both discrete and continuous: F(x) = P(X ≤ x). It starts at 0, ends at 1, and is non-decreasing. The CDF of a continuous variable is the integral of its PDF. The CDF is underrated in practice — it tells you directly what fraction of your data falls below a threshold, which is useful for percentile calculations, hypothesis testing, and generating random samples via the inverse CDF method.</p>
+<p>A continuous random variable is described by its <b>probability density function</b> (PDF): f(x). Here's the thing that tripped me up early on — the PDF is <i>not</i> a probability. It can be greater than 1. Probabilities come from integrating the PDF over an interval: P(a &lt; X &lt; b) = ∫f(x)dx from a to b. The probability of any single exact value is zero for a continuous variable, which feels weird but is mathematically necessary.</p>
 
-<h3 id="joint-marginal-conditional">Joint, Marginal, and Conditional Distributions</h3>
+<p>The <b>cumulative distribution function</b> (CDF) works for both types: F(x) = P(X ≤ x). It starts at 0, ends at 1, and never decreases. The CDF is underappreciated — it directly tells you what fraction of data falls below a threshold, powers percentile calculations, and enables random sampling via the inverse CDF method.</p>
 
-<p>When you have two random variables X and Y, their <b>joint distribution</b> P(X, Y) describes the probability of every (x, y) pair. The <b>marginal distribution</b> P(X) is obtained by summing (or integrating) out Y: P(X = x) = Σ_y P(X = x, Y = y). The <b>conditional distribution</b> P(Y|X) tells you the distribution of Y given a specific value of X.</p>
+<h3 id="joint-marginal-conditional-dists">Joint, Marginal, and Conditional Distributions</h3>
 
-<p>This connects directly to the fundamental split in ML models. <b>Discriminative models</b> learn P(Y|X) directly — given features X, what is the distribution over labels Y? Logistic regression, neural networks, SVMs (with probabilistic outputs). <b>Generative models</b> learn the joint P(X, Y) = P(X|Y) * P(Y), which means they model how the data was generated. Naive Bayes, GANs, VAEs, diffusion models. The generative approach lets you sample new data, detect outliers, and handle missing features — but it requires modeling the much harder distribution P(X), the distribution over the entire input space.</p>
+<p>With two random variables X and Y, their <b>joint distribution</b> P(X, Y) describes every (x, y) pair. The <b>marginal</b> P(X) sums out Y: P(X=x) = Σ_y P(X=x, Y=y). The <b>conditional</b> P(Y|X) tells you Y's distribution given a specific X.</p>
 
-<!-- ═══════ 3. Distributions — The Toolkit ═══════ -->
+<p>This maps directly to ML's fundamental modeling split. <b>Discriminative models</b> learn P(Y|X) — given features, predict the label. Logistic regression, neural networks, SVMs. <b>Generative models</b> learn the joint P(X, Y), which means modeling how data is created. Naive Bayes, GANs, VAEs, diffusion models. The generative path lets you sample new data and detect outliers, but requires modeling P(X) — the distribution over the entire input space — which is much harder.</p>
 
-<h2 id="distributions">Distributions — The Toolkit</h2>
+<!-- ═══════ 5. Distributions ═══════ -->
 
-<p>Every ML model either assumes a distribution or implicitly defines one. Knowing which distribution to reach for — and why — is a core practitioner skill. Here is your reference table.</p>
+<h2 id="distributions">The Distribution Toolkit</h2>
 
-<h3 id="distribution-table">Which Distribution When</h3>
+<p>Every ML model either assumes a distribution or implicitly defines one. The Gaussian noise assumption gives you MSE loss. The Bernoulli assumption gives you cross-entropy. The choice of distribution is a modeling decision with real consequences, and understanding your options is what separates someone who can tune hyperparameters from someone who can design a model from scratch.</p>
+
+<h3 id="distribution-table">Reference: Which Distribution When</h3>
 
 <table>
 <thead>
-<tr><th>Distribution</th><th>Type</th><th>Support</th><th>Use Case</th><th>ML Example</th></tr>
+<tr><th>Distribution</th><th>Type</th><th>Support</th><th>Use Case</th><th>ML Connection</th></tr>
 </thead>
 <tbody>
-<tr><td><b>Bernoulli</b></td><td>Discrete</td><td>{0, 1}</td><td>Single yes/no trial</td><td>Binary classification output</td></tr>
-<tr><td><b>Binomial</b></td><td>Discrete</td><td>{0, 1, ..., n}</td><td>Count of successes in n trials</td><td>Number of correct predictions in batch</td></tr>
-<tr><td><b>Categorical</b></td><td>Discrete</td><td>{1, ..., K}</td><td>Single draw from K classes</td><td>Softmax output (single prediction)</td></tr>
-<tr><td><b>Multinomial</b></td><td>Discrete</td><td>Count vectors</td><td>Counts across K categories in n trials</td><td>Bag-of-words document model</td></tr>
-<tr><td><b>Geometric</b></td><td>Discrete</td><td>{1, 2, 3, ...}</td><td>Number of trials until first success</td><td>Number of samples until rare event</td></tr>
-<tr><td><b>Poisson</b></td><td>Discrete</td><td>{0, 1, 2, ...}</td><td>Count of events in fixed interval</td><td>Word counts, event-rate modeling</td></tr>
-<tr><td><b>Uniform</b></td><td>Continuous</td><td>[a, b]</td><td>All values equally likely</td><td>Random initialization, uninformative prior</td></tr>
-<tr><td><b>Gaussian</b></td><td>Continuous</td><td>(-∞, ∞)</td><td>Naturally occurring measurements</td><td>Weight init, noise model, latent space</td></tr>
-<tr><td><b>Multivariate Gaussian</b></td><td>Continuous</td><td>R^d</td><td>Correlated continuous data</td><td>GMMs, VAE latent space, GPs</td></tr>
-<tr><td><b>Exponential</b></td><td>Continuous</td><td>[0, ∞)</td><td>Time between events</td><td>Survival analysis, time-to-event</td></tr>
-<tr><td><b>Beta</b></td><td>Continuous</td><td>[0, 1]</td><td>Probability of a probability</td><td>Prior for Bernoulli/Binomial parameters</td></tr>
-<tr><td><b>Gamma</b></td><td>Continuous</td><td>(0, ∞)</td><td>Positive continuous quantities</td><td>Prior for Poisson rate, precision</td></tr>
-<tr><td><b>Dirichlet</b></td><td>Continuous</td><td>Simplex</td><td>Distribution over distributions</td><td>Prior for Categorical/Multinomial, LDA topics</td></tr>
+<tr><td><b>Bernoulli</b></td><td>Discrete</td><td>{0, 1}</td><td>Single yes/no outcome</td><td>Binary classifier output → cross-entropy loss</td></tr>
+<tr><td><b>Binomial</b></td><td>Discrete</td><td>{0,...,n}</td><td>Count of successes in n trials</td><td>Correct predictions in a batch</td></tr>
+<tr><td><b>Categorical</b></td><td>Discrete</td><td>{1,...,K}</td><td>One draw from K classes</td><td>Softmax output → categorical cross-entropy</td></tr>
+<tr><td><b>Multinomial</b></td><td>Discrete</td><td>Count vectors</td><td>Counts across K categories</td><td>Bag-of-words document model</td></tr>
+<tr><td><b>Poisson</b></td><td>Discrete</td><td>{0,1,2,...}</td><td>Event counts in fixed interval</td><td>Word counts, rate modeling</td></tr>
+<tr><td><b>Geometric</b></td><td>Discrete</td><td>{1,2,3,...}</td><td>Trials until first success</td><td>Samples until rare event</td></tr>
+<tr><td><b>Gaussian</b></td><td>Continuous</td><td>(-∞, ∞)</td><td>Measurements, sums of effects</td><td>Weight init, noise model, MSE loss</td></tr>
+<tr><td><b>Multivariate Gaussian</b></td><td>Continuous</td><td>ℝᵈ</td><td>Correlated continuous data</td><td>GMMs, VAE latent space, GPs</td></tr>
+<tr><td><b>Beta</b></td><td>Continuous</td><td>[0, 1]</td><td>Probability of a probability</td><td>Conjugate prior for Bernoulli/Binomial</td></tr>
+<tr><td><b>Dirichlet</b></td><td>Continuous</td><td>Simplex</td><td>Distribution over distributions</td><td>LDA topics, prior for Categorical</td></tr>
+<tr><td><b>Exponential</b></td><td>Continuous</td><td>[0, ∞)</td><td>Time between events</td><td>Survival analysis</td></tr>
+<tr><td><b>Gamma</b></td><td>Continuous</td><td>(0, ∞)</td><td>Positive quantities</td><td>Prior for Poisson rate, precision</td></tr>
 <tr><td><b>Student-t</b></td><td>Continuous</td><td>(-∞, ∞)</td><td>Gaussian with heavier tails</td><td>Robust regression, small-sample testing</td></tr>
-<tr><td><b>Chi-squared</b></td><td>Continuous</td><td>[0, ∞)</td><td>Sum of squared Gaussians</td><td>Goodness-of-fit tests, feature selection</td></tr>
+<tr><td><b>Chi-squared</b></td><td>Continuous</td><td>[0, ∞)</td><td>Sum of squared Gaussians</td><td>Goodness-of-fit, feature selection</td></tr>
+<tr><td><b>Uniform</b></td><td>Continuous</td><td>[a, b]</td><td>All values equally likely</td><td>Uninformative prior, random init</td></tr>
 </tbody>
 </table>
 
-<h3 id="gaussian">The Gaussian (Normal) Distribution</h3>
+<h3 id="gaussian">The Gaussian — Why It's Everywhere</h3>
 
-<p>The <b>Gaussian distribution</b> is parameterized by mean μ and variance σ²: f(x) = (1 / sqrt(2πσ²)) * exp(-(x-μ)² / (2σ²)). It shows up everywhere in ML, and this is not a coincidence — the Central Limit Theorem guarantees that sums of many independent random variables converge to a Gaussian regardless of the original distribution.</p>
+<p>The <b>Gaussian (normal) distribution</b> is parameterized by mean μ and variance σ²: f(x) = (1/√(2πσ²)) · exp(-(x-μ)²/(2σ²)). It's symmetric, bell-shaped, and shows up everywhere. This isn't coincidence — the Central Limit Theorem (which we'll hit soon) guarantees that sums of many independent effects converge to a Gaussian regardless of the original distribution.</p>
 
-<p>Why does ML care so much about Gaussians?</p>
-<ul>
-  <li><b>Weight initialization:</b> We initialize neural network weights from N(0, σ²) with carefully chosen σ (He initialization uses σ² = 2/n_in).</li>
-  <li><b>Noise models:</b> Assuming Gaussian noise in regression is equivalent to minimizing mean squared error — the MSE loss is the negative log-likelihood of a Gaussian.</li>
-  <li><b>Latent spaces:</b> VAEs force the latent space to be Gaussian, which enables smooth interpolation and sampling.</li>
-  <li><b>Batch normalization:</b> Normalizes activations to approximately N(0, 1) within each mini-batch.</li>
-  <li><b>Gaussian processes:</b> A fully Bayesian approach to regression where the prior over functions is a Gaussian.</li>
-</ul>
+<p>ML uses Gaussians constantly. We initialize neural network weights from N(0, σ²) with σ chosen carefully (He initialization uses σ² = 2/n_in). Assuming Gaussian noise on regression targets gives you MSE loss — that's not a design choice, that's a mathematical derivation we'll see in the MLE section. VAEs force the latent space to be Gaussian so you can sample smoothly. Batch normalization pushes activations toward N(0, 1). Gaussian processes put a Gaussian prior over entire functions.</p>
 
-<p>The <b>68-95-99.7 rule</b>: approximately 68% of values fall within 1σ of the mean, 95% within 2σ, and 99.7% within 3σ. This gives you quick mental math for outlier detection — anything beyond 3σ is suspicious.</p>
+<p>The <b>68-95-99.7 rule</b>: ~68% of values fall within 1σ of the mean, ~95% within 2σ, ~99.7% within 3σ. Quick mental math for outlier detection: anything beyond 3σ is suspicious. Beyond 5σ is almost certainly wrong data or a different distribution.</p>
 
-<h3 id="multivariate-gaussian">The Multivariate Gaussian</h3>
+<h3 id="multivariate-gaussian">The Multivariate Gaussian and Mahalanobis Distance</h3>
 
-<p>The <b>multivariate Gaussian</b> generalizes to d dimensions. It is parameterized by a mean vector μ (d-dimensional) and a covariance matrix Σ (d × d, symmetric positive definite). The PDF is: f(x) = (1 / sqrt((2π)^d * det(Σ))) * exp(-0.5 * (x-μ)^T * Σ^(-1) * (x-μ)).</p>
+<p>In d dimensions, the <b>multivariate Gaussian</b> is parameterized by mean vector μ and covariance matrix Σ (d×d, symmetric positive definite). The PDF is: f(x) = (1/√((2π)ᵈ·det(Σ))) · exp(-½(x-μ)ᵀΣ⁻¹(x-μ)).</p>
 
-<p>The covariance matrix Σ controls the shape and orientation of the probability cloud. Diagonal Σ means the dimensions are uncorrelated — the cloud is axis-aligned. Off-diagonal entries introduce correlations — the cloud tilts. The eigenvectors of Σ give the principal axes of the ellipsoid, and the eigenvalues give the variance along each axis. This is literally what PCA does: it finds the eigenvectors of the sample covariance matrix, then projects data onto the directions of highest variance.</p>
+<p>Σ controls the shape of the probability cloud. Diagonal → dimensions are uncorrelated, cloud is axis-aligned. Off-diagonal entries → correlations, cloud tilts. The eigenvectors of Σ are the principal axes; eigenvalues are the variance along each axis. This is what PCA computes: find the eigenvectors of the sample covariance matrix, project data onto directions of maximum variance.</p>
 
-<p>The <b>Mahalanobis distance</b> (x-μ)^T * Σ^(-1) * (x-μ) is the natural distance metric for multivariate Gaussians. It accounts for correlations and different scales across dimensions. Euclidean distance treats all dimensions equally — Mahalanobis distance does not, which is why it is better for outlier detection in correlated data.</p>
+<p>The exponent (x-μ)ᵀΣ⁻¹(x-μ) is the <b>Mahalanobis distance</b> — a distance metric that accounts for correlations and different scales. Euclidean distance treats all dimensions equally; Mahalanobis stretches and rotates space so the Gaussian becomes a sphere, then measures Euclidean distance in that transformed space. It's the right metric for outlier detection in correlated data.</p>
 
-<h3 id="beta-distribution">The Beta Distribution</h3>
+<h3 id="beta-distribution">The Beta Distribution — Modeling Probabilities</h3>
 
-<p>The <b>Beta distribution</b> Beta(α, β) lives on [0, 1] — perfect for modeling probabilities. Its shape is controlled by two parameters α and β. When α = β = 1, it is uniform. When α &gt; 1 and β &gt; 1, it is unimodal (bell-shaped). When α &lt; 1 and β &lt; 1, it is U-shaped (bimodal at the boundaries). Think of α as "pseudo-counts of successes" and β as "pseudo-counts of failures" from imaginary prior observations.</p>
+<p>The <b>Beta distribution</b> Beta(α, β) lives on [0, 1] — which makes it perfect for modeling a probability itself. What's the probability that our spam filter's true accuracy is 0.85? That question needs a distribution over [0, 1], and the Beta is our tool.</p>
 
-<p>The Beta distribution is the <b>conjugate prior</b> for the Bernoulli and Binomial likelihoods. This means that if your prior is Beta(α, β) and you observe k successes in n trials, the posterior is Beta(α + k, β + n - k). No integrals, no MCMC — the update is just adding counts. This is one of the few cases where Bayesian inference is analytically tractable, and it is beautiful: your prior belief (α, β) gets updated by simply accumulating evidence (k successes, n-k failures).</p>
+<p>Its shape depends on α and β. When α = β = 1, it's uniform (total ignorance). When α &gt; 1 and β &gt; 1, it's bell-shaped. Think of α as "pseudo-counts of successes" and β as "pseudo-counts of failures." A Beta(10, 2) says "I've seen something like 10 successes and 2 failures" — it peaks near 0.83.</p>
 
-<h3 id="dirichlet-distribution">The Dirichlet Distribution</h3>
+<p>The beautiful part: Beta is the <b>conjugate prior</b> for Bernoulli and Binomial likelihoods. Start with prior Beta(α, β), observe k successes in n trials, and the posterior is Beta(α+k, β+n-k). No integrals. No MCMC. You add counts. That's the entire update. We'll use this for our spam filter shortly.</p>
 
-<p>The <b>Dirichlet distribution</b> Dir(α1, α2, ..., αK) is the multivariate generalization of the Beta — it produces vectors that live on the probability simplex (non-negative entries that sum to one). It is the conjugate prior for the Categorical and Multinomial distributions. In Latent Dirichlet Allocation (LDA), the Dirichlet prior is placed over topic-word distributions and document-topic distributions, which is where the model gets its name.</p>
+<h3 id="dirichlet-distribution">The Dirichlet — Multivariate Beta</h3>
 
-<p>When all αk are equal and greater than 1, the Dirichlet concentrates mass on uniform-ish distributions. When all αk are less than 1, it concentrates mass on sparse distributions (most of the probability on a few categories). When αk vary, the distribution favors specific categories over others. This makes it a flexible tool for encoding your prior beliefs about how categorical probabilities should look.</p>
+<p>The <b>Dirichlet distribution</b> Dir(α₁,...,αK) generalizes Beta to K dimensions. It produces vectors on the probability simplex (non-negative, sum to one). It's the conjugate prior for Categorical and Multinomial likelihoods. When all αk &gt; 1, it favors uniform-ish distributions. When all αk &lt; 1, it favors sparse distributions. In Latent Dirichlet Allocation (LDA), the Dirichlet prior over topic-word distributions is literally where the model gets its name.</p>
 
-<h3 id="moderate-distributions">Bernoulli, Binomial, Categorical, Poisson</h3>
+<h3 id="bernoulli-and-loss">Bernoulli, Binomial, Categorical, Poisson — and Your Loss Functions</h3>
 
-<p>The <b>Bernoulli distribution</b> is the simplest: a single coin flip with P(X=1) = p. Every binary classifier's output is a Bernoulli. The negative log-likelihood of a Bernoulli is the <b>binary cross-entropy loss</b>: -[y*log(p) + (1-y)*log(1-p)]. This is not a coincidence — the standard classification loss was derived from assuming Bernoulli outputs and applying MLE.</p>
+<p>Back to our spam filter. Each email is a Bernoulli trial: spam (1) with probability p, not-spam (0) with probability 1-p. The <b>Bernoulli distribution</b> is the simplest: P(X=x) = pˣ(1-p)¹⁻ˣ for x ∈ {0, 1}.</p>
 
-<p>The <b>Binomial</b> counts successes in n independent Bernoulli trials. The <b>Categorical</b> generalizes Bernoulli to K classes — a single draw from a discrete distribution. The softmax output of a neural network defines a Categorical distribution, and the negative log-likelihood of a Categorical is the <b>categorical cross-entropy loss</b>. Again, the loss function you use every day is just MLE under a specific distributional assumption.</p>
+<p>Here's where it gets good. Take the negative log of that: -[y·log(p) + (1-y)·log(1-p)]. Look familiar? That's <b>binary cross-entropy loss</b>. The loss function you use in every binary classifier is the negative log-likelihood of a Bernoulli. It wasn't invented — it was derived. We'll make this derivation explicit in the MLE section.</p>
 
-<p>The <b>Poisson distribution</b> models counts of events that happen at a constant average rate. P(X=k) = λ^k * exp(-λ) / k!. It appears in NLP for modeling word counts and in any setting where you are counting occurrences in a fixed window of time or space. The Poisson is the limit of the Binomial when n is large and p is small (rare events).</p>
+<p>The <b>Categorical distribution</b> generalizes Bernoulli to K classes. The softmax output of a neural network defines a Categorical, and its negative log-likelihood is <b>categorical cross-entropy loss</b>. The <b>Binomial</b> counts successes in n Bernoulli trials. The <b>Poisson</b> models event counts at a constant rate and appears in NLP for word count models.</p>
 
-<h3 id="brief-distributions">Exponential, Gamma, Chi-squared, Uniform, Student-t, Multinomial, Geometric</h3>
+<h3 id="brief-distributions">The Rest of the Family</h3>
 
-<p>The <b>Exponential</b> distribution models time between events in a Poisson process — memoryless, with rate parameter λ. The <b>Gamma</b> distribution generalizes it (the sum of k Exponentials is Gamma) and serves as a conjugate prior for the Poisson rate. <b>Chi-squared</b> is a special case of Gamma — the sum of squared standard normals — and drives goodness-of-fit and independence tests.</p>
+<p>The <b>Exponential</b> models time between events — memoryless, used in survival analysis. The <b>Gamma</b> generalizes it and serves as conjugate prior for the Poisson rate. <b>Chi-squared</b> is a Gamma special case — sum of squared standard normals — powering goodness-of-fit tests. The <b>Student-t</b> looks like a Gaussian but with heavier tails; it approaches the Gaussian as degrees of freedom grow and is the go-to for small-sample hypothesis testing. The <b>Uniform</b> is maximum-entropy when you only know the range.</p>
 
-<p>The <b>Uniform</b> assigns equal probability across an interval — the maximum-entropy distribution when you only know the range. The <b>Student-t</b> looks like a Gaussian but with heavier tails; it approaches the Gaussian as degrees of freedom increase and is used for robust regression and small-sample hypothesis testing. The <b>Multinomial</b> counts across K categories in n trials (Binomial generalized to K categories). The <b>Geometric</b> counts trials until the first success.</p>
-
-<h3 id="distribution-sampling-code">Code: Sampling Key Distributions</h3>
+<h3 id="distribution-sampling-code">Code: Sampling and Inspecting Distributions</h3>
 
 <pre><code>import numpy as np
 from scipy import stats
@@ -528,113 +600,107 @@ from scipy import stats
 np.random.seed(42)
 n_samples = 10_000
 
-# --- Sample from 6 key distributions ---
 samples = {
-    'Bernoulli (p=0.3)':     np.random.binomial(1, 0.3, n_samples),
+    'Bernoulli (p=0.3)':      np.random.binomial(1, 0.3, n_samples),
     'Binomial (n=20, p=0.4)': np.random.binomial(20, 0.4, n_samples),
-    'Poisson (λ=5)':         np.random.poisson(5, n_samples),
-    'Gaussian (μ=0, σ=1)':   np.random.normal(0, 1, n_samples),
-    'Beta (α=2, β=5)':       np.random.beta(2, 5, n_samples),
-    'Exponential (λ=1.5)':   np.random.exponential(1/1.5, n_samples),
+    'Poisson (λ=5)':          np.random.poisson(5, n_samples),
+    'Gaussian (μ=0, σ=1)':    np.random.normal(0, 1, n_samples),
+    'Beta (α=2, β=5)':        np.random.beta(2, 5, n_samples),
+    'Exponential (λ=1.5)':    np.random.exponential(1/1.5, n_samples),
 }
 
-# Print summary statistics
 for name, data in samples.items():
     print(f"{name:30s}  mean={np.mean(data):.3f}  std={np.std(data):.3f}  "
-          f"min={np.min(data):.3f}  max={np.max(data):.3f}")
+          f"min={np.min(data):.3f}  max={np.max(data):.3f}")</code></pre>
 
-# To visualize (matplotlib):
-# import matplotlib.pyplot as plt
-# fig, axes = plt.subplots(2, 3, figsize=(14, 8))
-# for ax, (name, data) in zip(axes.flat, samples.items()):
-#     ax.hist(data, bins=50, density=True, alpha=0.7, edgecolor='black')
-#     ax.set_title(name)
-# plt.tight_layout()
-# plt.show()</code></pre>
+<!-- ═══════ 6. Expectation, Variance ═══════ -->
 
-<!-- ═══════ 4. Expectation, Variance, Covariance ═══════ -->
-
-<h2 id="expectation-variance">Expectation, Variance, Covariance</h2>
+<h2 id="expectation-variance">Expectation, Variance, and Friends</h2>
 
 <h3 id="expected-value">Expected Value</h3>
 
-<p>The <b>expected value</b> E[X] is the weighted average of all possible values, weighted by their probabilities. For discrete: E[X] = Σ x * P(X=x). For continuous: E[X] = ∫ x * f(x) dx. It is the "center of mass" of the distribution.</p>
+<p>The <b>expected value</b> E[X] is the weighted average of all possible values, weighted by their probabilities. Discrete: E[X] = Σ x·P(X=x). Continuous: E[X] = ∫ x·f(x) dx. It's the "center of mass" of the distribution.</p>
 
-<p><b>Linearity of expectation</b> is one of the most powerful properties in probability: E[aX + bY] = a*E[X] + b*E[Y]. This holds always, even when X and Y are dependent. This is why the expected loss over a mini-batch equals the average of the expected losses per sample — no independence assumption needed.</p>
+<p><b>Linearity of expectation</b> is one of the most powerful tools in probability: E[aX + bY] = a·E[X] + b·E[Y]. This holds <i>always</i>, even when X and Y are dependent. This is why the expected loss over a mini-batch equals the average of individual expected losses — no independence assumption needed.</p>
 
-<h3 id="variance">Variance and Standard Deviation</h3>
+<h3 id="variance-std">Variance and Standard Deviation</h3>
 
-<p><b>Variance</b> measures spread: Var(X) = E[(X - E[X])²] = E[X²] - (E[X])². The second form is often easier to compute. <b>Standard deviation</b> σ = sqrt(Var(X)) is in the same units as X. Key properties: Var(aX + b) = a² * Var(X) — constants get squared, shifts disappear. For independent variables: Var(X + Y) = Var(X) + Var(Y). This is why averaging n independent samples reduces variance by a factor of n — the variance of the sample mean is σ²/n.</p>
+<p><b>Variance</b> measures spread: Var(X) = E[(X - E[X])²] = E[X²] - (E[X])². <b>Standard deviation</b> σ = √Var(X) lives in the same units as X. Key properties: Var(aX + b) = a²·Var(X) — scaling squares, shifts vanish. For independent variables: Var(X + Y) = Var(X) + Var(Y). This is why averaging n independent samples reduces variance by a factor of n — the variance of the sample mean is σ²/n.</p>
 
 <h3 id="covariance-correlation">Covariance, Correlation, and the Covariance Matrix</h3>
 
-<p><b>Covariance</b> measures how two variables move together: Cov(X, Y) = E[(X - E[X])(Y - E[Y])] = E[XY] - E[X]*E[Y]. Positive covariance means they tend to increase together. Negative means one increases as the other decreases. Zero covariance means no linear relationship — but they could still be nonlinearly dependent.</p>
+<p><b>Covariance</b> measures how two variables move together: Cov(X, Y) = E[(X-E[X])(Y-E[Y])] = E[XY] - E[X]·E[Y]. Positive: they rise together. Negative: one rises as the other falls. Zero: no <i>linear</i> relationship — but nonlinear dependence can still exist.</p>
 
-<p><b>Correlation</b> normalizes covariance to [-1, 1]: ρ(X, Y) = Cov(X, Y) / (σ_X * σ_Y). It measures the strength of the linear relationship, making it scale-invariant.</p>
+<p><b>Correlation</b> normalizes to [-1, 1]: ρ(X,Y) = Cov(X,Y)/(σ_X·σ_Y). Scale-invariant measure of linear association.</p>
 
-<p>For a random vector X = [X1, ..., Xd], the <b>covariance matrix</b> Σ has entry (i,j) = Cov(Xi, Xj). It is symmetric and positive semi-definite. The diagonal entries are the variances. PCA decomposes this matrix: the eigenvectors give the principal components (directions of maximum variance) and the eigenvalues give the variance explained along each direction. When you "whiten" data, you multiply by Σ^(-1/2) to make the covariance the identity matrix — each dimension becomes uncorrelated with unit variance.</p>
+<p>For a random vector X = [X₁,...,Xd], the <b>covariance matrix</b> Σ has entry (i,j) = Cov(Xᵢ, Xⱼ). It's symmetric and positive semi-definite. Diagonal entries are variances. PCA decomposes this matrix: eigenvectors give principal components, eigenvalues give variance explained. When you "whiten" data by multiplying by Σ^(-½), you make dimensions uncorrelated with unit variance — a common preprocessing step that helps optimization converge faster.</p>
 
-<!-- ═══════ 5. Key Theorems ═══════ -->
+<!-- ═══════ 7. Key Theorems ═══════ -->
 
-<h2 id="key-theorems">Key Theorems</h2>
+<h2 id="key-theorems">The Two Theorems That Make ML Work</h2>
 
-<h3 id="law-of-large-numbers">Law of Large Numbers</h3>
+<h3 id="law-of-large-numbers">Law of Large Numbers → Monte Carlo</h3>
 
-<p>The <b>Law of Large Numbers (LLN)</b> says that the sample mean converges to the true mean as the number of samples grows. Take n i.i.d. samples from any distribution with mean μ. As n → ∞, the sample mean (1/n) * Σ Xi → μ with probability 1 (the strong law). This is the mathematical justification for using empirical averages as estimators. It is also why more training data helps — the empirical risk (average loss over training data) converges to the true risk (expected loss over the data distribution) as n grows.</p>
+<p>The <b>Law of Large Numbers</b> says the sample mean converges to the true mean as n grows. Take n i.i.d. samples from any distribution with mean μ. As n → ∞, the average (1/n)·Σ Xᵢ → μ with probability 1.</p>
 
-<p>Monte Carlo estimation relies on LLN: if you cannot compute an integral analytically, draw samples and average. The more samples, the better the approximation. This is the backbone of MCMC, importance sampling, and every simulation-based method in ML.</p>
+<p>This is the mathematical justification for using averages as estimators. It's also why more training data helps: the empirical risk (average loss on training data) converges to the true risk (expected loss on the data distribution). And it's the foundation of <b>Monte Carlo methods</b> — if you can't compute an integral analytically, draw samples and average. MCMC, importance sampling, and every simulation-based method in ML stand on this theorem.</p>
 
-<h3 id="central-limit-theorem">Central Limit Theorem</h3>
+<h3 id="central-limit-theorem">Central Limit Theorem → Why SGD Works</h3>
 
-<p>The <b>Central Limit Theorem (CLT)</b> is one of the deepest results in probability. Take n i.i.d. samples from <i>any</i> distribution with mean μ and finite variance σ². The distribution of the sample mean is approximately Gaussian with mean μ and variance σ²/n, regardless of the original distribution. As n grows, the approximation improves.</p>
+<p>The <b>Central Limit Theorem (CLT)</b> is deeper. Take n i.i.d. samples from <i>any</i> distribution with mean μ and finite variance σ². The distribution of the sample mean is approximately Gaussian with mean μ and variance σ²/n, regardless of the original distribution. As n grows, the approximation tightens.</p>
 
-<p>The CLT explains why Gaussians are everywhere. Heights are the sum of many genetic and environmental factors — Gaussian. Measurement errors are the sum of many small independent sources — Gaussian. The gradients in mini-batch SGD are averages over batch_size samples, so by CLT, the stochastic gradient is approximately Gaussian around the true gradient. This has a profound implication: the noise in SGD is approximately Gaussian, and the variance decreases as 1/batch_size. Larger batches give more accurate gradient estimates but with diminishing returns — doubling the batch size only reduces gradient variance by half.</p>
+<p>The CLT explains why Gaussians are everywhere in nature — heights, measurement errors, test scores are all sums of many small independent effects. But the ML implication is direct and profound: gradients in mini-batch SGD are averages over batch_size samples. By the CLT, the stochastic gradient is approximately Gaussian around the true gradient. The noise variance decreases as 1/batch_size. Doubling your batch size halves the gradient noise variance — but you get diminishing returns, and some noise is actually beneficial for escaping sharp minima.</p>
 
 <pre><code>import numpy as np
 
-# --- CLT in action: averages of non-Gaussian data become Gaussian ---
+# CLT in action: averages of wildly non-Gaussian data become Gaussian
 np.random.seed(42)
 n_experiments = 10_000
 
-# Source: heavily skewed Exponential distribution (definitely not Gaussian)
+# Source: heavily skewed Exponential (definitely not Gaussian)
 lam = 2.0
-true_mean = 1 / lam  # = 0.5
-true_var = 1 / lam**2  # = 0.25
+true_mean = 1 / lam   # 0.5
+true_var = 1 / lam**2  # 0.25
 
 for batch_size in [1, 5, 30, 100]:
-    # Each experiment: draw batch_size samples, compute mean
-    means = [np.mean(np.random.exponential(1/lam, batch_size))
-             for _ in range(n_experiments)]
-    means = np.array(means)
+    means = np.array([
+        np.mean(np.random.exponential(1/lam, batch_size))
+        for _ in range(n_experiments)
+    ])
+    clt_predicted_std = np.sqrt(true_var / batch_size)
     print(f"batch_size={batch_size:3d}  "
-          f"sample_mean={np.mean(means):.4f} (true={true_mean:.4f})  "
-          f"sample_std={np.std(means):.4f} (CLT predicts={np.sqrt(true_var/batch_size):.4f})")
-    # As batch_size grows, the distribution of means becomes tighter and more Gaussian</code></pre>
+          f"mean={np.mean(means):.4f} (true={true_mean:.4f})  "
+          f"std={np.std(means):.4f} (CLT={clt_predicted_std:.4f})")
+    # As batch_size grows, std shrinks and distribution becomes more Gaussian</code></pre>
 
-<!-- ═══════ 6. MLE, MAP, and Estimation Theory ═══════ -->
+<!-- ═══════ 8. MLE and MAP ═══════ -->
 
-<h2 id="mle-map">MLE, MAP, and Estimation Theory</h2>
+<h2 id="mle-map">MLE and MAP — Where Loss Functions Come From</h2>
+
+<p>This is the section where everything connects. Every loss function you've ever used has a probabilistic derivation, and understanding that derivation means you can invent the right loss function for any problem instead of guessing.</p>
 
 <h3 id="mle">Maximum Likelihood Estimation (MLE)</h3>
 
-<p><b>MLE</b> finds the parameter values that make the observed data most probable. Given data D = {x1, ..., xn} assumed i.i.d. from a distribution with parameter θ, the likelihood is: L(θ) = P(D|θ) = Π_i P(xi|θ). MLE finds θ* = argmax_θ L(θ).</p>
+<p><b>MLE</b> asks: what parameter values make the observed data most probable? Given data D = {x₁,...,xₙ} assumed i.i.d. from a distribution with parameter θ, the <b>likelihood</b> is L(θ) = P(D|θ) = Π P(xᵢ|θ). MLE finds θ* = argmax L(θ).</p>
 
-<p>In practice, you always work with the <b>log-likelihood</b> because products become sums: log L(θ) = Σ_i log P(xi|θ). Maximizing the log-likelihood is equivalent to maximizing the likelihood (log is monotonic), but sums are numerically stable and have nicer gradients.</p>
+<p>Products of small numbers underflow, so we always work with the <b>log-likelihood</b>: log L(θ) = Σ log P(xᵢ|θ). Products become sums. Maximizing the log-likelihood is equivalent (log is monotonic) but numerically stable.</p>
 
-<p>Here is the punchline that connects MLE to every loss function you have ever used:</p>
+<p>Now the punchline. What happens when you write down the negative log-likelihood for specific distributional assumptions?</p>
 
 <table>
 <thead>
-<tr><th>Model Assumption</th><th>Negative Log-Likelihood</th><th>Resulting Loss Function</th></tr>
+<tr><th>Assumption</th><th>Negative Log-Likelihood</th><th>You Get</th></tr>
 </thead>
 <tbody>
-<tr><td>Gaussian noise on y</td><td>Σ (yi - ŷi)² / (2σ²) + const</td><td>Mean Squared Error</td></tr>
-<tr><td>Bernoulli output</td><td>-Σ [yi*log(pi) + (1-yi)*log(1-pi)]</td><td>Binary Cross-Entropy</td></tr>
-<tr><td>Categorical output</td><td>-Σ log(p_yi)</td><td>Categorical Cross-Entropy</td></tr>
+<tr><td>Gaussian noise on targets</td><td>Σ (yᵢ - ŷᵢ)² / (2σ²) + const</td><td><b>Mean Squared Error</b></td></tr>
+<tr><td>Bernoulli output</td><td>-Σ [yᵢ·log(pᵢ) + (1-yᵢ)·log(1-pᵢ)]</td><td><b>Binary Cross-Entropy</b></td></tr>
+<tr><td>Categorical output</td><td>-Σ log(p_yᵢ)</td><td><b>Categorical Cross-Entropy</b></td></tr>
 </tbody>
 </table>
 
-<p>When you minimize cross-entropy loss, you are doing MLE under a Bernoulli or Categorical assumption. When you minimize MSE, you are doing MLE under a Gaussian noise assumption. Understanding this connection means you can <i>derive</i> the right loss function for any distributional assumption, rather than memorizing loss functions as arbitrary formulas.</p>
+<p>MSE isn't a design choice — it's what you get when you assume your regression targets have Gaussian noise. Cross-entropy isn't a design choice — it's what you get when you assume Bernoulli or Categorical outputs. Every time you call <code>loss = nn.CrossEntropyLoss()</code>, you're doing MLE under a Categorical assumption. This connection is worth internalizing deeply.</p>
+
+<p>Let's see this concretely with our spam filter. Each email has a true label y ∈ {0,1} and our model outputs a spam probability p. The Bernoulli log-likelihood for one email is y·log(p) + (1-y)·log(1-p). Sum over all emails, negate, and you have binary cross-entropy. Minimizing it is the same as maximizing the likelihood that our model generated the observed spam labels. That's it. That's where the loss comes from.</p>
 
 <h3 id="mle-code">Code: MLE Estimation</h3>
 
@@ -642,185 +708,174 @@ for batch_size in [1, 5, 30, 100]:
 
 np.random.seed(42)
 
-# --- MLE for Gaussian parameters: estimate μ and σ² from data ---
+# MLE for Gaussian: estimates converge as sample size grows
 true_mu, true_sigma = 5.0, 2.0
 
-# Watch estimates converge as sample size grows
 for n in [10, 50, 200, 1000, 10000]:
     data = np.random.normal(true_mu, true_sigma, n)
+    mu_mle = np.mean(data)                        # MLE for μ = sample mean
+    sigma2_mle = np.mean((data - mu_mle)**2)      # MLE for σ² uses 1/n (biased)
+    print(f"n={n:5d}  μ̂={mu_mle:.4f} (true={true_mu})  "
+          f"σ̂²={sigma2_mle:.4f} (true={true_sigma**2:.1f})")
 
-    # MLE estimates for Gaussian:
-    # μ_MLE = sample mean, σ²_MLE = sample variance (biased)
-    mu_mle = np.mean(data)
-    sigma2_mle = np.mean((data - mu_mle)**2)  # MLE uses 1/n, not 1/(n-1)
-
-    print(f"n={n:5d}  μ_MLE={mu_mle:.4f} (true={true_mu})  "
-          f"σ²_MLE={sigma2_mle:.4f} (true={true_sigma**2:.1f})")
-
-# --- Log-likelihood as a function of μ (with σ fixed) ---
+# Visualize: log-likelihood peaks at the sample mean
 data = np.random.normal(true_mu, true_sigma, 100)
 
-def log_likelihood(mu, data, sigma=true_sigma):
-    """Gaussian log-likelihood as a function of mu."""
+def gaussian_log_lik(mu, data, sigma=true_sigma):
     n = len(data)
-    return -n/2 * np.log(2 * np.pi * sigma**2) - np.sum((data - mu)**2) / (2 * sigma**2)
+    return -n/2 * np.log(2*np.pi*sigma**2) - np.sum((data-mu)**2)/(2*sigma**2)
 
-# Evaluate over a grid — the peak should be at the sample mean
 mu_grid = np.linspace(2, 8, 200)
-ll_values = [log_likelihood(mu, data) for mu in mu_grid]
+ll_values = [gaussian_log_lik(mu, data) for mu in mu_grid]
 best_mu = mu_grid[np.argmax(ll_values)]
-print(f"\nGrid search peak: μ={best_mu:.3f}, sample mean: {np.mean(data):.3f}")</code></pre>
+print(f"\nGrid search peak: μ={best_mu:.3f}, sample mean: {np.mean(data):.3f}")
+# They match — the MLE for the Gaussian mean IS the sample mean</code></pre>
 
-<h3 id="map">Maximum A Posteriori (MAP) Estimation</h3>
+<h3 id="map">MAP: Add a Prior, Get Regularization</h3>
 
-<p><b>MAP</b> adds a prior to MLE. Instead of maximizing just the likelihood, MAP maximizes the posterior: θ_MAP = argmax_θ P(θ|D) = argmax_θ P(D|θ) * P(θ). Taking the log: θ_MAP = argmax_θ [log P(D|θ) + log P(θ)]. The first term is the log-likelihood (the data fit). The second term is the log-prior (your regularization).</p>
+<p><b>MAP</b> maximizes the posterior instead of the likelihood: θ_MAP = argmax P(θ|D) = argmax [P(D|θ)·P(θ)]. Taking the log: argmax [log P(D|θ) + log P(θ)]. The first term is the log-likelihood — data fit. The second is the log-prior — regularization.</p>
 
-<p>This is where the famous regularization connections come from:</p>
+<p>This is where the famous connections come from:</p>
 
 <table>
 <thead>
-<tr><th>Prior on Weights</th><th>Log-Prior</th><th>Regularization Effect</th></tr>
+<tr><th>Prior on Weights</th><th>Log-Prior Penalty</th><th>Regularization</th></tr>
 </thead>
 <tbody>
-<tr><td>Gaussian: P(w) ∝ exp(-w²/(2σ²))</td><td>-Σ wi² / (2σ²)</td><td><b>L2 regularization</b> (weight decay)</td></tr>
-<tr><td>Laplace: P(w) ∝ exp(-|w|/b)</td><td>-Σ |wi| / b</td><td><b>L1 regularization</b> (sparsity)</td></tr>
+<tr><td>Gaussian: P(w) ∝ exp(-w²/(2σ²))</td><td>-Σ wᵢ² / (2σ²)</td><td><b>L2 (weight decay)</b></td></tr>
+<tr><td>Laplace: P(w) ∝ exp(-|w|/b)</td><td>-Σ |wᵢ| / b</td><td><b>L1 (sparsity)</b></td></tr>
 </tbody>
 </table>
 
-<p>A Gaussian prior says "I believe weights are probably small, centered at zero" — it penalizes large weights quadratically. A Laplace prior says the same but penalizes linearly, which drives many weights exactly to zero (sparsity). Every time you add weight decay to a neural network, you are implicitly making a Bayesian assumption: the weights have a Gaussian prior. The regularization strength λ is inversely proportional to the prior variance σ² — a narrow prior (strong belief that weights are small) means heavy regularization.</p>
+<p>A Gaussian prior says "weights are probably small" and penalizes large values quadratically — that's L2 regularization. A Laplace prior penalizes linearly, driving many weights to exactly zero — that's L1 regularization and why LASSO gives sparse solutions. Every time you add <code>weight_decay=0.01</code> to your optimizer, you're making a Bayesian statement: "I believe the weights have a Gaussian prior with this variance." The regularization strength λ is inversely proportional to the prior variance σ².</p>
+
+<h3 id="mle-map-bayesian">MLE vs. MAP vs. Full Bayesian</h3>
 
 <div class="callout callout-info">
-  <b>MLE vs MAP vs Full Bayesian:</b> MLE gives you a single best-fit parameter. MAP gives you a single best-fit parameter with regularization. Full Bayesian inference gives you the entire posterior distribution over parameters — no single answer, but a distribution of answers weighted by plausibility. In practice, most deep learning uses MLE or MAP (via regularization). Full Bayesian is used in Gaussian processes, Bayesian neural networks, and small-data regimes where uncertainty quantification matters.
+  <b>Three levels of inference:</b> MLE gives you a single point estimate — the most likely parameters. MAP gives you a single point estimate with regularization — the most likely parameters under a prior. Full Bayesian inference gives you the entire posterior distribution over parameters — not one answer, but a weighted distribution of answers. Most deep learning uses MLE or MAP. Full Bayesian (Gaussian processes, Bayesian neural networks) shines in small-data regimes where uncertainty quantification matters.
 </div>
 
-<h3 id="confidence-intervals">Confidence Intervals</h3>
+<h3 id="fisher-information">Fisher Information and Cramér-Rao (Brief)</h3>
 
-<p>A <b>95% confidence interval</b> is a range computed from the data such that, across many repetitions of the experiment, 95% of such intervals would contain the true parameter. It is not "95% probability that the true value is in this interval" — the true value is fixed, the interval is random. The distinction matters for interpretation, though in practice most people use the Bayesian credible interval interpretation (which <i>is</i> a probability statement about the parameter) and that is fine as long as you are consistent about it.</p>
+<p>The <b>Fisher information</b> I(θ) = E[(∂/∂θ log P(X|θ))²] measures how much information data carries about θ. High Fisher information means the log-likelihood has sharp curvature — data is very informative. The <b>Cramér-Rao bound</b> says no unbiased estimator can have variance less than 1/I(θ). MLE is asymptotically efficient — it hits this bound for large n. This is one reason MLE dominates: it's provably optimal in the large-sample limit.</p>
 
-<h3 id="fisher-information">Fisher Information and Cramér-Rao Bound</h3>
+<!-- ═══════ 9. Bayesian Inference ═══════ -->
 
-<p>The <b>Fisher information</b> I(θ) measures how much information the data carries about the parameter θ. Formally: I(θ) = E[(d/dθ log P(X|θ))²] = -E[d²/dθ² log P(X|θ)]. High Fisher information means the log-likelihood has sharp curvature near the true parameter — the data is very informative about θ.</p>
+<h2 id="bayesian-inference">Bayesian Inference — The Full Picture</h2>
 
-<p>The <b>Cramér-Rao bound</b> says that no unbiased estimator can have variance less than 1/I(θ). It sets a fundamental limit on estimation accuracy. An estimator that achieves this bound is called <b>efficient</b>. MLE is asymptotically efficient — for large samples, MLE achieves the Cramér-Rao bound. This is one reason MLE is so widely used: it is not just convenient, it is provably optimal (in the large-sample limit).</p>
+<h3 id="bayesian-workflow">The Workflow: Prior → Likelihood → Posterior</h3>
 
-<h3 id="method-of-moments">Method of Moments</h3>
+<p>The Bayesian workflow is always the same three steps. (1) Choose a prior P(θ) encoding beliefs before data. (2) Choose a likelihood P(D|θ) encoding how data is generated. (3) Apply Bayes' theorem to get the posterior P(θ|D). If new data arrives, the current posterior becomes the next prior. This sequential updating is one of the great strengths of the Bayesian framework.</p>
 
-<p>An alternative to MLE: set the population moments equal to sample moments and solve for parameters. For a Gaussian, the first moment (mean) gives μ and the second central moment (variance) gives σ². It is simpler than MLE but often less efficient. In practice, MLE is almost always preferred, but method of moments can be useful as a quick initial estimate or when the likelihood is hard to compute.</p>
-
-<!-- ═══════ 7. Bayesian Inference ═══════ -->
-
-<h2 id="bayesian-inference">Bayesian Inference</h2>
-
-<h3 id="bayesian-workflow">Prior → Likelihood → Posterior</h3>
-
-<p>The Bayesian workflow is always the same: (1) specify a prior P(θ) encoding your beliefs before seeing data, (2) specify a likelihood P(D|θ) encoding how data is generated given parameters, (3) apply Bayes' theorem to get the posterior P(θ|D). The posterior becomes your new belief about θ, incorporating both your prior knowledge and the evidence from data. If new data arrives, the current posterior becomes the prior for the next update. This sequential updating is one of the great strengths of the Bayesian framework — it is naturally incremental.</p>
+<p>For our spam filter: we believe the spam rate is around 50% but we're not sure. That's a Beta(2, 2) prior. We observe 100 emails, 45 are spam. Our posterior is Beta(2+45, 2+55) = Beta(47, 57). New posterior mean: 47/104 ≈ 0.452. As more data arrives, our uncertainty shrinks and the estimate converges toward the true rate. That's Bayesian learning.</p>
 
 <h3 id="conjugate-priors">Conjugate Priors</h3>
 
-<p>A prior is <b>conjugate</b> to a likelihood if the posterior has the same functional form as the prior. Conjugate priors make Bayesian updating analytically tractable — no integrals to approximate. Here are the ones you should know:</p>
+<p>A prior is <b>conjugate</b> to a likelihood if the posterior has the same form as the prior. These are the analytically tractable cases — no approximation needed.</p>
 
 <table>
 <thead>
 <tr><th>Likelihood</th><th>Conjugate Prior</th><th>Posterior</th><th>Update Rule</th></tr>
 </thead>
 <tbody>
-<tr><td>Bernoulli / Binomial</td><td>Beta(α, β)</td><td>Beta(α + k, β + n - k)</td><td>Add successes to α, failures to β</td></tr>
-<tr><td>Gaussian (known σ²)</td><td>Gaussian(μ₀, σ₀²)</td><td>Gaussian(μ_n, σ_n²)</td><td>Precision-weighted average of prior and data</td></tr>
-<tr><td>Poisson</td><td>Gamma(α, β)</td><td>Gamma(α + Σxi, β + n)</td><td>Add total count to α, sample size to β</td></tr>
-<tr><td>Categorical / Multinomial</td><td>Dirichlet(α₁,...,αK)</td><td>Dirichlet(α₁+c₁,...,αK+cK)</td><td>Add counts per category</td></tr>
+<tr><td>Bernoulli / Binomial</td><td>Beta(α, β)</td><td>Beta(α+k, β+n-k)</td><td>Add successes to α, failures to β</td></tr>
+<tr><td>Gaussian (known σ²)</td><td>Gaussian(μ₀, σ₀²)</td><td>Gaussian(μₙ, σₙ²)</td><td>Precision-weighted average of prior and data</td></tr>
+<tr><td>Poisson</td><td>Gamma(α, β)</td><td>Gamma(α+Σxᵢ, β+n)</td><td>Add total count to α, sample size to β</td></tr>
+<tr><td>Categorical / Multinomial</td><td>Dirichlet(α₁,...,αK)</td><td>Dirichlet(α₁+c₁,...,αK+cK)</td><td>Add observed counts per category</td></tr>
 </tbody>
 </table>
 
 <h3 id="posterior-predictive">Posterior Predictive Distribution</h3>
 
-<p>Once you have the posterior P(θ|D), you can predict new data by integrating out the parameter: P(x_new|D) = ∫ P(x_new|θ) * P(θ|D) dθ. This is the <b>posterior predictive distribution</b>. Unlike plug-in predictions (where you use a single point estimate of θ), the posterior predictive accounts for parameter uncertainty — if you are unsure about θ, your predictions will be wider. This is why Bayesian models naturally give you calibrated uncertainty estimates.</p>
+<p>Once you have P(θ|D), predict new data by integrating out the parameter: P(x_new|D) = ∫ P(x_new|θ)·P(θ|D) dθ. This is the <b>posterior predictive</b>. Unlike plug-in predictions (use one θ), it accounts for parameter uncertainty — if you're unsure about θ, predictions are wider. This is why Bayesian models give calibrated uncertainty: they know what they don't know.</p>
 
-<h3 id="bayesian-updating-code">Code: Bayesian Updating (Beta-Binomial)</h3>
+<h3 id="bayesian-updating-code">Code: Beta-Binomial Bayesian Updating</h3>
 
 <pre><code>import numpy as np
+from scipy.stats import beta as beta_dist
 
-# --- Bayesian updating: Beta-Binomial model ---
-# Estimating the probability of a coin being heads.
-# True probability (unknown to us): 0.7
-true_p = 0.7
+# Bayesian spam filter: estimating the true spam rate
+# True rate (unknown to us): 0.45
+true_spam_rate = 0.45
 
-# Prior: Beta(2, 2) — mild belief that p is near 0.5
+# Prior: Beta(2, 2) — we mildly believe spam rate is ~50%
 alpha, beta_param = 2.0, 2.0
+print(f"Prior: Beta({alpha:.0f}, {beta_param:.0f}), mean = {alpha/(alpha+beta_param):.3f}\n")
 
-print(f"Prior: Beta({alpha:.0f}, {beta_param:.0f})")
-print(f"  Prior mean: {alpha / (alpha + beta_param):.3f}")
-print(f"  Prior is mildly informative — we think p ≈ 0.5\n")
-
-# Simulate data arriving in batches
 np.random.seed(42)
-batch_sizes = [5, 10, 20, 50, 100]
+batch_sizes = [5, 10, 20, 50, 100, 500]
+total_seen = 0
 
 for batch in batch_sizes:
-    flips = np.random.binomial(1, true_p, batch)
-    heads = np.sum(flips)
-    tails = batch - heads
+    emails = np.random.binomial(1, true_spam_rate, batch)
+    spam_count = emails.sum()
+    not_spam = batch - spam_count
+    total_seen += batch
 
-    # Bayesian update: just add counts!
-    alpha += heads
-    beta_param += tails
+    alpha += spam_count
+    beta_param += not_spam
 
-    posterior_mean = alpha / (alpha + beta_param)
-    # 95% credible interval from Beta distribution
-    from scipy.stats import beta as beta_dist
+    mean = alpha / (alpha + beta_param)
     ci_low, ci_high = beta_dist.ppf([0.025, 0.975], alpha, beta_param)
 
-    print(f"After {batch:3d} flips ({heads} heads): "
+    print(f"After {total_seen:4d} emails ({spam_count:2d} spam in batch): "
           f"Beta({alpha:.0f}, {beta_param:.0f})  "
-          f"mean={posterior_mean:.3f}  "
-          f"95% CI=[{ci_low:.3f}, {ci_high:.3f}]")
+          f"mean={mean:.3f}  95% CI=[{ci_low:.3f}, {ci_high:.3f}]")
 
-print(f"\nTrue p = {true_p}  |  Final estimate = {alpha/(alpha+beta_param):.3f}")
-print("Notice: the credible interval shrinks as data accumulates.")</code></pre>
+print(f"\nTrue rate: {true_spam_rate}  |  Final estimate: {alpha/(alpha+beta_param):.3f}")
+print("The credible interval tightens as evidence accumulates.")</code></pre>
 
-<h3 id="mcmc">Markov Chain Monte Carlo (MCMC)</h3>
+<h3 id="mcmc">MCMC: When Conjugacy Isn't Available</h3>
 
-<p>When conjugate priors are not available (which is most of the time in complex models), you cannot compute the posterior analytically. <b>MCMC</b> is the workhorse solution: construct a Markov chain whose stationary distribution is the posterior, run it long enough, and the samples you collect approximate the posterior distribution.</p>
+<p>Most real models don't have conjugate priors. The posterior is some complicated unnormalized density you can't integrate analytically. <b>Markov Chain Monte Carlo (MCMC)</b> solves this: construct a Markov chain whose stationary distribution is the posterior, run it long enough, and the samples you collect approximate the posterior.</p>
 
-<p>The <b>Metropolis-Hastings</b> algorithm is the simplest MCMC method. At each step: (1) propose a new parameter value from a proposal distribution, (2) compute the acceptance ratio (ratio of posterior probabilities), (3) accept or reject the proposal with probability equal to the ratio. If the proposal has higher posterior probability, always accept. If lower, accept with some probability — this prevents the chain from getting stuck. The proposals you accept form your approximate posterior samples.</p>
+<p>The <b>Metropolis-Hastings</b> algorithm is the simplest MCMC. At each step: propose a new parameter value, compute the acceptance ratio (ratio of posterior densities), accept or reject probabilistically. Higher posterior probability? Always accept. Lower? Accept with some probability — this keeps the chain from getting stuck. The accepted samples form your approximate posterior.</p>
 
-<p><b>Hamiltonian Monte Carlo (HMC)</b> is a more sophisticated variant that uses gradient information to make intelligent proposals, traveling along the posterior surface rather than randomly stumbling around. It explores high-dimensional posteriors much more efficiently than Metropolis-Hastings. PyMC and Stan use HMC variants (specifically NUTS — the No-U-Turn Sampler) under the hood.</p>
+<p><b>Hamiltonian Monte Carlo (HMC)</b> uses gradient information to make smarter proposals — it travels along the posterior surface instead of stumbling randomly. HMC explores high-dimensional posteriors much more efficiently. PyMC and Stan use HMC variants (NUTS — the No-U-Turn Sampler) under the hood.</p>
 
-<h3 id="variational-inference">Variational Inference</h3>
+<h3 id="variational-inference">Variational Inference → ELBO → VAEs</h3>
 
-<p><b>Variational Inference (VI)</b> takes a completely different approach: instead of sampling from the posterior, approximate it with a simpler distribution and optimize the approximation. Choose a family of distributions q(θ; φ) (e.g., a factorized Gaussian), then find the parameters φ that make q as close to the true posterior as possible.</p>
+<p>I'm still building intuition for variational inference. It took me three attempts to understand it, and I'll share the version that finally clicked.</p>
 
-<p>"Close" is measured by <b>KL divergence</b>: KL(q || p) = ∫ q(θ) * log(q(θ) / P(θ|D)) dθ. Minimizing this directly requires knowing P(θ|D), which is what we are trying to find. The trick: instead, maximize the <b>Evidence Lower Bound (ELBO)</b>: ELBO = E_q[log P(D|θ)] - KL(q || P(θ)). The first term says "the approximate posterior should explain the data." The second says "the approximate posterior should not stray too far from the prior." Maximizing ELBO is equivalent to minimizing KL divergence.</p>
+<p><b>Variational Inference (VI)</b> takes a different approach from MCMC: instead of sampling from the posterior, approximate it with a simpler distribution q(θ; φ) and optimize φ to make q as close as possible to the true posterior.</p>
 
-<p>VI is the engine behind <b>Variational Autoencoders (VAEs)</b>. The encoder maps data to an approximate posterior q(z|x) over latent variables. The decoder maps latent variables back to data via P(x|z). The VAE loss is exactly the negative ELBO: reconstruction loss (the likelihood term) plus KL divergence between the encoder output and the prior (typically a standard Gaussian). Now you know where the VAE loss function comes from — it is not ad hoc, it is variational inference.</p>
+<p>"Close" is measured by <b>KL divergence</b>: KL(q || p). Minimizing this directly requires knowing the true posterior — the thing we're trying to find. The trick: instead, maximize the <b>Evidence Lower Bound (ELBO)</b>:</p>
 
-<!-- ═══════ 8. Hypothesis Testing & A/B Testing ═══════ -->
+<p>ELBO = E_q[log P(D|θ)] - KL(q(θ) || P(θ))</p>
 
-<h2 id="hypothesis-testing">Hypothesis Testing &amp; A/B Testing</h2>
+<p>First term: "the approximate posterior should explain the data." Second term: "the approximate posterior shouldn't stray too far from the prior." Maximizing ELBO is equivalent to minimizing KL divergence to the true posterior.</p>
+
+<p>This is exactly the <b>VAE loss function</b>. The encoder outputs q(z|x) — an approximate posterior over latent variables. The decoder outputs P(x|z) — a likelihood. The loss is: reconstruction loss (negative log-likelihood) + KL divergence between the encoder output and a standard Gaussian prior. That's the negative ELBO. The VAE loss isn't ad hoc — it's variational inference with a specific choice of approximate posterior family.</p>
+
+<!-- ═══════ 10. Hypothesis Testing ═══════ -->
+
+<h2 id="hypothesis-testing">Hypothesis Testing and A/B Testing</h2>
 
 <h3 id="null-alternative">Null and Alternative Hypotheses</h3>
 
-<p>A <b>hypothesis test</b> formalizes the question: "Is this effect real, or could it be explained by random chance?" The <b>null hypothesis</b> H₀ is the boring explanation — no effect, no difference, the model improvement is just noise. The <b>alternative hypothesis</b> H₁ is what you are trying to show — there is a real effect. You never "prove" H₁; you either reject H₀ (strong evidence against the boring explanation) or fail to reject it (insufficient evidence).</p>
+<p>You've trained two spam filters. Model B looks 2% better on the test set. Is that real, or did you get lucky with the test split? <b>Hypothesis testing</b> formalizes this question.</p>
 
-<h3 id="p-values">p-values</h3>
+<p>The <b>null hypothesis</b> H₀ is the boring explanation: there's no real difference, the 2% is noise. The <b>alternative hypothesis</b> H₁: there is a real difference. You never "prove" H₁ — you either reject H₀ (strong evidence against no-difference) or fail to reject it (not enough evidence).</p>
 
-<p>The <b>p-value</b> is the probability of observing data at least as extreme as what you got, assuming the null hypothesis is true. A small p-value means "this data would be very unlikely if there were really no effect," which is evidence against H₀.</p>
+<h3 id="p-values">p-values — What They Are and What They Are NOT</h3>
+
+<p>The <b>p-value</b> is the probability of seeing data at least as extreme as what you observed, assuming H₀ is true. Small p-value → "this result would be very unlikely if there were no real effect" → evidence against H₀.</p>
 
 <div class="callout callout-warning">
   <b>What p-values are NOT:</b>
   <ul>
-    <li>NOT the probability that H₀ is true. A p-value of 0.03 does not mean "3% chance the null is true."</li>
-    <li>NOT the probability that your result happened by chance.</li>
-    <li>NOT a measure of effect size. A tiny, meaningless effect can have a tiny p-value with enough data.</li>
-    <li>NOT comparable across different tests or sample sizes.</li>
+    <li>NOT the probability that H₀ is true. A p-value of 0.03 doesn't mean "3% chance the models are the same."</li>
+    <li>NOT the probability your result happened by chance.</li>
+    <li>NOT a measure of effect size. A tiny, meaningless difference can produce a tiny p-value with enough data.</li>
   </ul>
-  The p-value is a statement about the data under the null, not a statement about the null under the data. Confusing these is the conditional probability swap again — P(data|H₀) vs P(H₀|data).
+  The p-value is P(data | H₀), not P(H₀ | data). Confusing these is the conditional probability swap we warned about earlier. Getting P(H₀ | data) requires Bayes' theorem and a prior on H₀.
 </div>
 
 <h3 id="type-errors">Type I/II Errors and Power</h3>
 
 <table>
 <thead>
-<tr><th></th><th>H₀ True (no effect)</th><th>H₀ False (real effect)</th></tr>
+<tr><th></th><th>H₀ True (no real difference)</th><th>H₀ False (real difference)</th></tr>
 </thead>
 <tbody>
 <tr><td><b>Reject H₀</b></td><td>Type I Error (false positive, rate = α)</td><td>Correct! (Power = 1 - β)</td></tr>
@@ -828,19 +883,19 @@ print("Notice: the credible interval shrinks as data accumulates.")</code></pre>
 </tbody>
 </table>
 
-<p><b>Statistical power</b> (1 - β) is the probability of detecting a real effect when it exists. Power depends on: (1) effect size — larger effects are easier to detect, (2) sample size — more data means more power, (3) significance level α — higher α gives more power but more false positives, (4) variance — lower variance makes effects stand out more. Before running an experiment, always do a power analysis to determine how many samples you need. Running underpowered experiments wastes resources and produces unreliable conclusions.</p>
+<p><b>Statistical power</b> (1 - β) is the probability of detecting a real effect when one exists. It depends on effect size, sample size, significance level, and variance. Always do a power analysis before running experiments — underpowered experiments waste resources and produce unreliable conclusions.</p>
 
-<h3 id="t-tests">t-Tests for Model Comparison</h3>
+<h3 id="t-tests">Paired t-Tests for Model Comparison</h3>
 
-<p>When comparing two models on the same test set, use a <b>paired t-test</b>. For each test sample, compute the difference in performance (e.g., model A got it right and model B got it wrong, or the difference in losses). The paired test accounts for the fact that some samples are inherently harder than others — it tests whether the <i>differences</i> are systematically nonzero, not whether the raw scores differ.</p>
-
-<h3 id="chi-squared-anova">Chi-squared and ANOVA</h3>
-
-<p>The <b>Chi-squared test</b> checks if observed frequencies differ from expected frequencies — useful for testing independence between categorical variables or goodness-of-fit. <b>ANOVA</b> (Analysis of Variance) tests whether the means of three or more groups differ; it generalizes the two-sample t-test. In ML, ANOVA occasionally appears in feature selection (testing whether a feature's mean differs across classes).</p>
+<p>When comparing two models on the same test set, use a <b>paired t-test</b>. For each sample, compute the performance difference. The paired test accounts for sample difficulty — some samples are hard for both models. It tests whether the <i>differences</i> are systematically non-zero.</p>
 
 <h3 id="multiple-testing">Multiple Testing Correction</h3>
 
-<p>If you run 20 hypothesis tests at α = 0.05, you expect one false positive even if every null is true. When testing many hypotheses simultaneously (e.g., which of 1,000 features are relevant), you must correct for multiple testing. <b>Bonferroni correction</b> divides α by the number of tests — simple but conservative. <b>Benjamini-Hochberg</b> controls the false discovery rate (FDR) instead of the family-wise error rate — it is less conservative and more appropriate when you expect some true positives. In practice, Benjamini-Hochberg is the standard in genomics, feature selection, and any setting with many parallel tests.</p>
+<p>Run 20 tests at α = 0.05, and you expect one false positive even with no real effects. <b>Bonferroni correction</b>: divide α by the number of tests. Simple but conservative. <b>Benjamini-Hochberg</b>: controls false discovery rate (FDR) instead — less conservative, standard in practice when you expect some true positives among many tests.</p>
+
+<h3 id="ab-testing">A/B Testing: Frequentist vs. Bayesian</h3>
+
+<p>Frequentist A/B testing: fix a sample size, run the experiment, compute a p-value. Binary outcome: significant or not. You cannot peek at results early without inflating error rates. Bayesian A/B testing: compute the posterior probability that variant B is better. You can check results at any time, because you're updating a belief, not running a fixed-sample procedure. The Bayesian approach gives you P(B is better | data) directly — a much more useful quantity than a p-value.</p>
 
 <h3 id="paired-t-test-code">Code: Paired t-Test for Model Comparison</h3>
 
@@ -848,24 +903,18 @@ print("Notice: the credible interval shrinks as data accumulates.")</code></pre>
 from scipy import stats
 
 np.random.seed(42)
-
-# --- Compare two models on the same 200-sample test set ---
 n_test = 200
 
-# Model A: 82% accuracy, Model B: 78% accuracy (but is the difference significant?)
-# Simulate per-sample correctness (1 = correct, 0 = wrong)
-# Models share some "easy" samples and some "hard" samples
-difficulty = np.random.uniform(0, 1, n_test)  # lower = easier
-model_a_correct = (difficulty + np.random.normal(0, 0.15, n_test) &lt; 0.82).astype(int)
-model_b_correct = (difficulty + np.random.normal(0, 0.15, n_test) &lt; 0.78).astype(int)
+# Two spam filters on the same test set
+difficulty = np.random.uniform(0, 1, n_test)
+model_a_correct = (difficulty + np.random.normal(0, 0.15, n_test) < 0.82).astype(int)
+model_b_correct = (difficulty + np.random.normal(0, 0.15, n_test) < 0.78).astype(int)
 
-acc_a = model_a_correct.mean()
-acc_b = model_b_correct.mean()
-print(f"Model A accuracy: {acc_a:.3f}")
-print(f"Model B accuracy: {acc_b:.3f}")
-print(f"Raw difference:   {acc_a - acc_b:.3f}\n")
+print(f"Model A accuracy: {model_a_correct.mean():.3f}")
+print(f"Model B accuracy: {model_b_correct.mean():.3f}")
+print(f"Raw difference:   {model_a_correct.mean() - model_b_correct.mean():.3f}\n")
 
-# Paired t-test: test if per-sample differences are systematically nonzero
+# Paired t-test on per-sample differences
 differences = model_a_correct - model_b_correct
 t_stat, p_value = stats.ttest_rel(model_a_correct, model_b_correct)
 
@@ -874,118 +923,106 @@ print(f"  Mean difference: {differences.mean():.4f}")
 print(f"  t-statistic:     {t_stat:.3f}")
 print(f"  p-value:         {p_value:.4f}")
 
-if p_value &lt; 0.05:
-    print("  → Reject H₀: The difference is statistically significant at α=0.05")
+if p_value < 0.05:
+    print("  → Reject H₀: difference is statistically significant at α=0.05")
 else:
-    print("  → Fail to reject H₀: No significant difference detected")
+    print("  → Fail to reject H₀: no significant difference detected")
 
-# Effect size: Cohen's d for paired samples
+# Effect size
 cohens_d = differences.mean() / differences.std()
-print(f"  Cohen's d:       {cohens_d:.3f} ({'small' if abs(cohens_d)&lt;0.5 else 'medium' if abs(cohens_d)&lt;0.8 else 'large'})")</code></pre>
+label = 'small' if abs(cohens_d) < 0.5 else 'medium' if abs(cohens_d) < 0.8 else 'large'
+print(f"  Cohen's d:       {cohens_d:.3f} ({label})")</code></pre>
 
-<!-- ═══════ 9. Descriptive Statistics & Resampling ═══════ -->
+<!-- ═══════ 11. Descriptive Statistics ═══════ -->
 
-<h2 id="descriptive-statistics">Descriptive Statistics &amp; Resampling</h2>
+<h2 id="descriptive-statistics">Descriptive Statistics and Resampling</h2>
 
-<p>You know these. <b>Mean</b> (average), <b>median</b> (middle value — robust to outliers), <b>mode</b> (most frequent value). <b>Variance</b> and <b>standard deviation</b> measure spread. <b>Skewness</b> measures asymmetry (income distributions are right-skewed). <b>Kurtosis</b> measures tail heaviness (high kurtosis = more outliers than a Gaussian). In practice, always look at the median alongside the mean — if they differ substantially, your distribution is skewed and the mean is misleading.</p>
+<h3 id="summary-stats">Summary Statistics</h3>
+
+<p>You know these: <b>mean</b> (average), <b>median</b> (middle value, robust to outliers), <b>mode</b> (most frequent). <b>Variance</b> and <b>standard deviation</b> measure spread. <b>Skewness</b> measures asymmetry — income distributions are right-skewed, so the mean is higher than the median. <b>Kurtosis</b> measures tail heaviness — high kurtosis means more outliers than a Gaussian. In practice: always look at the median alongside the mean. If they differ a lot, your distribution is skewed and the mean is misleading.</p>
 
 <h3 id="bootstrap">Bootstrap Confidence Intervals</h3>
 
-<p>The <b>bootstrap</b> is beautifully simple: to estimate the uncertainty of any statistic, resample your data with replacement many times, compute the statistic on each resample, and look at the distribution of results. The 2.5th and 97.5th percentiles of the bootstrap distribution give you a 95% confidence interval. No distributional assumptions, no formulas — just resampling. It works for means, medians, model accuracies, AUC scores, anything.</p>
+<p>The <b>bootstrap</b> is one of my favorite tools in all of statistics because it's so direct. Want to know the uncertainty of any statistic — any statistic at all — without making distributional assumptions? Resample your data with replacement many times. Compute the statistic on each resample. Look at the distribution of results. The 2.5th and 97.5th percentiles give you a 95% confidence interval. Works for means, medians, AUC, F1, any crazy metric you can compute.</p>
 
 <pre><code>import numpy as np
 
 np.random.seed(42)
 
-# --- Bootstrap confidence interval for model accuracy ---
-# Suppose model predictions on a test set of 500 samples
+# Bootstrap CI for our spam filter's accuracy
 n_test = 500
-# Simulated: model gets ~85% accuracy
-correct = np.random.binomial(1, 0.85, n_test)
-observed_accuracy = correct.mean()
+correct = np.random.binomial(1, 0.85, n_test)  # ~85% accuracy
+observed_acc = correct.mean()
 
-# Bootstrap: resample with replacement, compute accuracy each time
 n_bootstrap = 10_000
-boot_accuracies = np.array([
+boot_accs = np.array([
     np.random.choice(correct, size=n_test, replace=True).mean()
     for _ in range(n_bootstrap)
 ])
 
-ci_low = np.percentile(boot_accuracies, 2.5)
-ci_high = np.percentile(boot_accuracies, 97.5)
+ci_low, ci_high = np.percentile(boot_accs, [2.5, 97.5])
 
-print(f"Observed accuracy:      {observed_accuracy:.4f}")
-print(f"Bootstrap mean:         {boot_accuracies.mean():.4f}")
-print(f"Bootstrap std:          {boot_accuracies.std():.4f}")
-print(f"95% Bootstrap CI:       [{ci_low:.4f}, {ci_high:.4f}]")
-print(f"\nInterpretation: we are 95% confident the true accuracy")
-print(f"lies between {ci_low:.1%} and {ci_high:.1%}.")</code></pre>
+print(f"Observed accuracy:  {observed_acc:.4f}")
+print(f"Bootstrap mean:     {boot_accs.mean():.4f}")
+print(f"Bootstrap std:      {boot_accs.std():.4f}")
+print(f"95% Bootstrap CI:   [{ci_low:.4f}, {ci_high:.4f}]")
+print(f"\nWe're 95% confident the true accuracy is between {ci_low:.1%} and {ci_high:.1%}.")</code></pre>
 
 <h3 id="permutation-tests">Permutation Tests</h3>
 
-<p><b>Permutation tests</b> assess significance by randomly shuffling labels and seeing how extreme your observed statistic is compared to the shuffled distribution. Want to know if two models differ? Randomly swap which predictions belong to model A vs B many times. If the observed difference is in the top 5% of the shuffled distribution, reject the null at α=0.05. Like bootstrap, permutation tests are nonparametric — no distributional assumptions. They are especially useful when the data does not meet the assumptions of parametric tests.</p>
+<p><b>Permutation tests</b> assess significance by randomly shuffling labels. Want to know if two models differ? Randomly swap which predictions belong to Model A vs. B many times. If the observed difference lands in the top 5% of the shuffled distribution, reject the null at α = 0.05. Like bootstrap, permutation tests are nonparametric — no distributional assumptions needed.</p>
 
-<!-- ═══════ 10. Concentration Inequalities ═══════ -->
+<!-- ═══════ 12. Concentration Inequalities ═══════ -->
 
 <h2 id="concentration-inequalities">Concentration Inequalities</h2>
 
-<p>Concentration inequalities bound how far a random variable can deviate from its expected value. They are the theoretical backbone of generalization bounds in learning theory.</p>
+<p>These bounds tell you how far a random variable can stray from its expected value. They're the theoretical backbone of generalization in learning theory — and they show up in ML interviews when the conversation turns to "why does your model generalize?"</p>
 
-<p><b>Markov's inequality:</b> For a non-negative random variable, P(X &gt;= a) &lt;= E[X] / a. Very loose, but requires almost no assumptions. <b>Chebyshev's inequality:</b> P(|X - μ| &gt;= kσ) &lt;= 1/k². Uses variance information to give a tighter bound. Still distribution-free.</p>
+<p><b>Markov's inequality:</b> For non-negative X, P(X ≥ a) ≤ E[X]/a. Extremely loose, but requires almost nothing. <b>Chebyshev's inequality:</b> P(|X - μ| ≥ kσ) ≤ 1/k². Uses variance information for a tighter bound. Still distribution-free.</p>
 
-<p><b>Hoeffding's inequality</b> is the workhorse in learning theory. For n independent bounded random variables in [a, b] with sample mean X̄ and true mean μ: P(|X̄ - μ| &gt;= t) &lt;= 2 * exp(-2nt² / (b-a)²). The probability of the sample mean deviating from the true mean decreases exponentially with n. This directly gives you <b>PAC (Probably Approximately Correct) learning</b> bounds: with high probability (the "probably" part), the empirical risk is close to the true risk (the "approximately correct" part). The bound tells you how many samples you need for a given level of confidence.</p>
+<p><b>Hoeffding's inequality</b> is the workhorse. For n independent bounded random variables in [a, b]: P(|X̄ - μ| ≥ t) ≤ 2·exp(-2nt²/(b-a)²). The probability of the sample mean deviating from the true mean drops <i>exponentially</i> with n.</p>
 
-<p><b>Sub-Gaussian</b> random variables satisfy Hoeffding-like tail bounds even when unbounded. Gaussians are sub-Gaussian (obviously), and so are all bounded random variables. Many concentration results in modern ML theory use sub-Gaussian assumptions because they give exponential tail bounds without requiring bounded support.</p>
+<p>This directly gives <b>PAC (Probably Approximately Correct)</b> learning bounds: with high probability ("probably"), the empirical risk is close to the true risk ("approximately correct"). Hoeffding tells you exactly how many samples you need for a given confidence level. Sub-Gaussian random variables extend these exponential tail bounds to unbounded distributions — and most quantities in ML (bounded losses, Gaussian noise) are sub-Gaussian.</p>
 
-<!-- ═══════ 11. Gaussian Mixture Models ═══════ -->
+<!-- ═══════ 13. GMM ═══════ -->
 
 <h2 id="gmm">Gaussian Mixture Models</h2>
 
-<p>A <b>Gaussian Mixture Model (GMM)</b> assumes data is generated from a mixture of K Gaussian distributions. Each data point comes from one of the K components, but you do not know which one. The generative process: (1) pick a component k with probability πk (the mixing weight), (2) sample x from N(μk, Σk). The overall density is: P(x) = Σ_k πk * N(x | μk, Σk).</p>
+<p>A <b>Gaussian Mixture Model</b> assumes data is generated from K Gaussian components. The generative story: pick component k with probability πk (mixing weight), then sample x from N(μk, Σk). The density is P(x) = Σk πk · N(x|μk, Σk). You don't know which component generated each point — that's the latent variable.</p>
 
-<p>GMMs are fit using the <b>Expectation-Maximization (EM)</b> algorithm, which iterates between two steps:</p>
-<ul>
-  <li><b>E-step:</b> For each data point, compute the posterior probability (responsibility) that it belongs to each component: r_ik = πk * N(xi | μk, Σk) / Σ_j πj * N(xi | μj, Σj). This is just Bayes' theorem.</li>
-  <li><b>M-step:</b> Update each component's parameters using the responsibilities as soft assignments: μk = (Σ_i r_ik * xi) / (Σ_i r_ik), and similarly for Σk and πk.</li>
-</ul>
+<p>GMMs are fit by the <b>Expectation-Maximization (EM)</b> algorithm. Two alternating steps:</p>
 
-<p>EM alternates until convergence. Each iteration is guaranteed to increase (or maintain) the log-likelihood — it never gets worse. However, EM can converge to local optima, so you should run it multiple times with different initializations.</p>
+<p><b>E-step:</b> For each data point, compute the posterior probability (responsibility) that it belongs to each component: rᵢk = πk·N(xᵢ|μk, Σk) / Σⱼ πⱼ·N(xᵢ|μⱼ, Σⱼ). This is Bayes' theorem — the prior is the mixing weight, the likelihood is the Gaussian density, the posterior is the responsibility.</p>
 
-<p>GMMs perform <b>soft clustering</b>: each point has a probability of belonging to each cluster, rather than a hard assignment. K-means is actually a special case of GMM where all covariances are isotropic and equal, and you take hard assignments (argmax instead of soft responsibilities). When you need cluster shapes that are not spherical, or when you need uncertainty in cluster assignments, GMMs are the right tool.</p>
+<p><b>M-step:</b> Update each component's parameters using responsibilities as soft weights: μk = (Σᵢ rᵢk·xᵢ) / (Σᵢ rᵢk), and analogously for Σk and πk.</p>
 
-<!-- ═══════ 12. Causal Inference ═══════ -->
+<p>EM is guaranteed to increase (or maintain) log-likelihood each iteration — it never gets worse. But it can hit local optima, so run it multiple times with different initializations.</p>
+
+<p>GMMs give you <b>soft clustering</b>: each point has a probability of membership in each cluster. K-means is actually a special case of GMM where all covariances are equal and isotropic, and you take hard assignments (argmax instead of soft responsibilities). When you need non-spherical clusters or uncertainty in assignments, GMMs are the tool.</p>
+
+<!-- ═══════ 14. Causal Inference ═══════ -->
 
 <h2 id="causal-inference">Causal Inference</h2>
 
-<p><b>Correlation does not imply causation.</b> You have heard this a thousand times, but it still trips up practitioners. Ice cream sales correlate with drowning deaths — not because ice cream causes drowning, but because both increase in hot weather. The hot weather is a <b>confounder</b>: a variable that influences both the treatment and the outcome, creating a spurious association.</p>
+<p><b>Correlation does not imply causation.</b> We've all heard it a thousand times, and it still trips people up. Ice cream sales correlate with drowning deaths — hot weather is the <b>confounder</b> driving both. Our spam filter might learn that emails from a certain domain correlate with spam, but if we block that domain entirely, we might lose legitimate emails — because the correlation was driven by a third factor.</p>
 
-<p><b>Simpson's paradox</b> is the most dramatic example: a trend that appears in several groups reverses when the groups are combined. A treatment can appear better overall but worse in every subgroup (or vice versa), because the groups have different sizes and baseline rates. This is not a paradox in the logical sense — it is confounding in action. The solution is to condition on the confounder, not to blindly aggregate.</p>
+<p><b>Simpson's paradox</b> is the sharpest example: a trend in subgroups reverses when you combine them. A treatment can appear better overall but worse in every subgroup, because group sizes and baselines differ. It's confounding in action. The fix is conditioning on the confounder — not blindly aggregating.</p>
 
-<p><b>Directed Acyclic Graphs (DAGs)</b> formalize causal relationships. Nodes are variables, directed edges represent causal influence. Judea Pearl's <b>do-calculus</b> lets you determine whether a causal effect is identifiable from observational data alone, and how to estimate it. The key operation is the "do" operator: P(Y | do(X=x)) is different from P(Y | X=x) because "doing" removes the influence of confounders on X.</p>
+<p><b>Directed Acyclic Graphs (DAGs)</b> formalize causal relationships. Judea Pearl's <b>do-calculus</b> distinguishes observing from intervening: P(Y | do(X=x)) ≠ P(Y | X=x) because "doing" severs the confounder's influence on X. Models trained on observational data learn correlations, not causal effects. A model that discovers "lighter → lung cancer" will make terrible interventions. As ML moves into healthcare, policy, and other high-stakes domains, causal reasoning is becoming essential, not optional.</p>
 
-<p>Why should ML practitioners care? Because models trained on observational data learn correlations, not causal effects. A model might learn that carrying a lighter predicts lung cancer — not because lighters cause cancer, but because smokers carry lighters. If you use such a model to make interventions (recommending people discard their lighters to prevent cancer), you will fail. Causal reasoning tells you which features are actually actionable and which are merely associated. As ML moves into healthcare, policy, and other high-stakes domains, causal thinking becomes essential.</p>
+<!-- ═══════ 15. Wrap-Up ═══════ -->
 
-<!-- ═══════ 13. Checklist ═══════ -->
+<h2 id="wrap-up">Wrap-Up</h2>
 
-<h2 id="checklist">What You Should Now Be Able To Do</h2>
+<p>We started with three emails and a confession about avoiding probability. We end with a toolkit that connects to nearly everything in modern ML.</p>
 
-<div class="checklist">
-  <ul>
-    <li>Apply Bayes' theorem to real problems and explain why base rates matter — work through the medical test example from memory</li>
-    <li>Derive common loss functions (MSE, cross-entropy) from MLE under specific distributional assumptions</li>
-    <li>Explain why L2 regularization corresponds to a Gaussian prior and L1 to a Laplace prior on weights</li>
-    <li>Choose the right distribution for a given modeling problem using the reference table</li>
-    <li>Perform Bayesian updating with conjugate priors (Beta-Binomial, Gaussian-Gaussian, Dirichlet-Categorical)</li>
-    <li>Explain the difference between MLE, MAP, and full Bayesian inference — and when to use each</li>
-    <li>Run and interpret a paired t-test for model comparison, including effect size</li>
-    <li>Construct bootstrap confidence intervals for any statistic without distributional assumptions</li>
-    <li>Explain what p-values are and — critically — what they are not</li>
-    <li>Describe the EM algorithm for GMMs and explain how E-step is Bayes' theorem in action</li>
-    <li>Connect the chain rule of probability to autoregressive models (GPT, WaveNet)</li>
-    <li>Explain why the Central Limit Theorem makes mini-batch SGD gradient noise approximately Gaussian</li>
-  </ul>
-</div>
+<p>Here's what we built. Probability gives us the language of uncertainty. Conditional probability and Bayes' theorem tell us how to update beliefs — and we saw how confusing P(A|B) with P(B|A) can send innocent people to prison or make your spam filter worthless. Distributions are assumptions your models make whether you realize it or not — Bernoulli gives you cross-entropy, Gaussian gives you MSE, Beta gives you a conjugate prior. MLE derives your loss functions. MAP derives your regularization. The CLT explains why SGD noise is Gaussian and what batch size does to it. Bayesian inference gives you uncertainty quantification, and variational inference powers VAEs. Hypothesis testing keeps you honest about whether your improvements are real.</p>
 
+<p>I'm grateful you stuck with this. Probability was the math I resisted the longest, and it turned out to be the math I use the most. If any section felt dense, come back to it after you've seen the concept appear in a later chapter — it'll click differently when you have a concrete use case.</p>
+
+<p>The spam filter we threaded through this section was a toy. But the principles behind it — updating beliefs with evidence, choosing the right distributional assumption, testing whether differences are real — are the same principles you'll use when building production systems at scale. The math doesn't change. Only the number of parameters does.</p>
+
+<p>Next up, we tackle Optimization — the machinery that actually finds the parameters once you've defined what "good" means probabilistically. Everything we derived here (loss functions, regularization, the ELBO) becomes an objective that optimization minimizes. The two sections are designed to be read together.</p>
 
 
       <div class="page-nav">
