@@ -296,448 +296,372 @@
 <h1>Modern Vision</h1>
 <div class="chapter-meta">
   <span class="tag">Chapter 9: CNNs &amp; Computer Vision</span>
-  <span class="tag">CLIP · Stable Diffusion · Multimodal LLMs · Vision-Language</span>
+  <span class="tag">ViT · Swin · CLIP · DINOv2 · SAM · Foundation Models</span>
 </div>
 
 <div class="tldr">
   <div class="tldr-label">TL;DR</div>
-  <p>The boundary between vision and language has collapsed. CLIP connects images and text in a shared embedding space, enabling zero-shot classification without any task-specific training. Diffusion models like Stable Diffusion generate images from text by learning to reverse a noise-adding process. Multimodal LLMs — GPT-4V, LLaVA, Gemini — can see and discuss images by projecting visual features into a language model's embedding space. GANs dominated generative vision for years but have been largely displaced by diffusion models. Self-supervised models like DINOv2 learn powerful visual representations without labels. Understanding what these models do and when to reach for them is more important than knowing every implementation detail.</p>
+  <p>The Vision Transformer (ViT) proved that pure self-attention — no convolutions at all — can match or beat CNNs on images, provided you have enough data. Swin Transformer fixed ViT's scalability problem with windowed attention, making transformers practical for detection and segmentation. CLIP bridged vision and language by training image and text encoders in a shared embedding space, enabling zero-shot classification. DINOv2 showed you can learn powerful visual features from images alone through self-distillation. Hybrid architectures like ConvNeXt blurred the CNN-transformer line entirely. SAM made segmentation promptable and universal. The era of training a model per task is ending — modern vision is about foundation models you adapt, not architectures you build from scratch.</p>
 </div>
 
 <!-- ═══════════════════════════════════════════ -->
-<h2>The Vision-Language Convergence</h2>
+<h2>The Moment Everything Changed</h2>
 
-<p>The boundary between vision and language has collapsed. Modern models don't just see images — they understand them in terms of language. CLIP connects images and text. Stable Diffusion generates images from words. GPT-4V discusses photographs. This is where computer vision is heading.</p>
+<p>I avoided looking at Vision Transformers for longer than I'd like to admit. Every time a new ViT variant hit the arXiv feed, I'd skim the abstract and think, "I know CNNs, I'll learn this later." Convolutions were working fine for me. The inductive biases felt right. Locality, translation equivariance — these made physical sense for images. Why would I throw them away and let a model attend to every pixel pair in a 224×224 image?</p>
 
-<p>For most of computer vision's history, vision systems and language systems lived in completely separate worlds. An image classifier output a class index. A text model output a sequence of tokens. The two never talked. The breakthrough came from a deceptively simple idea: what if we trained an image encoder and a text encoder to put matching images and descriptions near each other in the same embedding space? That idea — contrastive vision-language learning — unlocked everything that followed.</p>
+<p>Then the results started piling up. ViT beating CNNs on ImageNet. Swin Transformer dominating every detection and segmentation benchmark. CLIP doing zero-shot classification that competed with fully supervised models. DINOv2 learning features from raw images that transferred to practically anything. At some point the discomfort of not understanding what was happening under the hood became greater than the comfort of my CNN knowledge. Here is that dive.</p>
 
-<p>Here's the mental model for modern vision:</p>
+<p>Before we start, a heads-up. We'll be talking about self-attention, patch embeddings, contrastive learning, and self-distillation. You don't need to know any of it beforehand. We'll build each idea from the ground up, one piece at a time. If you understand convolutions from earlier in this chapter, you already have the right frame of reference — modern vision is largely a story of what happens when you start removing convolutions and replacing them with attention.</p>
 
-<pre><code>                         Modern Vision Landscape
-  ┌──────────────────────────────────────────────────────────────┐
-  │                                                              │
-  │    UNDERSTANDING                        GENERATION           │
-  │    ─────────────                        ──────────           │
-  │                                                              │
-  │    CLIP                                 Diffusion Models     │
-  │    (image ↔ text alignment)             (Stable Diffusion,   │
-  │          │                               DALL-E 3, Flux)     │
-  │          │                                    │              │
-  │          ├─── Zero-shot classification        │              │
-  │          ├─── Visual search                   │              │
-  │          └─── Foundation for everything ───────┘              │
-  │                                                              │
-  │    DINOv2                               GANs (legacy)        │
-  │    (self-supervised features)           (StyleGAN, Pix2Pix)  │
-  │                                                              │
-  │    Multimodal LLMs                                           │
-  │    (GPT-4V, LLaVA, Gemini)                                  │
-  │    Vision encoder → Projection → LLM                        │
-  │    "One model to rule them all"                              │
-  │                                                              │
-  └──────────────────────────────────────────────────────────────┘
-</code></pre>
-
-<p>Let's walk through each piece.</p>
+<p>This isn't a short journey, but I hope you'll be glad you came.</p>
 
 <!-- ═══════════════════════════════════════════ -->
-<h2>CLIP: Contrastive Language-Image Pre-training</h2>
+<h2>Vision Transformer: An Image Is Worth 16×16 Words</h2>
 
-<p>CLIP (OpenAI, 2021) is arguably the single most influential model in modern vision. The idea: train an image encoder and a text encoder simultaneously so that matching image-text pairs produce similar embeddings, while non-matching pairs produce dissimilar ones. That's it. No class labels. No bounding boxes. Just images paired with their text descriptions — 400 million of them scraped from the internet.</p>
+<p>For decades, the assumption was: images need convolutions. The local connectivity, the weight sharing, the hierarchical receptive fields — these are how you process spatial data. Dosovitskiy and colleagues at Google Brain asked a heretical question in 2020: what if we didn't use convolutions at all? What if we took the transformer architecture that was crushing NLP benchmarks and applied it directly to images?</p>
 
-<h3>How CLIP Works</h3>
+<p>The problem is that transformers eat sequences of tokens, and images aren't sequences. An image is a 2D grid of pixels. A 224×224 RGB image has 150,528 values. Feeding each pixel as a token would mean an attention matrix of 50,176 × 50,176 — roughly 2.5 billion entries. That's not going to work.</p>
 
-<p>The training setup is beautifully simple. Take a batch of N image-text pairs. Encode all N images with the image encoder (a Vision Transformer or ResNet). Encode all N texts with the text encoder (a Transformer). Now you have N image embeddings and N text embeddings. The correct pairings lie on the diagonal of the N×N similarity matrix — image 1 should match text 1, image 2 should match text 2, and so on. Push matching pairs together, push all other pairs apart. That's contrastive learning.</p>
+<h3>Patch Embedding — Turning Images Into Sequences</h3>
 
-<pre><code>  CLIP Training: Contrastive Learning
-  ────────────────────────────────────
+<p>The fix is elegant. Instead of treating each pixel as a token, chop the image into non-overlapping patches and treat each patch as a token. Think of it like cutting a photograph into a grid of small squares and then reading them left-to-right, top-to-bottom, like words in a sentence.</p>
+
+<p>Take a 224×224 image and divide it into 16×16 patches. That gives us a 14×14 grid — 196 patches total. Each patch is 16 × 16 × 3 = 768 values (for RGB). Flatten that into a vector, run it through a linear projection to get a D-dimensional embedding, and now you have 196 tokens, each representing one patch of the image.</p>
+
+<pre><code>  ViT: Image → Sequence of Patch Tokens
+  ────────────────────────────────────────
+
+  224×224 image, 16×16 patches:
+
+  ┌────┬────┬────┬────┬─ ─ ─┬────┐
+  │ P₁ │ P₂ │ P₃ │ P₄ │     │P₁₄│   Each patch: 16×16×3 = 768 values
+  ├────┼────┼────┼────┤     ├────┤
+  │P₁₅│P₁₆│P₁₇│P₁₈│     │P₂₈│   → flatten → linear projection
+  ├────┼────┼────┼────┤     ├────┤
+  │    │    │    │    │     │    │   → 196 tokens of dimension D
+  ┆    ┆    ┆    ┆    ┆     ┆    ┆
+  ├────┼────┼────┼────┤     ├────┤
+  │    │    │    │    │     │P₁₉₆│
+  └────┴────┴────┴────┴─ ─ ─┴────┘
+
+  Sequence: [CLS, P₁, P₂, P₃, ... P₁₉₆]  +  positional embeddings
+                ↓
+         Standard Transformer Encoder
+         (multi-head self-attention + MLP)
+                ↓
+         [CLS] output → classification head
+</code></pre>
+
+<p>Two more pieces are essential. First, <strong>positional embeddings</strong> — learned vectors added to each patch token to tell the model where in the image that patch lives. Without them, the transformer would have no idea that patch 1 is top-left and patch 196 is bottom-right; it would treat the image as an unordered bag of patches. ViT uses learned 1D positional embeddings rather than the sinusoidal encodings from NLP transformers, and they work surprisingly well — the model figures out the 2D spatial structure from the data.</p>
+
+<p>Second, a special <strong>[CLS] token</strong> is prepended to the sequence, borrowed directly from BERT. This token participates in self-attention with all 196 patches, aggregating information from the entire image. After the final transformer layer, the [CLS] token's output gets fed to a classification head. It's the model's way of saying "here's my summary of what this image contains."</p>
+
+<h3>Why It Works (When It Has Enough Data)</h3>
+
+<p>Here's the critical insight about ViT, and I'll be honest — it took me a while to internalize this. CNNs have strong <strong>inductive biases</strong> baked in. Locality: a pixel is most related to its neighbors. Translation equivariance: a cat in the top-left should be processed the same way as a cat in the bottom-right. These assumptions give CNNs a head start. They don't need to learn that nearby pixels are correlated — that knowledge is wired into the architecture.</p>
+
+<p>ViT has almost none of these priors. It starts from a blank slate. Every patch can attend to every other patch from layer one. The model has to learn locality, spatial relationships, and feature hierarchies entirely from data. That means on small datasets, ViT gets destroyed by CNNs. The original paper is candid about this: trained on ImageNet-1k alone (1.28 million images), ViT underperforms ResNets.</p>
+
+<p>But give it enough data — ImageNet-21k (14M images) or JFT-300M (300M images) — and something remarkable happens. The lack of inductive bias becomes a strength. The model isn't constrained by architectural assumptions about what relationships matter. It learns to attend to distant patches when that's useful, to focus locally when that's useful, and to build whatever feature hierarchy the data demands. With enough examples, ViT surpasses every CNN on the same benchmarks.</p>
+
+<div class="callout callout-warning">
+  <div class="callout-label">The Quadratic Problem</div>
+  <p>Self-attention computes an N×N attention matrix, where N is the number of tokens. For ViT with 196 patches, that's a 196×196 matrix — manageable. But if you wanted to process a 1024×1024 image with 16×16 patches, you'd have 4,096 tokens and a 4096×4096 attention matrix. Double the image resolution and you quadruple the attention cost. This quadratic scaling is ViT's fundamental limitation, and it's what motivated the Swin Transformer.</p>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2>Swin Transformer: Making Vision Transformers Practical</h2>
+
+<p>ViT proved that transformers can work for vision. But it had two serious shortcomings for real-world use. First, the quadratic attention cost made it impractical for high-resolution images. Second, it produced a single-scale feature map — all tokens at the same resolution. CNNs naturally produce multi-scale features (think of a ResNet with its /4, /8, /16, /32 feature maps), which is essential for detection and segmentation where you need to find both tiny and large objects.</p>
+
+<p>The Swin Transformer (Liu et al., 2021) solved both problems with two ideas that, in hindsight, feel inevitable: windowed attention and hierarchical feature maps.</p>
+
+<h3>Windowed Attention — From Global to Local</h3>
+
+<p>Instead of every patch attending to every other patch across the entire image, Swin restricts attention to local windows. Divide the feature map into non-overlapping windows of, say, 7×7 patches. Self-attention happens within each window independently. A window of 49 tokens produces a 49×49 attention matrix — the same size regardless of how large the full image is. That transforms the complexity from quadratic in image size to linear.</p>
+
+<p>But now you've lost global context. Patches in one window can't see patches in the neighboring window. The fix is <strong>shifted windows</strong>. In alternating layers, the window grid is shifted by half a window width. This means patches that were in separate windows in one layer end up sharing a window in the next layer, creating cross-window information flow.</p>
+
+<pre><code>  Swin Transformer: Shifted Window Attention
+  ────────────────────────────────────────────
+
+  Layer L: Regular Windows         Layer L+1: Shifted Windows
+  ┌─────────┬─────────┐           ┌────┬──────────┬────┐
+  │         │         │           │    │          │    │
+  │  Win 1  │  Win 2  │           │    │  Win A   │    │
+  │         │         │           │    │          │    │
+  ├─────────┼─────────┤    →      ├────┼──────────┼────┤
+  │         │         │           │    │          │    │
+  │  Win 3  │  Win 4  │           │    │  Win B   │    │
+  │         │         │           │    │          │    │
+  └─────────┴─────────┘           └────┴──────────┴────┘
+
+  Patches at window boundaries in Layer L
+  become window-interior in Layer L+1.
+  Information flows across the entire image
+  over successive layers.
+</code></pre>
+
+<p>Think of it like this: imagine you're in a building with rooms. In regular windowed attention, people can talk within their room but not to the next room. Shifted windows are like moving the walls between conversations — suddenly people who were separated end up in the same room, and they carry information from their previous conversations with them.</p>
+
+<h3>Hierarchical Feature Maps</h3>
+
+<p>The second innovation is that Swin builds feature maps at multiple scales, like a CNN does. It starts with 4×4 patches (small, high-resolution tokens) and progressively merges patches between stages. Adjacent 2×2 groups of patches get concatenated and projected down. This halves the spatial resolution and doubles the channel depth at each stage, producing a pyramid of features:</p>
+
+<pre><code>  Stage 1:  56 × 56 tokens, C channels       (1/4 resolution)
+  Stage 2:  28 × 28 tokens, 2C channels      (1/8 resolution)
+  Stage 3:  14 × 14 tokens, 4C channels      (1/16 resolution)
+  Stage 4:   7 ×  7 tokens, 8C channels      (1/32 resolution)
+</code></pre>
+
+<p>This is the same multi-scale structure you'd get from a ResNet. That means Swin can drop directly into existing detection and segmentation frameworks — Feature Pyramid Networks, Mask R-CNN, UPerNet — anywhere CNNs were used as backbones. And it beat the CNNs on every one of those benchmarks.</p>
+
+<p>Swin became the de facto vision backbone for dense prediction tasks. Swin v2 later scaled the design to 3 billion parameters and 1536×1536 resolution, proving the approach could grow.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2>DeiT: Making ViT Practical Without Massive Data</h2>
+
+<p>ViT's dependence on hundreds of millions of training images was a real barrier. Most teams don't have a JFT-300M lying around. Facebook Research's DeiT (Data-efficient Image Transformer, Touvron et al., 2021) showed that ViT could be trained effectively on ImageNet-1k alone — if you were clever about it.</p>
+
+<p>The key idea: <strong>knowledge distillation</strong>. Train a strong CNN teacher (like a RegNet), then train the ViT student to match the teacher's outputs. DeiT adds a special <strong>distillation token</strong> alongside the [CLS] token. The [CLS] token trains against ground-truth labels in the standard way. The distillation token trains against the teacher's soft predictions — learning not what the answer is, but how the teacher reasons about uncertainty across classes.</p>
+
+<p>The dual supervision — hard labels from the dataset plus soft knowledge from the CNN — gives the ViT student enough signal to learn effectively without needing 300 million images. Strong data augmentation (RandAugment, random erasing, Mixup, CutMix) filled in the rest. DeiT matched ViT-on-JFT performance using only ImageNet-1k, making vision transformers accessible to everyone.</p>
+
+<p>There's something deeply satisfying about this. CNNs, with their strong inductive biases, learn efficiently from limited data. Transformers, with their minimal biases, can eventually surpass CNNs given enough data. DeiT essentially lets the CNN's inductive biases flow into the transformer through distillation — the best of both worlds.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2>The Hybrid Question: CNN or Transformer — Or Both?</h2>
+
+<p>Once ViT showed that pure attention could work for vision, and Swin showed it could work at scale, an obvious question emerged: do we actually need to choose between convolutions and attention? Maybe the best architecture uses both.</p>
+
+<h3>ConvNeXt — A CNN That Learned From Transformers</h3>
+
+<p>ConvNeXt (Liu et al., 2022) is one of my favorite papers in recent years, because it completely reframes the CNN-vs-transformer debate. The authors started with a standard ResNet-50 and systematically modernized it by adopting design principles from Swin Transformer — one change at a time, measuring the impact of each:</p>
+
+<p>Larger kernels (7×7 instead of 3×3). Inverted bottleneck blocks (wide → narrow → wide, like transformers' MLP). LayerNorm instead of BatchNorm. GELU activation instead of ReLU. Fewer activation functions and normalization layers. A "patchify" stem instead of the traditional conv-pool-conv stem.</p>
+
+<p>The result: a pure CNN — no attention whatsoever — that matches Swin Transformer's performance across classification, detection, and segmentation. ConvNeXt's message is profound: the gap between CNNs and transformers was never really about attention versus convolution. It was about training recipes, architectural details, and scaling strategies. Modernize a CNN with the lessons from the transformer era, and the performance gap vanishes.</p>
+
+<h3>CoAtNet and True Hybrids</h3>
+
+<p><strong>CoAtNet</strong> (Dai et al., 2021) takes a more explicit hybrid approach: use convolution layers in the early stages where local features matter most, then switch to transformer layers in the later stages where global context becomes important. The intuition is that early layers need to extract edges, textures, and local patterns — convolutions are efficient at this. Later layers need to reason about relationships between distant parts of the image — attention excels here.</p>
+
+<p>This staged approach gets the CNN's data efficiency in the early layers (where the model needs to learn local patterns regardless) and the transformer's flexibility in the later layers (where global reasoning adds the most value). CoAtNet achieved state-of-the-art results on ImageNet with less data than pure ViT needed.</p>
+
+<div class="callout callout-info">
+  <div class="callout-label">The Real Takeaway</div>
+  <p>The CNN-versus-transformer debate has largely been resolved, and the answer is: it depends on your constraints. Need the best accuracy and have massive data? Pure transformer. Need data efficiency and fast inference? CNN or hybrid. Need a drop-in backbone for detection or segmentation? Swin or ConvNeXt. The architecture matters less than the training recipe, the data, and the scale.</p>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2>Rest Stop</h2>
+
+<p>If you've made it this far, you've covered a lot of ground. You now have a solid mental model of how transformers invaded computer vision: ViT showed it was possible, Swin made it practical, DeiT made it data-efficient, and ConvNeXt showed that a modernized CNN could keep up. That's a real understanding of the architectural evolution, and it's genuinely useful.</p>
+
+<p>If you want to stop here, you can. You understand the backbones. That alone puts you ahead of most people who use these models as black boxes.</p>
+
+<p>But the backbone is only half the story. The other half is what you build on top of it — or more precisely, how you train it. The models that are reshaping production computer vision right now aren't distinguished by their architecture (they mostly use some variant of ViT). They're distinguished by their training paradigm: contrastive vision-language learning (CLIP), self-supervised distillation (DINOv2), and promptable task-agnostic pretraining (SAM). These are the foundation models, and they're the reason most teams no longer train vision models from scratch.</p>
+
+<p>If that discomfort of not knowing what's underneath is nagging at you, read on.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2>CLIP: When Vision Learned to Read</h2>
+
+<p>For the entire history of supervised computer vision, the workflow was: collect images, label them (expensive), train a model on those labels, and hope it generalizes. If your task changed — from classifying animals to classifying vehicles — you needed new labels and a new training run. Every task was its own silo.</p>
+
+<p>CLIP (Contrastive Language-Image Pre-training, Radford et al., 2021) broke that pattern entirely. Instead of training with class labels, CLIP trains with image-caption pairs — 400 million of them, scraped from the internet. An image of a golden retriever on a beach paired with the caption "a golden retriever playing on a sandy beach." No class taxonomy. No label ontology. Just images and their natural language descriptions.</p>
+
+<h3>The Training Loop</h3>
+
+<p>CLIP has two encoders. An image encoder (a ViT or ResNet) that maps images to vectors. A text encoder (a Transformer) that maps text to vectors of the same dimension. Training is contrastive: take a batch of N image-text pairs, compute the cosine similarity between every image and every text in the batch, and push matching pairs (the diagonal of the N×N matrix) together while pushing non-matching pairs apart.</p>
+
+<pre><code>  CLIP Training
+  ─────────────
 
   Batch of N image-text pairs:
 
-  Images                    Texts
-  ───────                   ─────
-  🖼️ dog on beach          "a dog playing on a sandy beach"
-  🖼️ red sports car        "red sports car on highway"
-  🖼️ mountain sunset       "sunset over snow-capped mountains"
-
-  Image Encoder              Text Encoder
-  (ViT-B/32)                 (Transformer)
-       │                          │
-       ▼                          ▼
-  [img₁ emb]                [txt₁ emb]
-  [img₂ emb]                [txt₂ emb]
-  [img₃ emb]                [txt₃ emb]
+  Image Encoder        Text Encoder
+  (ViT-L/14)           (Transformer)
+       │                     │
+       ▼                     ▼
+  [img₁]  [img₂]  [img₃]   [txt₁]  [txt₂]  [txt₃]
 
   Cosine Similarity Matrix (N × N):
-                  txt₁    txt₂    txt₃
-       img₁  [  0.95    0.12    0.08  ]  ← maximize diagonal
-       img₂  [  0.10    0.93    0.15  ]  ← minimize off-diagonal
-       img₃  [  0.07    0.11    0.96  ]
-              ──────────────────────────
-              ✓ match   ✗ mismatch
+
+              txt₁    txt₂    txt₃
+   img₁  [  0.92    0.11    0.05  ]   ← match
+   img₂  [  0.08    0.89    0.13  ]   ← match
+   img₃  [  0.04    0.09    0.94  ]   ← match
+           ────────────────────────
+   Goal: maximize diagonal, minimize off-diagonal
 </code></pre>
+
+<p>The loss is symmetric cross-entropy applied both row-wise (for each image, which text matches?) and column-wise (for each text, which image matches?). After training, the two encoders live in a shared embedding space: images and text that describe the same thing land near each other.</p>
 
 <h3>Zero-Shot Classification</h3>
 
-<p>Here's where CLIP gets magical. Once trained, you can classify images into <em>any</em> set of categories — without any task-specific training data. Describe your classes in text, encode them, encode the image, and pick the closest text embedding. Want to classify animals? Encode "a photo of a cat," "a photo of a dog," "a photo of a bird." Encode your image. Cosine similarity tells you which class it is.</p>
+<p>This is where the paradigm shift happens. Suppose you want to classify images into categories you've never trained on — say, identifying bird species. With traditional supervised learning, you'd need a labeled dataset of birds and a training run. With CLIP, you write text descriptions of your classes: "a photo of a cardinal," "a photo of a blue jay," "a photo of a robin." Encode them with the text encoder. Encode your image with the image encoder. Compute cosine similarities. The highest similarity wins.</p>
 
-<pre><code># Zero-shot classification with CLIP
-import clip
-import torch
+<pre><code># Zero-shot classification with CLIP — no training data needed
+import clip, torch
 from PIL import Image
 
 model, preprocess = clip.load("ViT-B/32", device="cuda")
 
-image = preprocess(Image.open("mystery_animal.jpg")).unsqueeze(0).to("cuda")
-
-# Define classes as natural language — no training needed
+image = preprocess(Image.open("mystery_bird.jpg")).unsqueeze(0).to("cuda")
 texts = clip.tokenize([
-    "a photo of a cat",
-    "a photo of a dog",
-    "a photo of a bird",
-    "a photo of a fish"
+    "a photo of a cardinal",
+    "a photo of a blue jay",
+    "a photo of a robin"
 ]).to("cuda")
 
 with torch.no_grad():
-    image_features = model.encode_image(image)
-    text_features = model.encode_text(texts)
+    img_emb = model.encode_image(image)
+    txt_emb = model.encode_text(texts)
+    img_emb /= img_emb.norm(dim=-1, keepdim=True)
+    txt_emb /= txt_emb.norm(dim=-1, keepdim=True)
+    similarity = (img_emb @ txt_emb.T).softmax(dim=-1)
 
-    # Normalize and compute similarity
-    image_features /= image_features.norm(dim=-1, keepdim=True)
-    text_features /= text_features.norm(dim=-1, keepdim=True)
-    similarity = (image_features @ text_features.T).softmax(dim=-1)
-
-print(similarity)  # e.g., [0.02, 0.91, 0.05, 0.02] → it's a dog!
+# similarity might be [0.03, 0.91, 0.06] → blue jay
 </code></pre>
 
-<p>No labeled training data. No fine-tuning. Just text descriptions and cosine similarity. This is what "zero-shot" means — the model has never seen labeled examples of your specific task, yet it can perform it. CLIP's zero-shot accuracy on ImageNet is competitive with a fully supervised ResNet-50 that was trained on 1.2 million labeled images.</p>
+<p>CLIP's zero-shot accuracy on ImageNet competes with a fully supervised ResNet-50 trained on 1.28 million labeled ImageNet images. That's a model that has never seen an ImageNet label matching a model trained specifically on ImageNet — and they're in the same ballpark. I'll be honest: when I first read that result, I didn't believe it.</p>
 
-<h3>Why CLIP Matters So Much</h3>
+<h3>Why CLIP Became the Foundation of Everything</h3>
 
-<p>CLIP isn't just a clever classifier. It's a <strong>foundation</strong> that everything else builds on:</p>
-
-<ul>
-  <li><strong>Stable Diffusion</strong> uses CLIP's text encoder to understand text prompts</li>
-  <li><strong>Open-vocabulary object detection</strong> uses CLIP embeddings to detect objects from text descriptions without fixed class sets</li>
-  <li><strong>Visual search engines</strong> use CLIP to find images by text queries (or similar images by image queries)</li>
-  <li><strong>Multimodal LLMs</strong> often start with CLIP's image encoder as their vision backbone</li>
-</ul>
+<p>CLIP's influence extends far beyond classification. Its text encoder became the language understanding backbone of Stable Diffusion. Its image encoder (or the improved SigLIP variant from Google, which replaces the softmax loss with a more scalable sigmoid loss) serves as the vision backbone for multimodal LLMs like LLaVA and GPT-4V. Its contrastive framework inspired open-vocabulary object detection (detecting objects described by any text, not a fixed class set) and visual search (finding images by text queries in a vector database). If you understand CLIP, you understand the foundation on which most of modern vision-language AI is built.</p>
 
 <div class="callout callout-info">
   <div class="callout-label">Prompt Engineering for Vision</div>
-  <p>CLIP is sensitive to how you phrase class descriptions. "A photo of a dog" works better than just "dog" because the training data was image-caption pairs, not single-word labels. For even better accuracy, use ensembles of prompts: "a photo of a dog," "a picture of a dog," "a drawing of a dog" — and average the text embeddings.</p>
+  <p>CLIP is sensitive to how you phrase class descriptions. "A photo of a dog" works dramatically better than "dog" alone, because the training data was image-caption pairs, not single-word labels. For better accuracy, average embeddings from multiple prompt templates: "a photo of a dog," "a picture of a dog," "a bright photo of a dog." This prompt ensemble technique is used in most serious CLIP deployments.</p>
 </div>
 
 <!-- ═══════════════════════════════════════════ -->
-<h2>DINOv2: Self-Supervised Visual Features</h2>
+<h2>DINOv2: Vision Without Words</h2>
 
-<p>CLIP learns from image-text pairs. But what if you don't have text at all — just images? <strong>DINOv2</strong> (Meta, 2023) is a self-supervised vision foundation model that learns powerful visual representations from images alone. No labels. No captions. Just raw images and clever self-supervision.</p>
+<p>CLIP needs image-text pairs. 400 million of them. That's a lot of internet scraping and a lot of assumptions about caption quality. What if you could learn equally powerful visual features from images alone — no captions, no labels, nothing but raw pixels?</p>
 
-<p>The training uses a combination of self-distillation and masked image modeling. A student network sees partial views of an image (cropped, masked patches) and tries to match the representations of a teacher network that sees the full image. The teacher is updated as a moving average of the student — no separate labels needed. The result: features that capture fine-grained spatial information, textures, shapes, and semantic concepts — all without a single human annotation.</p>
+<p>That's DINOv2 (Oquab et al., Meta, 2023). It learns visual representations through <strong>self-distillation</strong> — a teacher-student setup where the teacher is a slowly-updating copy of the student itself.</p>
 
-<p>Why care about DINOv2? Because its features are remarkably versatile. Take a DINOv2 backbone, freeze it, and add a simple linear head — you'll get strong performance on classification, segmentation, depth estimation, and more. It's the closest thing we have to a "universal vision feature extractor." When you need visual features but don't have labeled data for your specific task, DINOv2 is your first call.</p>
+<h3>How Self-Distillation Works</h3>
 
-<pre><code>  CLIP vs. DINOv2 — Different Strengths
-  ────────────────────────────────────────
+<p>Take an image and create multiple augmented views of it — different crops, scales, color distortions. Feed some views to the student network and other (often larger, less-distorted) views to the teacher network. The student's job: produce embeddings that match the teacher's embeddings for the same image, despite seeing different views. The teacher's weights are updated as an exponential moving average (EMA) of the student's weights — it changes slowly, providing a stable target.</p>
 
-  CLIP                              DINOv2
-  ────                              ──────
-  Learns from image-text pairs      Learns from images alone
-  Great for text-guided tasks       Great for dense prediction
-  (search, classification)          (segmentation, depth)
-  Semantic understanding            Spatial + semantic features
-  Needs captions                    Needs nothing but images
-  Foundation for generation         Foundation for perception
+<pre><code>  DINOv2: Self-Distillation
+  ──────────────────────────
+
+  Same image, different augmented views:
+
+  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
+  │ Global   │  │ Global   │  │  Local   │  │  Local   │
+  │ crop 1   │  │ crop 2   │  │  crop 1  │  │  crop 2  │
+  │ (large)  │  │ (large)  │  │ (small)  │  │ (small)  │
+  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘
+       │              │              │              │
+       ▼              ▼              ▼              ▼
+  ┌─────────┐   ┌─────────┐   ┌─────────┐   ┌─────────┐
+  │ Teacher │   │ Teacher │   │ Student │   │ Student │
+  │ (EMA)   │   │ (EMA)   │   │         │   │         │
+  └────┬────┘   └────┬────┘   └────┬────┘   └────┬────┘
+       │              │              │              │
+       └──────┬───────┘              └──────┬───────┘
+              │                             │
+              ▼                             ▼
+        Teacher outputs              Student outputs
+              │                             │
+              └──── consistency loss ────────┘
+
+  Teacher weights = slow EMA of student weights
+  No labels anywhere in this process
 </code></pre>
+
+<p>The model converges because the teacher's slow updates create a stable learning signal — the student is always chasing a smoothed version of its own improving representations. Over time, the features settle into rich, semantically meaningful embeddings. DINOv2 was trained on a curated dataset of 142 million images (LVD-142M), with no labels at all.</p>
+
+<h3>Why DINOv2 Matters</h3>
+
+<p>DINOv2's features are remarkably general. Freeze the backbone, add a linear layer on top, and you get strong performance on image classification, semantic segmentation, depth estimation, and instance retrieval — all without fine-tuning the backbone. It's the closest thing we have to a universal vision feature extractor.</p>
+
+<p>Where DINOv2 particularly shines is on <strong>dense prediction tasks</strong> — segmentation, depth, surface normal estimation. CLIP, trained on image-level alignment with text, produces features tuned for understanding what's in an image. DINOv2, trained on view consistency across spatial crops, preserves fine-grained spatial information that tells you where things are. They're complementary. When you need features for a task and don't have labeled data, CLIP is your pick for anything text-related, and DINOv2 for anything spatial.</p>
 
 <!-- ═══════════════════════════════════════════ -->
-<h2>Generative Vision: Diffusion Models</h2>
+<h2>SAM: Segment Anything</h2>
 
-<p>If CLIP is the understanding side of modern vision, diffusion models are the generation side. And they've completely transformed what's possible. Type "a cat astronaut riding a horse on Mars in the style of Van Gogh" and get a photorealistic (or artistic) image in seconds. That's diffusion.</p>
+<p>SAM (Segment Anything Model, Kirillov et al., Meta, 2023) is what happens when you apply the foundation model philosophy to segmentation specifically. The goal: a single model that can segment any object in any image, prompted by a point click, a bounding box, or even a text description.</p>
 
-<h3>The Core Idea</h3>
+<p>The architecture has three pieces. A heavyweight <strong>ViT image encoder</strong> processes the image once, producing a dense feature map. A lightweight <strong>prompt encoder</strong> converts user prompts (points, boxes, masks) into embeddings. A lightweight <strong>mask decoder</strong> combines image features with prompt embeddings to predict segmentation masks. The image encoder runs once per image; the prompt encoder and mask decoder are fast enough to run interactively.</p>
 
-<p>Diffusion models work by learning to reverse a noise-adding process. The <strong>forward process</strong> takes a clean image and gradually adds Gaussian noise over many steps until you're left with pure static — complete random noise. The <strong>reverse process</strong> trains a neural network (typically a U-Net or Transformer) to undo each noise step — to look at a noisy image and predict what it looked like one step less noisy. Once trained, generation is simple: start with pure random noise and iteratively denoise it. Each step removes a little noise, and after enough steps, a coherent image emerges.</p>
+<pre><code>  SAM Architecture
+  ────────────────
 
-<pre><code>  Diffusion Process
-  ─────────────────
+  Input Image ──→ ViT Image Encoder ──→ Image Features (computed once)
+                                              │
+  User Prompt ──→ Prompt Encoder ──→ ─────────┤
+  (point/box/mask)                             │
+                                               ▼
+                                        Mask Decoder
+                                               │
+                                               ▼
+                                      Segmentation Mask(s)
+                                      + confidence scores
 
-  Forward (training): Add noise step by step
-  ┌────────┐    ┌────────┐    ┌────────┐    ┌────────┐    ┌────────┐
-  │ Clean  │ →  │ Slight │ →  │ More   │ →  │ Very   │ →  │ Pure   │
-  │ image  │    │ noise  │    │ noise  │    │ noisy  │    │ noise  │
-  │  🐱    │    │  🐱~   │    │  ~~?   │    │  ~~~~  │    │ static │
-  └────────┘    └────────┘    └────────┘    └────────┘    └────────┘
-    t=0           t=250         t=500         t=750         t=1000
-
-  Reverse (generation): Remove noise step by step
-  ┌────────┐    ┌────────┐    ┌────────┐    ┌────────┐    ┌────────┐
-  │ Pure   │ →  │ Vague  │ →  │ Shape  │ →  │ Almost │ →  │ Clean  │
-  │ noise  │    │ blobs  │    │ forms  │    │ clear  │    │ image  │
-  │ static │    │  ~~~~  │    │  ~🐱~  │    │  🐱~   │    │  🐱    │
-  └────────┘    └────────┘    └────────┘    └────────┘    └────────┘
-    t=1000        t=750         t=500         t=250          t=0
-
-  Network learns: "Given this noisy image at step t, predict the noise"
+  Image encoder: expensive, runs once
+  Prompt + decoder: cheap, runs per interaction
 </code></pre>
 
-<p>Understanding the principles matters more than the math. The forward process adds noise. The reverse process learns to remove it. Conditioning on text guides what gets generated.</p>
+<p>SAM was trained on the SA-1B dataset — 11 million images with over 1.1 billion masks, the largest segmentation dataset ever created (also generated semi-automatically using SAM itself in a data engine loop). The result is zero-shot segmentation that works across domains: medical images, satellite photos, microscopy, everyday scenes — without any domain-specific training.</p>
 
-<h3>Latent Diffusion (Stable Diffusion)</h3>
+<p>SAM represents a philosophical shift. Traditional segmentation models learn to segment specific categories (person, car, tree). SAM learns to segment objects as a concept — anything that looks like a distinct thing in an image. You don't specify what to segment by naming a class; you specify it by pointing at it. That's a fundamentally different interface.</p>
 
-<p>Early diffusion models operated directly in pixel space — denoising 512×512×3 images. This works but it's painfully slow and memory-hungry. <strong>Latent Diffusion</strong> (the architecture behind Stable Diffusion) introduced a crucial optimization: work in a compressed latent space instead.</p>
+<!-- ═══════════════════════════════════════════ -->
+<h2>The Foundation Model Paradigm</h2>
 
-<p>First, train a <strong>Variational Autoencoder (VAE)</strong> to compress images into a much smaller latent representation — typically 64×64×4 instead of 512×512×3. That's a ~48× compression. Then, run the entire diffusion process in this latent space. Finally, decode the denoised latent back to pixel space with the VAE decoder. Compressing to a latent space made diffusion practical — 64×64 latent instead of 512×512 pixels.</p>
+<p>If you step back from the individual models, a pattern becomes clear. Modern vision has converged on a two-phase paradigm that would have seemed bizarre a decade ago:</p>
 
-<pre><code>  Stable Diffusion Architecture
+<p><strong>Phase 1: Pre-train broadly.</strong> Train a massive model on a massive dataset, using a general-purpose objective. CLIP uses contrastive image-text matching. DINOv2 uses self-distillation. SAM uses promptable segmentation. The model learns rich, transferable representations.</p>
+
+<p><strong>Phase 2: Adapt cheaply.</strong> Take the pre-trained backbone and adapt it to your specific task. This might mean adding a linear head (linear probing), fine-tuning a few layers, or using the model zero-shot. The key: you never need to train a vision backbone from scratch again. The heavy lifting is done once, shared by the entire community.</p>
+
+<pre><code>  The Foundation Model Paradigm
   ──────────────────────────────
 
-  Text Prompt: "a cat wearing sunglasses at the beach"
-       │
-       ▼
-  ┌─────────────┐
-  │ CLIP Text   │ ← CLIP's text encoder guides generation
-  │ Encoder     │
-  └──────┬──────┘
-         │ text embeddings
-         ▼
-  ┌──────────────────────────────────────────────┐
-  │           Latent Diffusion Process           │
-  │                                              │
-  │  Random    ┌──────────┐    Denoised          │
-  │  Noise  →  │  U-Net   │ →  Latent            │
-  │  (64×64)   │ (guided  │    (64×64)           │
-  │            │ by text) │                      │
-  │            └──────────┘                      │
-  │         ↑ repeat ~50 denoising steps         │
-  └──────────────────────────────────────────────┘
-         │
-         ▼
-  ┌─────────────┐
-  │ VAE Decoder │ → Final Image (512×512)
-  └─────────────┘
+  Before (2012-2020):
+  ┌──────────┐    ┌──────────┐    ┌──────────┐
+  │ Task A   │    │ Task B   │    │ Task C   │
+  │ Dataset  │    │ Dataset  │    │ Dataset  │
+  │ Model    │    │ Model    │    │ Model    │
+  │ Training │    │ Training │    │ Training │
+  └──────────┘    └──────────┘    └──────────┘
+  Each task: train from scratch or fine-tune ImageNet model
+
+  Now (2021+):
+                ┌─────────────────────┐
+                │  Foundation Model   │
+                │  (CLIP / DINOv2 /   │
+                │   SAM / SigLIP)     │
+                │  Pre-trained once   │
+                └──────┬──────────────┘
+                       │
+            ┌──────────┼──────────┐
+            ▼          ▼          ▼
+       ┌─────────┐ ┌─────────┐ ┌─────────┐
+       │ Task A  │ │ Task B  │ │ Task C  │
+       │ Linear  │ │ Fine-   │ │ Zero-   │
+       │ probe   │ │ tune    │ │ shot    │
+       └─────────┘ └─────────┘ └─────────┘
+  Adapt the foundation — don't rebuild it
 </code></pre>
 
-<h3>Classifier-Free Guidance</h3>
-
-<p>One of the most important practical controls in diffusion models is <strong>classifier-free guidance (CFG)</strong>. During training, the model sometimes sees the text condition and sometimes doesn't (the condition is randomly dropped). At inference, you generate two predictions: one conditioned on the text prompt and one unconditional. The final prediction amplifies the difference between them:</p>
-
-<p><code>output = unconditional + guidance_scale × (conditional - unconditional)</code></p>
-
-<p>The <code>guidance_scale</code> controls the trade-off between quality and diversity. A scale of 1.0 means no guidance — you get diverse but often off-topic images. A scale of 7-12 (typical for Stable Diffusion) gives high-quality, prompt-faithful images. Push it to 20+ and you get oversaturated, artifact-heavy images that are too faithful to the prompt. Finding the right guidance scale is part art, part experimentation.</p>
-
-<div class="callout callout-warning">
-  <div class="callout-label">Practical Tip</div>
-  <p>Guidance scale of 7-8 is the sweet spot for most Stable Diffusion use cases. Below 5 and images drift from the prompt. Above 15 and they become oversaturated and artifact-heavy. When you see "CFG scale" in a diffusion UI, this is what it controls.</p>
-</div>
-
-<!-- ═══════════════════════════════════════════ -->
-<h2>GANs: A Brief Retrospective</h2>
-
-<p>Before diffusion models took over, <strong>Generative Adversarial Networks (GANs)</strong> were the undisputed champions of image generation from 2014 to roughly 2020. The setup: a generator creates fake images, a discriminator tries to tell real from fake, and they train adversarially until the generator's fakes are indistinguishable from real images.</p>
-
-<p>The highlights of the GAN era:</p>
-
-<ul>
-  <li><strong>StyleGAN / StyleGAN2</strong> (NVIDIA): Generated photorealistic human faces that don't exist. Introduced style-based generation with explicit control over coarse and fine features. <a href="https://thispersondoesnotexist.com">thispersondoesnotexist.com</a> ran on StyleGAN.</li>
-  <li><strong>Pix2Pix</strong>: Paired image-to-image translation. Sketch → photo, satellite → map, day → night. Required paired training data.</li>
-  <li><strong>CycleGAN</strong>: Unpaired image translation. Horse → zebra, summer → winter. No paired data needed — a breakthrough for domains where pairs don't exist.</li>
-</ul>
-
-<p>GANs dominated 2014-2020. Diffusion models have largely replaced them for image generation. But GANs still win in specific niches:</p>
-
-<ul>
-  <li><strong>Real-time generation</strong>: GANs generate in a single forward pass. Diffusion needs 20-50 steps.</li>
-  <li><strong>Video super-resolution and enhancement</strong>: GAN discriminators produce perceptually sharper results.</li>
-  <li><strong>Domain-specific tasks</strong>: When your domain is narrow (faces, medical images), a well-tuned GAN can still outperform generic diffusion models.</li>
-</ul>
-
-<pre><code>  Image Generation Timeline
-  ─────────────────────────
-
-  2014        2017         2019         2020          2022          2024
-  ────        ────         ────         ────          ────          ────
-  GAN         Pix2Pix      StyleGAN2    DDPM          Stable        SDXL
-  (Goodfellow) CycleGAN    (faces)      (diffusion    Diffusion     Flux
-                                         works!)      (practical)   SD3
-
-  ◄─── GAN Era ────────────────────►◄─── Diffusion Era ──────────────►
-
-  GANs: fast, sharp, but unstable training, mode collapse
-  Diffusion: slower, but stable training, better diversity, text control
-</code></pre>
-
-<!-- ═══════════════════════════════════════════ -->
-<h2>Multimodal LLMs: Language Models That Can See</h2>
-
-<p>The most exciting frontier in modern vision is multimodal LLMs — language models that can process and reason about images. GPT-4V, LLaVA, Gemini, Claude — these models can look at a photograph and have a conversation about it. They can answer questions, describe scenes, read text in images, interpret charts, spot anomalies, and even write code from screenshots.</p>
-
-<h3>The Architecture Pattern</h3>
-
-<p>The recipe is surprisingly consistent across all multimodal LLMs:</p>
-
-<ol>
-  <li><strong>Vision encoder</strong> — typically a CLIP-based ViT or SigLIP. Takes the image and produces a sequence of visual tokens (patch embeddings).</li>
-  <li><strong>Projection layer</strong> — a learned linear layer or small MLP that maps visual tokens into the LLM's embedding space. This is the bridge between vision and language.</li>
-  <li><strong>Large Language Model</strong> — a pretrained LLM (GPT-4, LLaMA, etc.) that processes the projected visual tokens alongside text tokens. From the LLM's perspective, image patches are just another kind of "word."</li>
-</ol>
-
-<pre><code>  Multimodal LLM Architecture
-  ────────────────────────────
-
-  Input Image                    Text Prompt
-  ┌──────────┐                   "What's happening in
-  │  🖼️      │                    this image?"
-  │  photo   │                         │
-  └────┬─────┘                         │
-       │                               │
-       ▼                               ▼
-  ┌──────────┐                  ┌──────────────┐
-  │  Vision  │                  │   Text       │
-  │  Encoder │                  │   Tokenizer  │
-  │ (ViT /   │                  │              │
-  │  SigLIP) │                  └──────┬───────┘
-  └────┬─────┘                         │
-       │ visual tokens                 │ text tokens
-       ▼                               │
-  ┌──────────┐                         │
-  │Projection│                         │
-  │  Layer   │                         │
-  └────┬─────┘                         │
-       │ projected visual tokens       │
-       └───────────┬───────────────────┘
-                   │
-                   ▼
-          ┌────────────────┐
-          │      LLM       │
-          │  (GPT-4 /      │
-          │   LLaMA / etc) │
-          │                │
-          │  Processes     │
-          │  visual +      │
-          │  text tokens   │
-          │  together      │
-          └───────┬────────┘
-                  │
-                  ▼
-          "A dog is playing fetch
-           on a sunny beach with
-           its owner..."
-</code></pre>
-
-<h3>Key Multimodal Models</h3>
-
-<table>
-  <thead>
-    <tr>
-      <th>Model</th>
-      <th>Developer</th>
-      <th>Vision Encoder</th>
-      <th>Key Strength</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>GPT-4V / GPT-4o</td>
-      <td>OpenAI</td>
-      <td>Proprietary</td>
-      <td>Best general reasoning, OCR, chart understanding</td>
-    </tr>
-    <tr>
-      <td>Gemini</td>
-      <td>Google</td>
-      <td>Proprietary</td>
-      <td>Native multimodal (not bolted on), video understanding</td>
-    </tr>
-    <tr>
-      <td>Claude</td>
-      <td>Anthropic</td>
-      <td>Proprietary</td>
-      <td>Strong document and chart analysis, careful reasoning</td>
-    </tr>
-    <tr>
-      <td>LLaVA</td>
-      <td>Microsoft/UW</td>
-      <td>CLIP ViT-L</td>
-      <td>Open-source, simple architecture, good baseline</td>
-    </tr>
-    <tr>
-      <td>InternVL</td>
-      <td>Shanghai AI Lab</td>
-      <td>InternViT</td>
-      <td>Open-source, competitive with proprietary models</td>
-    </tr>
-  </tbody>
-</table>
-
-<h3>What Multimodal LLMs Unified</h3>
-
-<p>Image captioning, visual question answering (VQA), image-based reasoning, optical character recognition, document understanding, chart interpretation — these used to be separate tasks with separate architectures, separate datasets, and separate evaluation benchmarks. Each one had its own specialist model. Now they're all just <strong>prompting a multimodal LLM</strong>.</p>
-
-<p>Want a caption? "Describe this image." Want VQA? "How many people are in this photo?" Want OCR? "Read the text in this receipt." Want reasoning? "What will happen next in this scene?" One model, one interface, infinite tasks. That's the power of unifying vision and language.</p>
-
-<div class="callout callout-info">
-  <div class="callout-label">The LLaVA Recipe</div>
-  <p>LLaVA (Large Language and Vision Assistant) showed that you can build a competitive multimodal LLM with a surprisingly simple recipe: take a pretrained CLIP ViT, add a linear projection layer, connect it to a pretrained LLaMA, and fine-tune on visual instruction-following data. The whole thing can be trained on a single 8-GPU machine in about a day. This democratized multimodal AI research.</p>
-</div>
-
-<!-- ═══════════════════════════════════════════ -->
-<h2>How the Pieces Connect</h2>
-
-<p>Modern vision isn't a collection of independent models — it's an ecosystem where the same components keep appearing in different configurations. Understanding the connections helps you see the big picture:</p>
-
-<pre><code>  The Modern Vision Ecosystem
-  ────────────────────────────
-
-                    CLIP
-                 (foundation)
-                /      |       \
-               /       |        \
-              ▼        ▼         ▼
-     Zero-shot    Stable      Multimodal
-     Classify     Diffusion   LLMs
-                  (generate)  (understand)
-                      |            |
-                      |            |
-                      ▼            ▼
-                  Text→Image   VQA, Captioning,
-                  Image Edit   Visual Reasoning
-                  Inpainting   Document Analysis
-
-     DINOv2                     GANs
-     (self-supervised)          (legacy, niche)
-        │                          │
-        ▼                          ▼
-     Dense features            Real-time
-     Segmentation              generation
-     Depth estimation          Super-resolution
-
-  ──────────────────────────────────────────────
-  Decision Guide:
-  • Need to classify without training data? → CLIP
-  • Need universal visual features?         → DINOv2
-  • Need to generate images from text?      → Stable Diffusion / DALL-E
-  • Need to discuss/reason about images?    → Multimodal LLM
-  • Need real-time generation?              → GAN (still)
-</code></pre>
-
-<p><strong>CLIP is the connective tissue.</strong> Its text encoder powers Stable Diffusion's understanding of prompts. Its image encoder (or descendants like SigLIP) serves as the vision backbone for multimodal LLMs. Its contrastive training framework inspired countless follow-up models. If you understand CLIP, you understand the foundation of modern vision.</p>
-
-<p><strong>DINOv2 complements CLIP</strong> by excelling at spatial tasks. CLIP is trained on image-level alignment with text, so it's great for understanding what's in an image but less precise about where things are. DINOv2's self-supervised objective preserves fine-grained spatial information, making it better for segmentation, depth estimation, and other dense prediction tasks.</p>
-
-<p><strong>Diffusion models handle generation.</strong> They've replaced GANs as the default for text-to-image, image editing, inpainting, and style transfer. The combination of CLIP text understanding + latent diffusion + classifier-free guidance gives users unprecedented control over generated images.</p>
-
-<p><strong>Multimodal LLMs handle understanding.</strong> By connecting a vision encoder to a language model, they turn the "describe what you see" problem into a language modeling problem — and language models are very, very good at that.</p>
+<p>I'm still developing my intuition for why this works as well as it does. The going theory is that large-scale pre-training on diverse data forces the model to learn general visual concepts — edges, textures, shapes, objects, scenes, spatial relationships — that are universally useful, rather than task-specific shortcuts. But the honest answer is that no one fully understands why representations learned through self-distillation or contrastive learning transfer so effectively to such wildly different downstream tasks.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <h2>When to Reach for What</h2>
 
-<p>The practical question isn't "how do these work internally?" — it's "which tool do I grab for my problem?" Here's the decision framework:</p>
+<p>The practical question for an engineer isn't "which architecture is theoretically best?" — it's "which model do I grab for this specific problem?" Here's how the landscape maps to real decisions:</p>
 
 <table>
   <thead>
     <tr>
-      <th>Task</th>
+      <th>Scenario</th>
       <th>Reach For</th>
       <th>Why</th>
     </tr>
@@ -746,55 +670,63 @@ print(similarity)  # e.g., [0.02, 0.91, 0.05, 0.02] → it's a dog!
     <tr>
       <td>Classify images, no labeled data</td>
       <td>CLIP zero-shot</td>
-      <td>Text descriptions define your classes</td>
+      <td>Describe classes in text, compare embeddings</td>
     </tr>
     <tr>
       <td>Classify images, some labeled data</td>
-      <td>CLIP/DINOv2 + linear probe or fine-tune</td>
-      <td>Foundation model features + task-specific head</td>
+      <td>DINOv2 or CLIP backbone + linear probe</td>
+      <td>Frozen foundation features + thin task head</td>
     </tr>
     <tr>
-      <td>Search images by text query</td>
-      <td>CLIP embeddings + vector DB</td>
-      <td>Encode images and queries in same space</td>
+      <td>Object detection or segmentation backbone</td>
+      <td>Swin Transformer or ConvNeXt</td>
+      <td>Multi-scale features, plug into FPN/Mask R-CNN</td>
     </tr>
     <tr>
-      <td>Find similar images</td>
-      <td>CLIP or DINOv2 embeddings</td>
-      <td>Nearest-neighbor in embedding space</td>
+      <td>Interactive or zero-shot segmentation</td>
+      <td>SAM</td>
+      <td>Point/box prompts, works across domains</td>
     </tr>
     <tr>
-      <td>Generate images from text</td>
-      <td>Stable Diffusion / DALL-E / Flux</td>
-      <td>Diffusion models dominate text-to-image</td>
+      <td>Visual search by text query</td>
+      <td>CLIP/SigLIP embeddings + vector DB</td>
+      <td>Images and text in the same embedding space</td>
     </tr>
     <tr>
-      <td>Edit or inpaint images</td>
-      <td>Stable Diffusion (img2img, inpainting)</td>
-      <td>Condition on both text and source image</td>
-    </tr>
-    <tr>
-      <td>Answer questions about an image</td>
-      <td>Multimodal LLM (GPT-4V, Gemini)</td>
-      <td>Natural language in, natural language out</td>
-    </tr>
-    <tr>
-      <td>Extract text from images (OCR)</td>
-      <td>Multimodal LLM or dedicated OCR</td>
-      <td>LLMs handle messy real-world text surprisingly well</td>
-    </tr>
-    <tr>
-      <td>Dense prediction (segmentation, depth)</td>
-      <td>DINOv2 features + task head</td>
+      <td>Dense prediction (depth, normals)</td>
+      <td>DINOv2 backbone + task head</td>
       <td>Best spatial features without labels</td>
     </tr>
     <tr>
-      <td>Real-time face generation</td>
-      <td>StyleGAN</td>
-      <td>Single forward pass, still the fastest</td>
+      <td>Fast inference on edge/mobile</td>
+      <td>EfficientViT or MobileNetV3</td>
+      <td>Designed for low latency and small memory</td>
+    </tr>
+    <tr>
+      <td>Maximum accuracy, large dataset</td>
+      <td>ViT-Large or ViT-Giant, fine-tuned</td>
+      <td>Pure transformers scale best with data</td>
+    </tr>
+    <tr>
+      <td>Limited data, need quick results</td>
+      <td>ConvNeXt or DeiT</td>
+      <td>CNN inductive bias or distillation helps</td>
     </tr>
   </tbody>
 </table>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2>The Interview Lens</h2>
+
+<p>Modern vision comes up constantly in senior ML interviews. The questions that separate candidates aren't about memorizing architectures — they're about understanding trade-offs. Here are the threads interviewers pull on:</p>
+
+<p><strong>ViT vs. CNN inductive bias.</strong> Why does ViT underperform CNNs on small datasets? Because CNNs have locality and translation equivariance baked in — they don't need to learn that nearby pixels are related. ViT has to learn this from scratch, which costs data. But when data is abundant, those same inductive biases can become constraints that limit what the model can learn.</p>
+
+<p><strong>Attention complexity.</strong> ViT's self-attention is O(N²) in the number of patches. Swin's windowed attention is O(N) with respect to image size (O(M²) per window, where M is fixed). This is why Swin can handle high-resolution images where vanilla ViT cannot. Interviewers want to see that you understand this isn't an abstract concern — it directly determines what resolution you can process in production.</p>
+
+<p><strong>Supervised vs. self-supervised vs. contrastive.</strong> Traditional ImageNet training is supervised — you need 1.28 million labeled images. CLIP is contrastive — you need image-text pairs, but no class labels. DINOv2 is self-supervised — you need images and nothing else. Each training paradigm produces features with different strengths. Supervised features are optimized for the specific task you labeled. CLIP features understand language-aligned semantics. DINOv2 features preserve spatial structure. Knowing when each is appropriate shows depth.</p>
+
+<p><strong>The foundation model trade-off.</strong> Why not fine-tune the whole backbone for every task? Because catastrophic forgetting destroys general features. Linear probing preserves them but limits adaptation. The practical answer is usually somewhere in between: fine-tune the last few layers, or use adapters (small trainable modules inserted into frozen layers), or use LoRA. Understanding this spectrum from linear probing to full fine-tuning — and when each makes sense — is what interviewers are really after.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <h2>What You Should Now Be Able To Do</h2>
@@ -802,16 +734,17 @@ print(similarity)  # e.g., [0.02, 0.91, 0.05, 0.02] → it's a dog!
 <div class="callout callout-success">
   <div class="callout-label">Checklist</div>
   <ul>
-    <li>Explain how CLIP trains image and text encoders using contrastive learning</li>
-    <li>Perform zero-shot image classification using CLIP: describe classes as text, encode, and compare</li>
-    <li>Describe the forward (noise-adding) and reverse (denoising) processes in diffusion models</li>
-    <li>Explain why Stable Diffusion works in latent space and why that matters for efficiency</li>
-    <li>Describe what classifier-free guidance controls and how to tune it</li>
-    <li>Explain the architecture pattern behind multimodal LLMs: vision encoder → projection → LLM</li>
-    <li>Recognize that image captioning, VQA, and visual reasoning are now unified under multimodal LLMs</li>
-    <li>Distinguish DINOv2 (self-supervised, spatial) from CLIP (contrastive, text-aligned)</li>
-    <li>Summarize where GANs still win versus where diffusion models have taken over</li>
-    <li>Choose the right model for a given vision task: CLIP for zero-shot, diffusion for generation, multimodal LLMs for understanding</li>
+    <li>Explain how ViT converts images to patch token sequences and processes them with a standard transformer encoder</li>
+    <li>Articulate why ViT underperforms CNNs on small datasets (minimal inductive bias) and outperforms them on massive datasets</li>
+    <li>Describe Swin Transformer's windowed attention and shifted windows — and why they make attention complexity linear in image size</li>
+    <li>Explain how DeiT uses knowledge distillation from a CNN teacher to make ViT data-efficient</li>
+    <li>Contrast ConvNeXt (modernized CNN matching transformers) with CoAtNet (explicit CNN-transformer hybrid)</li>
+    <li>Walk through CLIP's contrastive training: image encoder + text encoder + N×N similarity matrix + symmetric loss</li>
+    <li>Perform zero-shot classification with CLIP and explain why prompt engineering matters</li>
+    <li>Describe DINOv2's self-distillation: teacher-student, EMA updates, multiple augmented views, no labels</li>
+    <li>Explain SAM's architecture: heavyweight image encoder + lightweight prompt encoder + mask decoder</li>
+    <li>Distinguish when to use CLIP (text-aligned tasks), DINOv2 (spatial/dense tasks), Swin (detection backbone), and SAM (interactive segmentation)</li>
+    <li>Articulate the foundation model paradigm: pre-train broadly, adapt cheaply</li>
   </ul>
 </div>
 
