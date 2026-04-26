@@ -293,469 +293,475 @@
 
     <div class="content">
 
+
 <h1>Embeddings &amp; Tokenization</h1>
 <div class="chapter-meta">
   <span class="tag">Chapter 11: Natural Language Processing</span>
   <span class="tag">Word Embeddings · Subword Tokenization</span>
 </div>
 
-<div class="tldr">
-  <div class="tldr-label">Section Overview</div>
-  <p>This section combines Word Embeddings and Subword Tokenization into one comprehensive reference.</p>
+<!-- ═══════════ OPENING ═══════════ -->
+
+<p>I avoided thinking about word embeddings for an embarrassingly long time. Every time I saw a diagram of vectors floating in space with arrows labeled "king − man + woman = queen," I'd nod, say "neat," and move on without actually understanding how raw text becomes a list of numbers that a neural network can chew on. I told myself the details didn't matter — that I could treat embeddings as a black box and tokenizers as someone else's problem. Finally the discomfort of not knowing what's happening between "the user typed a sentence" and "the model saw a tensor" grew too great for me. Here is that dive.</p>
+
+<p>Word embeddings are dense numerical representations of words — compact vectors, typically 100 to 1,024 dimensions, where geometric proximity encodes semantic similarity. The idea traces back to distributional semantics in the 1950s, but the modern revolution started in 2013 with Word2Vec and never really stopped. Tokenization is the less glamorous sibling: the process of deciding where to cut a string of text into pieces before handing those pieces to an embedding layer. Together, embeddings and tokenization form the front door of every language model. Nothing else works until they do.</p>
+
+<p>Before we start, a heads-up. We're going to build everything from scratch — one-hot vectors, prediction tasks, co-occurrence matrices, merge algorithms — but you don't need to know any of it beforehand. We'll add what we need, one piece at a time.</p>
+
+<p>This isn't a short journey, but I hope you'll be glad you came.</p>
+
+<!-- ═══════════ TABLE OF CONTENTS ═══════════ -->
+
+<div class="callout callout-info" style="background: var(--bg-secondary); border-left-color: var(--accent);">
+  <div class="callout-label">What We'll Cover</div>
+  <p style="margin:0; line-height:1.9;">
+    One-hot encoding and why it fails<br>
+    The distributional hypothesis<br>
+    Word2Vec: Skip-gram and CBOW<br>
+    The softmax bottleneck and negative sampling<br>
+    GloVe: the global co-occurrence view<br>
+    FastText: subword-aware embeddings<br>
+    Cosine similarity and embedding geometry<br>
+    <em>Rest Stop</em><br>
+    The polysemy problem<br>
+    ELMo: context enters the picture<br>
+    From ELMo to BERT: contextual embeddings arrive<br>
+    The vocabulary problem and why tokenization matters<br>
+    Byte Pair Encoding (BPE)<br>
+    WordPiece<br>
+    Unigram and SentencePiece<br>
+    Byte-level BPE<br>
+    Vocabulary size and embedding dimension tradeoffs<br>
+    Positional embeddings: giving order to orderless models<br>
+  </p>
 </div>
 
+<!-- ═══════════ ONE-HOT ENCODING ═══════════ -->
 
-<!-- ═══════════ Word Embeddings ═══════════ -->
-<h2>Word Embeddings</h2>
+<h2>One-Hot Encoding and Why It Fails</h2>
 
-<div class="tldr">
-  <div class="tldr-label">TL;DR</div>
-  <p>Words need to become numbers before any model can touch them. One-hot vectors are wasteful and blind to meaning. Word embeddings map each word to a dense, low-dimensional vector where similar words land near each other. Word2Vec learns embeddings by predicting context words (or vice versa), using negative sampling to make training feasible. GloVe achieves similar results by factorizing a global co-occurrence matrix. FastText goes further by representing words as bags of character n-grams, handling misspellings and rare words gracefully. All static embeddings share one flaw: a single vector per word, regardless of context. ELMo fixed this with bidirectional LSTMs, paving the road to transformers.</p>
-</div>
+<p>Imagine we're building a movie review analyzer. It reads what people write about films and decides whether they liked it or not. Our first challenge: the model only speaks numbers, and our users speak English. We need a translation layer.</p>
 
-<h3>Why Embeddings?</h3>
+<p>Let's start with a tiny vocabulary of five words: "love," "hate," "great," "movie," and "boring." The most straightforward way to convert these into numbers is <strong>one-hot encoding</strong> — give each word a vector as long as the vocabulary, with a single 1 in the position assigned to that word and 0s everywhere else.</p>
 
-<p>Before we can do anything interesting with text — classify it, translate it, generate it — we need to turn words into numbers. The simplest approach is a <strong>one-hot vector</strong>: if your vocabulary has 50,000 words, each word becomes a vector of length 50,000 with a single 1 and 49,999 zeros. "cat" might be <code>[0, 0, ..., 1, ..., 0]</code> and "dog" might be <code>[0, 0, ..., 0, 1, ..., 0]</code>.</p>
+<pre><code># Our tiny vocabulary of 5 words
+#           love  hate  great  movie  boring
+# love    = [1,    0,    0,     0,     0   ]
+# hate    = [0,    1,    0,     0,     0   ]
+# great   = [0,    0,    1,     0,     0   ]
+# movie   = [0,    0,    0,     1,     0   ]
+# boring  = [0,    0,    0,     0,     1   ]</code></pre>
 
-<p>This has three devastating problems. First, the vectors are enormous. A vocabulary of 100,000 words means each word is a 100,000-dimensional vector. Multiply that by the number of words in your dataset, and you've got a storage nightmare. Second, the vectors are sparse — almost entirely zeros. That's wasteful for computation. Third, and most critically, every pair of one-hot vectors is equally distant from every other pair. The dot product of "cat" and "dog" is zero. The dot product of "cat" and "refrigerator" is also zero. The representation carries no information about meaning, similarity, or relationships between words.</p>
+<p>Five words, five dimensions. Each word lives at one corner of a five-dimensional hypercube. Let's check the distance between "love" and "great" — two words that feel similar in a movie review context. The dot product of their one-hot vectors is 0. Now check "love" and "boring." Also 0. Every pair of distinct words is equally distant from every other pair. Our representation has told the model that "love" is as unrelated to "great" as it is to "boring."</p>
 
-<p>What we want instead is a representation where "cat" and "dog" are close together (both animals, both pets), "king" and "queen" are close (both royalty), and "king" and "banana" are far apart. We want geometry to reflect semantics. That's what <strong>word embeddings</strong> give us: dense, low-dimensional vectors (typically 50–300 dimensions) where proximity encodes similarity. The question is how to learn them.</p>
+<p>That's the first problem: <strong>one-hot vectors carry zero information about meaning</strong>. They're glorified ID numbers with extra zeros.</p>
 
-<h3>Word2Vec</h3>
+<p>The second problem is scale. A realistic English vocabulary has 50,000 to 100,000 words. That means every single word is a vector with 100,000 dimensions, of which 99,999 are zero. Multiply by the number of words in your dataset, and you're storing vast oceans of nothing. It's like assigning every person on Earth their own planet and then trying to build a social network between them — the address system tells you nothing about who lives near whom.</p>
 
-<h4>The Core Idea</h4>
+<p>What we want instead is a representation where "love" and "great" are close together, "hate" and "boring" are close together, and "love" and "boring" are far apart. We want the geometry of the vector space to mirror the geometry of meaning. That's what <strong>word embeddings</strong> give us: dense vectors, typically 100 to 300 dimensions, where proximity encodes similarity.</p>
 
-<p>In 2013, Tomas Mikolov and colleagues at Google published a paper that changed NLP. The insight behind <strong>Word2Vec</strong> was borrowed from linguistics: "you shall know a word by the company it keeps" (J.R. Firth, 1957). If two words consistently appear in similar contexts — surrounded by the same neighboring words — they probably mean similar things. "Cat sat on the mat" and "dog sat on the rug" tell us that "cat" and "dog" play similar roles.</p>
+<p>The question is: how do we learn them?</p>
 
-<p>Word2Vec doesn't parse grammar or look up definitions. It just slides a window across massive amounts of text and learns to predict which words appear near which. The result is a set of vectors that capture remarkable semantic relationships, all from raw co-occurrence statistics.</p>
+<!-- ═══════════ DISTRIBUTIONAL HYPOTHESIS ═══════════ -->
 
-<h4>Skip-gram</h4>
+<h2>The Distributional Hypothesis</h2>
 
-<p>The <strong>skip-gram</strong> model works like this: pick a target word from your text, then try to predict the words that surround it within a fixed window. Suppose your sentence is "the cat sat on the mat" and your window size is 2. If the target word is "sat," the context words are "the," "cat," "on," and "the." The model's job is: given "sat," predict those four neighbors.</p>
+<p>The answer comes from a deceptively powerful idea from linguistics. In 1957, J.R. Firth wrote: "You shall know a word by the company it keeps." This is the <strong>distributional hypothesis</strong> — words that appear in similar contexts tend to have similar meanings.</p>
 
-<p>Internally, the model has two weight matrices. The first maps each word to its embedding vector (the one we actually want). The second maps from embedding space back to vocabulary space to produce predictions. During training, you feed in "sat," look up its embedding, and use it to predict each context word in turn. The loss function measures how well the model predicts the actual context words versus random words. Gradients flow back and adjust the embedding, nudging "sat" closer to words it co-occurs with.</p>
+<p>Let's go back to our movie reviews. Suppose our dataset contains these sentences:</p>
 
-<p>You slide this window across billions of words of text. After enough iterations, words that appear in similar contexts end up with similar vectors — not because anyone told the model about meaning, but because the prediction task forced it to organize words by their distributional patterns.</p>
+<pre><code>"I love this great movie"
+"I love this amazing movie"
+"I hate this boring movie"
+"I hate this terrible movie"</code></pre>
 
-<h4>CBOW</h4>
+<p>Look at the slots around "great" and "amazing." They both appear between "this" and "movie," preceded by "love." Look at "boring" and "terrible." Same pattern, but preceded by "hate." Without anyone telling the model what these words mean, the contexts alone reveal that "great" and "amazing" play similar roles, and "boring" and "terrible" play similar roles. And that the first group is associated with "love" while the second is associated with "hate."</p>
 
-<p><strong>Continuous Bag of Words</strong> (CBOW) is the mirror image of skip-gram. Instead of predicting context from a target, you predict the target from its context. Given "the," "cat," "on," "the," predict "sat." The context word embeddings are averaged (or summed) into a single vector, and that vector is used to predict the center word.</p>
+<p>The distributional hypothesis is not a proof that context equals meaning. It's an empirical observation that works shockingly well in practice. If two words consistently show up in the same neighborhoods, surrounded by the same neighbors, they're almost certainly related. Not identical — "big" and "small" also share contexts ("the ___ house") even though they mean opposite things. We'll come back to that wrinkle. But as a starting point, context is remarkably informative.</p>
 
-<p>CBOW trains faster than skip-gram because it processes one prediction per window position instead of several. Skip-gram, on the other hand, tends to do better on rare words because each word gets more training signal (it appears as both a target and a context word for its neighbors). In practice, skip-gram is more commonly used, but the quality difference is often small.</p>
+<p>The challenge now is to turn this linguistic insight into a mathematical training procedure. That's what Tomas Mikolov and colleagues at Google did in 2013, with a system called Word2Vec.</p>
 
-<h4>The Softmax Problem and Negative Sampling</h4>
+<!-- ═══════════ WORD2VEC ═══════════ -->
 
-<p>Here's the practical problem. To predict a context word, the model needs to produce a probability distribution over the entire vocabulary. That means computing a softmax over 100,000+ words for every single training example. The denominator of the softmax — the sum of exponentials across the whole vocabulary — is brutally expensive.</p>
+<h2>Word2Vec: Learning Embeddings from Prediction</h2>
 
-<p><strong>Negative sampling</strong> sidesteps this entirely. Instead of asking "what's the probability of each word in the vocabulary?", it asks a simpler question: "is this word-context pair real, or did I make it up?" For each real pair (like "sat" and "cat"), you sample k random words from the vocabulary (say, k = 5–15) that probably didn't appear in that context. Then you train a binary classifier to distinguish real pairs from fake ones. The loss for a single training example is:</p>
+<h3>Skip-gram — Predict the Neighbors</h3>
 
-<pre><code># Negative sampling objective (simplified)
-# For a real (target, context) pair and k negative samples:
+<p>The <strong>Skip-gram</strong> model asks a peculiar question. Given a single word, can you predict which words appear near it? On the surface, this seems like a bizarre task. But the attempt to answer it forces the model to learn rich representations.</p>
+
+<p>Here's the setup. We take a sentence from our movie reviews — say, "I love this great movie" — and slide a window across it. If the window size is 2, we look two words in each direction. When the window is centered on "great," the context words are "love," "this," "great," and "movie." The model's task: given "great" as input, predict each of those neighbors.</p>
+
+<p>Internally, the model has two weight matrices. The first is the <strong>embedding matrix</strong> — it maps each word's one-hot vector to a dense embedding. This is the matrix we actually care about; it's what we'll keep after training. The second is the <strong>context matrix</strong> — it maps from embedding space back to vocabulary space to produce predictions. We usually throw this one away.</p>
+
+<p>When we feed "great" into the model, it looks up the embedding for "great" (a row in the embedding matrix), then tries to use that vector to predict "love," "this," and "movie." The loss function measures how well it did. Gradients flow backward and nudge the embedding for "great" — pushing it closer to words it appears near and further from words it doesn't.</p>
+
+<p>We repeat this for every word in every sentence across the entire corpus. Billions of these tiny nudges. After enough passes, words that consistently appear in similar neighborhoods end up with similar vectors. "Great" and "amazing" converge because they both predict the same context words. "Great" and "refrigerator" diverge because their neighborhoods look nothing alike.</p>
+
+<p>That's Skip-gram. It sounds almost too simple to work. And yet the vectors it produces capture nuanced semantic relationships that no one explicitly programmed.</p>
+
+<h3>CBOW — Predict the Center</h3>
+
+<p><strong>Continuous Bag of Words</strong> (CBOW) is Skip-gram's mirror image. Instead of using one word to predict its neighbors, we use the neighbors to predict the one word. Given "love," "this," and "movie," predict "great."</p>
+
+<p>The context word embeddings get averaged into a single vector — this is the "bag of words" part; we throw away word order within the context window. That averaged vector is then used to predict the center word.</p>
+
+<p>CBOW trains faster because it makes one prediction per window position instead of several (Skip-gram makes one prediction per context word). But Skip-gram tends to produce better embeddings for rare words. Here's why: in Skip-gram, a rare word appears as the center many times, each time paired with a different context word. It gets many gradient updates. In CBOW, a rare word in the center still generates one prediction, but a rare word in the context gets averaged with common words and its signal gets diluted.</p>
+
+<p>In practice, Skip-gram is more commonly used, especially for smaller datasets. The quality gap shrinks as data grows. Both produce good embeddings. The bigger question is computational — which brings us to a serious bottleneck.</p>
+
+<h3>The Softmax Bottleneck and Negative Sampling</h3>
+
+<p>Here's the problem that nearly killed Word2Vec before it started. To predict a context word, the model needs to produce a probability distribution over the <em>entire</em> vocabulary. For each training example, it computes a score for every word, exponentiates all of them, and divides by the sum. That's a <strong>softmax</strong> over 100,000+ words. For <em>every single</em> window position. For <em>every sentence</em> in a corpus of billions of words.</p>
+
+<p>The computational cost is O(V) per training step, where V is the vocabulary size. This is brutal. Training would take years.</p>
+
+<p><strong>Negative sampling</strong> is the trick that makes Word2Vec feasible. Instead of asking "which word among 100,000 is most likely?", it asks a much easier question: "is this specific word-context pair real, or did I make it up?"</p>
+
+<p>For each real pair — like ("great", "movie") from our review corpus — we grab k random words from the vocabulary that almost certainly weren't in the context. Maybe we grab "elephant," "Tuesday," and "carburetor." Now we have one positive example and k negative examples. We train a binary classifier: push the dot product of "great" and "movie" up (they co-occur), push the dot products of "great" with each noise word down (they don't).</p>
+
+<pre><code># Negative sampling objective for one (center, context) pair:
 #
-# L = -log(sigmoid(v_context . v_target))
-#     - sum_{i=1}^{k} log(sigmoid(-v_neg_i . v_target))
+# Maximize:  log σ(v_movie · v_great)          ← real pair, push together
+#          + log σ(-v_elephant · v_great)       ← fake pair, push apart
+#          + log σ(-v_tuesday · v_great)        ← fake pair, push apart
+#          + log σ(-v_carburetor · v_great)     ← fake pair, push apart
 #
-# v_context . v_target should be LARGE  (real pair → sigmoid → 1)
-# v_neg_i   . v_target should be SMALL  (fake pair → sigmoid → 0)</code></pre>
+# σ is the sigmoid function
+# k = 3 negative samples in this example (typically 5-15)</code></pre>
 
-<p>This reduces each training step from O(V) to O(k), where V is vocabulary size and k is typically 5–15. The negative words are sampled proportional to their frequency raised to the 3/4 power — this slightly oversamples rare words so they get enough training signal. <strong>Hierarchical softmax</strong> is another trick that arranges the vocabulary in a binary tree and only computes log(V) probabilities per step, but negative sampling is simpler and more widely used.</p>
+<p>Each training step now touches k + 1 words instead of 100,000. That's a reduction from O(V) to O(k), where k is typically 5 to 15. Larger datasets need fewer negative samples (k = 5 works well); smaller datasets benefit from more (k = 15).</p>
 
-<p>One more trick: <strong>subsampling frequent words</strong>. Words like "the," "a," and "is" appear so often that they dominate the training data without contributing much information. Word2Vec randomly discards frequent words during training with a probability that increases with word frequency. This speeds up training and, counterintuitively, improves embedding quality because the remaining training pairs are more informative.</p>
+<p>One subtle detail: the negative words aren't sampled uniformly. They're sampled proportional to their frequency raised to the 3/4 power. I'll be honest — I'm still developing my intuition for why 3/4 specifically. Mikolov's team tried several exponents and 3/4 won empirically. The effect is to slightly flatten the frequency distribution: common words like "the" still get sampled more often as negatives (which makes sense — they provide useful contrast), but rare words get sampled more than raw frequency would suggest (which helps their embeddings train faster). The exponent 3/4 isn't theoretically derived; it's an empirical sweet spot that has proven robust across many settings.</p>
 
-<h4>The King–Queen Analogy</h4>
+<p>One more trick worth mentioning: <strong>subsampling frequent words</strong>. Words like "the" and "is" appear in nearly every context window. They contribute very little information — "movie" appearing near "the" tells us nothing — but they dominate the training data. Word2Vec randomly discards high-frequency words during training, with a drop probability that increases with word frequency. This speeds up training and, counterintuitively, <em>improves</em> embedding quality because the remaining pairs are more informative.</p>
 
-<p>The most famous result from Word2Vec is the analogy task. Compute <code>vec("king") - vec("man") + vec("woman")</code> and the closest vector in the embedding space is <code>vec("queen")</code>. The vector arithmetic captures the relationship: "king" is to "man" as "queen" is to "woman." The difference vector <code>vec("king") - vec("man")</code> encodes something like "royalty," and adding it to <code>vec("woman")</code> gives you a female royal.</p>
+<h3>The King–Queen Magic (and Its Limits)</h3>
 
-<pre><code>from gensim.models import KeyedVectors
+<p>The most famous result from Word2Vec is the analogy test. Take the vector for "king," subtract the vector for "man," add the vector for "woman," and search for the nearest neighbor. You get "queen."</p>
 
-# Load pretrained Word2Vec embeddings (Google News, 300d)
-wv = KeyedVectors.load_word2vec_format(
-    "GoogleNews-vectors-negative300.bin", binary=True
-)
+<p>I still find it wild that this works. Nobody told the model about gender. Nobody told it about royalty. But the co-occurrence patterns in billions of words of text were enough for the model to carve out a "gender" direction in vector space and a "royalty" direction, such that arithmetic on those directions produces sensible results.</p>
 
-# The classic analogy: king - man + woman ≈ queen
-result = wv.most_similar(positive=["king", "woman"], negative=["man"], topn=3)
-for word, score in result:
-    print(f"  {word}: {score:.4f}")
-# Output (typical):
-#   queen: 0.7118
-#   monarch: 0.6189
-#   princess: 0.5902
+<pre><code># vec("king") - vec("man") + vec("woman") ≈ vec("queen")
+#
+# The vector difference (king - man) encodes something like
+# "royalty without gender." Adding it to "woman" gives
+# "royalty + female" → queen.
+#
+# Similarly:
+# vec("paris") - vec("france") + vec("germany") ≈ vec("berlin")
+# vec("bigger") - vec("big") + vec("cold") ≈ vec("colder")</code></pre>
 
-# More analogies
-print(wv.most_similar(positive=["paris", "germany"], negative=["france"], topn=1))
-# [('berlin', 0.7327)]
+<p>But let's be careful about what this tells us. The king–queen analogy works because gender is a strong, consistent signal in the training data. Many other analogies fail silently. And some succeed for the wrong reasons: "doctor" minus "man" plus "woman" often returns "nurse" — not because that's the correct analogy, but because the training corpus is saturated with societal stereotypes. The embeddings are a mirror of the data they were trained on, including its biases. Bolukbasi et al. showed in 2016 that Word2Vec associates "programmer" with male names and "homemaker" with female names. If you deploy embeddings in a real system, auditing them for harmful associations is not optional.</p>
 
-print(wv.most_similar(positive=["bigger", "cold"], negative=["big"], topn=1))
-# [('colder', 0.7254)]</code></pre>
+<!-- ═══════════ GLOVE ═══════════ -->
 
-<p>This is impressive, but let's be honest about the limitations. The king–queen analogy works because gender is a prominent, consistent axis in the training data. Many other analogies fail silently. "doctor" minus "man" plus "woman" often returns "nurse" — not because that's the correct analogy, but because the training corpus reflects societal biases. The embeddings have absorbed stereotypes from the text they were trained on.</p>
+<h2>GloVe: The Global View</h2>
 
-<div class="callout callout-warning">
-  <div class="callout-label">Bias in Word Embeddings</div>
-  <p>Word embeddings are a mirror of the data they were trained on, including its prejudices. Bolukbasi et al. (2016) showed that Word2Vec embeddings associate "programmer" and "engineer" with male names, and "homemaker" and "nurse" with female names. Debiasing techniques exist — projecting out the gender subspace, for example — but they're imperfect and sometimes just hide the bias rather than removing it. If you deploy embeddings in a production system, audit them for harmful associations. This is not optional.</p>
+<p>Word2Vec learns by sliding a small window across text, one example at a time. It never steps back to look at the full picture. In 2014, Pennington, Socher, and Manning at Stanford asked: what if we started with the global picture instead?</p>
+
+<p><strong>GloVe</strong> (Global Vectors for Word Representation) begins by building a <strong>co-occurrence matrix</strong>. This is a giant table — one row per word, one column per word — where entry X_ij counts how often word i appears near word j across the entire corpus. For our movie review vocabulary, it might look like this:</p>
+
+<pre><code>#           love  hate  great  movie  boring
+# love      -     0     12     45     1
+# hate      0     -     1      38     15
+# great     12    1     -      30     0
+# movie     45    38    30     -      20
+# boring    1     15    0      20     -
+#
+# (numbers are illustrative)</code></pre>
+
+<p>"Love" co-occurs heavily with "movie" (45 times) and "great" (12 times) but rarely with "boring" (once). "Hate" co-occurs heavily with "movie" (38) and "boring" (15) but rarely with "great" (once). The structure of meaning is already visible in this table — GloVe's job is to compress it into dense vectors.</p>
+
+<p>The model learns vectors w_i and w_j (plus bias terms) such that their dot product approximates the logarithm of the co-occurrence count:</p>
+
+<pre><code># GloVe objective:
+# w_i · w_j + b_i + b_j  ≈  log(X_ij)
+#
+# The loss weights each pair by f(X_ij), a function that:
+# - Caps the influence of very frequent pairs (so "the"+"the" doesn't dominate)
+# - Ignores very rare pairs (noise)
+# f(x) = (x / x_max)^0.75  if x < x_max, else 1</code></pre>
+
+<p>Why the logarithm? Because raw co-occurrence counts span many orders of magnitude. "The" might co-occur with "movie" 50,000 times while "exquisite" co-occurs with "movie" 3 times. Working in log-space compresses this range and makes the optimization better behaved.</p>
+
+<p>The key insight from the GloVe paper — and this is genuinely elegant — is about <em>ratios</em> of co-occurrence probabilities. Consider three words: "ice," "steam," and "solid." The ratio P(solid | ice) / P(solid | steam) is large — "solid" co-occurs much more with "ice" than with "steam." The ratio P(gas | ice) / P(gas | steam) is small. And the ratio P(water | ice) / P(water | steam) is close to 1 — "water" is equally relevant to both. These ratios encode the <em>distinction</em> between "ice" and "steam" more cleanly than raw probabilities. GloVe's objective is designed to make dot products of word vectors reflect these ratios.</p>
+
+<p>Here's the part that surprised me when I first learned it: Levy and Goldberg showed in 2014 that Word2Vec with negative sampling is <em>implicitly</em> factorizing a shifted version of the pointwise mutual information matrix — which is closely related to a log co-occurrence matrix. In other words, Word2Vec and GloVe are doing more similar things than their architectures suggest. One approaches the problem through local prediction, the other through global factorization, but they converge to similar solutions. In practice, well-tuned Word2Vec and well-tuned GloVe produce embeddings of comparable quality on most benchmarks. The choice often comes down to which pretrained vectors are available, not which algorithm is inherently superior.</p>
+
+<!-- ═══════════ FASTTEXT ═══════════ -->
+
+<h2>FastText: Breaking Words into Pieces</h2>
+
+<p>Both Word2Vec and GloVe have a quiet but devastating flaw: they treat every word as an atomic, indivisible unit. The word "loving" has no connection to "love" in the model's eyes — it's a completely separate entry in the vocabulary. And if a word never appeared in the training data? No vector. Game over. The model outputs a useless <code>[UNK]</code> token.</p>
+
+<p>Let's feel this pain in our movie review analyzer. A user writes: "unbelievably loveable cinematography." The word "unbelievably" wasn't in our training corpus. Neither was "loveable" (we had "lovable" with a different spelling). Word2Vec gives up on both. Two out of three words — gone.</p>
+
+<p><strong>FastText</strong>, published by Bojanowski et al. at Facebook AI Research in 2017, fixes this by cracking words open. Instead of treating "loving" as one atomic symbol, FastText represents it as a bag of <strong>character n-grams</strong> — overlapping slices of 3 to 6 characters, plus the whole word itself:</p>
+
+<pre><code># FastText decomposes "loving" into character n-grams
+# (using angle brackets as word boundary markers)
+#
+# n=3:  &lt;lo, lov, ovi, vin, ing, ng&gt;
+# n=4:  &lt;lov, lovi, ovin, ving, ing&gt;
+# n=5:  &lt;lovi, lovin, oving, ving&gt;
+# n=6:  &lt;lovin, loving, oving&gt;
+# whole word: &lt;loving&gt;
+#
+# The word's embedding = sum of all these n-gram vectors</code></pre>
+
+<p>Each character n-gram gets its own vector. The word's embedding is the sum of all its n-gram vectors. Training proceeds exactly like Word2Vec's skip-gram with negative sampling — the only difference is how the center word's vector is computed.</p>
+
+<p>This has two consequences that matter enormously. First, <strong>out-of-vocabulary words are no longer a death sentence</strong>. Even if "unbelievably" never appeared in training, FastText can build a reasonable vector from its character n-grams — many of which appeared in other words like "unbelievable," "incredibly," and "believable." The model has never seen this exact word, but it has seen most of its parts.</p>
+
+<p>Second, <strong>morphological relationships emerge automatically</strong>. "Love," "loved," "loving," and "loveable" all share the n-grams "lov," "love," and others. Their vectors end up close in embedding space — not because anyone told the model about English verb conjugation, but because shared character sequences lead to shared n-gram vectors. This makes FastText particularly powerful for <strong>morphologically rich languages</strong> like Turkish, Finnish, and German. In Turkish, a single root verb can generate hundreds of inflected forms. Word2Vec treats each form as unrelated; FastText captures their structural kinship.</p>
+
+<p>Coming back to our movie review analyzer: with FastText, "unbelievably" gets a reasonable vector (close to "unbelievable" and "incredibly"), "loveable" gets a vector close to "lovable" and "love," and the model can actually do its job. The address-book analogy holds here too — FastText doesn't need to have met someone personally; it can infer where they'd live on the map from their family name.</p>
+
+<!-- ═══════════ COSINE SIMILARITY ═══════════ -->
+
+<h2>Cosine Similarity and Embedding Geometry</h2>
+
+<p>Now that we have word vectors, we need a way to measure how similar two words are. The standard tool is <strong>cosine similarity</strong>: the cosine of the angle between two vectors. It ranges from −1 (pointing in opposite directions) through 0 (perpendicular, unrelated) to 1 (pointing the same way).</p>
+
+<pre><code># cos(a, b) = (a · b) / (||a|| × ||b||)
+#
+# Think of it as: how much do these vectors point
+# in the same direction, ignoring how long they are?</code></pre>
+
+<p>Why cosine instead of Euclidean distance? Because cosine ignores magnitude and focuses on direction. This matters because embedding magnitude tends to correlate with word frequency — common words often have larger norms. We don't want "the" to be "similar" to everything; we want direction to carry the semantic signal. Cosine factors out the length.</p>
+
+<p>Here's a result that trips people up: "good" and "bad" typically have moderate-to-high cosine similarity, around 0.5 to 0.7. That feels wrong — they're antonyms! But distributional similarity means "used in similar contexts," and antonyms fill identical syntactic slots: "the food was ___," "that was a ___ idea," "how ___ was it?" The model can't distinguish "similar meaning" from "similar usage." If you need a model that separates sentiment polarity, raw word embeddings aren't enough. You'll need a task-specific layer on top.</p>
+
+<!-- ═══════════ REST STOP ═══════════ -->
+
+<div class="callout callout-warning" style="border-left-color: var(--accent);">
+  <div class="callout-label">🛑 Rest Stop</div>
+  <p>Congratulations on making it this far. You can stop here if you want.</p>
+  <p>You now have a solid mental model of static word embeddings: one-hot vectors are wasteful and meaning-blind. Word2Vec learns dense vectors by predicting which words appear near which, using negative sampling to make it tractable. GloVe achieves similar results by factorizing a global co-occurrence matrix. FastText extends the idea to sub-word character n-grams, handling misspellings and rare words gracefully. Cosine similarity measures how much two embeddings point in the same direction.</p>
+  <p>This model doesn't tell the complete story. Every method we've seen assigns exactly <strong>one</strong> vector per word, regardless of context. "Bank" gets the same embedding whether it means a financial institution or the side of a river. For many tasks, this ceiling is real and painful.</p>
+  <p>The short version of what comes next: contextual embeddings (ELMo, BERT) generate different vectors for the same word depending on the surrounding sentence. Then we'll tackle tokenization — how text gets chopped into pieces before embeddings ever enter the picture. There. You're 60% of the way through.</p>
+  <p>But if the discomfort of not knowing what's underneath is nagging at you, read on.</p>
 </div>
 
-<h3>GloVe</h3>
+<!-- ═══════════ CONTEXTUAL EMBEDDINGS ═══════════ -->
 
-<h4>Global Co-occurrence</h4>
+<h2>The Polysemy Problem</h2>
 
-<p><strong>GloVe</strong> (Global Vectors for Word Representation), developed by Pennington, Socher, and Manning at Stanford in 2014, takes a different angle. Instead of sliding a window across text and learning from local predictions, GloVe first builds a <strong>co-occurrence matrix</strong>: a giant table where entry (i, j) counts how often word i appears near word j across the entire corpus.</p>
+<p>Let's return to our movie review analyzer. A user writes: "The film's bank scenes were shot on location near the river bank." The word "bank" appears twice with two completely different meanings. With Word2Vec, GloVe, or FastText, both get the <em>exact same vector</em> — some weighted average of the financial and geographical senses, dominated by whichever appeared more in the training data. Our model can't tell the difference.</p>
 
-<p>Then it factorizes that matrix. The goal is to learn vectors w_i and w_j such that their dot product approximates the logarithm of the co-occurrence count: <code>w_i · w_j + b_i + b_j ≈ log(X_ij)</code>, where X_ij is the co-occurrence count. The loss function weights each entry by a function of X_ij so that very frequent co-occurrences don't dominate and very rare ones don't add noise.</p>
+<p>This is the <strong>polysemy</strong> problem — a single word with multiple meanings collapses into a single representation. "Play" as a theatrical performance gets the same vector as "play" as a verb meaning to engage in a game. "Light" as illumination, "light" as not heavy, "light" as to ignite — all the same vector. Language is riddled with these ambiguities, and static embeddings can't resolve them.</p>
 
-<h4>GloVe vs. Word2Vec</h4>
+<p>For many tasks, this limitation is tolerable. If 95% of "bank" in your corpus means the financial kind, the static embedding captures that dominant sense well enough for document classification. But for tasks that require precise understanding — question answering, named entity recognition, machine translation — a single vector per word hits a hard ceiling.</p>
 
-<p>The key difference is philosophical. Word2Vec learns from local context windows — it never explicitly constructs a global view of co-occurrence. GloVe starts with the global picture and factorizes it. In theory, GloVe captures long-range statistics that a fixed-size window might miss.</p>
+<h2>ELMo: Context Enters the Picture</h2>
 
-<p>In practice? The results are remarkably similar. Multiple studies have shown that well-tuned Word2Vec and well-tuned GloVe produce embeddings of comparable quality on most benchmarks. GloVe sometimes wins on analogy tasks; Word2Vec sometimes wins on similarity tasks. The choice often comes down to which pretrained embeddings are available for your language and domain, not which algorithm is inherently better.</p>
+<p><strong>ELMo</strong> (Embeddings from Language Models), published by Peters et al. in 2018, cracked this ceiling wide open. The core idea: instead of looking up a fixed vector from a table, <em>run the entire sentence through a deep neural network</em> and use the network's internal states as word representations. Because the network reads the whole sentence, each word's representation is shaped by every other word around it.</p>
 
-<h3>FastText</h3>
+<p>ELMo's architecture is a two-layer <strong>bidirectional LSTM</strong> trained on a language modeling objective. The forward LSTM reads left-to-right and predicts the next word. The backward LSTM reads right-to-left and predicts the previous word. At inference time, for each word position, ELMo produces three vectors: one from a character-level CNN at the bottom (capturing morphology — word shape and spelling patterns), one from the first LSTM layer (which researchers found captures syntax — part-of-speech, grammatical roles), and one from the second LSTM layer (capturing semantics — word sense, topic).</p>
 
-<h4>Subword Information</h4>
+<p>The final embedding is a learned weighted combination of all three layers. And here's the elegant part: different downstream tasks learn <em>different</em> weights. A part-of-speech tagger puts more weight on the first LSTM layer. A sentiment classifier puts more weight on the second. Each task finds its own optimal mix automatically.</p>
 
-<p>Both Word2Vec and GloVe treat each word as an atomic unit. The word "running" has no relationship to "run" in the model's eyes — it's just another entry in the vocabulary. If a word didn't appear in the training data, you're out of luck. It gets no vector at all.</p>
+<p>Now "bank" in "I deposited money at the bank" gets a vector influenced by "deposited," "money," and the financial context. "Bank" in "I sat on the river bank" gets a different vector, pulled toward geographical terrain by "river." The same word, different representations. That's contextual embedding.</p>
 
-<p><strong>FastText</strong>, published by Bojanowski et al. at Facebook AI Research in 2017, fixes this by representing each word as a bag of character n-grams. The word "where" is decomposed into its character n-grams (with special boundary markers): <code>&lt;wh</code>, <code>whe</code>, <code>her</code>, <code>ere</code>, <code>re&gt;</code>, plus the whole word <code>&lt;where&gt;</code>. Each n-gram gets its own vector, and the word's embedding is the sum of all its n-gram vectors.</p>
+<p>ELMo improved the state of the art on six NLP benchmarks the day it was published. But its deeper contribution was conceptual: it proved that you don't need a fixed lookup table. You need a <em>function</em> that produces word vectors conditioned on context.</p>
 
-<p>This has two massive advantages. First, it handles <strong>out-of-vocabulary words</strong>. Even if "unfriendliness" never appeared in training, FastText can construct a reasonable vector from its character n-grams — many of which did appear in other words like "unfriendly," "friendliness," and "kindness." Second, it naturally captures morphology. Words that share prefixes or suffixes (like "running," "runner," "runs") will share n-grams and therefore have similar embeddings. This makes FastText particularly powerful for <strong>morphologically rich languages</strong> like Turkish, Finnish, and German, where a single root can generate dozens of word forms that Word2Vec would treat as completely unrelated.</p>
+<h2>From ELMo to BERT: The Transformer Revolution</h2>
 
-<p>The training procedure is essentially the same as Word2Vec's skip-gram with negative sampling — the only difference is how word vectors are computed (sum of n-gram vectors instead of a single lookup).</p>
+<p>ELMo used bidirectional LSTMs. They work, but LSTMs process text sequentially — word by word — which limits both speed and the range of context they can effectively capture. In late 2018, Devlin et al. at Google published <strong>BERT</strong> (Bidirectional Encoder Representations from Transformers), which replaced LSTMs with <strong>self-attention</strong> — the mechanism at the heart of the Transformer architecture. Self-attention lets every word attend to every other word in the sentence simultaneously, regardless of distance. It's covered in depth in the chapter on Sequence Models and Attention; the relevant point here is that BERT's contextual embeddings are richer, faster to compute, and better at capturing long-range dependencies than ELMo's.</p>
 
-<div class="callout callout-info">
-  <div class="callout-label">Choosing Between Word2Vec, GloVe, and FastText</div>
-  <p>If your text is clean, your vocabulary is well-covered, and you just need solid general-purpose embeddings, any of the three will work. Use GloVe or Word2Vec pretrained vectors for a quick start. Use FastText when your data contains misspellings, slang, domain-specific jargon, or when you're working with a morphologically rich language. FastText is also the best choice when your vocabulary is open-ended — user-generated content, medical terminology, code identifiers — because it can always construct a vector, even for words it's never seen.</p>
-</div>
+<p>BERT takes in a sequence of tokens, passes them through 12 (or 24) layers of self-attention, and outputs a contextual embedding for each token position. The output at each position is a function of <em>all</em> input tokens — so every word's representation is shaped by the entire sentence.</p>
 
-<h3>Embedding Properties</h3>
+<p>After BERT, contextual embeddings became the default. GPT (autoregressive, left-to-right context), RoBERTa (BERT trained more carefully), XLNet, ALBERT — all produce contextual embeddings, differing in architecture and training details but sharing the same core idea that ELMo pioneered: words don't have fixed meanings; context determines meaning.</p>
 
-<h4>Dimensionality</h4>
+<p>I'll confess that the jump from "each word has one vector" to "each word has a different vector in every sentence it appears in" felt unsettling to me at first. It's harder to inspect, harder to visualize, harder to debug. But the performance gains are undeniable, and once you internalize the idea, it actually feels more honest — because words <em>do</em> change meaning with context, and pretending otherwise was always a simplification.</p>
 
-<p>How many dimensions should your embedding vectors have? Common choices are 50, 100, 200, and 300. Smaller dimensions train faster and use less memory, but may not capture enough semantic distinctions. Larger dimensions can represent finer-grained relationships but risk overfitting on small datasets and show diminishing returns past 300 dimensions.</p>
+<!-- ═══════════ TOKENIZATION ═══════════ -->
 
-<p>A practical rule of thumb: 100–300 dimensions work well for most English NLP tasks. If your vocabulary is small or your downstream task is simple (sentiment classification, for example), 50 dimensions might suffice. If you're doing fine-grained semantic work on a large corpus, 300 is a good ceiling. Going to 500 or 1000 rarely helps and often hurts.</p>
+<h2>The Vocabulary Problem</h2>
 
-<h4>Cosine Similarity</h4>
+<p>We've been talking about turning words into vectors. But we've been quietly dodging a harder question: what is a "word"?</p>
 
-<p>Once you have embeddings, you need a way to measure how similar two words are. The standard choice is <strong>cosine similarity</strong>: the cosine of the angle between two vectors. It ranges from -1 (opposite directions) to 1 (same direction), with 0 meaning orthogonal (unrelated). The formula is <code>cos(a, b) = (a · b) / (||a|| × ||b||)</code>.</p>
+<p>Consider our movie review analyzer again. It's trained on a vocabulary of 50,000 English words. A user writes: "The cinematographer's visualizations were unbelievably breathtaking." How many of those words are in our vocabulary? "The" — yes. "Were" — yes. "Cinematographer's" — maybe not (we might have "cinematographer" without the possessive). "Visualizations" — possibly not. "Unbelievably" — unlikely. "Breathtaking" — hopefully.</p>
 
-<p>Why cosine instead of Euclidean distance? Because cosine ignores vector magnitude and focuses on direction. Two vectors that point the same way but have different lengths will have cosine similarity 1.0. This is desirable because embedding magnitude often reflects word frequency rather than meaning — common words tend to have larger norms. Cosine factors that out.</p>
+<p>Every word that isn't in the vocabulary collapses into a single <code>[UNK]</code> token. Unknown. The model learns nothing from it. In some domains — medical records, legal contracts, user-generated social media — 10 to 15 percent of words can end up unknown. That's like reading a book with every seventh word blacked out.</p>
 
-<pre><code>import numpy as np
-from gensim.models import KeyedVectors
+<p>We could go the other direction: <strong>character-level tokenization</strong>. Treat every letter, space, and punctuation mark as its own token. Now nothing is ever unknown — the vocabulary is roughly 256 entries (or fewer for English). But the sequences become absurdly long. "The cat sat" goes from 3 tokens to 11. Transformers have a fixed context window — say, 4,096 tokens. You've burned your window on spelling out individual characters instead of processing actual meaning. And the model must learn that "c-a-t" means the same thing as "C-A-T" or "c-a-t-s," which is hard when each letter is processed as a separate step.</p>
 
-# Load pretrained GloVe vectors (converted to word2vec format)
-wv = KeyedVectors.load_word2vec_format("glove.6B.100d.word2vec.txt")
+<p><strong>Subword tokenization</strong> is the sweet spot. Keep common words whole — "the," "movie," "great" stay as single tokens. Break rare words into pieces the model has seen before — "unbelievably" becomes "un" + "believ" + "ably." Each piece is meaningful and reusable. "Unbreakable" shares the "un" and "able" pieces with "unbelievably." Think of it like Lego: you can build any word from a set of reusable bricks, and the bricks themselves carry meaning. You don't need a separate brick for every possible creation.</p>
 
-# Cosine similarity between word pairs
-pairs = [
-    ("cat", "dog"),        # both animals → high similarity
-    ("cat", "computer"),   # unrelated → low similarity
-    ("good", "great"),     # synonyms → high similarity
-    ("good", "bad"),       # antonyms → moderate (both adjectives!)
-]
+<p>Vocabulary sizes land in the sweet spot of 30,000 to 50,000 tokens. Sequences stay short. Nothing is ever truly unknown. The question is: how do you decide which pieces to keep?</p>
 
-for w1, w2 in pairs:
-    sim = wv.similarity(w1, w2)
-    print(f"  sim({w1}, {w2}) = {sim:.4f}")
-# Typical output:
-#   sim(cat, dog) = 0.8798
-#   sim(cat, computer) = 0.1820
-#   sim(good, great) = 0.7192
-#   sim(good, bad) = 0.5437  ← surprisingly high!
+<!-- ═══════════ BPE ═══════════ -->
 
-# Note: "good" and "bad" are similar because they appear
-# in identical contexts ("the food was ___"). Embeddings
-# capture distributional similarity, not sentiment polarity.</code></pre>
+<h2>Byte Pair Encoding (BPE)</h2>
 
-<p>That last result — "good" and "bad" having moderate similarity — trips people up. But it makes sense. Distributional similarity means "used in similar contexts," and antonyms are often used interchangeably in the same syntactic slot. Embeddings don't distinguish "similar meaning" from "similar usage." Keep this in mind when using embeddings for sentiment analysis.</p>
+<p><strong>Byte Pair Encoding</strong> was originally a data compression algorithm from 1994, repurposed for NLP by Sennrich, Haddow, and Birch in 2016. The idea: start with individual characters. Find the most frequent adjacent pair. Merge them into a new token. Repeat until you've hit your target vocabulary size.</p>
 
-<h3>Contextual Embeddings: ELMo</h3>
+<p>Let's walk through it with movie-related words. Suppose our entire training corpus has four words with these frequencies:</p>
 
-<h4>The Problem with Static Embeddings</h4>
+<pre><code># Word frequencies in our corpus:
+# "loved"  (appears 50 times)  → l o v e d _
+# "love"   (appears 40 times)  → l o v e _
+# "movie"  (appears 60 times)  → m o v i e _
+# "movies" (appears 30 times)  → m o v i e s _
+#
+# (_ marks end-of-word)</code></pre>
 
-<p>Every method we've discussed so far — Word2Vec, GloVe, FastText — assigns exactly one vector per word type. The word "bank" gets the same embedding whether it means a financial institution or the side of a river. The word "play" gets the same vector whether it's a noun (a theater play) or a verb (play a game). This is a fundamental limitation. Language is full of <strong>polysemy</strong> (multiple meanings) and the correct meaning depends entirely on context.</p>
+<p>We count every adjacent pair across all words, weighted by frequency. The pair ("o", "v") appears in "loved" (50) + "love" (40) + "movie" (60) + "movies" (30) = 180 times. That's the most frequent pair. Merge it.</p>
 
-<p>For many tasks, this limitation is tolerable. If most occurrences of "bank" in your dataset refer to financial institutions, the embedding will capture that dominant sense reasonably well. But for tasks that require precise word-sense disambiguation, static embeddings hit a ceiling.</p>
+<pre><code># Merge 1: ("o", "v") → "ov"
+#
+# "loved"  → l ov e d _    (×50)
+# "love"   → l ov e _      (×40)
+# "movie"  → m ov i e _    (×60)
+# "movies" → m ov i e s _  (×30)</code></pre>
 
-<h4>ELMo: Embeddings from Language Models</h4>
+<p>Recount. Now ("l", "ov") appears 50 + 40 = 90 times. ("ov", "i") appears 60 + 30 = 90 times. ("ov", "e") appears 50 + 40 = 90 times. It's a three-way tie. Let's break ties alphabetically and merge ("l", "ov").</p>
 
-<p><strong>ELMo</strong> (Embeddings from Language Models), published by Peters et al. in 2018, broke through this ceiling. Instead of a fixed lookup table, ELMo runs the input sentence through a deep bidirectional LSTM and uses the internal states as word representations. Because the LSTM reads the entire sentence, each word's representation is influenced by all other words in the sentence. The word "bank" in "I deposited money at the bank" gets a different vector than "bank" in "I sat on the river bank."</p>
+<pre><code># Merge 2: ("l", "ov") → "lov"
+#
+# "loved"  → lov e d _     (×50)
+# "love"   → lov e _       (×40)
+# "movie"  → m ov i e _    (×60)
+# "movies" → m ov i e s _  (×30)</code></pre>
 
-<p>ELMo's architecture is a two-layer bidirectional LSTM trained on a language modeling objective — predict the next word (forward) and the previous word (backward). At inference time, for each word, ELMo produces three vectors: one from the character-level CNN (capturing morphology), one from the first LSTM layer (capturing syntax), and one from the second LSTM layer (capturing semantics). The final embedding is a learned weighted sum of all three.</p>
+<p>Now ("lov", "e") appears 50 + 40 = 90 times. Merge it.</p>
 
-<h4>Layer-wise Representations</h4>
+<pre><code># Merge 3: ("lov", "e") → "love"
+#
+# "loved"  → love d _      (×50)
+# "love"   → love _        (×40)
+# "movie"  → m ov i e _    (×60)
+# "movies" → m ov i e s _  (×30)</code></pre>
 
-<p>This <strong>layer-wise</strong> structure turned out to be important. Researchers found that lower layers capture syntactic information — part-of-speech, syntactic roles — while higher layers capture semantic information — word sense, sentiment. Different downstream tasks benefit from different layers. A POS tagger works best with lower-layer representations; a sentiment classifier works best with higher-layer representations. ELMo's learned weighting lets each task find its own optimal combination.</p>
+<p>After three merges, "love" is a single token. "Loved" is "love" + "d" + "_". The algorithm learned that "loved" contains "love" — a morphological relationship — purely from character frequency statistics. No linguistics knowledge was programmed in. No rules about English verb tenses. The Lego bricks assembled themselves.</p>
 
-<p>ELMo improved the state of the art on six NLP benchmarks the day it was published. It was a proof of concept for a transformative idea: don't learn fixed word vectors — learn a function that produces word vectors conditioned on context. This idea is the direct ancestor of BERT, GPT, and every transformer-based language model that followed. Those models replaced ELMo's LSTMs with self-attention (which we'll cover in the chapter on Transformers), but the core principle — contextual representations — was ELMo's contribution.</p>
+<p>The number of merges is a hyperparameter that directly controls vocabulary size. Start with ~256 base characters, add one new token per merge. GPT-2 uses about 50,257 tokens. GPT-4 uses around 100,000. LLaMA 3 uses 128,000. More tokens means shorter sequences (good for context window) but a larger embedding table (more parameters to train).</p>
 
-<div class="callout callout-info">
-  <div class="callout-label">Static vs. Contextual: When to Use What</div>
-  <p>Static embeddings (Word2Vec, GloVe, FastText) are still useful. They're fast, lightweight, and require no GPU at inference time. For simple tasks like document similarity, keyword clustering, or information retrieval on constrained hardware, they're often the right choice. Contextual embeddings (ELMo, BERT) shine on tasks that require understanding nuance: question answering, named entity recognition in ambiguous contexts, and anything where word sense matters. The tradeoff is always compute cost and latency versus accuracy.</p>
-</div>
+<p>One critical detail about BPE at inference time: when tokenizing new text, BPE replays the merge rules in the <em>exact order</em> they were learned during training. It doesn't greedily find the longest match. The merge priority list is the tokenizer's memory. This is why you must always pair a model with its exact tokenizer — using a different merge table produces completely different token IDs, and the model's embedding layer becomes meaningless. It's like shuffling the labels on a filing cabinet — the contents no longer match the index.</p>
 
-<p>From one-hot vectors to Word2Vec to ELMo, each step added more intelligence to how we represent words. One-hot vectors know nothing about meaning. Word2Vec captures similarity from co-occurrence. ELMo captures context-dependent meaning by reading entire sentences. The next leap — transformers and self-attention — will take this idea even further, but that's a story for a later chapter.</p>
+<!-- ═══════════ WORDPIECE ═══════════ -->
 
-<h3>What You Should Now Be Able To Do</h3>
+<h2>WordPiece</h2>
+
+<p><strong>WordPiece</strong> was introduced by Schuster and Nakajima in 2012 for Japanese and Korean speech processing, and later became famous as BERT's tokenizer. At first glance, it looks identical to BPE — start with characters, iteratively merge pairs. But the merge criterion is different, and that difference matters.</p>
+
+<p>BPE merges the most <em>frequent</em> pair. WordPiece merges the pair that maximizes the <em>likelihood</em> of the training data. Concretely, it asks: if tokens "a" and "b" appear frequently on their own but rarely together, merging them doesn't help much — they were already being modeled fine separately. But if they appear frequently together <em>relative</em> to their individual frequencies, the merge captures a genuine pattern. This is closely related to <strong>pointwise mutual information</strong> (PMI).</p>
+
+<p>The result is a vocabulary that's slightly more "linguistically aware" than BPE. WordPiece tends to merge real morphological units rather than high-frequency coincidences.</p>
+
+<p>WordPiece uses a special marker — <code>##</code> — to indicate continuation tokens. The first piece of any word has no prefix. All subsequent pieces get <code>##</code>. This makes it trivial to reconstruct the original text: strip the prefix, join the pieces.</p>
+
+<pre><code># BERT (WordPiece) tokenization examples:
+#
+# "unbelievable"  →  ["un", "##bel", "##ie", "##va", "##ble"]
+# "tokenization"  →  ["token", "##ization"]
+# "the cat sat"   →  ["the", "cat", "sat"]
+#
+# Common words stay whole. Rare words split into reusable pieces.
+# "un" appears in un-happy, un-usual, un-likely — it learns negation.
+# "##ble" appears in read-able, cap-able, comfort-able — it learns suffixes.</code></pre>
+
+<p>The model learns morphology without anyone programming morphological rules. The prefix "un" carries the concept of negation across hundreds of words. The suffix "##tion" appears in "action," "nation," "tokenization" — all nominalized forms. These patterns emerge from the statistics of the training data.</p>
+
+<!-- ═══════════ UNIGRAM / SENTENCEPIECE ═══════════ -->
+
+<h2>Unigram and SentencePiece</h2>
+
+<p>BPE and WordPiece both build bottom-up — start with characters, merge upward. The <strong>Unigram</strong> approach, introduced by Taku Kudo in 2018, goes the opposite direction. Start with a very large initial vocabulary — all substrings up to a certain length, plus all individual characters — and iteratively <em>remove</em> the tokens that contribute least to the corpus likelihood.</p>
+
+<p>Each token has an associated probability, learned through expectation-maximization. Given a word, there are multiple valid ways to segment it. "Unbreakable" could be ["un", "break", "able"] or ["unbreak", "able"] or individual characters. The Unigram model scores each segmentation by the product of its token probabilities and picks the highest-scoring one.</p>
+
+<p>This multiplicity is actually a feature. During training, you can <strong>sample</strong> different segmentations of the same word — a technique called <strong>subword regularization</strong>. Sometimes "unbreakable" segments as ["un", "break", "able"], sometimes as ["unbreak", "able"]. This acts as data augmentation, making the model robust to segmentation variation at test time. BPE and WordPiece always produce the same deterministic segmentation; Unigram gives you controlled randomness.</p>
+
+<p><strong>SentencePiece</strong>, also by Kudo, is a tokenization library that implements both Unigram and BPE. Its key innovation: it treats the input as a raw stream of characters rather than pre-segmented words. Most tokenizers assume you've already split text on whitespace. SentencePiece doesn't. It treats spaces as ordinary characters (represented by the ▁ symbol). This means it works identically for English (which uses spaces), Chinese and Japanese (which don't), and everything in between. No language-specific pre-processing rules required.</p>
+
+<p>SentencePiece is the tokenizer behind T5, ALBERT, XLNet, and many multilingual models. The "no pre-tokenization" design is why it became the default for multilingual settings.</p>
+
+<!-- ═══════════ BYTE-LEVEL BPE ═══════════ -->
+
+<h2>Byte-Level BPE</h2>
+
+<p>GPT-2 introduced a clever twist on standard BPE. Instead of starting with Unicode characters (of which there are ~150,000), it starts with the 256 raw <strong>UTF-8 byte values</strong>. Every possible text — English, Mandarin, Arabic, emoji, even raw binary data — is first converted to a sequence of bytes, and BPE merges operate on those bytes.</p>
+
+<p>The result: there is no unknown token. Ever. Any byte sequence is representable, because the base vocabulary covers every possible byte. You never need to worry about unseen scripts, unexpected Unicode characters, or creative emoji combinations. The <code>[UNK]</code> problem disappears entirely.</p>
+
+<p>The tradeoff is efficiency across scripts. A common English word like "the" is 3 bytes in UTF-8, and the merge table quickly learns to represent it as a single token. But a Chinese character is 3 bytes, and a rare emoji can be 4. If the merge table hasn't seen a particular character often enough, that single character might consume 3 to 4 tokens. In practice, byte-level BPE uses about 1.3 to 1.5 times more tokens for non-Latin scripts compared to a dedicated tokenizer for that language.</p>
+
+<p>This has real consequences. If your tokenizer takes 1.5 times more tokens to encode Hindi text than English, Hindi users get 1.5 times less context window and pay 1.5 times more per API call. This is a genuine equity issue in LLM deployment. Newer models like LLaMA 3 and Gemma use larger vocabularies (128,000 to 256,000 tokens) specifically to improve efficiency across languages.</p>
+
+<!-- ═══════════ VOCAB SIZE AND EMBEDDING DIM ═══════════ -->
+
+<h2>Vocabulary Size and Embedding Dimension</h2>
+
+<p>Two hyperparameters quietly shape everything downstream: how many tokens are in the vocabulary, and how many dimensions each token's embedding has.</p>
+
+<h3>Vocabulary Size</h3>
+
+<p>Too small — say, 4,000 tokens — and common words get shredded. "Understanding" might become five tokens. Sequences get long, the model burns context window on sub-word fragments instead of meaning, and training slows down. Too large — say, 500,000 tokens — and the embedding table becomes enormous. Each token needs a dense vector (768 to 4,096 dimensions), so 500,000 tokens means hundreds of millions of parameters in the embedding layer alone. Worse, rare tokens in a huge vocabulary see very few training examples, so their embeddings stay noisy and undertrained.</p>
+
+<p>The sweet spot for English-centric models has settled around 30,000 to 50,000 tokens. Multilingual models go higher: 100,000 to 256,000, because they need to efficiently represent multiple scripts. The trend in 2023–2024 is toward larger vocabularies as model sizes grow — when the rest of your model has 70 billion parameters, the relative cost of a bigger embedding table shrinks.</p>
+
+<h3>Embedding Dimension</h3>
+
+<p>For classic static embeddings (Word2Vec, GloVe), typical dimensions are 50, 100, 200, or 300. Smaller dimensions train faster and use less memory but might miss fine-grained distinctions. Larger dimensions can capture richer relationships but risk overfitting on small datasets and show diminishing returns past 300.</p>
+
+<p>For transformer-based models, the embedding dimension is usually tied to the model's hidden dimension: BERT-base uses 768, BERT-large uses 1,024, GPT-3 uses 12,288, and LLaMA-70B uses 8,192. The embedding dimension and model width should scale together — there's little point in having 4,096-dimensional embeddings feeding into a 768-dimensional transformer.</p>
+
+<p>I haven't figured out a perfectly clean way to summarize the dimension tradeoff, but here's a rough heuristic: the embedding dimension should be large enough that adding dimensions still improves downstream task performance, and no larger. For most practical purposes, match whatever the pretrained model uses. If you're training from scratch, start with the community's conventional wisdom for your model scale and adjust based on validation performance.</p>
+
+<!-- ═══════════ POSITIONAL EMBEDDINGS ═══════════ -->
+
+<h2>Positional Embeddings: Giving Order to Orderless Models</h2>
+
+<p>We've covered how words become vectors. But there's a subtle gap we haven't addressed. Transformers process all tokens in parallel — they have no inherent sense of order. The sentence "dog bites man" and "man bites dog" would produce identical representations if we only used word embeddings, because the same words are present. Self-attention computes relationships between all pairs, but it doesn't know which came first.</p>
+
+<p><strong>Positional embeddings</strong> fix this by injecting position information into each token's representation. The original Transformer paper (Vaswani et al., 2017) used <strong>sinusoidal positional encodings</strong> — fixed mathematical functions that produce a unique pattern for each position:</p>
+
+<pre><code># Sinusoidal positional encoding:
+# PE(pos, 2i)   = sin(pos / 10000^(2i/d))
+# PE(pos, 2i+1) = cos(pos / 10000^(2i/d))
+#
+# pos = position in the sequence (0, 1, 2, ...)
+# i = dimension index
+# d = embedding dimension
+#
+# Each position gets a unique vector. Different dimensions
+# oscillate at different frequencies, creating a unique
+# "fingerprint" for each position.</code></pre>
+
+<p>These sinusoidal encodings are not learned — they're fixed mathematical functions. The appealing property is that relative positions can be computed from the encodings: PE(pos + k) can be expressed as a linear function of PE(pos), which in theory lets the model learn to attend to relative positions.</p>
+
+<p>Most modern models use <strong>learned positional embeddings</strong> instead — a separate embedding table where each position (0 through max_length − 1) gets its own trainable vector. BERT and GPT-2 both use this approach. The model learns whatever positional patterns are useful, without being constrained to sinusoids.</p>
+
+<p>More recently, <strong>Rotary Position Embeddings</strong> (RoPE), used in LLaMA and many recent models, take a different approach entirely. Instead of adding a positional vector, RoPE rotates the query and key vectors in attention by an angle proportional to position. This naturally encodes <em>relative</em> position — the angle between two tokens depends on their distance, not their absolute positions. RoPE handles longer sequences more gracefully than fixed-length positional tables and has become the dominant approach for modern LLMs.</p>
+
+<p>Regardless of the approach, the final input to the model is the sum (or combination) of the token embedding and the positional embedding. The token embedding says <em>what</em> the word is. The positional embedding says <em>where</em> it is. Both are essential.</p>
+
+<!-- ═══════════ WRAP-UP ═══════════ -->
+
+<h2>The Full Picture</h2>
+
+<p>If you're still with me, thank you. I hope it was worth it.</p>
+
+<p>We started with one-hot vectors — wasteful, enormous, and meaning-blind. We learned that distributional context is all you need to discover word meaning, and built that insight into Skip-gram and CBOW. We tamed the softmax bottleneck with negative sampling, saw GloVe take a global view through co-occurrence matrices, and watched FastText break words into character n-grams so that no word is ever truly unknown. We hit the ceiling of static embeddings, where every word gets one vector regardless of context, and watched ELMo and BERT shatter that ceiling by making representations dynamic — shaped by the full sentence. Then we turned to the less glamorous but equally critical question of tokenization: BPE merging character pairs bottom-up, WordPiece choosing merges by likelihood, Unigram pruning top-down, and byte-level BPE eliminating unknown tokens forever. We closed with the quiet but powerful choices of vocabulary size, embedding dimension, and positional encodings.</p>
+
+<p>My hope is that the next time you see a tokenizer configuration or an embedding layer in a model architecture, instead of nodding and moving on, you'll know what each piece does and why it's there — having a pretty good mental model of the machinery that turns raw text into the tensors that make everything else possible.</p>
+
+<!-- ═══════════ RESOURCES ═══════════ -->
+
+<h3>Resources</h3>
+
+<p>A handful of sources that shaped my understanding:</p>
+
 <ul>
-  <li>Explain the distributional hypothesis ("words that appear in similar contexts have similar meanings") and why it works</li>
-  <li>Draw the Skip-gram and CBOW architectures and explain how they train</li>
-  <li>Explain negative sampling and why it's needed (hint: softmax over 100k words is expensive)</li>
-  <li>Demonstrate the king − man + woman ≈ queen analogy and explain what it reveals about embedding geometry</li>
-  <li>Compare Word2Vec, GloVe, and FastText — when each is strongest</li>
-  <li>Explain why FastText handles out-of-vocabulary words when Word2Vec and GloVe can't</li>
-  <li>Articulate the key limitation of static embeddings and why contextual embeddings (ELMo → BERT) were needed</li>
-  <li>Load pretrained embeddings with gensim and compute word similarities</li>
-</ul>
-<!-- ═══════════ Subword Tokenization ═══════════ -->
-<h2>Subword Tokenization</h2>
-
-<div class="tldr">
-  <div class="tldr-label">TL;DR</div>
-  <p>Word-level tokenization chokes on rare words. Character-level tokenization makes sequences painfully long. Subword tokenization splits the difference — common words stay whole, rare words get broken into reusable pieces. BPE (used in GPT) merges frequent character pairs bottom-up. WordPiece (used in BERT) merges by likelihood gain. Unigram (used in T5 via SentencePiece) starts big and prunes down. Byte-level BPE eliminates unknown tokens entirely by operating on raw bytes. The choice of tokenizer and vocabulary size quietly shapes everything downstream.</p>
-</div>
-
-<h3>The Vocabulary Problem</h3>
-
-<p>Before a neural network can process text, every word must become a number. The simplest approach is <strong>word-level tokenization</strong>: assign an integer to each unique word in your training corpus. "The" gets 1, "cat" gets 2, "sat" gets 3, and so on. This works until you encounter a word the model has never seen. Maybe someone writes "catsat" by accident. Maybe a user types "pretraining" and your corpus only had "pre-training." Maybe you're processing German, where compound words like "Handschuhschneeballschlacht" (a snowball fight with gloves) are perfectly normal. Every unseen word collapses into a single <code>[UNK]</code> token. The model learns nothing from it.</p>
-
-<p>The scale of this problem is brutal. English has over a million distinct word forms if you count inflections, derivations, and compound words. A vocabulary of 50,000 words — already large — still misses a huge fraction of them. Misspellings, brand names, code identifiers, technical jargon, and morphological variants all become <code>[UNK]</code>. In some domains, 10–15% of tokens end up unknown. That's like reading a book with every seventh word blacked out.</p>
-
-<p>The opposite extreme is <strong>character-level tokenization</strong>. Every character — "a", "b", "c", space, punctuation — gets its own token. Now nothing is unknown. The vocabulary is tiny (a few hundred entries). But the sequences become absurdly long. The sentence "The cat sat" is 11 characters instead of 3 words. Transformers have a fixed context window, so you've just cut your effective capacity by roughly 4x. Worse, the model must learn long-range dependencies across many more positions. Learning that "c-a-t" means the same animal whether it appears at position 5 or position 500 is hard when each letter is a separate step.</p>
-
-<p><strong>Subword tokenization</strong> is the sweet spot. The idea: keep common words intact, but break rare words into smaller pieces that the model has seen before. "Unbelievable" might split into "un" + "believ" + "able." Each piece is meaningful and reusable. "Unbreakable" shares the "un" and "able" pieces. The model learns morphological patterns automatically, without anyone hand-coding rules. Vocabulary sizes are manageable (typically 30,000–50,000 tokens), sequences stay short, and nothing is ever truly unknown.</p>
-
-<h3>Byte Pair Encoding (BPE)</h3>
-
-<p><strong>Byte Pair Encoding</strong> was originally a data compression algorithm from 1994, repurposed for NLP by Sennrich, Haddow, and Birch in 2016. The core idea is elegant: start with individual characters, then iteratively merge the most frequent adjacent pair into a new token. Repeat until you hit your desired vocabulary size. That's it.</p>
-
-<h4>A Worked Example</h4>
-
-<p>Let's walk through BPE step by step. Suppose our entire training corpus is four words: "low", "lower", "newest", "widest". First, we split every word into characters and add a special end-of-word symbol <code>_</code>. We also note how many times each word appeared (let's say once each for simplicity):</p>
-
-<pre><code># Initial vocabulary: individual characters + end-of-word marker
-# Word frequencies (each appears once in our tiny corpus)
-
-"low"    → l o w _
-"lower"  → l o w e r _
-"newest" → n e w e s t _
-"widest" → w i d e s t _
-</code></pre>
-
-<p>Now we count every adjacent pair across all words. The pair ("e", "s") appears twice — once in "newest" and once in "widest." The pair ("s", "t") also appears twice. The pair ("l", "o") appears twice. Let's say we break ties alphabetically and merge ("e", "s") first.</p>
-
-<pre><code># Merge 1: ("e", "s") → "es"
-
-"low"    → l o w _
-"lower"  → l o w e r _
-"newest" → n e w es t _
-"widest" → w i d es t _
-</code></pre>
-
-<p>Now we recount. The pair ("es", "t") appears twice (in "newest" and "widest"). Merge it.</p>
-
-<pre><code># Merge 2: ("es", "t") → "est"
-
-"low"    → l o w _
-"lower"  → l o w e r _
-"newest" → n e w est _
-"widest" → w i d est _
-</code></pre>
-
-<p>Recount again. ("l", "o") appears twice ("low" and "lower"). Merge it.</p>
-
-<pre><code># Merge 3: ("l", "o") → "lo"
-
-"low"    → lo w _
-"lower"  → lo w e r _
-"newest" → n e w est _
-"widest" → w i d est _
-</code></pre>
-
-<p>Now ("lo", "w") appears twice. Merge it.</p>
-
-<pre><code># Merge 4: ("lo", "w") → "low"
-
-"low"    → low _
-"lower"  → low e r _
-"newest" → n e w est _
-"widest" → w i d est _
-</code></pre>
-
-<p>After just four merges, "low" is a single token. "Lower" is "low" + "e" + "r" + "_". The model now knows that "lower" contains "low" — it learned a morphological relationship purely from frequency statistics. If we continued merging, "low_" would fuse next, then perhaps "est_", and so on.</p>
-
-<p>The number of merges is a hyperparameter that directly controls vocabulary size. Start with ~256 base characters, add one new token per merge. 32,000 merges gives you roughly 32,256 tokens. GPT-2 uses about 50,257 tokens. GPT-4 uses around 100,000. More tokens means shorter sequences but a larger embedding table.</p>
-
-<h4>BPE in Practice</h4>
-
-<p>BPE is the tokenization method behind GPT-2, GPT-3, GPT-4, LLaMA, and most modern large language models. It's also the standard in neural machine translation. The HuggingFace <code>tokenizers</code> library makes it straightforward to train one from scratch:</p>
-
-<pre><code>from tokenizers import Tokenizer
-from tokenizers.models import BPE
-from tokenizers.trainers import BpeTrainer
-from tokenizers.pre_tokenizers import Whitespace
-
-# Initialize a BPE tokenizer
-tokenizer = Tokenizer(BPE(unk_token="[UNK]"))
-tokenizer.pre_tokenizer = Whitespace()
-
-# Configure training
-trainer = BpeTrainer(
-    vocab_size=8000,
-    special_tokens=["[UNK]", "[PAD]", "[CLS]", "[SEP]", "[MASK]"],
-    min_frequency=2,          # ignore pairs that appear only once
-    show_progress=True
-)
-
-# Train on your corpus (list of file paths)
-tokenizer.train(["my_corpus.txt"], trainer)
-
-# Test it
-output = tokenizer.encode("unbelievably newest tokenization")
-print(output.tokens)
-# Might produce: ['un', 'believ', 'ably', 'new', 'est', 'token', 'ization']
-
-tokenizer.save("my_bpe_tokenizer.json")
-</code></pre>
-
-<div class="callout callout-info">
-  <div class="callout-label">Why Merge Order Matters at Inference</div>
-  <p>During tokenization of new text, BPE replays the merge rules in the exact order they were learned during training. It doesn't just greedily find the longest match. The merge priority list is the tokenizer's "memory." This is why you must always pair a model with its exact tokenizer — using a different merge table produces completely different token IDs, and the model's embeddings become meaningless.</p>
-</div>
-
-<h3>WordPiece</h3>
-
-<p><strong>WordPiece</strong> was introduced by Schuster and Nakajima in 2012 for Japanese and Korean speech processing, and later became famous as BERT's tokenizer. It looks similar to BPE at first glance — start with characters, iteratively merge pairs — but the merge criterion is different. BPE merges the most <em>frequent</em> pair. WordPiece merges the pair that maximizes the <em>likelihood</em> of the training data.</p>
-
-<p>Concretely, WordPiece scores each candidate merge by how much it increases the language model's probability of the corpus. If tokens "a" and "b" appear often individually but rarely together, merging them doesn't help much. If they appear often together relative to their individual frequencies, the merge is valuable. This is similar to pointwise mutual information. The result is a vocabulary that's slightly more "linguistically aware" than BPE — it favors merges that capture genuine sub-word units rather than just frequent collocations.</p>
-
-<h4>The ## Convention</h4>
-
-<p>WordPiece uses a special prefix — <code>##</code> — to mark tokens that are continuations of a previous token (i.e., they don't start a new word). The first piece of any word has no prefix. All subsequent pieces get <code>##</code>. This makes it trivial to reconstruct the original text: strip <code>##</code> and join.</p>
-
-<p>For example, BERT tokenizes "unbelievable" like this:</p>
-
-<pre><code># BERT's WordPiece tokenization of "unbelievable"
-from transformers import BertTokenizer
-
-tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
-tokens = tokenizer.tokenize("unbelievable")
-print(tokens)
-# ['un', '##bel', '##ie', '##va', '##ble']
-
-# Another example
-print(tokenizer.tokenize("tokenization is fascinating"))
-# ['token', '##ization', 'is', 'fascinating']
-
-# Common words stay whole
-print(tokenizer.tokenize("the cat sat on the mat"))
-# ['the', 'cat', 'sat', 'on', 'the', 'mat']
-</code></pre>
-
-<p>Notice how "the", "cat", "is" — common words — survive as single tokens. "Unbelievable" breaks into pieces, but each piece carries meaning. "un" is a negation prefix the model sees in thousands of words. "##ble" is a suffix shared by "readable", "capable", "comfortable." The model implicitly learns morphology without any explicit linguistic rules.</p>
-
-<h3>Unigram Language Model</h3>
-
-<p>The <strong>Unigram</strong> approach, introduced by Taku Kudo in 2018, works in the opposite direction from BPE. Instead of starting small and building up, you start with a very large initial vocabulary — say, all substrings up to a certain length plus all individual characters — and iteratively <em>remove</em> tokens that contribute least to the overall corpus likelihood.</p>
-
-<p>Each token in the vocabulary has an associated probability (trained via expectation-maximization). Given a sentence, there are often multiple valid ways to segment it into tokens. The Unigram model picks the segmentation that maximizes the total log-probability. For "unbreakable", possible segmentations include ["un", "break", "able"], ["unbreak", "able"], ["u", "n", "b", "r", "e", "a", "k", "a", "b", "l", "e"], and many more. Each segmentation has a total probability (product of individual token probabilities), and the model picks the highest one.</p>
-
-<p>This multiplicity of segmentations is actually useful. During training, you can sample different segmentations of the same word — a technique called <strong>subword regularization</strong>. Sometimes "unbreakable" segments as ["un", "break", "able"], sometimes as ["unbreak", "able"]. This acts as data augmentation, making the model more robust to different tokenizations at test time. BPE and WordPiece, by contrast, always produce the same deterministic segmentation.</p>
-
-<h4>SentencePiece</h4>
-
-<p><strong>SentencePiece</strong>, also by Kudo, is a language-agnostic tokenization library that implements both Unigram and BPE. Its key innovation: it treats the input as a raw byte stream rather than a sequence of pre-segmented words. Most tokenizers assume you've already split text on whitespace — SentencePiece doesn't. It treats spaces as just another character (represented as the Unicode character ▁, "lower one eighth block"). This means it works identically on languages like Chinese and Japanese that don't use spaces, languages like English that do, and everything in between.</p>
-
-<p>SentencePiece is the tokenizer behind T5, ALBERT, XLNet, and many multilingual models. The "no pre-tokenization" design is especially important for multilingual models — you don't need language-specific rules for word boundaries.</p>
-
-<h3>Byte-Level BPE</h3>
-
-<p>GPT-2 introduced a clever twist: <strong>Byte-level BPE</strong>. Instead of starting with Unicode characters (of which there are ~150,000), you start with the 256 raw UTF-8 byte values. Every possible text — English, Chinese, Arabic, emoji, even binary data — is first converted to a sequence of bytes, and BPE merges operate on those bytes.</p>
-
-<p>The result: there is no unknown token. Ever. Any byte sequence is representable, because the base vocabulary covers every possible byte. This eliminates the <code>[UNK]</code> problem completely. You never need to worry about out-of-vocabulary words, unseen scripts, or unexpected Unicode characters. GPT-2, GPT-3, GPT-4, and many other models use this approach.</p>
-
-<p>The tradeoff is efficiency. A common English word like "the" is 3 bytes, and the BPE merge table will quickly learn to represent it as a single token. But a Chinese character in UTF-8 is 3 bytes, and a rare emoji can be 4 bytes. If the merge table hasn't seen a particular character often enough to merge its bytes, that single character might consume 3–4 tokens instead of 1. In practice, byte-level BPE tokenizers use about 1.3–1.5x more tokens for non-Latin scripts compared to a dedicated tokenizer for that language.</p>
-
-<div class="callout callout-warning">
-  <div class="callout-label">The Hidden Cost of Tokenization</div>
-  <p>Tokenizer choice affects cost in production. If your tokenizer takes 1.5x more tokens to encode Hindi text compared to English, Hindi users effectively get 1.5x less context window and pay 1.5x more per API call. This is a real equity issue in LLM deployment. Some newer models (like Gemma and LLaMA 3) use larger vocabularies (128k–256k tokens) specifically to improve efficiency on non-English languages.</p>
-</div>
-
-<h3>Tokenizer Training</h3>
-
-<h4>Vocabulary Size Tradeoffs</h4>
-
-<p>Vocabulary size is one of those hyperparameters that quietly affects everything. Too small (say, 4,000 tokens) and common words get split into many pieces — "understanding" might become five tokens. Sequences get long, the model needs more compute per sentence, and the effective context window shrinks. Too large (say, 500,000 tokens) and the embedding table becomes enormous. Each token has a dense vector (768 or 4,096 dimensions), so 500k tokens means billions of parameters just in the embedding layer. Worse, rare tokens in a huge vocabulary get very few training examples, so their embeddings are undertrained and noisy.</p>
-
-<p>The sweet spot for most English-centric models has been 30,000–50,000 tokens. Multilingual models push higher: 100,000–256,000 tokens, because they need to efficiently represent multiple scripts. The trend in 2023–2024 is toward larger vocabularies as model sizes grow — the relative cost of a bigger embedding table shrinks when the rest of the model has 70 billion parameters.</p>
-
-<h4>Domain-Specific Tokenizers</h4>
-
-<p>A tokenizer trained on Wikipedia and web text does a poor job on code. The identifier <code>getAllUsersByOrganizationId</code> might split into 8 tokens when a code-aware tokenizer could handle it in 3. Biomedical text is full of terms like "deoxyribonucleic" that a general tokenizer shreds into tiny pieces. Legal documents repeat long Latin phrases that a general tokenizer handles inefficiently.</p>
-
-<p>Training a domain-specific tokenizer is straightforward — you just train BPE or Unigram on your domain corpus. The HuggingFace <code>tokenizers</code> library handles all of it. But there's a catch: if you change the tokenizer, you must retrain (or at least fine-tune) the model, because the embedding layer maps token IDs to vectors. Swapping tokenizers without retraining is like shuffling the labels on a filing cabinet — the contents no longer match the index.</p>
-
-<p>A pragmatic middle ground is to start from a pretrained model and extend its tokenizer with domain-specific tokens. Add new tokens to the vocabulary, initialize their embeddings (often as the mean of their sub-token embeddings), and fine-tune. This preserves most of the pretrained knowledge while improving efficiency on domain text.</p>
-
-<h3>Comparison</h3>
-
-<p>Here's how the four approaches stack up side by side:</p>
-
-<table>
-  <thead>
-    <tr>
-      <th>Method</th>
-      <th>Direction</th>
-      <th>Merge Criterion</th>
-      <th>Used By</th>
-      <th>Key Trait</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>BPE</td>
-      <td>Bottom-up (merge)</td>
-      <td>Most frequent pair</td>
-      <td>GPT-2/3/4, LLaMA, most LLMs</td>
-      <td>Simple, deterministic, widely adopted</td>
-    </tr>
-    <tr>
-      <td>WordPiece</td>
-      <td>Bottom-up (merge)</td>
-      <td>Max likelihood gain</td>
-      <td>BERT, DistilBERT, Electra</td>
-      <td>## prefix for continuation tokens</td>
-    </tr>
-    <tr>
-      <td>Unigram</td>
-      <td>Top-down (prune)</td>
-      <td>Remove least useful token</td>
-      <td>T5, ALBERT, XLNet (via SentencePiece)</td>
-      <td>Multiple segmentations; subword regularization</td>
-    </tr>
-    <tr>
-      <td>Byte-level BPE</td>
-      <td>Bottom-up (merge)</td>
-      <td>Most frequent byte pair</td>
-      <td>GPT-2/3/4, RoBERTa</td>
-      <td>No [UNK] tokens ever; any input representable</td>
-    </tr>
-  </tbody>
-</table>
-
-<p>In practice, the differences between these methods matter less than you might expect. With the same vocabulary size and training data, BPE, WordPiece, and Unigram produce surprisingly similar downstream performance. The bigger decisions are vocabulary size, training corpus composition, and whether to go byte-level. If you're starting from scratch, BPE with a byte-level fallback (as in GPT-2) is the safest default. If you're using an existing pretrained model, just use whatever tokenizer it shipped with — consistency is more important than optimality.</p>
-
-<h3>What You Should Now Be Able To Do</h3>
-<ul>
-  <li>Explain why subword tokenization exists — the OOV problem with word-level, the sequence length problem with character-level</li>
-  <li>Walk through a BPE merge example by hand and explain the algorithm</li>
-  <li>Explain the difference between BPE (frequency-based merges) and WordPiece (likelihood-based merges)</li>
-  <li>Explain the ## prefix convention in WordPiece and why it matters for reconstruction</li>
-  <li>Describe how Unigram/SentencePiece works top-down (prune vocabulary) vs BPE bottom-up (merge pairs)</li>
-  <li>Explain why byte-level BPE eliminates unknown tokens entirely</li>
-  <li>Articulate the vocabulary size tradeoff: too small = long sequences, too large = undertrained rare tokens</li>
-  <li>Train a custom BPE tokenizer with the HuggingFace tokenizers library</li>
+  <li><strong>Mikolov et al., "Efficient Estimation of Word Representations in Vector Space" (2013)</strong> — The O.G. Word2Vec paper. Remarkably short and readable for something that changed the field.</li>
+  <li><strong>Pennington, Socher, Manning, "GloVe: Global Vectors for Word Representation" (2014)</strong> — The co-occurrence ratio insight is worth the read alone.</li>
+  <li><strong>Jay Alammar's "The Illustrated Word2Vec"</strong> — Wildly helpful visual walkthrough. If you're a visual learner, start here.</li>
+  <li><strong>Levy &amp; Goldberg, "Neural Word Embedding as Implicit Matrix Factorization" (2014)</strong> — The paper that showed Word2Vec and GloVe are doing more similar things than anyone expected. Mind-bending.</li>
+  <li><strong>Peters et al., "Deep contextualized word representations" (2018)</strong> — The ELMo paper. Laid the intellectual groundwork for BERT and everything after.</li>
+  <li><strong>Hugging Face Tokenizers documentation</strong> — The most practical guide to training BPE, WordPiece, and Unigram tokenizers from scratch. Insightful and well-maintained.</li>
+  <li><strong>Kudo, "SentencePiece: A simple and language independent subword tokenizer" (2018)</strong> — The paper behind SentencePiece. Clear writing, and the design decisions about whitespace handling are illuminating.</li>
 </ul>
 
       <div class="page-nav">

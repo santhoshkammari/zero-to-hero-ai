@@ -298,895 +298,526 @@
 <h1>LLM Training &mdash; Pretraining, Scaling &amp; Fundamentals</h1>
 <div class="chapter-meta">
   <span class="tag">Chapter 12: Large Language Models</span>
-  <span class="tag">14 subtopics</span>
 </div>
 
-<div class="tldr">
-  <div class="tldr-label">TL;DR</div>
-  <p>This section covers the three pillars of LLM training: pretraining objectives (CLM, MLM, span corruption, ELECTRA), scaling laws (Kaplan vs Chinchilla and why it changes everything about how you budget compute), and the practical engineering of actually training these models (data prep, AdamW, learning rate schedules, mixed precision, distributed training, and stability tricks). The pretraining objective you choose determines what the model can do. Scaling laws tell you how big to make it and how much data to feed it. And the training fundamentals determine whether your run actually converges or burns money. Master all three and you can plan, launch, and debug a real LLM training run.</p>
+<p>I avoided digging into how LLMs are actually <em>trained</em> for longer than I&rsquo;d like to admit. I could use them, prompt them, even fine-tune them. But every time someone asked &ldquo;how is the base model actually made?&rdquo; I&rsquo;d wave my hands and mumble something about &ldquo;next-token prediction on lots of text.&rdquo; That answer is technically correct and practically useless. It&rsquo;s like saying a skyscraper is made from &ldquo;stacking stuff up.&rdquo; Finally the discomfort of not knowing what actually happens between &ldquo;download Common Crawl&rdquo; and &ldquo;you have a working chatbot&rdquo; grew too great for me. Here is that dive.</p>
+
+<p>LLM pretraining is the process of teaching a randomly initialized neural network to understand and generate language by exposing it to enormous quantities of text. The model learns no specific task &mdash; it learns <em>language itself</em>, developing internal representations of syntax, semantics, world knowledge, and reasoning patterns. Pretraining was popularized by GPT (2018) and BERT (2018), and has since become the foundation of every major language AI system.</p>
+
+<p>Before we start, a heads-up. We&rsquo;re going to talk about web crawling, hash functions, tokenization algorithms, loss functions, scaling power laws, GPU clusters, and numerical precision. You don&rsquo;t need to know any of it beforehand. We&rsquo;ll add the concepts we need one at a time, with explanation.</p>
+
+<p>This isn&rsquo;t a short journey, but I hope you&rsquo;ll be glad you came.</p>
+
+<div style="margin:1.5em 0; padding-left:1.5em; border-left:3px solid var(--accent, #666); font-style:italic; line-height:1.8">
+  Where does the training data come from?<br>
+  Cleaning the mess<br>
+  Building a vocabulary from scratch<br>
+  The pretraining objective: what does the model actually learn?<br>
+  Three flavors of prediction<br>
+  Rest stop<br>
+  How big should the model be? Scaling laws<br>
+  The Chinchilla correction<br>
+  Compute-optimal training and the data wall<br>
+  The physical machine: clusters and interconnects<br>
+  When training goes wrong: loss spikes and stability<br>
+  Feeding the beast: curriculum and data mixing<br>
+  Resources and credits
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  PART 1 — PRETRAINING OBJECTIVES                                  -->
+
+<h2>Where Does the Training Data Come From?</h2>
+
+<p>Imagine we want to train a small language model for a recipe website. We want it to complete sentences like &ldquo;Preheat the oven to&rdquo; or &ldquo;Stir the mixture until.&rdquo; Where do we get the training text?</p>
+
+<p>For our tiny recipe model, we might scrape three cooking blogs. We&rsquo;d end up with maybe 10,000 sentences. For a real LLM, the answer is the same &mdash; scrape the web &mdash; but at a scale that&rsquo;s hard to internalize. The primary source for most open LLMs is <strong>Common Crawl</strong>, a nonprofit that has been crawling the web monthly since 2008. Each monthly snapshot is tens of terabytes of raw HTML. All of it. News articles, blog posts, forum threads, product listings, cookie consent banners, spam, and an astonishing number of pages that consist entirely of the phrase &ldquo;lorem ipsum.&rdquo;</p>
+
+<p>Common Crawl alone gives us hundreds of trillions of words. But raw web text is like a river after a flood: there&rsquo;s water, but also driftwood, plastic bags, and the occasional shopping cart. I&rsquo;ll be honest &mdash; when I first looked at raw Common Crawl data, I was genuinely surprised by how much of it is garbage. Not edge-case garbage. <em>Majority</em> garbage.</p>
+
+<p>The major open pretraining datasets each take a different approach to taming this flood:</p>
+
+<p><strong>The Pile</strong>, built by EleutherAI, took a curation-first approach. Instead of starting with one giant web crawl, they assembled 22 distinct subsets: Wikipedia, ArXiv papers, PubMed biomedical literature, GitHub code, Stack Exchange Q&amp;A, Project Gutenberg books, YouTube subtitles, even Enron emails and Ubuntu IRC chat logs. Each subset was chosen because it represented a different <em>kind</em> of language the model should learn. The total: 825 GB of text, deliberately diverse.</p>
+
+<p><strong>RedPajama</strong>, from Together AI, aimed to reproduce the data recipe behind LLaMA. It combined filtered Common Crawl with Wikipedia, books, ArXiv, Stack Exchange, PubMed, and GitHub code &mdash; roughly 1.2 trillion tokens. The key word is &ldquo;reproduce&rdquo; &mdash; they wanted to show that an open dataset could match what Meta used behind closed doors.</p>
+
+<p><strong>RefinedWeb</strong>, built for the Falcon models, took the opposite philosophy. Instead of curating many sources, they focused entirely on Common Crawl but applied brutally aggressive filtering. The thesis: if you clean web data well enough, you don&rsquo;t <em>need</em> curated sources. A bold claim, and Falcon&rsquo;s strong performance backed it up.</p>
+
+<p>Back to our recipe model. We scraped three blogs and got 10,000 sentences. That&rsquo;s our &ldquo;Common Crawl.&rdquo; Now we need to clean it. And that brings us to the hardest part of data preparation &mdash; the part that doesn&rsquo;t get enough credit.</p>
+
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 
-<h2>Part I &mdash; Pretraining Objectives</h2>
+<h2>Cleaning the Mess</h2>
 
-<p>Before an LLM can chat, summarize, or write code, it has to be <em>pretrained</em> &mdash; trained on a massive corpus with a self-supervised objective. No labels, no human annotation. Just raw text and a clever loss function. The choice of pretraining objective is arguably the single most important design decision you make, because it determines what the model learns to represent and what it can later be fine-tuned to do.</p>
+<p>Our recipe scrape contains duplicates. Lots of them. The same chocolate chip cookie recipe appeared on all three blogs (they all copied it from the same source, naturally). There are also navigation menus, ad text, comment sections full of &ldquo;great recipe!!!&rdquo;, and one blog that auto-generated 500 pages of keyword-stuffed SEO nonsense about &ldquo;best recipe for recipe recipes.&rdquo;</p>
 
-<p>There are four major objectives worth knowing cold. Let&rsquo;s go through each.</p>
+<p>Cleaning happens in two stages: deduplication and quality filtering. Both matter more than most people realize.</p>
 
-<!-- ═══════════════════════════════════════════ -->
-<h3>Causal Language Modeling (Next-Token Prediction)</h3>
+<h3>Deduplication</h3>
 
-<p>This is the one that powers GPT, LLaMA, Mistral, Claude, and basically every model you&rsquo;ve interacted with through a chatbot. <strong>Causal language modeling (CLM)</strong> trains a model to predict the next token given all previous tokens. That&rsquo;s the entire objective. The most capable AI systems on the planet are built on &ldquo;read left to right, guess what comes next.&rdquo;</p>
+<p>I assumed web data was mostly unique. I was wrong by an embarrassing margin. Studies consistently find that 30&ndash;50% of web-crawled text is near-duplicate content. Not vaguely similar &mdash; <em>near-identical</em>. Boilerplate footers, syndicated articles, copy-pasted forum posts, scraped mirrors of the same sites.</p>
 
-<p>Formally, given a sequence of tokens <code>x₁, x₂, ..., xₙ</code>, we factorize the joint probability autoregressively:</p>
+<p>Training on duplicate data is worse than wasteful. It causes the model to <em>memorize</em> those passages rather than generalize from them. If the same paragraph appears a thousand times, the model learns to recite it verbatim, which is bad for both generalization and privacy.</p>
 
-<pre><code>P(x₁, x₂, ..., xₙ) = ∏ₜ P(xₜ | x₁, x₂, ..., xₜ₋₁)
+<p>The standard deduplication approach uses a technique called <strong>MinHash with Locality-Sensitive Hashing (LSH)</strong>. Here&rsquo;s how it works, traced through our recipe example. Suppose we have three documents:</p>
 
-At each position t, the model predicts:
-  P(xₜ | x₁, x₂, ..., xₜ₋₁)
-</code></pre>
+<pre><code>Doc A: "Preheat oven to 350°F. Mix flour, sugar, and butter."
+Doc B: "Preheat oven to 350°F. Mix flour, sugar, and butter. Add eggs."
+Doc C: "Saut&eacute; onions in olive oil until translucent."</code></pre>
 
-<p>The model never looks ahead. Position 5 can attend to positions 1&ndash;4 but never to 6, 7, or 8. This is enforced by a <strong>causal attention mask</strong> &mdash; a lower-triangular matrix that blocks attention to future positions:</p>
+<p>First, we break each document into overlapping chunks of words called <strong>n-grams</strong> (typically 5-grams). Doc A becomes the set {&ldquo;Preheat oven to 350&deg;F Mix&rdquo;, &ldquo;oven to 350&deg;F Mix flour&rdquo;, ...}. Doc B produces a very similar set with a few extras at the end.</p>
 
-<pre><code>Causal Mask (seq_len = 5):
+<p>Next, we apply multiple hash functions to each n-gram set and keep only the minimum hash value for each function. This produces a compact fingerprint called a <strong>MinHash signature</strong> &mdash; maybe 128 numbers that summarize the entire document. The mathematical property that makes this work: the probability that two documents share a MinHash value equals their <strong>Jaccard similarity</strong> (the overlap of their n-gram sets divided by the union).</p>
 
-         Key positions →
-Query  ┌                     ┐
-  ↓    │  1  0  0  0  0      │   position 1 sees only itself
-       │  1  1  0  0  0      │   position 2 sees 1-2
-       │  1  1  1  0  0      │   position 3 sees 1-3
-       │  1  1  1  1  0      │   position 4 sees 1-4
-       │  1  1  1  1  1      │   position 5 sees 1-5
-       └                     ┘
-  1 = can attend, 0 = masked (set to -∞ before softmax)
-</code></pre>
+<p>Then <strong>LSH</strong> groups documents with similar fingerprints into buckets. Within each bucket, we compute exact Jaccard similarity. Documents above a threshold (commonly 0.8) are flagged as near-duplicates, and all but one copy gets removed.</p>
 
-<p>The loss is cross-entropy computed at <em>every</em> position. For each token, the model outputs a probability distribution over the entire vocabulary (typically 32k&ndash;128k tokens), and you penalize it for assigning low probability to the actual next token. Sum or average across all positions.</p>
+<p>For our recipe example, Docs A and B would land in the same LSH bucket, and their Jaccard similarity (high, because most n-grams overlap) would exceed 0.8. We&rsquo;d keep one and discard the other. Doc C has completely different n-grams, so it stays.</p>
 
-<p>Here&rsquo;s the critical implementation detail &mdash; the <strong>shift trick</strong>:</p>
+<p>At production scale, the LLaMA team applied exact deduplication at the line level (removing identical lines across the corpus) plus fuzzy deduplication with MinHash at the document level. This alone cut their data by roughly a third.</p>
 
-<pre><code># CLM training step — the shift trick
-logits = model(input_ids)              # (batch, seq_len, vocab_size)
+<h3>Quality Filtering</h3>
 
-# The model predicts position t+1 from position t
-# So we align: logits at position t → label at position t+1
-shift_logits = logits[:, :-1, :]       # all but last position
-shift_labels = input_ids[:, 1:]        # all but first token
+<p>After deduplication, we still have a lot of low-quality text. The goal is to keep the Wikipedia articles and cooking instructions while removing the SEO spam and cookie consent banners.</p>
 
-loss = F.cross_entropy(
-    shift_logits.reshape(-1, vocab_size),
-    shift_labels.reshape(-1)
-)
-loss.backward()
-</code></pre>
+<p>Three approaches, often used in combination:</p>
 
-<p>Why the shift? Because <code>logits[t]</code> is the model&rsquo;s prediction for position <code>t+1</code>, made using context from positions <code>1..t</code>. So you compare <code>logits[:, :-1]</code> (predictions for positions 2 through N) against <code>labels[:, 1:]</code> (actual tokens at positions 2 through N). Off-by-one errors here are one of the most common bugs in training code.</p>
+<p><strong>Perplexity-based filtering</strong> trains a small, cheap language model (often a KenLM n-gram model) on a reference corpus of high-quality text, such as Wikipedia. Then every document in the crawl gets scored: how surprised is the quality model by this text? A well-written article gets low perplexity (not surprising). A page of garbled text or keyword spam gets high perplexity (very surprising). Documents above a perplexity threshold get removed. This is the core of the <strong>CCNet</strong> pipeline, developed by Facebook for processing Common Crawl.</p>
 
-<p>During training, we use <strong>teacher forcing</strong>: we feed the model the actual ground-truth tokens at every position, not its own predictions. This stabilizes learning enormously. At inference time, you don&rsquo;t have ground truth, so you feed back the model&rsquo;s own outputs autoregressively &mdash; which is why generation quality can degrade over very long sequences.</p>
+<p><strong>Heuristic rules</strong> catch patterns that statistical models miss. Remove documents shorter than 200 characters. Remove documents where more than 30% of characters are special symbols. Remove documents with a word-to-symbol ratio below a threshold. Remove documents with more than 3 consecutive repeated lines. The RefinedWeb paper documents dozens of such rules, each discovered by manually inspecting failure cases.</p>
 
-<div class="info-box">
-  <strong>Why does next-token prediction produce such capable models?</strong> Because language encodes everything. To predict the next word accurately, the model must learn syntax, semantics, world knowledge, reasoning patterns, social conventions, code logic, and mathematical structure. The objective is trivially simple; the knowledge required to minimize it is not. This is the deep insight behind GPT-scale models.
-</div>
+<p><strong>Classifier-based filtering</strong> trains a fast classifier (often fastText) on a small set of human-rated examples. &ldquo;Is this high quality? Yes or no.&rdquo; Then it scores the entire crawl. This is more expensive than heuristics but catches subtler quality issues.</p>
 
-<!-- ═══════════════════════════════════════════ -->
-<h3>Masked Language Modeling (MLM)</h3>
+<p>Our recipe model&rsquo;s equivalent: we read through our 10,000 scraped sentences, threw out the navigation menus and comment spam, and kept the actual recipes. At web scale, you can&rsquo;t read anything manually, so you build automated versions of yourself.</p>
 
-<p>BERT took a completely different approach. Instead of predicting left-to-right, <strong>masked language modeling</strong> randomly hides some tokens and asks the model to fill them back in &mdash; using context from <em>both sides</em>. Bidirectional context is the superpower here. When predicting a masked token, the model sees everything to the left <em>and</em> right, giving it a much richer representation of each position.</p>
+<p>Here&rsquo;s something that took me a while to internalize: the quality of your data <em>is</em> a scaling law. Bad data doesn&rsquo;t get diluted by more compute. It shifts the entire loss curve upward. A well-curated 1T token dataset can produce a better model than a poorly filtered 5T token dataset. Microsoft&rsquo;s Phi models demonstrated this dramatically &mdash; they trained small models on &ldquo;textbook quality&rdquo; data and got performance that rivaled models 10&times; larger trained on noisier corpora.</p>
 
-<p>The masking protocol uses an <strong>80/10/10 strategy</strong>. You randomly select 15% of tokens for prediction, then:</p>
+<!-- ═══════════════════════════════════════════════════════════════════ -->
 
-<ul>
-  <li><strong>80%</strong> of selected tokens → replaced with <code>[MASK]</code></li>
-  <li><strong>10%</strong> → replaced with a random vocabulary token</li>
-  <li><strong>10%</strong> → left unchanged (but still predicted)</li>
-</ul>
+<h2>Building a Vocabulary from Scratch</h2>
 
-<pre><code>Input:    The cat [MASK] on the [MASK]
-Target:          sat           mat
+<p>We have clean text. Before we can train a model on it, we need to convert words into numbers. But which numbers? And what counts as a &ldquo;word&rdquo;?</p>
 
-               ┌──────────────────────┐
-Context:  ◄─── The cat ??? on the ??? ───►
-               └──────────────────────┘
-          Bidirectional: each [MASK] sees ALL other tokens
-</code></pre>
+<p>Our recipe corpus has words like &ldquo;preheat,&rdquo; &ldquo;350&deg;F,&rdquo; &ldquo;tablespoon,&rdquo; and &ldquo;saut&eacute;.&rdquo; If we treat each unique word as a token, we get a vocabulary of maybe 5,000 entries. That works for a tiny model, but real English has hundreds of thousands of words, plus every language we want to support, plus code, plus mathematical notation. A word-level vocabulary would be enormous and still fail on any word it hasn&rsquo;t seen before.</p>
 
-<p>Why the 80/10/10 split? If you always used <code>[MASK]</code>, the model would learn to only care when it sees that special token &mdash; but <code>[MASK]</code> never appears during fine-tuning or inference. The random replacements force the model to maintain good representations for every token, because any token <em>might</em> be corrupted. The unchanged tokens ensure the model doesn&rsquo;t assume non-mask tokens are always correct.</p>
+<p>The solution is <strong>subword tokenization</strong>, and the dominant algorithm is <strong>Byte Pair Encoding (BPE)</strong>. The core idea: start with individual characters (or bytes), then repeatedly merge the most frequent pair of adjacent tokens into a new token. After enough merges, common words become single tokens while rare words get split into familiar pieces.</p>
 
-<p>The critical tradeoff: MLM produces <em>excellent</em> representations for understanding tasks (classification, NER, question answering) because each token&rsquo;s representation incorporates the full bidirectional context. But MLM models <strong>can&rsquo;t generate text natively</strong>. There&rsquo;s no left-to-right factorization &mdash; you can&rsquo;t autoregressively sample from a model that was trained to fill in blanks at random positions.</p>
+<p>Let&rsquo;s walk through BPE on a tiny vocabulary. Suppose our entire corpus is:</p>
 
-<div class="warning-box">
-  <strong>The 15% bottleneck.</strong> MLM only computes loss on the 15% of tokens that were selected for masking. That means 85% of the input tokens contribute nothing to the gradient signal in each training step. This is a massive sample inefficiency &mdash; and it&rsquo;s exactly what ELECTRA was designed to fix.
-</div>
+<pre><code>Corpus: "heat heat heat preheat preheat"
 
-<!-- ═══════════════════════════════════════════ -->
-<h3>Span Corruption (T5)</h3>
+Start with character-level tokens:
+  h e a t   h e a t   h e a t   p r e h e a t   p r e h e a t
 
-<p>Google&rsquo;s T5 generalized MLM in an elegant way. Instead of masking individual tokens, <strong>span corruption</strong> masks contiguous spans of variable length. Each span is replaced with a single sentinel token (<code>&lt;extra_id_0&gt;</code>, <code>&lt;extra_id_1&gt;</code>, etc.), and the decoder generates the missing spans:</p>
+Frequency of adjacent pairs:
+  (h, e): 5    (e, a): 5    (a, t): 5    (p, r): 2    (r, e): 2
 
-<pre><code>Original:    "The quick brown fox jumps over the lazy dog"
+Merge #1: (h, e) → "he"  (most frequent pair, tied — pick one)
+  he a t   he a t   he a t   p r e he a t   p r e he a t
 
-Corrupted input (encoder sees this):
-  "The &lt;extra_id_0&gt; fox jumps &lt;extra_id_1&gt; dog"
+Merge #2: (a, t) → "at"
+  he at   he at   he at   p r e he at   p r e he at
 
-Target output (decoder generates this):
-  "&lt;extra_id_0&gt; quick brown &lt;extra_id_1&gt; over the lazy"
+Merge #3: (he, at) → "heat"
+  heat   heat   heat   p r e heat   p r e heat
 
-           spans removed              decoder reconstructs
-           ┌──────────┐              ┌──────────────────────┐
-Input: The │  &lt;X0&gt;    │ fox jumps   │ &lt;X0&gt; quick brown     │
-           └──────────┘              │ &lt;X1&gt; over the lazy   │
-                                     └──────────────────────┘
-</code></pre>
+Merge #4: (e, heat) → "eheat"  ... and so on</code></pre>
 
-<p>T5 typically corrupts 15% of tokens total, with a mean span length of 3. This has several advantages over token-level MLM:</p>
+<p>After enough merges, &ldquo;heat&rdquo; is a single token and &ldquo;preheat&rdquo; is two tokens: &ldquo;pre&rdquo; + &ldquo;heat.&rdquo; A word the model has never seen, like &ldquo;reheat,&rdquo; would get split into &ldquo;re&rdquo; + &ldquo;heat&rdquo; &mdash; meaningful pieces that the model knows.</p>
 
-<ul>
-  <li><strong>Multi-token reconstruction:</strong> The model learns to reconstruct phrases, not just isolated words.</li>
-  <li><strong>Compressed input:</strong> A 5-token span becomes 1 sentinel, so the encoder processes shorter sequences &mdash; computationally cheaper.</li>
-  <li><strong>Compact targets:</strong> The decoder output only contains the missing spans, not the full original sequence.</li>
-</ul>
+<p>The vocabulary size &mdash; how many merges you perform &mdash; is a design choice with real tradeoffs. LLaMA-2 uses 32,000 tokens (via SentencePiece). GPT-4 uses about 100,000 tokens (via tiktoken). A larger vocabulary means each word is represented by fewer tokens (saving sequence length, which saves compute in the attention mechanism), but it also means a larger embedding matrix (the lookup table that converts token IDs to vectors) and a larger output layer.</p>
 
-<p>T5 casts <em>everything</em> as text-to-text. Pretraining: corrupted text → original spans. Fine-tuning: &ldquo;translate English to German: The house is blue&rdquo; → &ldquo;Das Haus ist blau.&rdquo; Same architecture, same loss, every task. This uniformity is both elegant and practical &mdash; no task-specific heads needed.</p>
+<p>At LLM scale, the tokenizer is typically trained on a representative sample of the training data, not the full corpus. You want the tokenizer to reflect the distribution of text the model will see. Train the tokenizer on English Wikipedia and your model will struggle with Python code. Train it on a balanced mix and it handles both.</p>
 
-<!-- ═══════════════════════════════════════════ -->
-<h3>Replaced Token Detection (ELECTRA)</h3>
+<p>One thing that still trips me up: the tokenizer is trained <em>separately</em> from the model, <em>before</em> model training begins. Once set, it&rsquo;s frozen. You cannot change the vocabulary mid-training. This means tokenizer design decisions made months before training completes have permanent consequences. A mismatch between the tokenizer and the training data is one of those silent bugs that degrades quality without ever throwing an error.</p>
 
-<p>ELECTRA is the cleverest pretraining objective and possibly the most underrated. The insight: instead of masking tokens and predicting them (which only learns from 15% of tokens), train a <strong>discriminator</strong> that identifies which tokens have been replaced &mdash; learning from <em>every single token</em> in the sequence.</p>
+<!-- ═══════════════════════════════════════════════════════════════════ -->
 
-<p>The setup involves two models:</p>
+<h2>The Pretraining Objective: What Does the Model Actually Learn?</h2>
 
-<ol>
-  <li><strong>Generator</strong> (small): A small MLM model that proposes plausible replacements for masked positions.</li>
-  <li><strong>Discriminator</strong> (main model): Takes the generator&rsquo;s output and classifies each token as &ldquo;original&rdquo; or &ldquo;replaced.&rdquo;</li>
-</ol>
+<p>We have clean data and a tokenizer. Now for the question that determines everything: what task do we give the model during training? There are no labels, no human annotations. The model has to learn from the text itself. The trick is designing a <strong>self-supervised objective</strong> &mdash; a task the data provides for free.</p>
 
-<pre><code>Original:      The chef cooked a delicious meal
-Masked:        The chef [MASK] a [MASK] meal
-Generator:     The chef prepared a wonderful meal    ← plausible fakes
-                         ↓            ↓
-Discriminator: The  chef  prepared  a  wonderful  meal
-               orig orig  REPLACED  orig REPLACED  orig
-               ✓    ✓     ✗         ✓    ✗         ✓
+<p>Let&rsquo;s return to our recipe corpus. We have the sentence: &ldquo;Preheat the oven to 350&deg;F and grease the pan.&rdquo; What can we ask the model to do with this, without any human labeling?</p>
 
-Loss: binary cross-entropy on EVERY token position
-</code></pre>
+<h3>Causal Language Modeling: Guess What Comes Next</h3>
 
-<p>The key advantage: the discriminator computes loss on <strong>all tokens</strong>, not just the 15% that were masked. Every position contributes gradient signal. This makes ELECTRA dramatically more sample-efficient &mdash; a small ELECTRA model can match the performance of a BERT model trained with 4&times; the compute.</p>
+<p>The most powerful idea in modern AI might also be the most underwhelming when you first hear it: <strong>predict the next token</strong>. That&rsquo;s it. Given everything the model has read so far, what token comes next?</p>
 
-<p>The generator is intentionally small (typically 1/4 to 1/3 the size of the discriminator). You don&rsquo;t want the generator to be too good &mdash; if it produced perfect replacements, the discrimination task would be impossible. You also don&rsquo;t want it too bad &mdash; if replacements are obviously wrong, the task is trivially easy. The sweet spot is plausible-but-detectable fakes.</p>
+<p>For our recipe sentence, the model sees &ldquo;Preheat&rdquo; and must predict &ldquo;the.&rdquo; Then it sees &ldquo;Preheat the&rdquo; and predicts &ldquo;oven.&rdquo; Then &ldquo;Preheat the oven&rdquo; → &ldquo;to.&rdquo; And so on, sliding forward one token at a time. At every position, the model outputs a probability distribution over the entire vocabulary &mdash; all 32,000 tokens &mdash; and gets penalized for assigning low probability to the actual next token.</p>
 
-<p>After pretraining, you throw away the generator and fine-tune only the discriminator. The discriminator has learned rich token-level representations from the all-token signal, and these transfer beautifully to downstream tasks.</p>
+<pre><code>Input tokens:     Preheat  the   oven   to   350   °F   and
+                    ↓       ↓      ↓     ↓     ↓    ↓     ↓
+Model predicts:   the     oven    to    350   °F   and  grease
+                    ↕       ↕      ↕     ↕     ↕    ↕     ↕
+Actual next:      the     oven    to    350   °F   and  grease  ✓ ✓ ✓ ✓ ✓ ✓ ✓
 
-<!-- ═══════════════════════════════════════════ -->
-<h3>Architecture &harr; Objective Mapping</h3>
+Loss = cross-entropy at EVERY position, averaged across the sequence</code></pre>
 
-<p>Different architectures pair naturally with different objectives. This table is worth memorizing:</p>
+<p>This is called <strong>causal language modeling (CLM)</strong> because each prediction is causal: position 5 can attend to positions 1 through 4 but never to position 6 or beyond. The model reads left to right, like us. This is enforced by a <strong>causal attention mask</strong> &mdash; a triangular matrix that blocks each position from seeing the future:</p>
+
+<pre><code>Causal Mask (5 tokens):
+
+         Preheat  the  oven  to  350
+Preheat  [  1      0    0    0    0  ]   sees only itself
+the      [  1      1    0    0    0  ]   sees Preheat, the
+oven     [  1      1    1    0    0  ]   sees Preheat, the, oven
+to       [  1      1    1    1    0  ]   sees positions 1-4
+350      [  1      1    1    1    1  ]   sees everything so far
+
+1 = can attend, 0 = masked (set to -∞ before softmax)</code></pre>
+
+<p>The implementation has a critical detail called the <strong>shift trick</strong>. The model&rsquo;s output at position <em>t</em> is its prediction for position <em>t+1</em>. So to compute the loss, we compare logits at positions 1 through N&minus;1 against the actual tokens at positions 2 through N:</p>
+
+<pre><code>logits = model(input_ids)              # shape: (batch, seq_len, vocab_size)
+
+shift_logits = logits[:, :-1, :]       # predictions for positions 2..N
+shift_labels = input_ids[:, 1:]        # actual tokens at positions 2..N
+
+loss = cross_entropy(shift_logits, shift_labels)</code></pre>
+
+<p>Off-by-one errors in this shift are one of the most common bugs in training code. I&rsquo;ve seen experienced engineers lose days to it.</p>
+
+<p>During training, we use <strong>teacher forcing</strong>: the model always receives the actual ground-truth tokens as input, not its own predictions. At inference time, there is no ground truth, so the model feeds its own outputs back in, generating one token at a time autoregressively.</p>
+
+<p>Why does this absurdly minimal objective produce such capable models? Because language encodes everything. To accurately predict the next word in a Wikipedia article about quantum mechanics, the model must understand physics. To predict the next line of a Python function, it must understand programming logic. To predict the next sentence in a novel, it must understand human psychology. The objective is trivial. The knowledge required to minimize it is not. That&rsquo;s the deep insight behind GPT and every decoder-only model since.</p>
+
+<p>CLM powers GPT, LLaMA, Mistral, Claude, and effectively every chatbot you&rsquo;ve interacted with. The industry has converged on it because generation is the killer app, and decoder-only models with CLM scale cleanly: one architecture, one objective, one pipeline.</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+
+<h2>Three Flavors of Prediction</h2>
+
+<p>CLM isn&rsquo;t the only pretraining objective. There are two important alternatives, and understanding all three reveals <em>why</em> the field converged on CLM &mdash; and what we gave up along the way.</p>
+
+<h3>Masked Language Modeling: Fill in the Blanks</h3>
+
+<p>BERT (2018) took a completely different approach. Instead of reading left to right and predicting the next word, it randomly hides some tokens and asks the model to fill them back in &mdash; using context from <em>both</em> sides.</p>
+
+<p>Our recipe sentence becomes:</p>
+
+<pre><code>Original: "Preheat the oven to 350°F and grease the pan"
+Masked:   "Preheat the [MASK] to 350°F and [MASK] the pan"
+
+The model must predict:
+  [MASK] → "oven"   (using left context "Preheat the" AND right context "to 350°F...")
+  [MASK] → "grease" (using "...and" AND "the pan")</code></pre>
+
+<p>The superpower here is <strong>bidirectional context</strong>. When predicting &ldquo;oven,&rdquo; the model sees both &ldquo;Preheat the&rdquo; and &ldquo;to 350&deg;F.&rdquo; CLM only sees the left side. This makes <strong>masked language modeling (MLM)</strong> produce richer representations for understanding tasks &mdash; classification, named entity recognition, question answering.</p>
+
+<p>BERT masks 15% of tokens using an <strong>80/10/10 protocol</strong>: 80% are replaced with the special [MASK] token, 10% are replaced with a random word from the vocabulary, and 10% are left unchanged but still predicted. The random replacements and unchanged tokens prevent the model from learning a shortcut that only activates when it sees [MASK] &mdash; a token that never appears during fine-tuning or real use.</p>
+
+<p>The tradeoff is severe: MLM models <strong>cannot generate text</strong>. There&rsquo;s no left-to-right factorization, no way to autoregressively sample. And there&rsquo;s a sample efficiency problem: only 15% of tokens contribute to the loss in each training step. The other 85% provide context but generate zero gradient signal. That&rsquo;s a lot of wasted compute.</p>
+
+<h3>Prefix Language Modeling and Span Corruption</h3>
+
+<p>Between CLM and MLM lies a family of hybrid objectives. <strong>Prefix language modeling</strong>, used in models like UniLM, lets the model attend bidirectionally within a &ldquo;prefix&rdquo; section, then autoregressively predicts what follows. Think of it as reading an entire question bidirectionally, then generating the answer left-to-right.</p>
+
+<p><strong>Span corruption</strong>, used by T5, generalizes MLM by masking contiguous spans of tokens rather than individual words. Each span is replaced with a single sentinel token, and the decoder reconstructs the missing spans:</p>
+
+<pre><code>Original:  "Preheat the oven to 350°F and grease the pan"
+Corrupted: "Preheat &lt;X0&gt; 350°F and &lt;X1&gt; pan"
+Target:    "&lt;X0&gt; the oven to &lt;X1&gt; grease the"
+
+The encoder sees the corrupted input (shorter — saves compute).
+The decoder generates only the missing pieces (compact targets).</code></pre>
+
+<p>T5 cast every NLP task as text-to-text: same architecture, same loss, every task. Pretraining was span corruption. Fine-tuning was &ldquo;translate English to German: The house is blue&rdquo; → &ldquo;Das Haus ist blau.&rdquo; Elegant and practical, but the encoder-decoder architecture is more complex to scale than a pure decoder.</p>
+
+<p>Here&rsquo;s the mapping that&rsquo;s worth internalizing:</p>
 
 <table>
   <thead>
     <tr>
       <th>Architecture</th>
-      <th>Typical Objective</th>
-      <th>Attention Pattern</th>
-      <th>Best For</th>
+      <th>Objective</th>
+      <th>Attention</th>
+      <th>Strengths</th>
       <th>Examples</th>
     </tr>
   </thead>
   <tbody>
     <tr>
       <td><strong>Encoder-only</strong></td>
-      <td>MLM, Replaced Token Detection</td>
-      <td>Bidirectional (full)</td>
-      <td>Classification, NER, retrieval, embeddings</td>
-      <td>BERT, RoBERTa, ELECTRA, DeBERTa</td>
+      <td>MLM</td>
+      <td>Bidirectional</td>
+      <td>Classification, retrieval, embeddings</td>
+      <td>BERT, RoBERTa, ELECTRA</td>
     </tr>
     <tr>
       <td><strong>Decoder-only</strong></td>
-      <td>Causal LM (next-token)</td>
+      <td>CLM</td>
       <td>Causal (left-to-right)</td>
-      <td>Text generation, chat, code, reasoning</td>
-      <td>GPT, LLaMA, Mistral, PaLM</td>
+      <td>Generation, chat, code, reasoning</td>
+      <td>GPT, LLaMA, Mistral</td>
     </tr>
     <tr>
       <td><strong>Encoder-Decoder</strong></td>
-      <td>Span corruption, denoising</td>
+      <td>Span corruption / prefix LM</td>
       <td>Bidirectional encoder + causal decoder</td>
-      <td>Translation, summarization, structured generation</td>
-      <td>T5, BART, UL2, Flan-T5</td>
+      <td>Translation, summarization</td>
+      <td>T5, BART, UL2</td>
     </tr>
   </tbody>
 </table>
 
-<p>The industry has converged heavily on <strong>decoder-only + CLM</strong>. Why? Because generation is the killer app, and decoder-only models scale most cleanly &mdash; one architecture, one objective, one training pipeline. Encoder-only models are still king for embedding and classification tasks. Encoder-decoder models remain strong for structured sequence-to-sequence problems, but they&rsquo;re increasingly replaced by decoder-only models that are simply big enough to do everything.</p>
-
-<div class="info-box">
-  <strong>UL2: the best-of-all-worlds attempt.</strong> Google&rsquo;s UL2 (Unified Language Learner) trains a single model with a mixture of objectives &mdash; causal LM, prefix LM, and span corruption &mdash; distinguished by special mode-switching tokens. The idea is that each objective teaches the model different capabilities. UL2 showed strong results, but the complexity of managing multiple objectives during training has limited adoption.
-</div>
+<p>The industry converged on decoder-only CLM not because it&rsquo;s theoretically best for every task, but because it&rsquo;s the simplest to scale and generation turned out to be the killer capability. One architecture, one objective, one training pipeline. Encoder-only models remain king for embeddings and classification. Encoder-decoder models are strong for structured sequence-to-sequence problems. But when your model is big enough, decoder-only does everything well enough, and &ldquo;well enough at everything&rdquo; beat &ldquo;best at one thing.&rdquo;</p>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  PART 2 — SCALING LAWS                                            -->
+
+<h2>Rest Stop</h2>
+
+<p>Congratulations on making it this far. If you want to stop here, you can.</p>
+
+<p>You now have a solid mental model of LLM pretraining: raw text gets scraped from the web, cleaned through deduplication and quality filtering, converted to tokens by a BPE tokenizer, and fed into a transformer that learns to predict the next token. That&rsquo;s the foundation of GPT, LLaMA, and every major language model.</p>
+
+<p>This understanding doesn&rsquo;t tell the complete story. It doesn&rsquo;t answer &ldquo;how big should the model be?&rdquo; or &ldquo;how many GPUs do you need?&rdquo; or &ldquo;what happens when the training run blows up at 3 AM?&rdquo; Those are the questions that separate someone who <em>understands</em> pretraining from someone who can actually <em>plan and execute</em> one.</p>
+
+<p>The short version: there are mathematical laws that tell you the optimal model size for your budget, you need hundreds of GPUs connected by specialized networking hardware, and training runs are fragile beasts that require careful babysitting. There. You&rsquo;re 60% of the way.</p>
+
+<p>But if the discomfort of not knowing what&rsquo;s underneath is nagging at you, read on.</p>
+
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 
-<h2>Part II &mdash; Scaling Laws</h2>
+<h2>How Big Should the Model Be? Scaling Laws</h2>
 
-<p>Scaling laws are what transformed LLM training from expensive gambling into engineering. They&rsquo;re empirical relationships that predict how a model&rsquo;s loss decreases as you increase compute, data, or parameters. If you train large models &mdash; or even decide <em>whether</em> to &mdash; scaling laws are the most important planning tool you have.</p>
+<p>For years, training LLMs was expensive gambling. You picked a model size, picked a dataset size, spent millions of dollars, and hoped it worked. Then in 2020, a team at OpenAI discovered something that turned gambling into engineering.</p>
 
-<!-- ═══════════════════════════════════════════ -->
-<h3>Kaplan et al. (2020) &mdash; The Original Power Laws</h3>
+<p>Kaplan and colleagues trained hundreds of transformer models ranging from a few hundred parameters to 1.5 billion parameters. When they plotted loss against model size on a log-log chart, they got a straight line. Same for loss against dataset size. Same for loss against total compute.</p>
 
-<p>The landmark paper came from OpenAI in January 2020. Kaplan and colleagues trained hundreds of transformer language models ranging from 768 parameters to 1.5B parameters and discovered three remarkably clean <strong>power-law relationships</strong>. On log-log plots, loss vs. each resource formed a straight line.</p>
+<p>Three clean <strong>power-law relationships</strong>:</p>
 
-<p>The three power laws:</p>
+<pre><code>Loss vs. Parameters:  L(N) ∝ N^(-0.076)
+Loss vs. Data:        L(D) ∝ D^(-0.095)
+Loss vs. Compute:     L(C) ∝ C^(-0.050)
 
-<pre><code>1. Loss vs Parameters (unlimited data/compute):
-   L(N) ≈ (Nc / N)^αN      αN ≈ 0.076
+        Loss (log scale)
+         │
+         │╲
+         │  ╲
+         │    ╲  ← straight line on log-log
+         │      ╲     (this is a power law)
+         │        ╲
+         │──────────── Parameters or Tokens (log scale)</code></pre>
 
-2. Loss vs Dataset Size (unlimited model/compute):
-   L(D) ≈ (Dc / D)^αD      αD ≈ 0.095
+<p>The profound implication: every time you 10&times; your parameters, you get a fixed reduction in loss. The returns never stop. They get more expensive, but they never stop. No one has found a ceiling yet.</p>
 
-3. Loss vs Compute (optimally allocated):
-   L(C) ≈ (Cc / C)^αC      αC ≈ 0.050
+<p>Kaplan&rsquo;s key conclusion: given a fixed compute budget, prioritize model size over data. Make the model <em>bigger</em> rather than training on more data. The recommendation: if you 10&times; your compute, 5&times; your parameters but only 2&times; your data.</p>
 
-  Loss (log)                         Loss (log)
-   │                                  │
-   │╲                                 │╲
-   │  ╲                               │  ╲
-   │    ╲  slope ≈ -0.076            │    ╲  slope ≈ -0.095
-   │      ╲                           │      ╲
-   │        ╲                         │        ╲
-   │──────────── Parameters (log)     │──────────── Tokens (log)
-</code></pre>
+<p>This directly shaped the &ldquo;make it bigger&rdquo; era. GPT-3 was 175 billion parameters trained on 300 billion tokens. Massive model, modest data. The thinking was: parameters matter most.</p>
 
-<p>The crucial interpretation: every time you 10&times; your parameters, you get a fixed reduction in log-loss. The returns never stop &mdash; they just get more expensive. This is profoundly important. There&rsquo;s no ceiling where bigger models stop helping (at least, none that anyone has found yet).</p>
+<p>This turned out to be wrong.</p>
 
-<p><strong>Kaplan&rsquo;s key conclusion:</strong> given a fixed compute budget, you should prioritize model size over data. Make the model <em>bigger</em> rather than training on more data. The recommendation was roughly: if you 10&times; your compute, 5&times; your parameters but only 2&times; your data.</p>
+<!-- ═══════════════════════════════════════════════════════════════════ -->
 
-<p>This directly shaped the &ldquo;make it bigger&rdquo; era. GPT-3 was 175B parameters trained on only 300B tokens &mdash; far fewer tokens per parameter than what we&rsquo;d later learn is optimal. The thinking was: parameters matter most. This turned out to be wrong.</p>
+<h2>The Chinchilla Correction</h2>
 
-<!-- ═══════════════════════════════════════════ -->
-<h3>Chinchilla (Hoffmann et al., 2022) &mdash; The Correction</h3>
+<p>In March 2022, DeepMind published a paper that reshuffled the entire field overnight. The title was dry: &ldquo;Training Compute-Optimal Large Language Models.&rdquo; The finding was devastating: <strong>almost every existing large model was undertrained.</strong></p>
 
-<p>In March 2022, DeepMind published a paper that reshaped the field overnight: &ldquo;Training Compute-Optimal Large Language Models.&rdquo; The finding was simple and devastating: <strong>almost every existing large model was undertrained.</strong></p>
+<p>Hoffmann&rsquo;s team ran a proper sweep: over 400 models from 70 million to 16 billion parameters, trained on varying amounts of data, all with fixed compute budgets. The picture that emerged was different from Kaplan&rsquo;s.</p>
 
-<p>The problem with Kaplan&rsquo;s analysis was subtle. Their experiments didn&rsquo;t vary model size and training tokens jointly in a fully balanced way. When Hoffmann&rsquo;s team ran a proper sweep &mdash; over 400 models from 70M to 16B parameters on varying amounts of data, with fixed compute budgets &mdash; a different picture emerged.</p>
+<p>The core finding: for compute-optimal training, <strong>scale parameters and data equally</strong>. The optimal ratio is roughly 20 tokens per parameter:</p>
 
-<p>The core finding: for compute-optimal training, <strong>scale parameters and data equally</strong>. The optimal ratio is roughly:</p>
+<pre><code>Chinchilla Rule:   D ≈ 20 × N
 
-<pre><code>Chinchilla Optimal Ratio:
-
-  D ≈ 20 × N
-
-  N = number of parameters
+  N = number of model parameters
   D = number of training tokens
 
-Given compute budget C ≈ 6 × N × D:
+Given compute C ≈ 6 × N × D:
   Optimal N ∝ √C
-  Optimal D ∝ √C
+  Optimal D ∝ √C     (both scale equally with compute)</code></pre>
 
-Both scale as the square root of compute — equally.
-</code></pre>
+<p>To prove it, they ran the most convincing experiment possible. DeepMind had recently trained <strong>Gopher</strong>: 280B parameters, 300B tokens. Classic Kaplan-era &mdash; huge model, modest data. Then they trained <strong>Chinchilla</strong>: 70B parameters (4&times; smaller) but on 1.4 trillion tokens (4.7&times; more data). Same compute budget. The result: Chinchilla won on nearly every benchmark. A model 4&times; smaller, trained on more data, was flat-out better. And because it was smaller, it was cheaper to deploy.</p>
 
-<p>To prove it, DeepMind ran the most convincing experiment possible. They had recently trained <strong>Gopher</strong>: 280B parameters, 300B tokens. Classic Kaplan-era design &mdash; huge model, modest data. Then they trained <strong>Chinchilla</strong>: only 70B parameters (4&times; smaller) but on 1.4T tokens (4.7&times; more data). <em>Same compute budget.</em></p>
-
-<pre><code>┌─────────────┬──────────────┬──────────────┬─────────────┐
-│   Model     │  Parameters  │  Tokens      │  Result     │
-├─────────────┼──────────────┼──────────────┼─────────────┤
-│  Gopher     │  280B        │  300B        │  Baseline   │
-│  Chinchilla │  70B (4× ↓)  │  1.4T (4.7× ↑) │  Better!  │
-└─────────────┴──────────────┴──────────────┴─────────────┘
-
-Same compute, 4× smaller model, but dramatically more data → wins.
-</code></pre>
-
-<p>Chinchilla beat Gopher on nearly every benchmark. A model 4&times; smaller, trained on more data, was flat-out better. And because it was smaller, it was cheaper to serve at inference time too.</p>
-
-<p>Here&rsquo;s the practical lookup table for compute-optimal training based on the Chinchilla ratio:</p>
+<p>I still have to look up the exact Chinchilla ratio every time I do a back-of-envelope calculation. So here&rsquo;s the lookup table I keep coming back to:</p>
 
 <table>
   <thead>
     <tr>
-      <th>Parameters (N)</th>
+      <th>Parameters</th>
       <th>Optimal Tokens (≈20N)</th>
-      <th>Approx FLOPs (6ND)</th>
+      <th>Approx FLOPs</th>
     </tr>
   </thead>
   <tbody>
-    <tr><td>400M</td><td>8B</td><td>2 × 10¹⁹</td></tr>
-    <tr><td>1B</td><td>20B</td><td>1.2 × 10²⁰</td></tr>
-    <tr><td>7B</td><td>140B</td><td>5.9 × 10²¹</td></tr>
-    <tr><td>13B</td><td>260B</td><td>2 × 10²²</td></tr>
-    <tr><td>70B</td><td>1.4T</td><td>5.9 × 10²³</td></tr>
-    <tr><td>175B</td><td>3.5T</td><td>3.7 × 10²⁴</td></tr>
+    <tr><td>400M</td><td>8B</td><td>2 &times; 10&sup1;&sup9;</td></tr>
+    <tr><td>1B</td><td>20B</td><td>1.2 &times; 10&sup2;&sup0;</td></tr>
+    <tr><td>7B</td><td>140B</td><td>5.9 &times; 10&sup2;&sup1;</td></tr>
+    <tr><td>13B</td><td>260B</td><td>2 &times; 10&sup2;&sup2;</td></tr>
+    <tr><td>70B</td><td>1.4T</td><td>5.9 &times; 10&sup2;&sup3;</td></tr>
   </tbody>
 </table>
 
-<p>Notice: GPT-3 (175B parameters, 300B tokens) was trained on roughly 12&times; fewer tokens than the Chinchilla-optimal amount. It was massively undertrained by modern standards.</p>
+<p>GPT-3 (175B parameters, 300B tokens) was trained on roughly 12&times; fewer tokens than Chinchilla would recommend. Massively undertrained by modern standards.</p>
 
-<div class="info-box">
-  <strong>Why LLaMA exists.</strong> Meta&rsquo;s LLaMA (2023) was explicitly designed around Chinchilla scaling. The LLaMA-7B model was trained on 1T tokens &mdash; roughly 7&times; the Chinchilla-optimal amount. Why overtrain? Because inference cost depends on model size, not training cost. A smaller model trained on more data than &ldquo;optimal&rdquo; is cheaper to deploy. LLaMA proved that you can trade extra training compute for cheaper inference, which matters enormously when you&rsquo;re serving millions of users.
-</div>
+<p>A quick Python function I use for budget planning:</p>
 
-<!-- ═══════════════════════════════════════════ -->
-<h3>The Data Wall</h3>
+<pre><code>import math
 
-<p>Here&rsquo;s the uncomfortable truth: we&rsquo;re running out of high-quality text data.</p>
-
-<p>Chinchilla says a 1T-parameter model needs 20T tokens. The entire publicly available internet (Common Crawl, books, code, Wikipedia, etc.) is estimated at roughly 5&ndash;15T tokens of reasonable quality. We&rsquo;re already scraping the barrel. Several implications follow:</p>
-
-<ul>
-  <li><strong>Data quality &gt; quantity:</strong> Deduplication and quality filtering can improve model quality more than adding more low-quality data. The Phi models from Microsoft demonstrated that carefully curated &ldquo;textbook quality&rdquo; data can produce surprisingly capable small models.</li>
-  <li><strong>Synthetic data:</strong> Models generating training data for other models (or themselves). This works better than you&rsquo;d expect, especially for code and math, but carries risks of &ldquo;model collapse&rdquo; &mdash; where distributional biases compound over generations.</li>
-  <li><strong>Multi-epoch training:</strong> Training on the same data multiple times. Chinchilla assumed single-epoch. Recent work shows 4&ndash;8 epochs can work with appropriate regularization, but returns diminish quickly.</li>
-  <li><strong>Multimodal data:</strong> Images, video, and audio contain enormous amounts of information. Training on multimodal data is partly a strategy to escape the text data wall.</li>
-</ul>
-
-<!-- ═══════════════════════════════════════════ -->
-<h3>Emergent Abilities</h3>
-
-<p>One of the most fascinating (and debated) aspects of scaling is <strong>emergence</strong> &mdash; capabilities that appear to materialize suddenly once a model crosses a certain scale threshold, with near-zero performance below and strong performance above.</p>
-
-<p>Examples that have been claimed as emergent:</p>
-
-<ul>
-  <li><strong>Few-shot arithmetic:</strong> Small models can&rsquo;t do 3-digit addition, but models above ~10B parameters suddenly can.</li>
-  <li><strong>Chain-of-thought reasoning:</strong> Prompting &ldquo;let&rsquo;s think step by step&rdquo; only helps above a certain scale.</li>
-  <li><strong>Multi-step logical reasoning:</strong> Tasks requiring multiple inference steps show sharp transitions.</li>
-  <li><strong>Code generation:</strong> Models below a threshold produce syntactically incorrect code; above it, they write working programs.</li>
-</ul>
-
-<pre><code>  Accuracy
-   │
-   │                          ●●●●● (large models)
-   │                        ●
-   │                      ●
-   │                    ●         ← sharp transition
-   │  ●●●●●●●●●●●●●●●
-   │  (small models — near zero)
-   │──────────────────────────── Model Scale (log)
-
-   Emergent ability: near-zero below threshold, strong above
-</code></pre>
-
-<div class="warning-box">
-  <strong>The emergence debate.</strong> A 2023 paper by Schaeffer et al. argued that emergence might be a <em>mirage</em> caused by metric choice. When you measure with discontinuous metrics (like exact-match accuracy), you see sharp transitions. When you measure with continuous metrics (like token-level log-likelihood), improvement is smooth and predictable. The model <em>is</em> getting better gradually &mdash; it&rsquo;s just that accuracy jumps from 0% to high once the model crosses the &ldquo;good enough&rdquo; threshold. This is still debated, but the lesson is: be careful about what you measure and how.
-</div>
-
-<!-- ═══════════════════════════════════════════ -->
-<h3>Practical Implications of Scaling Laws</h3>
-
-<p>Scaling laws aren&rsquo;t just academic curiosities. They&rsquo;re engineering tools. Here&rsquo;s how practitioners use them:</p>
-
-<ol>
-  <li><strong>Train small, predict large.</strong> Train a series of small models (100M, 300M, 1B) and plot their losses. Fit a power law. Extrapolate to predict what a 70B model would achieve. This can save millions of dollars by catching bad architectural decisions early.</li>
-  <li><strong>Compute-optimal budgeting.</strong> Given a GPU budget, use the Chinchilla ratio to determine the right model size and data volume. Don&rsquo;t just train the biggest model you can fit in memory.</li>
-  <li><strong>Inference-aware training.</strong> If you&rsquo;re deploying to millions of users, a smaller model trained longer (like LLaMA) may be better than a compute-optimal model. Training cost is one-time; inference cost is forever.</li>
-  <li><strong>Know when to stop scaling.</strong> If your loss curve is flattening faster than the power law predicts, something is wrong &mdash; bad data, bugs, or you&rsquo;ve hit a bottleneck. If it&rsquo;s tracking the predicted curve, your run is healthy.</li>
-  <li><strong>Architecture comparisons.</strong> Compare architectures at small scale. If architecture A has 5% lower loss than B at 1B parameters, the power law says A will still be better at 70B (assuming the exponents are similar). You don&rsquo;t need to train the full-scale model to decide.</li>
-</ol>
-
-<pre><code># Quick compute-optimal planning
 def chinchilla_optimal(flops_budget):
-    """Given a FLOPs budget, compute optimal model size and tokens."""
-    # C ≈ 6 * N * D, and D ≈ 20 * N
-    # So C ≈ 6 * N * 20N = 120 * N²
-    # N = sqrt(C / 120)
-    import math
+    """Given a FLOPs budget, estimate compute-optimal model size and tokens."""
+    # C ≈ 6 * N * D, with D ≈ 20 * N
+    # So C ≈ 120 * N², therefore N = sqrt(C / 120)
     N = math.sqrt(flops_budget / 120)
     D = 20 * N
-    return int(N), int(D)
+    return N, D
 
-# Example: 10^22 FLOPs budget
-params, tokens = chinchilla_optimal(1e22)
-print(f"Optimal: {params/1e9:.1f}B params, {tokens/1e9:.0f}B tokens")
-# → Optimal: ~9.1B params, ~182B tokens
-</code></pre>
+# Example: 10^22 FLOPs
+n, d = chinchilla_optimal(1e22)
+print(f"≈{n/1e9:.1f}B params, ≈{d/1e9:.0f}B tokens")
+# → ≈9.1B params, ≈182B tokens</code></pre>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  PART 3 — TRAINING FUNDAMENTALS                                   -->
+
+<h2>Compute-Optimal Training and the Data Wall</h2>
+
+<p>Chinchilla changed <em>how</em> labs allocate compute. But it also exposed a looming problem: we might run out of training data.</p>
+
+<p>A 1-trillion-parameter model, by the Chinchilla rule, would need 20 trillion tokens. The entire publicly available internet &mdash; Common Crawl, books, code, Wikipedia, everything &mdash; is estimated at 5 to 15 trillion tokens of reasonable quality. We&rsquo;re already scraping the edges.</p>
+
+<p>This &ldquo;data wall&rdquo; has driven several responses. Meta&rsquo;s LLaMA deliberately over-trains: LLaMA-7B was trained on 1 trillion tokens, roughly 7&times; the Chinchilla-optimal amount. The reasoning is pragmatic. Chinchilla optimizes for training compute, but inference cost depends on model <em>size</em>, not on how long you trained it. A smaller model trained longer is cheaper to deploy. When you&rsquo;re serving millions of users, the few extra weeks of training compute pay for themselves many times over in cheaper inference.</p>
+
+<p>Synthetic data &mdash; models generating training data for other models &mdash; is another escape route. It works surprisingly well for code and mathematics, where generated outputs can be verified for correctness. But it carries the risk of <strong>model collapse</strong>: distributional biases compound over generations, like repeatedly photocopying a photocopy until only the darkest marks survive.</p>
+
+<p>Multi-epoch training (reusing data multiple times) works with appropriate regularization, but returns diminish after 4&ndash;8 passes. Multimodal data &mdash; images, video, audio &mdash; is partly a strategy to escape the text data wall by tapping into the enormous information content of visual and auditory signals.</p>
+
+<p>No one is completely certain about the right path forward. My favorite thing about this corner of the field is how open the questions still are.</p>
+
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 
-<h2>Part III &mdash; Training Fundamentals</h2>
+<h2>The Physical Machine: Clusters and Interconnects</h2>
 
-<p>You know the objective (CLM) and you know the budget (Chinchilla). Now comes the hard part: actually training the thing. LLM training is an engineering discipline with a thousand ways to fail. This section covers the practical knowledge you need to plan, execute, and debug a training run.</p>
+<p>Let&rsquo;s ground all this theory in hardware. Training a 7B-parameter model requires multiple GPUs working in lockstep. Training a 70B model requires hundreds of them. The physical infrastructure is as much a part of the story as the algorithms.</p>
 
-<!-- ═══════════════════════════════════════════ -->
-<h3>Data Preparation</h3>
+<p>A modern training cluster is built from <strong>nodes</strong>, each containing 8 high-end GPUs (typically NVIDIA H100s). Within a node, GPUs communicate via <strong>NVLink</strong>, a proprietary interconnect that provides up to 900 GB/s of bidirectional bandwidth per GPU. That&rsquo;s fast enough that GPUs within a node can share data almost as if they were accessing their own memory.</p>
 
-<p>Your model is only as good as your data. This isn&rsquo;t a platitude &mdash; it&rsquo;s a scaling law. Bad data shifts your loss curve up, and no amount of compute compensates.</p>
+<p>Between nodes, the interconnect is <strong>InfiniBand</strong>, which provides 400 Gbps with latencies around 1&ndash;2 microseconds. Fast by networking standards, but roughly 18&times; slower than NVLink. This asymmetry shapes everything about distributed training strategy.</p>
 
-<h4>Deduplication</h4>
+<p>To get an intuition for these numbers: if NVLink were a fire hose, InfiniBand would be a garden hose. Both move water, but you plan very differently depending on which one you have between two GPUs.</p>
 
-<p>Duplicate data is shockingly common in web crawls. Common Crawl contains huge amounts of near-duplicate content &mdash; boilerplate, scraped pages, copy-pasted text. Training on duplicates wastes compute and can cause memorization (the model regurgitates training data verbatim, which is bad for privacy and generalization).</p>
+<p>Distributed training uses three types of parallelism, layered according to the bandwidth they need:</p>
 
-<p>The standard approach is <strong>MinHash + LSH</strong> (Locality-Sensitive Hashing):</p>
+<p><strong>Tensor Parallelism (TP)</strong> splits individual weight matrices across GPUs within a node. Each GPU computes a slice of the attention or feedforward layer, then they combine results. This requires constant communication between GPUs, so it uses the fastest link: NVLink within a node.</p>
 
-<ol>
-  <li>For each document, generate a set of n-grams (e.g., 5-grams of words).</li>
-  <li>Compute a MinHash signature: apply k hash functions to the n-gram set, take the minimum hash value for each function. This gives a compact fingerprint.</li>
-  <li>Use LSH to bucket documents with similar fingerprints.</li>
-  <li>Within each bucket, do pairwise Jaccard similarity. Remove near-duplicates above a threshold (e.g., 0.8).</li>
-</ol>
+<p><strong>Pipeline Parallelism (PP)</strong> assigns different transformer layers to different groups of nodes. GPU group 0 runs layers 1&ndash;8, group 1 runs layers 9&ndash;16, and so on. Data flows through groups like an assembly line. The downside is &ldquo;pipeline bubbles&rdquo; &mdash; GPUs sit idle waiting for activations from earlier stages. This tolerates moderate latency, so it spans a few nodes connected by InfiniBand.</p>
 
-<p>This reduces training data by 30&ndash;50% while <em>improving</em> model quality. The LLaMA paper reports exact deduplication at the line level plus fuzzy deduplication with MinHash at the document level.</p>
+<p><strong>Data Parallelism (DP / FSDP)</strong> replicates the training across many groups, each processing different batches. Gradients are averaged across groups after each step. This requires the least frequent communication, so it spans the widest network distances.</p>
 
-<h4>Quality Filtering</h4>
+<pre><code>Example: LLaMA-70B on 256 GPUs
 
-<p>Not all text is created equal. A Wikipedia article is more useful training data than a spam page or a cookie consent banner. Common filtering approaches:</p>
+  TP = 8  (within each node, NVLink — splits weight matrices)
+  × PP = 4  (across 4 node groups — splits layers)
+  × DP = 8  (across 8 pipeline replicas — splits data)
+  = 8 × 4 × 8 = 256 GPUs
 
-<ul>
-  <li><strong>Perplexity-based filtering:</strong> Train a small language model on high-quality data (e.g., Wikipedia). Score web-crawled documents with it. High perplexity = low quality. The CCNet pipeline uses a KenLM model for this.</li>
-  <li><strong>Heuristic rules:</strong> Remove documents that are too short, have too many special characters, have low word-to-symbol ratios, or contain too many repeated lines. The RefinedWeb paper lists dozens of such rules.</li>
-  <li><strong>Classifier-based:</strong> Train a binary classifier (e.g., fastText) to distinguish high-quality from low-quality text. Score and filter.</li>
-</ul>
+  Think of it as 8 identical assembly lines (DP),
+  each with 4 stages (PP),
+  each stage using 8 GPUs in lockstep (TP).</code></pre>
 
-<h4>Data Mix</h4>
+<p>The fire-hose-and-garden-hose analogy comes back here. TP needs the fire hose (NVLink, within a node). PP can work with the garden hose (InfiniBand, across a few nodes). DP can work with a trickle (InfiniBand across the wider network), because it only needs to sync gradients periodically.</p>
 
-<p>Modern LLMs train on a deliberate mixture of data sources. Getting the mix right matters a lot:</p>
+<p>The key memory optimization that makes all of this practical is <strong>FSDP</strong> (Fully Sharded Data Parallel), PyTorch&rsquo;s implementation of <strong>ZeRO-3</strong> from DeepSpeed. In standard data parallelism, every GPU holds a complete copy of the model, optimizer states, and gradients &mdash; massive redundancy. FSDP shards everything: each GPU stores only 1/N of the parameters, optimizer states, and gradients. During the forward pass, parameters are gathered from other GPUs right before they&rsquo;re needed, used, then discarded. This can reduce per-GPU memory from over 100 GB to under 15 GB for a 7B model across 8 GPUs.</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+
+<h2>When Training Goes Wrong: Loss Spikes and Stability</h2>
+
+<p>The first time I saw a loss spike in a training run, I thought the run was dead. Loss had been decreasing smoothly for days, and then &mdash; a sudden upward jump, like a heart rate monitor during a horror movie. Twenty minutes of panic. Then the loss recovered, as if nothing happened.</p>
+
+<p>Loss spikes are the most common instability in LLM training. The loss is declining peacefully, then shoots upward before (usually) recovering over the next few hundred steps. Causes include:</p>
+
+<p>A <strong>bad data batch</strong> &mdash; a batch containing highly unusual content (extremely long documents, garbled Unicode, code with pathological nesting) can produce extreme gradient values that shove the model into a bad region of parameter space. The fix: better data filtering before training, or detecting and skipping batches with anomalous loss during training.</p>
+
+<p>A <strong>learning rate that&rsquo;s too high</strong> &mdash; the optimizer takes a step that&rsquo;s too large and overshoots into a steep valley. The fix: reduce peak learning rate, use longer warmup, or both.</p>
+
+<p><strong>Numerical instability</strong> &mdash; FP16 overflow, division by very small numbers in layer normalization, or softmax overflow. The fix: use BF16 (which has the same dynamic range as FP32, making overflow extremely rare), add small epsilon values to denominators, and use numerically stable softmax implementations.</p>
+
+<p>Google&rsquo;s PaLM team documented a practical recovery approach: when a loss spike occurs, roll back to a checkpoint from roughly 100 steps before the spike started, and skip the data batches that triggered it. It&rsquo;s crude, but effective. Some teams also use <strong>checkpoint averaging</strong> &mdash; averaging weights from the last 5&ndash;20 checkpoints to smooth out catastrophic updates and return the model to a stable region.</p>
+
+<p>The universal safety net is <strong>gradient clipping</strong>: before each optimizer step, compute the global norm of all gradients and, if it exceeds a threshold (typically 1.0), scale all gradients down proportionally. This preserves the <em>direction</em> of the update while capping its <em>magnitude</em>. Think of it as saying &ldquo;go in the same direction, but take a smaller step.&rdquo; Global norm clipping, rather than per-parameter clipping, is critical because per-parameter clipping distorts the gradient direction.</p>
+
+<p>Other stability techniques that have proven essential at scale:</p>
+
+<p><strong>BF16 mixed precision</strong> &mdash; store most tensors in 16-bit bfloat16 (which trades mantissa precision for FP32-level dynamic range), but maintain a FP32 copy of the weights for the optimizer update. The optimizer accumulates many small gradient updates, and doing this in BF16 would cause rounding errors that compound over thousands of steps. This mixing of precisions is why it&rsquo;s called &ldquo;mixed precision.&rdquo;</p>
+
+<p><strong>QK-Norm</strong> &mdash; applying layer normalization to queries and keys before computing attention scores. Without this, attention logits can grow unboundedly as training progresses, eventually causing instability. Used in PaLM and LLaMA-2.</p>
+
+<p><strong>z-loss</strong> &mdash; a small penalty on the log-partition function of the output softmax, preventing output logits from growing too large. Used in PaLM training.</p>
+
+<p><strong>Learning rate warmup</strong> &mdash; starting with a near-zero learning rate and linearly increasing to the peak over the first 1&ndash;5% of training. At initialization, the model&rsquo;s gradients are wildly unpredictable. A full-strength learning rate at this stage can launch the model into a bad region it never recovers from. Warmup lets the optimizer cautiously explore the landscape before committing to large steps. After warmup, the learning rate follows a <strong>cosine decay</strong> curve down to roughly 10% of the peak.</p>
+
+<pre><code>  Learning Rate
+   │
+   │        peak (e.g., 3e-4)
+   │       ╱‾‾‾‾‾‾‾╲
+   │      ╱          ╲
+   │     ╱            ╲           cosine decay
+   │    ╱              ╲
+   │   ╱                ╲
+   │  ╱                  ╲
+   │ ╱                    ╲____  min (e.g., 3e-5)
+   │╱
+   │───────────────────────── Training Steps
+    warmup       main training
+    (1-5%)       (95-99%)</code></pre>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+
+<h2>Feeding the Beast: Curriculum and Data Mixing</h2>
+
+<p>So far, we&rsquo;ve treated the training data as a single homogeneous stream of tokens. In practice, it&rsquo;s a careful blend of many sources, and the proportions of that blend affect the resulting model profoundly.</p>
+
+<p>Return to our recipe model. Suppose we have three sources: recipe instructions (60%), food science articles (30%), and restaurant reviews (10%). If we oversample restaurant reviews, the model gets great at generating &ldquo;the ambiance was delightful&rdquo; but worse at &ldquo;preheat the oven to 350.&rdquo; The mix matters.</p>
+
+<p>Real LLMs face this at enormous scale:</p>
 
 <table>
   <thead>
     <tr>
       <th>Source</th>
       <th>Typical Share</th>
-      <th>Why It Matters</th>
+      <th>What It Teaches</th>
     </tr>
   </thead>
   <tbody>
-    <tr><td>Web crawl (filtered)</td><td>60&ndash;70%</td><td>Breadth of knowledge, conversational text</td></tr>
-    <tr><td>Code (GitHub)</td><td>5&ndash;15%</td><td>Reasoning, structured output, code generation</td></tr>
-    <tr><td>Books</td><td>5&ndash;10%</td><td>Long-form coherent text, deep knowledge</td></tr>
+    <tr><td>Filtered web crawl</td><td>60&ndash;70%</td><td>Breadth: conversational text, general knowledge</td></tr>
+    <tr><td>Code (GitHub)</td><td>5&ndash;15%</td><td>Structured reasoning, logic, programming</td></tr>
+    <tr><td>Books</td><td>5&ndash;10%</td><td>Long-form coherence, deep knowledge</td></tr>
     <tr><td>Wikipedia</td><td>3&ndash;5%</td><td>Factual knowledge, structured writing</td></tr>
-    <tr><td>Academic papers</td><td>3&ndash;5%</td><td>Scientific reasoning, technical writing</td></tr>
-    <tr><td>Conversational data</td><td>2&ndash;5%</td><td>Dialog, Q&amp;A patterns</td></tr>
+    <tr><td>Academic papers</td><td>3&ndash;5%</td><td>Scientific reasoning, technical language</td></tr>
+    <tr><td>Conversational data</td><td>2&ndash;5%</td><td>Dialog patterns, Q&amp;A structure</td></tr>
   </tbody>
 </table>
 
-<p>There&rsquo;s growing evidence that <strong>code data improves reasoning ability</strong> even on non-code tasks. Code is highly structured, logically precise, and forces the model to learn sequential reasoning. This is why models like Codex-descendants (GPT-3.5, GPT-4) are better at reasoning than models trained only on text.</p>
+<p>There&rsquo;s growing evidence that code data improves reasoning even on non-code tasks. Code is highly structured, logically precise, and demands sequential thinking. Models trained with significant code exposure (like GPT-3.5 and GPT-4, which descend from Codex) consistently outperform text-only models on reasoning benchmarks. This was a genuine surprise to the field.</p>
 
-<!-- ═══════════════════════════════════════════ -->
-<h3>The AdamW Optimizer</h3>
+<p>Getting the data mix right is as much art as science. <strong>DoReMi</strong>, a method from Google, attempts to learn optimal mixing proportions automatically. It frames the problem as minimax optimization: the data mixture and a small proxy model are co-trained, adjusting proportions to maximize downstream performance. The result often differs from hand-tuned proportions in ways that are hard to predict &mdash; for example, DoReMi might upweight a small, high-quality source that humans would have undersampled.</p>
 
-<p>SGD doesn&rsquo;t cut it for transformers. The loss landscape is too complex, with sharp valleys and saddle points. Every serious LLM training run uses <strong>AdamW</strong> &mdash; Adam with decoupled weight decay.</p>
+<p><strong>Curriculum learning</strong> goes further, changing the data order during training. One approach: start with simpler, cleaner text (Wikipedia, well-edited books) and gradually introduce noisier, more complex data (web crawl, code). The intuition is that early training establishes foundational representations, and disrupting those foundations with noisy data too early is like trying to learn calculus before arithmetic. In practice, the benefits of curriculum learning for LLMs are mixed &mdash; some teams report improvements, others find that random shuffling works as well. I&rsquo;m still developing my intuition for when curriculum helps and when it doesn&rsquo;t.</p>
 
-<p>Quick refresher on Adam: it maintains two exponential moving averages per parameter &mdash; the first moment (mean of gradients, controlled by β₁) and the second moment (mean of squared gradients, controlled by β₂). This gives each parameter its own adaptive learning rate. Parameters with noisy gradients get smaller effective learning rates; parameters with consistent gradients get larger ones.</p>
+<p>The honest truth about data mixing: no one is completely certain about the optimal proportions. Labs treat their data recipes as closely guarded secrets, and the few ablation studies that exist show that small changes in the mix can produce surprisingly large changes in downstream behavior. It&rsquo;s one of those areas where a lot of practical knowledge exists that hasn&rsquo;t been formalized into theory yet.</p>
 
-<p>The &ldquo;W&rdquo; in AdamW is about <strong>decoupled weight decay</strong>. Standard L2 regularization adds the weight penalty to the loss, which means the penalty interacts with Adam&rsquo;s adaptive learning rate in weird ways. Decoupled weight decay applies the penalty directly to the weights, bypassing the optimizer&rsquo;s momentum and scaling. This works better in practice and is now the universal default.</p>
+<!-- ═══════════════════════════════════════════════════════════════════ -->
 
-<pre><code># Typical AdamW settings for LLM training
-optimizer = torch.optim.AdamW(
-    model.parameters(),
-    lr=3e-4,           # peak learning rate (see schedule below)
-    betas=(0.9, 0.95), # β1, β2 — note β2=0.95, not the default 0.999
-    weight_decay=0.1,  # aggressive weight decay
-    eps=1e-8
-)
+<h2>Wrap-Up</h2>
 
-# Why β2=0.95 instead of 0.999?
-# 0.999 means the second moment adapts very slowly — it takes ~1000 steps
-# to forget old gradient magnitudes. At 0.95, it adapts in ~20 steps.
-# LLM training data is highly non-stationary (different domains, topics),
-# so you want faster adaptation. Most LLaMA-class models use 0.95.
-</code></pre>
+<p>If you&rsquo;re still with me, thank you. I hope it was worth it.</p>
 
-<div class="info-box">
-  <strong>Why not SGD?</strong> SGD works great for vision models (ResNets with SGD+momentum is still competitive). But transformers have attention layers with very different gradient scales across parameters &mdash; query/key/value projections, layer norms, embeddings all live in different regimes. Adam&rsquo;s per-parameter learning rate handles this naturally. SGD would require extremely careful per-layer LR tuning, which doesn&rsquo;t scale.
-</div>
+<p>We started with a deceptively mundane question &mdash; &ldquo;where does the training data come from?&rdquo; &mdash; and traced a path through web crawling and quality filtering, BPE tokenization, the surprisingly powerful next-token prediction objective, the scaling laws that turned expensive gambling into engineering, the physical infrastructure of GPU clusters connected by NVLink and InfiniBand, the fragile stability of multi-month training runs, and the art of mixing data from diverse sources.</p>
 
-<!-- ═══════════════════════════════════════════ -->
-<h3>Learning Rate Schedules</h3>
+<p>My hope is that the next time someone mentions &ldquo;pretraining a large language model,&rdquo; instead of picturing a mysterious black box, you&rsquo;ll picture the full pipeline: messy web data being filtered and deduplicated, a tokenizer carving text into subword pieces, a transformer reading left-to-right and guessing what comes next, and a team of engineers watching loss curves at 3 AM, ready to roll back to a checkpoint if something spikes. That&rsquo;s what&rsquo;s under the hood. It&rsquo;s engineering all the way down.</p>
 
-<p>The learning rate schedule is one of the most critical hyperparameters in LLM training. Get it wrong and your run either diverges or converges too slowly. The standard approach has two phases:</p>
+<!-- ═══════════════════════════════════════════════════════════════════ -->
 
-<h4>1. Linear Warmup</h4>
+<h2>Resources and Credits</h2>
 
-<p>Start with a very small learning rate and linearly increase to the peak over the first 1&ndash;5% of training steps. Why? At initialization, the model&rsquo;s activations and gradients are unpredictable. A large learning rate at this stage can push the model into a bad region of the loss landscape that it never recovers from. Warmup lets the optimizer &ldquo;feel out&rdquo; the landscape before committing to large steps.</p>
+<p>The resources below are the ones I found most illuminating while building this understanding.</p>
 
-<h4>2. Cosine Decay</h4>
-
-<p>After warmup, decay the learning rate following a cosine curve down to some minimum (typically 10% of the peak, or sometimes 0). Cosine decay is smooth, doesn&rsquo;t require step schedule tuning, and empirically works as well as or better than step decay for LLMs.</p>
-
-<pre><code>  LR
-   │
-   │        peak LR (e.g., 3e-4)
-   │       ╱‾‾‾‾‾‾‾╲
-   │      ╱          ╲
-   │     ╱            ╲              cosine decay
-   │    ╱              ╲
-   │   ╱                ╲
-   │  ╱                  ╲
-   │ ╱                    ╲_________  min LR (e.g., 3e-5)
-   │╱
-   │──────────────────────────────── Steps
-    warmup          main training
-    (1-5%)          (95-99%)
-
-# PyTorch implementation
-from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
-
-warmup = LinearLR(optimizer, start_factor=1e-8/3e-4, total_iters=2000)
-cosine = CosineAnnealingLR(optimizer, T_max=total_steps - 2000, eta_min=3e-5)
-scheduler = SequentialLR(optimizer, [warmup, cosine], milestones=[2000])
-</code></pre>
-
-<h4>Batch Size Scaling</h4>
-
-<p>Larger batch sizes let you take advantage of GPU parallelism, but they also change the optimization dynamics. The <strong>linear scaling rule</strong> (from Goyal et al., 2017): when you multiply the batch size by k, multiply the learning rate by k as well to maintain similar training dynamics.</p>
-
-<p>In practice, LLM training starts with a smaller batch size (to improve gradient signal-to-noise ratio early in training when the model is most sensitive) and ramps up the batch size during training. LLaMA-2 used batch size 4M tokens initially, ramping to 4M tokens throughout.</p>
-
-<!-- ═══════════════════════════════════════════ -->
-<h3>Mixed Precision Training</h3>
-
-<p>Training a 7B model in FP32 requires ~28GB just for the parameters, plus 2&ndash;3&times; that for optimizer states and gradients. At 70B it&rsquo;s physically impossible on any single GPU. <strong>Mixed precision</strong> training cuts memory usage roughly in half by storing most tensors in 16-bit floating point while maintaining FP32 where it matters.</p>
-
-<h4>BF16 vs FP16</h4>
-
-<p>There are two 16-bit formats, and the distinction matters:</p>
-
-<table>
-  <thead>
-    <tr>
-      <th>Format</th>
-      <th>Sign</th>
-      <th>Exponent</th>
-      <th>Mantissa</th>
-      <th>Dynamic Range</th>
-      <th>Precision</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><strong>FP16</strong></td>
-      <td>1 bit</td>
-      <td>5 bits</td>
-      <td>10 bits</td>
-      <td>±65,504</td>
-      <td>~3.3 decimal digits</td>
-    </tr>
-    <tr>
-      <td><strong>BF16</strong></td>
-      <td>1 bit</td>
-      <td>8 bits</td>
-      <td>7 bits</td>
-      <td>±3.4 × 10³⁸ (same as FP32!)</td>
-      <td>~2.4 decimal digits</td>
-    </tr>
-  </tbody>
-</table>
-
-<p><strong>BF16 won.</strong> The reason is simple: LLM training produces activations and gradients with a huge dynamic range. Values can span many orders of magnitude. FP16 has only 5 exponent bits, so it overflows or underflows frequently, requiring careful loss scaling. BF16 has 8 exponent bits &mdash; the same dynamic range as FP32 &mdash; so values almost never overflow. You lose some mantissa precision, but that turns out to matter much less than dynamic range for gradient-based optimization.</p>
-
-<pre><code># BF16 mixed precision with PyTorch AMP
-from torch.cuda.amp import autocast, GradScaler
-
-# BF16 — no scaler needed (dynamic range handles it)
-with autocast(dtype=torch.bfloat16):
-    logits = model(input_ids)
-    loss = compute_loss(logits, labels)
-loss.backward()
-optimizer.step()
-
-# FP16 — needs loss scaling to prevent gradient underflow
-scaler = GradScaler()
-with autocast(dtype=torch.float16):
-    logits = model(input_ids)
-    loss = compute_loss(logits, labels)
-scaler.scale(loss).backward()      # scale up loss to prevent underflow
-scaler.step(optimizer)              # unscale gradients, then step
-scaler.update()                     # adjust scale factor dynamically
-</code></pre>
-
-<p>The key insight: with BF16, you can drop the <code>GradScaler</code> entirely. No loss scaling, no scale factor tuning, no NaN headaches from overflow. This is why every modern training framework defaults to BF16 on hardware that supports it (A100, H100, and newer).</p>
-
-<div class="warning-box">
-  <strong>Master weights in FP32.</strong> Even with BF16 forward/backward passes, you should maintain a <strong>FP32 copy of the weights</strong> for the optimizer update. Accumulating many small gradient updates in BF16 causes rounding errors that compound over thousands of steps. The optimizer reads BF16 gradients, updates the FP32 master weights, then casts back to BF16 for the next forward pass. This is what &ldquo;mixed&rdquo; precision means &mdash; you mix precisions strategically, not uniformly.
-</div>
-
-<!-- ═══════════════════════════════════════════ -->
-<h3>Training Instabilities</h3>
-
-<p>LLM training runs are long (days to months) and expensive. A single instability event can waste enormous compute. Here are the common failure modes and their fixes.</p>
-
-<h4>Loss Spikes</h4>
-
-<p>The most common instability: loss is decreasing smoothly, then suddenly spikes upward before (hopefully) recovering. Causes include:</p>
-
-<ul>
-  <li><strong>Bad data batches:</strong> A batch with highly unusual content (very long sequences, strange Unicode, code with extreme nesting) can produce extreme gradients. Fix: better data filtering, or skip batches with anomalous loss.</li>
-  <li><strong>Learning rate too high:</strong> The optimizer takes a step that&rsquo;s too large and lands in a bad region. Fix: reduce peak LR, use longer warmup.</li>
-  <li><strong>Numerical instability:</strong> FP16 overflow, division by very small numbers in LayerNorm, or softmax overflow. Fix: switch to BF16, add epsilon to denominators, use numerically stable softmax.</li>
+<ul style="list-style:none; padding-left:0; line-height:2">
+  <li><strong>Kaplan et al., &ldquo;Scaling Laws for Neural Language Models&rdquo; (2020)</strong> &mdash; the O.G. paper that discovered the power laws. Dense but beautifully empirical.</li>
+  <li><strong>Hoffmann et al., &ldquo;Training Compute-Optimal Large Language Models&rdquo; (2022)</strong> &mdash; the Chinchilla paper. The single most impactful result in LLM training methodology.</li>
+  <li><strong>Touvron et al., &ldquo;LLaMA: Open and Efficient Foundation Language Models&rdquo; (2023)</strong> &mdash; a masterclass in practical training decisions, with more implementation details than most papers dare include.</li>
+  <li><strong>Penedo et al., &ldquo;The RefinedWeb Dataset for Falcon LLM&rdquo; (2023)</strong> &mdash; an insightful look at aggressive web data filtering. Changed how I think about data quality.</li>
+  <li><strong>Chowdhery et al., &ldquo;PaLM: Scaling Language Modeling with Pathways&rdquo; (2022)</strong> &mdash; the most detailed account of training stability issues at extreme scale. The loss spike section alone is worth the read.</li>
+  <li><strong>Rajbhandari et al., &ldquo;ZeRO: Memory Optimizations Toward Training Trillion Parameter Models&rdquo; (2020)</strong> &mdash; wildly helpful for understanding distributed training memory optimization.</li>
 </ul>
-
-<p>Google&rsquo;s PaLM paper documented a practical approach: when a loss spike occurs, roll back to a checkpoint from ~100 steps before the spike and skip the data batches that triggered it. This is crude but effective.</p>
-
-<h4>Gradient Clipping</h4>
-
-<p>The universal safety net: clip the global gradient norm to a maximum value (typically 1.0). This prevents any single batch from causing an outsized parameter update.</p>
-
-<pre><code># Gradient clipping — do this BEFORE optimizer.step()
-torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-optimizer.step()
-</code></pre>
-
-<p>Why global norm rather than per-parameter clipping? Because the direction of the gradient update matters. Per-parameter clipping distorts the gradient direction; global norm clipping preserves the direction while capping the magnitude. It&rsquo;s like saying &ldquo;go in the same direction, just don&rsquo;t go as far.&rdquo;</p>
-
-<h4>Other Stability Tricks</h4>
-
-<ul>
-  <li><strong>QK-Norm:</strong> Apply LayerNorm to queries and keys before computing attention scores. Prevents attention logits from growing unboundedly as training progresses. Used in PaLM, LLaMA-2.</li>
-  <li><strong>Independent weight decay for embeddings:</strong> Embedding layers sometimes benefit from different (often zero) weight decay compared to other layers.</li>
-  <li><strong>z-loss:</strong> Add a small penalty on the log-partition function of the output softmax to prevent logits from growing too large. Used in PaLM training.</li>
-</ul>
-
-<!-- ═══════════════════════════════════════════ -->
-<h3>Distributed Training</h3>
-
-<p>No one trains an LLM on a single GPU. Even a 7B model requires distributed training across multiple GPUs. The question is: <em>how</em> do you distribute?</p>
-
-<h4>Data Parallelism (DDP)</h4>
-
-<p>The simplest approach: replicate the entire model on each GPU, feed different data batches to each replica, compute gradients locally, then all-reduce (average) the gradients across GPUs before the optimizer step. Every GPU ends up with identical weights.</p>
-
-<pre><code>GPU 0: model copy → batch A → grads_A ─┐
-GPU 1: model copy → batch B → grads_B ─┼→ all-reduce → avg_grads → update
-GPU 2: model copy → batch C → grads_C ─┤
-GPU 3: model copy → batch D → grads_D ─┘
-
-Effective batch size = per_gpu_batch × num_gpus
-</code></pre>
-
-<p>Problem: each GPU must hold the <em>entire</em> model plus optimizer states. For a 7B model with AdamW in FP32, that&rsquo;s ~28GB (params) + 28GB (gradients) + 56GB (optimizer states: m and v) = ~112GB. That doesn&rsquo;t fit on a single 80GB A100.</p>
-
-<h4>FSDP / ZeRO &mdash; Sharded Data Parallelism</h4>
-
-<p>The breakthrough insight from DeepSpeed&rsquo;s <strong>ZeRO</strong> (Zero Redundancy Optimizer): in standard data parallelism, every GPU stores a full copy of optimizer states, gradients, and parameters &mdash; massive redundancy. What if we <em>shard</em> these across GPUs?</p>
-
-<p>ZeRO has three stages:</p>
-
-<table>
-  <thead>
-    <tr>
-      <th>Stage</th>
-      <th>What&rsquo;s Sharded</th>
-      <th>Memory per GPU (7B model, 8 GPUs)</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><strong>ZeRO-1</strong></td>
-      <td>Optimizer states only</td>
-      <td>~49GB (down from 112GB)</td>
-    </tr>
-    <tr>
-      <td><strong>ZeRO-2</strong></td>
-      <td>Optimizer states + gradients</td>
-      <td>~35GB</td>
-    </tr>
-    <tr>
-      <td><strong>ZeRO-3 / FSDP</strong></td>
-      <td>Optimizer states + gradients + parameters</td>
-      <td>~14GB</td>
-    </tr>
-  </tbody>
-</table>
-
-<p>PyTorch&rsquo;s <strong>FSDP</strong> (Fully Sharded Data Parallel) implements ZeRO-3 natively. Each GPU holds only a shard of parameters. During the forward pass, parameters are all-gathered just before they&rsquo;re needed, used, then discarded. During the backward pass, the same thing happens, plus gradients are reduce-scattered back to their owning GPU.</p>
-
-<pre><code># FSDP in PyTorch (simplified)
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from torch.distributed.fsdp import MixedPrecision
-
-mp_policy = MixedPrecision(
-    param_dtype=torch.bfloat16,
-    reduce_dtype=torch.bfloat16,
-    buffer_dtype=torch.bfloat16,
-)
-
-model = FSDP(
-    model,
-    mixed_precision=mp_policy,
-    sharding_strategy=ShardingStrategy.FULL_SHARD,  # ZeRO-3
-)
-# Now train as normal — FSDP handles communication
-</code></pre>
-
-<h4>Gradient Accumulation</h4>
-
-<p>Sometimes you want a very large effective batch size but can&rsquo;t fit it in GPU memory. <strong>Gradient accumulation</strong> is the simple trick: run multiple forward/backward passes, accumulating gradients, and only step the optimizer every N micro-batches.</p>
-
-<pre><code># Gradient accumulation (accumulate_steps = 4)
-optimizer.zero_grad()
-for i, batch in enumerate(dataloader):
-    loss = model(batch) / accumulate_steps   # normalize
-    loss.backward()                           # accumulate grads
-    if (i + 1) % accumulate_steps == 0:
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optimizer.step()
-        optimizer.zero_grad()
-
-# Effective batch size = micro_batch × accumulate_steps × num_gpus
-</code></pre>
-
-<h4>Tensor Parallelism and Pipeline Parallelism</h4>
-
-<p>For the largest models (100B+), even FSDP isn&rsquo;t enough. You need to split individual layers across GPUs:</p>
-
-<ul>
-  <li><strong>Tensor Parallelism (TP):</strong> Split individual weight matrices across GPUs. For example, a 4-way TP splits each attention head&rsquo;s Q/K/V projections across 4 GPUs. Each GPU computes a slice of the attention, then they all-reduce. Very fast (within a single node connected by NVLink) but requires tight GPU interconnect.</li>
-  <li><strong>Pipeline Parallelism (PP):</strong> Assign different layers to different GPUs. GPU 0 runs layers 1&ndash;8, GPU 1 runs layers 9&ndash;16, etc. The input flows through GPUs like a pipeline. The problem is &ldquo;pipeline bubbles&rdquo; &mdash; GPUs sit idle while waiting for activations from earlier stages. Microbatching (1F1B schedule) reduces but doesn&rsquo;t eliminate these bubbles.</li>
-</ul>
-
-<pre><code>Real-world parallelism strategy (e.g., LLaMA-70B on 256 GPUs):
-
-  TP=8 (within node, NVLink)
-  × PP=4 (across nodes)
-  × DP=8 (across groups, FSDP)
-  = 256 GPUs total
-
-  Each node (8 GPUs): tensor-parallel group
-  4 nodes: pipeline stages
-  8 such pipeline groups: data-parallel replicas
-</code></pre>
-
-<div class="info-box">
-  <strong>The 3D parallelism hierarchy.</strong> Modern large-scale training combines all three types: TP within a node (requires fast NVLink), PP across a few nodes (tolerates moderate latency), and DP/FSDP across many nodes (tolerates higher latency). The ordering reflects the communication bandwidth requirements: TP needs the most bandwidth, DP the least.
-</div>
-
-<!-- ═══════════════════════════════════════════ -->
-<h3>Checkpointing Strategies</h3>
-
-<p>Training runs crash. GPUs fail, nodes go down, NFS hiccups. If you don&rsquo;t checkpoint, you lose everything since the last save.</p>
-
-<h4>Training Checkpoints</h4>
-
-<p>Save every N steps (e.g., every 1000 steps) and keep the last K checkpoints (e.g., last 5). Each checkpoint includes:</p>
-
-<ul>
-  <li>Model weights</li>
-  <li>Optimizer states (both moments for AdamW)</li>
-  <li>Learning rate scheduler state</li>
-  <li>Data loader state (which samples you&rsquo;ve seen)</li>
-  <li>Random number generator states (for exact reproducibility)</li>
-</ul>
-
-<p>For a 7B model with AdamW, a full checkpoint is ~84GB (28GB params + 56GB optimizer). With FSDP, each GPU saves its shard, which is more efficient but requires all GPUs to be present for loading.</p>
-
-<h4>Activation Checkpointing (Gradient Checkpointing)</h4>
-
-<p>This is a <em>different</em> kind of checkpointing &mdash; it&rsquo;s a memory optimization during training, not a durability strategy.</p>
-
-<p>During the forward pass, you normally store all intermediate activations because they&rsquo;re needed for the backward pass. For a 7B model with a sequence length of 4096, this can eat 50&ndash;100GB of GPU memory. <strong>Activation checkpointing</strong> trades compute for memory: only store activations at certain layer boundaries, and recompute the rest during the backward pass.</p>
-
-<pre><code># Activation checkpointing in PyTorch
-from torch.utils.checkpoint import checkpoint
-
-class TransformerBlock(nn.Module):
-    def forward(self, x):
-        # Without activation checkpointing:
-        # x = self.attention(x) + x
-        # x = self.ffn(x) + x
-
-        # With activation checkpointing:
-        x = checkpoint(self.attention, x, use_reentrant=False) + x
-        x = checkpoint(self.ffn, x, use_reentrant=False) + x
-        return x
-
-# Roughly halves activation memory at the cost of ~33% more compute
-# (you do the forward pass twice for checkpointed regions)
-</code></pre>
-
-<p>The tradeoff: roughly 33% more compute (you recompute forward activations during backward) in exchange for drastically less memory. This is almost always worth it for large models because memory is the bottleneck, not compute.</p>
-
-<!-- ═══════════════════════════════════════════ -->
-<h3>Putting It All Together &mdash; A 7B Training Recipe</h3>
-
-<p>Let&rsquo;s assemble a concrete training recipe for a 7B parameter model, similar to LLaMA-2 7B. This is what the hyperparameter sheet looks like in practice:</p>
-
-<table>
-  <thead>
-    <tr>
-      <th>Hyperparameter</th>
-      <th>Value</th>
-      <th>Notes</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr><td><strong>Model size</strong></td><td>6.7B params</td><td>32 layers, dim 4096, 32 heads</td></tr>
-    <tr><td><strong>Vocab size</strong></td><td>32,000</td><td>SentencePiece BPE</td></tr>
-    <tr><td><strong>Sequence length</strong></td><td>4,096 tokens</td><td>Can extend later with RoPE</td></tr>
-    <tr><td><strong>Training tokens</strong></td><td>1&ndash;2T</td><td>Over-training for inference efficiency</td></tr>
-    <tr><td><strong>Batch size</strong></td><td>4M tokens</td><td>~1000 sequences of 4096</td></tr>
-    <tr><td><strong>Optimizer</strong></td><td>AdamW</td><td>β₁=0.9, β₂=0.95, ε=1e-8</td></tr>
-    <tr><td><strong>Weight decay</strong></td><td>0.1</td><td>Decoupled; 0 for embeddings and biases</td></tr>
-    <tr><td><strong>Peak LR</strong></td><td>3 × 10⁻⁴</td><td></td></tr>
-    <tr><td><strong>Min LR</strong></td><td>3 × 10⁻⁵</td><td>10% of peak</td></tr>
-    <tr><td><strong>Warmup</strong></td><td>2,000 steps</td><td>Linear warmup</td></tr>
-    <tr><td><strong>LR schedule</strong></td><td>Cosine decay</td><td>After warmup</td></tr>
-    <tr><td><strong>Gradient clipping</strong></td><td>1.0 (global norm)</td><td></td></tr>
-    <tr><td><strong>Precision</strong></td><td>BF16 mixed</td><td>FP32 master weights</td></tr>
-    <tr><td><strong>Parallelism</strong></td><td>FSDP (ZeRO-3)</td><td>On 64&ndash;128 A100 GPUs</td></tr>
-    <tr><td><strong>Activation ckpt</strong></td><td>Per-layer</td><td>Checkpoint every transformer block</td></tr>
-    <tr><td><strong>Checkpoint freq</strong></td><td>Every 1000 steps</td><td>Keep last 5</td></tr>
-    <tr><td><strong>Total steps</strong></td><td>~250,000&ndash;500,000</td><td>Depends on token budget</td></tr>
-  </tbody>
-</table>
-
-<pre><code># Pseudo-code for the full training loop
-import torch
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-
-# 1. Initialize
-model = LlamaModel(config)
-model = FSDP(model, mixed_precision=bf16_policy)
-optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4,
-                               betas=(0.9, 0.95), weight_decay=0.1)
-scheduler = get_cosine_with_warmup(optimizer, warmup=2000, total=500000)
-
-# 2. Training loop
-for step, batch in enumerate(dataloader):
-    # Forward (BF16)
-    with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-        logits = model(batch['input_ids'])
-        shift_logits = logits[:, :-1, :].contiguous()
-        shift_labels = batch['input_ids'][:, 1:].contiguous()
-        loss = F.cross_entropy(shift_logits.view(-1, vocab_size),
-                               shift_labels.view(-1))
-
-    # Backward
-    loss.backward()
-
-    # Gradient clipping
-    model.clip_grad_norm_(1.0)  # FSDP provides this
-
-    # Optimizer step
-    optimizer.step()
-    scheduler.step()
-    optimizer.zero_grad()
-
-    # Logging
-    if step % 10 == 0:
-        print(f"Step {step} | Loss {loss.item():.4f} | LR {scheduler.get_last_lr()[0]:.2e}")
-
-    # Checkpointing
-    if step % 1000 == 0:
-        save_checkpoint(model, optimizer, scheduler, step)
-</code></pre>
-
-<p>Some practical notes from running this in the real world:</p>
-
-<ul>
-  <li><strong>Monitoring:</strong> Log loss, gradient norm, learning rate, and throughput (tokens/second) to Weights &amp; Biases or TensorBoard. Loss spikes are your early warning system.</li>
-  <li><strong>Throughput target:</strong> On 64 A100-80GB GPUs, expect ~150k&ndash;300k tokens/second for a 7B model, depending on your sequence length and parallelism strategy. That&rsquo;s roughly 13&ndash;26B tokens/day, so training on 2T tokens takes 77&ndash;154 days.</li>
-  <li><strong>Cost estimate:</strong> At ~$2/GPU-hour for A100s, 64 GPUs for 100 days = ~$307k. This is why people care about Chinchilla-optimal training &mdash; every wasted FLOP is real money.</li>
-  <li><strong>Debugging runs:</strong> Always do a short sanity check first &mdash; 100 steps on a small subset &mdash; to verify the loss decreases, gradients are reasonable, and checkpointing works. Don&rsquo;t start a 3-month run without this.</li>
-</ul>
-
-<div class="warning-box">
-  <strong>The most expensive bug.</strong> The single most costly bug in LLM training is a subtle data issue that doesn&rsquo;t crash the run but degrades quality. For example: tokenizer mismatch (training on data tokenized with a different vocab), incorrect padding/masking (loss computed on padding tokens), or data leakage (evaluation data in the training set). These bugs can waste weeks of compute before anyone notices the resulting model is worse than expected.
-</div>
-
-<!-- ═══════════════════════════════════════════ -->
-<h2>What You Should Now Be Able To Do</h2>
-
-<div class="checklist">
-  <ul>
-    <li><strong>Explain and implement the CLM training loop</strong> including the shift trick, causal masking, and cross-entropy loss computation</li>
-    <li><strong>Compare all four pretraining objectives</strong> (CLM, MLM, span corruption, ELECTRA) and explain when each is appropriate and why</li>
-    <li><strong>Map architectures to objectives:</strong> encoder-only → MLM, decoder-only → CLM, encoder-decoder → span corruption, and explain the reasoning</li>
-    <li><strong>Explain the Kaplan vs Chinchilla debate</strong> &mdash; what each found, why they disagreed, and why Chinchilla&rsquo;s 20:1 token-to-parameter ratio changed how we train models</li>
-    <li><strong>Use scaling laws for planning:</strong> given a compute budget, estimate the optimal model size and token count</li>
-    <li><strong>Set up AdamW with the right hyperparameters</strong> (β₁=0.9, β₂=0.95, wd=0.1) and explain why these differ from defaults</li>
-    <li><strong>Design a learning rate schedule</strong> with linear warmup and cosine decay, and explain why warmup is necessary</li>
-    <li><strong>Choose between BF16 and FP16</strong> for mixed precision training and explain why BF16 is preferred for LLMs</li>
-    <li><strong>Explain FSDP/ZeRO sharding</strong> at all three stages and calculate memory savings for a given model size</li>
-    <li><strong>Assemble a complete training recipe</strong> for a 7B model with concrete hyperparameters, parallelism strategy, and checkpointing plan</li>
-  </ul>
-</div>
-
-
 
       <div class="page-nav">
         <span></span>
