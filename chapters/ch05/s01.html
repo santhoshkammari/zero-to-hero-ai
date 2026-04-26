@@ -285,7 +285,7 @@
 
   <div class="main">
     <div class="topbar">
-      <div class="breadcrumb"><a href="../../index.html">Home</a><span class="sep">/</span><a href="../../chapters/ch05/index.html">Ch 5</a><span class="sep">/</span><span>Linear Regression</span></div>
+      <div class="breadcrumb"><a href="../../index.html">Home</a><span class="sep">/</span><a href="../../chapters/ch05/index.html">Ch 5</a><span class="sep">/</span><span>Linear Models</span></div>
       <div class="topbar-actions">
         <button class="theme-toggle">🌙</button>
       </div>
@@ -296,616 +296,398 @@
 <h1>Linear Models</h1>
 <div class="chapter-meta">
   <span class="tag">Chapter 5: Supervised Learning</span>
-  <span class="tag">Linear Regression · Logistic Regression</span>
+  <span class="tag">Linear Regression · Logistic Regression · GLMs</span>
 </div>
+
+<!-- ═══════════ OPENING ═══════════ -->
+
+<p>I avoided a deep dive into linear models for longer than I'd like to admit. Every time someone mentioned "linear regression" in an interview prep session or a design review, I'd nod and think, "Yeah, I know that one. Straight line, least squares, move on." I treated them the way you treat the hometown you grew up in — too familiar to be interesting, not worth a second look. Finally the discomfort of realizing I couldn't answer even moderately probing questions about <em>why</em> regularization produces sparsity, or <em>what</em> the normal equation is actually doing geometrically, grew too great for me. Here is that dive.</p>
+
+<p>Linear models are the oldest workhorses in machine learning. Legendre and Gauss argued over who invented least squares around 1805. Two centuries later, linear and logistic regression remain the first models most teams reach for in production — not out of laziness, but because they're interpretable, fast, and surprisingly effective. Everything that came after — neural networks, SVMs, even tree ensembles — borrows ideas (loss functions, regularization, gradient-based optimization) that were first worked out in the linear setting.</p>
+
+<p>Before we start, a heads-up. We're going to build up from a single number on a number line to matrix equations, geometric intuitions for regularization, the sigmoid function, and eventually a unified framework that ties all linear models together. You don't need to know any of it beforehand. We'll add the concepts we need one at a time, with explanation.</p>
+
+<p>This isn't a short journey, but I hope you'll be glad you came.</p>
+
+<!-- ═══════════ TABLE OF CONTENTS ═══════════ -->
 
 <div class="tldr">
-  <div class="tldr-label">Section Overview</div>
-  <p>This section combines Linear Regression and Logistic Regression into one comprehensive reference.</p>
+  <div class="tldr-label">The Route</div>
+  <p style="line-height:2; margin:0;">
+    What "Linear" Actually Means<br>
+    One Feature, One Line, One Coffee Shop<br>
+    The Loss: Why We Square Things<br>
+    The Normal Equation<br>
+    When the Matrix Gets Too Big: Gradient Descent<br>
+    More Features, More Problems: Multicollinearity<br>
+    Rest Stop<br>
+    Regularization: The Budget Constraint<br>
+    The Geometry That Explains Sparsity<br>
+    The Bayesian Secret Identity<br>
+    ElasticNet: The Compromise<br>
+    From Numbers to Yes/No: The Sigmoid<br>
+    Log-Loss: A New Measure of Wrongness<br>
+    The Decision Boundary and Odds Ratios<br>
+    Finding the Weights: Why We Must Iterate<br>
+    Rest Stop<br>
+    The Bigger Picture: Generalized Linear Models<br>
+    Production Realities<br>
+    Wrap-Up<br>
+    Resources
+  </p>
 </div>
 
+<!-- ═══════════ WHAT "LINEAR" MEANS ═══════════ -->
 
-<!-- ═══════════ Linear Regression ═══════════ -->
-<h2>Linear Regression</h2>
+<h2>What "Linear" Actually Means</h2>
 
-<!-- ════════════════════════════════════════════ -->
+<p>This is where almost everyone gets tripped up, and I'll be honest — it got me too for an embarrassingly long time. When someone says "linear model," the natural reaction is to picture a straight line. And that's partly right. But the word "linear" in "linear regression" doesn't mean the relationship between input and output has to be a straight line. It means the model is linear in the <em>parameters</em> — the weights you're trying to learn.</p>
 
-<h3>Why a Straight Line?</h3>
+<p>Consider this model for predicting monthly revenue at a coffee shop:</p>
 
-<p>You're predicting house prices. You've got square footage in one column, sale price in another. You plot them and see an obvious upward trend — but it's noisy. Some 1,500 sqft houses sold for $200k, others for $260k.</p>
+<pre><code class="language-python">revenue = w₀ + w₁ × foot_traffic + w₂ × foot_traffic²</code></pre>
 
-<p>You need a formula. The simplest possible guess is a line:</p>
+<p>That foot_traffic² term makes the curve bend. The relationship between foot traffic and revenue is no longer a straight line. Yet this is still a "linear model," because if you squint at the weights — w₀, w₁, w₂ — each one appears exactly once, raised to the first power, not multiplied by another weight. The parameters enter the equation linearly. The features can be as wild as you want — x², log(x), sin(x), x₁ × x₂ — and as long as the weights combine linearly, the entire toolkit of linear regression still applies. Closed-form solutions, the normal equation, all of it.</p>
 
-<pre><code class="language-python">price = w₀ + w₁ × sqft</code></pre>
+<p>This distinction matters because it means "linear regression" is far more flexible than a straight line. Polynomial regression, interaction terms, basis expansions — all linear models. The line between "linear" and "nonlinear" models is not where most people draw it.</p>
 
-<p>Two reasons this is a great starting point. <strong>First, interpretability.</strong> If w₁ = 150, you tell your stakeholder: "each extra square foot adds ~$150." Try explaining a neural network's reasoning that clearly. <strong>Second, it works surprisingly often.</strong> Most real-world relationships are approximately linear within the range of data you actually observe — even when the true global relationship is curved.</p>
+<!-- ═══════════ ONE FEATURE ═══════════ -->
 
-<p>A line is the <em>default</em>. You only reach for something fancier when it demonstrably fails.</p>
+<h2>One Feature, One Line, One Coffee Shop</h2>
 
-<!-- ════════════════════════════════════════════ -->
+<p>Imagine we're helping a friend decide whether to open a coffee shop on a particular street. We've collected data from 12 existing shops: daily foot traffic past the door, and monthly revenue. We plot them and see an upward trend — noisy, but unmistakable. More people walking by means more money. Our job is to turn that noisy cloud of dots into a formula.</p>
 
-<h3>The Loss Function: Least Squares</h3>
+<p>The simplest possible formula is a line:</p>
 
-<p>You have <em>n</em> points. You want the line ŷ = w₀ + w₁x that's "closest" to all of them. But what does "close" mean? You need a single number that measures total wrongness. The standard choice:</p>
+<pre><code class="language-python">revenue = w₀ + w₁ × foot_traffic</code></pre>
 
-<pre><code class="language-python">Loss = Σᵢ (yᵢ - ŷᵢ)² = Σᵢ (yᵢ - w₀ - w₁xᵢ)²</code></pre>
+<p>Two numbers. That's all we need to learn. w₁ tells us how much each additional pedestrian is worth in monthly revenue. w₀ is the baseline — what the shop would earn even with zero foot traffic (rent-free coffee for ghosts, presumably). If w₁ comes out to 15, we can tell our friend: "Each extra person passing your door per day is worth roughly $15 a month in revenue." Try explaining a gradient-boosted ensemble's reasoning with the same clarity.</p>
 
-<p>Why <em>squared</em> errors specifically?</p>
+<p>The interpretability isn't a bonus feature. It's the reason linear models survive in healthcare, finance, and any domain where someone with signing authority needs to understand <em>why</em> the model says what it says.</p>
 
-<ul>
-  <li><strong>Makes all errors positive</strong> — being $10 too high is equally bad as $10 too low.</li>
-  <li><strong>Punishes large errors disproportionately</strong> — off by $100 contributes 10,000; ten errors of $10 contribute only 1,000 total.</li>
-  <li><strong>The math works out beautifully</strong> — you get a smooth, convex (bowl-shaped) surface with a single minimum and a closed-form solution.</li>
-</ul>
+<!-- ═══════════ THE LOSS ═══════════ -->
 
-<p>Take the derivatives, set to zero, solve. Done:</p>
+<h2>The Loss: Why We Square Things</h2>
 
-<pre><code class="language-python">w₁ = Σ(xᵢ - x̄)(yᵢ - ȳ) / Σ(xᵢ - x̄)²
-w₀ = ȳ - w₁x̄</code></pre>
+<p>We have 12 coffee shops, 12 data points. An infinite number of lines could pass through that noisy cloud. We need a way to pick the best one, which means we need a single number that measures how wrong a given line is. That number is the <strong>loss</strong>.</p>
 
-<p>No iteration, no hyperparameters. Plug in data, get answer. Legendre published this in 1805. It's still your first tool 220 years later.</p>
+<p>The standard choice is to measure the vertical distance between each actual revenue yᵢ and our predicted revenue ŷᵢ, square each distance, and add them up:</p>
 
-<h4>Why Not Absolute Errors?</h4>
+<pre><code class="language-python">Loss = Σᵢ (yᵢ - ŷᵢ)²</code></pre>
 
-<p>You could minimize |yᵢ - ŷᵢ| instead (L1 loss, a.k.a. Least Absolute Deviations). It's more robust to outliers — one wild data point can't drag the line as far. But it has no closed-form solution and isn't differentiable at zero, making optimization trickier. Use it when you suspect heavy-tailed noise. Otherwise, squared errors win on convenience.</p>
+<p>Why square the distances instead of using absolute values? Three reasons, and they're all worth knowing.</p>
 
-<!-- ════════════════════════════════════════════ -->
+<p>First, squaring makes every error positive — overestimating by $100 is penalized the same as underestimating by $100. Absolute values do this too, so this alone isn't decisive. Second, squaring punishes large errors disproportionately. One prediction that's off by $200 contributes 40,000 to the loss; four predictions each off by $100 contribute 40,000 total. The squared loss <em>really</em> doesn't want you to be wildly wrong anywhere. Third — and this is the real reason it won — the squared loss creates a smooth, bowl-shaped surface with a single bottom. Think of a valley with one lowest point. No matter where you start, if you walk downhill you'll reach it. That bowl shape is called <strong>convexity</strong>, and it means there's exactly one best answer. We'll come back to this bowl analogy several times.</p>
 
-<h3>The Normal Equation</h3>
+<p>There's a deeper reason too. If you assume the noise in your data follows a bell curve — a Gaussian distribution — then minimizing squared error is mathematically identical to maximizing the likelihood of your data. The technique we call <strong>Ordinary Least Squares</strong> (OLS) and the technique we call <strong>Maximum Likelihood Estimation</strong> (MLE) are the same calculation, wearing different hats. Legendre and Gauss figured this out circa 1805. Two centuries of validation later, it's still the default.</p>
 
-<p>One feature is a toy problem. Real models use dozens or hundreds. With multiple features, you write the model in matrix form:</p>
+<p>You <em>could</em> minimize absolute errors instead — that's called L1 loss or Least Absolute Deviations. It's more robust when you have wild outliers that would drag a squared-error line off course. But it has no closed-form solution and isn't differentiable at zero, making optimization trickier. Squared errors win on convenience for the common case.</p>
 
-<pre><code class="language-python">ŷ = Xw    where X is n×(p+1), w is (p+1)×1</code></pre>
+<!-- ═══════════ NORMAL EQUATION ═══════════ -->
 
-<p>The loss becomes <code>(y - Xw)ᵀ(y - Xw)</code>. Differentiate, set to zero, and you get the <strong>normal equation</strong>:</p>
+<h2>The Normal Equation</h2>
 
-<pre><code class="language-python">XᵀX w = Xᵀy   →   w = (XᵀX)⁻¹ Xᵀy</code></pre>
+<p>With one feature, finding the best line is a calculus exercise: take the derivative of the loss with respect to w₀ and w₁, set both to zero, solve the two equations. The answer pops out.</p>
 
-<p>Elegant. Exact. One shot. But there's a catch.</p>
+<p>Real problems have dozens, hundreds, or thousands of features. Our coffee shop model might include foot traffic, neighborhood median income, distance to the nearest competitor, average rent per square foot, and so on. With p features, the model becomes:</p>
 
-<h4>When to Use It vs. Gradient Descent</h4>
+<pre><code class="language-python">ŷ = Xw     where X is n×(p+1), w is (p+1)×1</code></pre>
 
-<table>
-  <thead>
-    <tr><th>Factor</th><th>Normal Equation</th><th>Gradient Descent</th></tr>
-  </thead>
-  <tbody>
-    <tr><td>Features (p)</td><td>Fast up to ~10k</td><td>Scales to millions</td></tr>
-    <tr><td>Samples (n)</td><td>Any (but need n &gt; p)</td><td>Any — mini-batch on huge data</td></tr>
-    <tr><td>Complexity</td><td>O(p³) for matrix inversion</td><td>O(npk) for k iterations</td></tr>
-    <tr><td>Hyperparameters</td><td>None</td><td>Learning rate, batch size, epochs</td></tr>
-    <tr><td>Exact solution?</td><td>Yes</td><td>Approximation (converges)</td></tr>
-    <tr><td>Singular XᵀX?</td><td>Fails (use pseudoinverse)</td><td>Still works</td></tr>
-  </tbody>
-</table>
+<p>X is a matrix. Each row is one coffee shop. Each column is one feature (plus a column of ones for the intercept). The loss in matrix form is (y - Xw)ᵀ(y - Xw). Take the derivative with respect to the whole weight vector, set it to zero, and you get the <strong>normal equation</strong>:</p>
 
-<p><strong>Rule of thumb:</strong> if your feature matrix fits comfortably in memory and p &lt; 10,000, use the normal equation. Otherwise, gradient descent.</p>
+<pre><code class="language-python">w = (XᵀX)⁻¹ Xᵀy</code></pre>
 
-<!-- ════════════════════════════════════════════ -->
+<p>One line. Plug in data, get the exact optimal weights. No iteration, no hyperparameters, no learning rate to tune. It's elegant. It's exact.</p>
 
-<h3>Gradient Descent</h3>
+<p>It also has a catch that bit me in a real project before I understood it. The formula requires inverting the matrix XᵀX. Matrix inversion costs O(p³) — that's p cubed, where p is the number of features. With 100 features, that's a million operations. Fine. With 100,000 features, that's 10¹⁵ operations. Not fine. The matrix also needs to be <em>invertible</em> in the first place. If two features are perfectly correlated — say you included both "temperature in Celsius" and "temperature in Fahrenheit" — XᵀX becomes singular and the inverse doesn't exist. Even <em>near</em>-perfect correlation makes the inversion numerically unstable: tiny changes in data produce wildly different weights.</p>
 
-<p>When XᵀX is too big to invert, you iterate instead. Start with random weights. Compute how wrong you are. Nudge in the direction that reduces the error. Repeat.</p>
+<p>A practical note: production code should never literally compute (XᵀX)⁻¹. Libraries use QR decomposition or SVD instead, which are numerically far more stable. But the formula is worth knowing because it reveals the structure: the answer depends on XᵀX (how the features relate to each other) and Xᵀy (how each feature relates to the target). That structure shows up everywhere.</p>
 
-<pre><code class="language-python">w ← w - α · ∇Loss(w)
+<!-- ═══════════ GRADIENT DESCENT ═══════════ -->
 
-∇Loss(w) = -2Xᵀ(y - Xw)     # the gradient
-α = learning rate              # step size</code></pre>
+<h2>When the Matrix Gets Too Big: Gradient Descent</h2>
 
-<p>The learning rate α is your first real hyperparameter. Too large → the loss oscillates or explodes. Too small → you waste hours crawling toward the answer.</p>
+<p>When you have so many features that inverting XᵀX is impractical — or you have so many data points that even forming the matrix blows your memory budget — you need a different approach. Instead of solving for the answer in one shot, you sneak up on it.</p>
 
-<h4>Batch vs. Mini-Batch vs. Stochastic</h4>
+<p>Start with random weights. Compute how wrong you are. Figure out which direction reduces the error. Take a small step in that direction. Repeat.</p>
 
-<table>
-  <thead>
-    <tr><th>Variant</th><th>Gradient computed on</th><th>Tradeoff</th></tr>
-  </thead>
-  <tbody>
-    <tr><td><strong>Batch</strong></td><td>All n samples</td><td>Accurate gradient, expensive per step</td></tr>
-    <tr><td><strong>Mini-batch</strong></td><td>Random subset (32–512)</td><td>Good balance — the standard choice</td></tr>
-    <tr><td><strong>Stochastic (SGD)</strong></td><td>Single sample</td><td>Noisy but fast; good for online learning</td></tr>
-  </tbody>
-</table>
+<pre><code class="language-python">w ← w - α · ∇Loss(w)</code></pre>
 
-<p>Mini-batch is what everyone uses in practice. It's noisy enough to escape shallow local minima (less relevant for linear regression's convex loss, but critical habit for deep learning) and cheap enough to scale to billions of rows.</p>
+<p>∇Loss(w) is the gradient — a vector that points in the direction of steepest increase. We move in the opposite direction, downhill. α is the <strong>learning rate</strong>, the size of each step. Think of it this way: you're standing somewhere in our bowl-shaped valley, blindfolded, and you can feel the slope of the ground under your feet. You take a step downhill, feel the slope again, step again. Eventually you reach the bottom.</p>
 
-<p><strong>Critical:</strong> gradient descent <em>requires</em> feature scaling. If sqft ranges from 500–3000 and bedrooms ranges from 1–5, the loss surface becomes an elongated ellipse and convergence slows dramatically. Always standardize first: <code>(x - mean) / std</code>.</p>
+<p>The learning rate α is your first real hyperparameter. Make it too large and you overshoot the bottom of the valley, bouncing back and forth across it, possibly flying off into the distance. Make it too small and you spend an eternity inching forward. The sweet spot is problem-dependent, and finding it is part of the craft.</p>
 
-<!-- ════════════════════════════════════════════ -->
+<p>There are three flavors of gradient descent, distinguished by how much data they look at per step. <strong>Batch gradient descent</strong> computes the gradient using all n data points — accurate but expensive when n is huge. <strong>Stochastic gradient descent</strong> (SGD) uses a single randomly chosen data point — fast but noisy, the gradient estimate lurches around like a drunk walk that trends downhill. <strong>Mini-batch gradient descent</strong> uses a random subset, typically 32 to 512 samples — noisy enough to avoid getting stuck, cheap enough to scale. Mini-batch is what everyone uses in practice.</p>
 
-<h3>Multiple Regression</h3>
+<p>One thing gradient descent demands that the normal equation doesn't: <strong>feature scaling</strong>. If foot traffic ranges from 50 to 3,000 and median income ranges from 30,000 to 150,000, the loss surface stretches into a long, narrow valley. The gradient points mostly along the narrow axis, and convergence slows to a crawl. Standardizing each feature to zero mean and unit variance — (x - mean) / std — turns that elongated valley into something closer to a round bowl, and gradient descent converges much faster.</p>
 
-<p>Going from 1 feature to many is conceptually straightforward — just more columns in X. But it introduces a new problem.</p>
+<!-- ═══════════ MULTICOLLINEARITY ═══════════ -->
 
-<h4>Multicollinearity</h4>
+<h2>More Features, More Problems: Multicollinearity</h2>
 
-<p>Include both "square footage" and "number of rooms." They're heavily correlated — big houses have more rooms. The model can't decide how to split credit. Coefficient for sqft might flip sign if you add one more data point. The individual coefficients become meaningless even though predictions remain stable.</p>
+<p>Going from one feature to many is conceptually straightforward. More columns in X, more weights to learn, same formula. But it introduces a problem that's invisible until it bites you.</p>
 
-<p>The <strong>Variance Inflation Factor (VIF)</strong> quantifies this:</p>
+<p>Imagine our coffee shop model includes both "total square footage" and "number of seats." These are heavily correlated — bigger shops have more seats. The model can't decide how to split credit between them. It might assign w = +500 to square footage and w = -300 to seats, or w = +200 to square footage and w = 0 to seats. Both combinations produce similar predictions, but the individual coefficients are meaningless. Worse, add one more data point and the coefficients might flip dramatically. The predictions stay stable, but your interpretation falls apart.</p>
 
-<pre><code class="language-python">VIF(j) = 1 / (1 - R²_j)
-# R²_j = R² from regressing feature j on all other features
-# VIF > 10 = serious problem.  VIF > 5 = investigate.</code></pre>
+<p>The <strong>Variance Inflation Factor</strong> (VIF) quantifies how bad this is. For each feature j, regress it against all the other features and compute the R². Then VIF(j) = 1 / (1 - R²_j). A VIF above 10 is a serious problem. Above 5 deserves investigation.</p>
 
-<p>Fixes: drop one of the correlated features, combine them (sqft per room), or just use regularization — it handles collinearity gracefully.</p>
+<p>The fixes are straightforward: drop one of the correlated features, combine them into a ratio (square footage per seat), or reach for regularization — which handles collinearity gracefully as a side effect. We're about to build the machinery for that.</p>
 
-<!-- ════════════════════════════════════════════ -->
+<!-- ═══════════ REST STOP 1 ═══════════ -->
 
-<h3>Regularization</h3>
+<div class="tldr">
+  <div class="tldr-label">Rest Stop</div>
+  <p>Congratulations on making it this far. You can stop here if you want. You now have a working mental model of linear regression: a line (or hyperplane) fitted by minimizing squared errors, solvable either in one shot via the normal equation or iteratively via gradient descent. You understand the tradeoff between the two, you know why feature scaling matters, and you can spot multicollinearity.</p>
+  <p>That's enough to build, train, and deploy a basic regression model. The short version of what comes next: regularization prevents your model from memorizing noise, and the sigmoid function extends the same framework to classification problems. There. You're 40% of the way through this section, and you have a solid foundation.</p>
+  <p>But if the discomfort of not knowing <em>why</em> Lasso produces exact zeros while Ridge doesn't, or <em>how</em> logistic regression and linear regression are actually the same framework in disguise, is nagging at you — read on.</p>
+</div>
 
-<p>This is the single most important concept in this section. Everything you learn here — L1 penalties, L2 penalties, the bias-variance tradeoff they embody — you'll use in <em>every model going forward</em>. Neural networks, SVMs, even tree ensembles use analogous ideas.</p>
+<!-- ═══════════ REGULARIZATION ═══════════ -->
 
-<p>The problem: more features → lower training error → but higher test error. Coefficients blow up, canceling each other in elaborate ways that work on training data and nowhere else. Regularization adds a penalty for large weights:</p>
+<h2>Regularization: The Budget Constraint</h2>
+
+<p>This is the single most important concept in this entire section, and the ideas transfer to every model you'll ever use. Neural networks, SVMs, tree ensembles — they all use variations of what we're about to build.</p>
+
+<p>The problem is this: as you add features, your model gets more flexible. Training error goes down. But at some point, the model starts fitting the noise in the training data — the random quirks that won't appear in new data. Test error goes back up. The coefficients grow large, canceling each other in elaborate ways that explain the training data perfectly and generalize nowhere.</p>
+
+<p>Here's the analogy that made it click for me. Imagine you're on a shopping trip with a fixed budget. Without a budget, you'd buy everything in the store — including things you don't need. With a budget, you're forced to prioritize: spend on the items that matter most, skip the rest. Regularization is the budget. It constrains how much total "weight" the model can distribute across features, forcing it to put weight only where it truly helps.</p>
+
+<p>Mathematically, we add a penalty to the loss:</p>
 
 <pre><code class="language-python">Total Loss = Data Loss + λ × Complexity Penalty</code></pre>
 
-<h4>Ridge Regression (L2)</h4>
+<p>λ (lambda) controls how tight the budget is. Large λ means a tight budget — aggressive shrinkage, potentially underfitting. Small λ means a loose budget — barely constrained, risk of overfitting. You tune it with cross-validation.</p>
+
+<h3>Ridge Regression (L2 Penalty)</h3>
+
+<p>The L2 penalty charges the sum of squared weights:</p>
 
 <pre><code class="language-python">Loss_ridge = Σ(yᵢ - ŷᵢ)² + λ Σ wⱼ²</code></pre>
 
-<p>Shrinks all coefficients toward zero, but never <em>to</em> zero. Every feature stays in the model with a dampened voice. Closed-form solution still exists:</p>
+<p>Every weight gets taxed in proportion to its square. Large weights are expensive; small weights are cheap. The effect: all coefficients shrink toward zero, but none reach exactly zero. Every feature stays in the model, but with a dampened voice. Going back to our shopping analogy — Ridge is like having a budget that makes expensive items cost even more, so you buy smaller amounts of everything instead of cutting anything completely.</p>
+
+<p>Ridge still has a closed-form solution, and this is where something beautiful happens:</p>
 
 <pre><code class="language-python">w_ridge = (XᵀX + λI)⁻¹ Xᵀy</code></pre>
 
-<p>That λI term is the magic — it makes XᵀX always invertible, even with perfect multicollinearity. Ridge is literally <em>adding stability to the matrix inversion</em>.</p>
+<p>Compare this to the original normal equation: w = (XᵀX)⁻¹ Xᵀy. The only difference is that λI — lambda times the identity matrix. Adding λ to the diagonal of XᵀX makes it always invertible, even when features are perfectly correlated. Regularization serves a double purpose: it prevents overfitting <em>and</em> fixes numerical instability. That's not a coincidence. The instability and the overfitting are two symptoms of the same disease — the model has too much freedom for the data it was given.</p>
 
-<p>Bayesian interpretation: ridge = Gaussian prior on coefficients centered at zero. "I believe weights are probably small; convince me otherwise with data."</p>
+<h3>Lasso Regression (L1 Penalty)</h3>
 
-<h4>Lasso Regression (L1)</h4>
+<p>The L1 penalty charges the sum of absolute weights:</p>
 
 <pre><code class="language-python">Loss_lasso = Σ(yᵢ - ŷᵢ)² + λ Σ |wⱼ|</code></pre>
 
-<p>The dramatic difference: lasso drives coefficients to <em>exactly zero</em>. Not approximately. Exactly. It performs <strong>automatic feature selection</strong>. If 8 of your 100 features matter, lasso zeros the other 92.</p>
+<p>The dramatic difference: Lasso drives coefficients to <em>exactly zero</em>. Not approximately zero. Not 0.0001. Exactly 0.0. If you have 100 features and 8 of them actually matter, Lasso will zero out the other 92. It performs <strong>automatic feature selection</strong> as a natural byproduct of optimization.</p>
 
-<p>Why? Geometrically, the L1 constraint region is a diamond with sharp corners on the axes. The loss function's contours tend to hit those corners — where one or more coordinates are exactly zero. L2's circle has no corners, so the contours touch at smooth points where everything is nonzero.</p>
+<p>In our shopping analogy, Lasso is like a budget that forces you to choose: buy a few items or nothing at all. No "tiny amounts of everything" — you either commit to an item or leave it on the shelf.</p>
 
-<p>No closed-form solution. Solved by coordinate descent (optimize one weight at a time, cycle through all).</p>
+<p>The tradeoff: there's no closed-form solution. You can't write down a one-line formula like Ridge. Lasso is solved by <strong>coordinate descent</strong> — optimize one weight at a time while holding all others fixed, cycle through all weights, repeat until convergence. Each step has a closed-form solution for a single weight, which makes the algorithm surprisingly fast despite being iterative.</p>
 
-<h4>ElasticNet (L1 + L2)</h4>
+<p>But <em>why</em> does the L1 penalty produce exact zeros while L2 doesn't? The answer is geometric, and it took me an embarrassingly long time to internalize it. Let me try to build the picture.</p>
 
-<pre><code class="language-python">Loss = Σ(yᵢ - ŷᵢ)² + λ[ρ Σ|wⱼ| + (1-ρ) Σwⱼ²]
-# ρ = l1_ratio in sklearn. ρ=1 → Lasso. ρ=0 → Ridge.</code></pre>
+<!-- ═══════════ GEOMETRY OF SPARSITY ═══════════ -->
 
-<p>Gets you sparsity (some zeros) <em>plus</em> stability (correlated features share coefficients instead of one randomly winning). Use when you have groups of correlated features.</p>
+<h2>The Geometry That Explains Sparsity</h2>
 
-<h4>Which Regularizer? Decision Table</h4>
+<p>Think of a two-weight model. The weight space is a flat plane with w₁ on one axis and w₂ on the other. The loss function (without regularization) looks like a bowl sitting on that plane, and the bottom of the bowl — the unconstrained optimum — is somewhere off to the side, not at the origin.</p>
 
-<table>
-  <thead>
-    <tr><th>Situation</th><th>Use</th><th>Why</th></tr>
-  </thead>
-  <tbody>
-    <tr><td>All features probably matter</td><td><strong>Ridge</strong></td><td>Shrinks everything, drops nothing</td></tr>
-    <tr><td>Many features are noise</td><td><strong>Lasso</strong></td><td>Zeros out the irrelevant ones</td></tr>
-    <tr><td>Groups of correlated features</td><td><strong>ElasticNet</strong></td><td>Lasso picks one randomly; ElasticNet keeps the group</td></tr>
-    <tr><td>Don't know / first try</td><td><strong>ElasticNet</strong> (ρ=0.5)</td><td>Hedge your bets, tune ρ with CV</td></tr>
-    <tr><td>Interpretability critical</td><td><strong>Lasso</strong></td><td>Sparse model = fewer coefficients to explain</td></tr>
-    <tr><td>p &gt;&gt; n (more features than samples)</td><td><strong>Lasso</strong> or <strong>ElasticNet</strong></td><td>Must reduce dimensionality; Ridge can't</td></tr>
-  </tbody>
-</table>
+<p>Now add the regularization constraint. We're saying the weights must stay within a "budget region" — a shape centered at the origin.</p>
 
-<!-- ════════════════════════════════════════════ -->
+<p>For L2 (Ridge), that budget region is a circle. All points where w₁² + w₂² ≤ t form a disc. For L1 (Lasso), the budget region is a diamond — technically a rotated square. All points where |w₁| + |w₂| ≤ t form a shape with sharp corners sitting exactly on the axes.</p>
 
-<h3>Assumptions (LINE)</h3>
+<p>The best regularized solution is where the loss function's contour lines — the ovals radiating outward from the bowl's bottom — first touch the constraint region. Picture slowly inflating an oval balloon from the optimum outward until it bumps into the constraint shape.</p>
 
-<p>OLS rests on four assumptions. You need to know them not because they're exam material, but because <em>when they break, your model lies to you in specific, diagnosable ways</em>.</p>
+<p>Here's the key: when an oval bumps into a circle, it can touch anywhere along the smooth surface. The contact point is almost never on an axis, so both weights remain nonzero. But when an oval bumps into a diamond, it's far more likely to hit one of those sharp corners. And the corners sit right on the axes — where one coordinate is exactly zero.</p>
 
-<table>
-  <thead>
-    <tr><th>Assumption</th><th>What It Means</th><th>What Breaks When Violated</th><th>How to Check</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><strong>L</strong>inearity</td>
-      <td>True relationship is linear in features</td>
-      <td>Systematic prediction errors; residuals show curves</td>
-      <td>Residuals vs. fitted plot</td>
-    </tr>
-    <tr>
-      <td><strong>I</strong>ndependence</td>
-      <td>Errors don't influence each other</td>
-      <td>Underestimated standard errors → overconfident p-values</td>
-      <td>Durbin-Watson test; residual autocorrelation plot</td>
-    </tr>
-    <tr>
-      <td><strong>N</strong>ormality</td>
-      <td>Residuals are normally distributed</td>
-      <td>Confidence intervals and hypothesis tests become unreliable</td>
-      <td>Q-Q plot of residuals</td>
-    </tr>
-    <tr>
-      <td><strong>E</strong>qual variance</td>
-      <td>Residual spread is constant (homoscedasticity)</td>
-      <td>Standard errors are wrong → confidence intervals lie</td>
-      <td>Residuals vs. fitted: look for funnel shape</td>
-    </tr>
-  </tbody>
-</table>
+<p>That's the entire explanation. The diamond has corners; the circle doesn't. Corners live on axes; axes are where weights are zero. Lasso produces sparsity because its constraint shape has geometry that funnels solutions toward those corners. In higher dimensions, the diamond becomes a cross-polytope with even more corners (there are 2p of them in p dimensions), and the probability of hitting a corner only increases.</p>
 
-<p><strong>Practical note:</strong> normality is the least important for prediction. With enough data, the Central Limit Theorem covers you. Linearity and equal variance are the ones that silently wreck your model. Always plot residuals.</p>
+<p>I still find it remarkable that such a fundamental behavioral difference — zero versus nonzero — comes down to whether the constraint shape has sharp corners. No amount of staring at the formulas alone would have given me that intuition. The picture is what makes it stick.</p>
 
-<p>When assumptions hold, OLS is the <strong>Best Linear Unbiased Estimator</strong> (BLUE) — that's the Gauss-Markov theorem. But "unbiased" isn't always what you want. A little bias (via regularization) often buys you a lot of variance reduction, and your test error drops.</p>
+<!-- ═══════════ BAYESIAN INTERPRETATION ═══════════ -->
 
-<p>Weighted Least Squares fixes heteroscedasticity when you know the variance structure: <code>Loss = Σ wᵢ(yᵢ - ŷᵢ)²</code>.</p>
+<h2>The Bayesian Secret Identity</h2>
 
-<!-- ════════════════════════════════════════════ -->
+<p>There's another way to see regularization that's worth carrying around in your head, because it shows up in interviews and connects to a much larger body of ideas.</p>
 
-<h3>R² and Adjusted R²</h3>
+<p>Ridge regression is equivalent to doing <strong>Maximum A Posteriori</strong> (MAP) estimation with a Gaussian prior on the weights. In plain language: before seeing any data, you believe each weight is probably close to zero, distributed like a bell curve centered at zero. The data then pulls the weights away from zero, but only as far as the evidence warrants. The penalty λ Σ wⱼ² is the negative log of that Gaussian prior. Large λ means a narrow bell curve — a strong belief that weights should be small. Small λ means a wide bell curve — a weak belief that you're easily overridden by data.</p>
 
-<p>R² answers: "what fraction of variance in y does the model explain?"</p>
+<p>Lasso regression is MAP estimation with a <strong>Laplace prior</strong> — a sharper, pointier distribution that puts more probability mass right at zero and has heavier tails. The shape of the Laplace distribution is what encodes the belief that most weights should be exactly zero, but a few can be large. The L1 penalty λ Σ |wⱼ| is the negative log of that Laplace prior.</p>
 
-<pre><code class="language-python">R² = 1 - (SS_res / SS_tot)
+<p>So choosing between Ridge and Lasso isn't an arbitrary decision about L1 versus L2. It's a statement about what you believe about the world before you look at the data. "I think all features contribute a little" → Ridge (Gaussian prior). "I think most features are irrelevant and a few drive everything" → Lasso (Laplace prior).</p>
 
-SS_res = Σ(yᵢ - ŷᵢ)²    # residual sum of squares
-SS_tot = Σ(yᵢ - ȳ)²     # total sum of squares</code></pre>
+<p>I'm still developing my intuition for when this Bayesian framing is practically useful versus when it's more of a philosophical comfort. But it's come up in every senior-level interview I've seen on the topic, so it's worth having in your back pocket.</p>
 
-<p>R² = 0.85 means 85% of the variation is captured. R² = 0 means you're no better than predicting the mean. R² = 1.0 is suspicious — you're probably overfitting or leaking the target.</p>
+<!-- ═══════════ ELASTICNET ═══════════ -->
 
-<h4>The Trap</h4>
+<h2>ElasticNet: The Compromise</h2>
 
-<p>R² <em>never decreases</em> when you add features. Throw in a column of random noise and R² ticks up by chance. This is why <strong>Adjusted R²</strong> exists — it penalizes for the number of features:</p>
+<p>Lasso has a flaw. When features are correlated — and in the real world, they almost always are — Lasso behaves erratically. It'll pick one feature from a correlated group and zero out the rest, and which one it picks can change if you add a single data point. Run it on ten different random splits and you get ten different selected features. That's uncomfortable if you care about interpretation.</p>
 
-<pre><code class="language-python">Adjusted R² = 1 - ((1 - R²)(n - 1)) / (n - p - 1)
-# n = samples, p = features</code></pre>
+<p>ElasticNet combines both penalties:</p>
 
-<p>If adding a feature doesn't improve adjusted R², it's not earning its keep. In practice, cross-validated metrics (RMSE, MAE) are more reliable than either R² variant for model selection.</p>
+<pre><code class="language-python">Loss = Σ(yᵢ - ŷᵢ)² + λ[ρ Σ|wⱼ| + (1-ρ) Σwⱼ²]</code></pre>
 
-<!-- ════════════════════════════════════════════ -->
+<p>The parameter ρ (called l1_ratio in sklearn) controls the mix. At ρ = 1, you get pure Lasso. At ρ = 0, pure Ridge. In between, you get the best of both worlds: the L1 component still produces some exact zeros (feature selection), while the L2 component encourages correlated features to share coefficients rather than one randomly winning. Zou and Hastie, who introduced ElasticNet in 2005, called this the <strong>grouping effect</strong> — correlated features tend to be selected or dropped as a group, not individually.</p>
 
-<h3>Production Gotchas</h3>
+<p>My practical guideline: if you don't know the correlation structure of your features — and you usually don't at the start — begin with ElasticNet at ρ = 0.5 and tune from there with cross-validation. It's a safer default than either pure Ridge or pure Lasso.</p>
 
-<h4>Feature Scaling Is Not Optional (for Regularization)</h4>
+<!-- ═══════════ SIGMOID ═══════════ -->
 
-<p>Ridge and Lasso penalize large coefficients. If sqft is in thousands and bedrooms is 1–5, the regularizer hammers the sqft coefficient unfairly — it's bigger only because the units are bigger. <strong>Always standardize features before regularized regression.</strong> sklearn's <code>Ridge</code>/<code>Lasso</code> don't do this for you.</p>
+<h2>From Numbers to Yes/No: The Sigmoid</h2>
 
-<h4>Polynomial Features for Non-Linearity</h4>
+<p>Our coffee shop model predicts revenue — a number that can be anything from −∞ to +∞ (well, negative revenue would be unfortunate, but the math allows it). But what if the question changes? Instead of "how much revenue," our friend asks: "Will this shop survive its first year — yes or no?"</p>
 
-<p>If residuals show a curve, add polynomial terms: x², x³, or interaction terms x₁×x₂. This is still "linear" regression — "linear" means linear in the <em>parameters</em>, not the features. Pair with regularization or the coefficients will explode.</p>
+<p>We need the output to be a probability between 0 and 1. The fix is disarmingly simple: take the same linear combination wᵀx + b and feed it through a function that squashes any real number into the range (0, 1). Think of it as a dimmer switch. The linear output is how far you've turned the dial — it can be any number. The dimmer switch converts that into a brightness level between off (0) and full (1).</p>
 
-<h4>Always Check Residual Plots</h4>
+<p>The specific function we use is the <strong>sigmoid</strong>:</p>
 
-<p>R² can look great while your model is systematically wrong. Plot residuals vs. predicted values. You're looking for random scatter. Patterns mean the model is missing something structural.</p>
+<pre><code class="language-python">σ(z) = 1 / (1 + e⁻ᶻ)</code></pre>
 
-<h4>Influence Diagnostics</h4>
+<p>But here's the thing most tutorials gloss over: the sigmoid isn't an arbitrary choice we picked because it looks nice. It emerges naturally from a specific assumption. Assume that the <strong>log-odds</strong> of survival are a linear function of the features:</p>
 
-<p><strong>Cook's Distance</strong> measures how much all predictions change when you remove one point. Threshold: Cook's D &gt; 4/n deserves a look. Don't delete influential points reflexively — investigate whether they're errors or genuinely informative outliers.</p>
+<pre><code class="language-python">log(p / (1 - p)) = wᵀx + b</code></pre>
 
-<!-- ════════════════════════════════════════════ -->
+<p>The quantity p / (1 - p) is the <strong>odds</strong> — familiar if you've ever bet on anything. Odds of 3 means "three times more likely to happen than not." Taking the log of the odds gives us a number that ranges from −∞ to +∞, which is exactly the range of a linear function. Now solve for p, and out comes the sigmoid. We didn't choose the shape. The math handed it to us.</p>
 
-<h3>Putting It All Together</h3>
+<p>The sigmoid's derivative has a beautiful property: σ'(z) = σ(z) · (1 − σ(z)). You compute the derivative directly from the function's own output, with no extra computation. This is why it was so popular in early neural networks — backpropagation was computationally cheap through the sigmoid layer.</p>
 
-<pre><code class="language-python">import numpy as np
-from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import make_pipeline
-from sklearn.model_selection import cross_val_score
-from sklearn.datasets import make_regression
+<p>At z = 0, the sigmoid outputs exactly 0.5 — maximum uncertainty. At z = 5, it's about 0.993. At z = −5, about 0.007. The interesting transition happens in roughly the [−5, 5] range. Outside that, the function is effectively flat, which will matter when we talk about optimization.</p>
 
-# 200 samples, 20 features, only 5 actually informative
-X, y = make_regression(n_samples=200, n_features=20,
-                       n_informative=5, noise=10, random_state=42)
+<p>That's logistic regression. Same linear core as before, same weights, same features — but with one extra function call at the end that converts a linear score into a probability. Everything else — the loss, the optimization, the regularization — flows from this one decision.</p>
 
-models = {
-    "OLS":        make_pipeline(StandardScaler(), LinearRegression()),
-    "Ridge":      make_pipeline(StandardScaler(), Ridge(alpha=1.0)),
-    "Lasso":      make_pipeline(StandardScaler(), Lasso(alpha=0.5)),
-    "ElasticNet": make_pipeline(StandardScaler(), ElasticNet(alpha=0.5, l1_ratio=0.5)),
-}
+<!-- ═══════════ LOG-LOSS ═══════════ -->
 
-print(f"{'Model':<13} {'CV R² (mean ± std)'}")
-print("-" * 38)
-for name, pipe in models.items():
-    scores = cross_val_score(pipe, X, y, cv=5, scoring="r2")
-    print(f"{name:<13} {scores.mean():.3f} ± {scores.std():.3f}")
+<h2>Log-Loss: A New Measure of Wrongness</h2>
 
-# Inspect Lasso's sparsity
-lasso_pipe = models["Lasso"].fit(X, y)
-coefs = lasso_pipe.named_steps["lasso"].coef_
-n_zeros = (np.abs(coefs) < 1e-6).sum()
-print(f"\nLasso zeroed {n_zeros}/{len(coefs)} coefficients")</code></pre>
+<p>In linear regression, we minimized squared error. Can we do the same here? Technically, yes. Practically, it's a disaster. When you push squared error through the sigmoid, the loss surface becomes non-convex — our nice bowl turns into a landscape with multiple valleys and flat plateaus. Gradient descent gets lost. The blindfolded hiker we imagined earlier would wander into a hollow that isn't the lowest point and stay there.</p>
 
-<p>This is what real projects look like. Load data. Try multiple models. Compare with cross-validation. Inspect sparsity. Pick the one that generalizes best.</p>
+<p>We need a loss function that stays convex and that punishes confident wrong predictions brutally. Here's what works:</p>
 
-<!-- ════════════════════════════════════════════ -->
+<pre><code class="language-python">L = −(1/n) Σ [yᵢ · log(pᵢ) + (1 − yᵢ) · log(1 − pᵢ)]</code></pre>
 
-<h3>What You Should Now Be Able To Do</h3>
+<p>To build the intuition, consider three scenarios for a shop that actually survived (y = 1). If we predicted p = 0.99, the loss for that sample is −log(0.99) ≈ 0.01 — confident and right, almost no penalty. If we predicted p = 0.50, the loss is −log(0.50) ≈ 0.69 — uncertain, moderate penalty. If we predicted p = 0.01, the loss is −log(0.01) ≈ 4.61 — confident and wrong, massive penalty.</p>
 
-<ul>
-  <li>☑ Explain why squared error is the default loss function and when you'd choose absolute error instead</li>
-  <li>☑ Write the normal equation from memory: <code>w = (XᵀX)⁻¹Xᵀy</code> — and explain when it fails</li>
-  <li>☑ Decide between the normal equation and gradient descent based on dataset size</li>
-  <li>☑ Explain gradient descent's update rule, the role of the learning rate, and why features must be scaled</li>
-  <li>☑ Diagnose multicollinearity using VIF and know how to fix it</li>
-  <li>☑ Choose between Ridge, Lasso, and ElasticNet for a given problem — and explain <em>why</em></li>
-  <li>☑ Interpret R² and adjusted R², and know when R² is misleading</li>
-  <li>☑ List the LINE assumptions and describe what breaks when each is violated</li>
-  <li>☑ Build a cross-validated comparison pipeline in sklearn with proper scaling</li>
-  <li>☑ Read a residual plot and spot linearity violations, heteroscedasticity, and outliers</li>
-</ul>
-<!-- ═══════════ Logistic Regression ═══════════ -->
-<h2>Logistic Regression</h2>
+<p>The logarithm makes the penalty asymptotic. As your predicted probability for the true class approaches zero, the loss shoots toward infinity. Being 99% sure about the wrong answer costs you enormously more than being 60% sure about the wrong answer. That's exactly the behavior you want.</p>
 
-<!-- ════════════════════════════════════════════ -->
+<p>This loss goes by two names: <strong>binary cross-entropy</strong> and <strong>negative log-likelihood</strong>. Minimizing it is mathematically equivalent to maximum likelihood estimation — finding the weights that make the observed data most probable. Two names, same math, same as we saw with OLS and Gaussian MLE in the linear regression case.</p>
 
-<h3>From Regression to Classification</h3>
+<!-- ═══════════ DECISION BOUNDARY AND ODDS RATIOS ═══════════ -->
 
-<p>You already know linear regression: multiply features by weights, add a bias, get a number. That number can be anything from −∞ to +∞. Great for predicting house prices. Terrible for answering "will this customer churn — yes or no?"</p>
+<h2>The Decision Boundary and Odds Ratios</h2>
 
-<p>The fix is embarrassingly simple: <strong>take that same linear output and squash it through a function that maps any real number to a probability between 0 and 1.</strong></p>
+<p>Here's something that initially surprised me: the sigmoid is not the decision boundary. The decision boundary is the set of points where wᵀx + b = 0. That's a <strong>hyperplane</strong> — a line in 2D, a flat plane in 3D, a flat surface in higher dimensions. The sigmoid takes the signed distance from that hyperplane and converts it into a probability. Points far on the positive side get p ≈ 1. Points far on the negative side get p ≈ 0. Points right on the boundary get p = 0.5.</p>
 
-<pre><code class="language-python">z = w·x + b            # same linear combination as before
-p = sigmoid(z)          # now it's a probability</code></pre>
+<p>This is why it's called logistic <em>regression</em>, not logistic classification. The underlying model draws a straight line through the feature space. It can't curve around clusters. If your classes aren't linearly separable, logistic regression makes the best straight cut it can — and no better. Add polynomial or interaction features if you need curves.</p>
 
-<p>That's it. That's logistic regression. Same idea as linear regression, but with one extra function call at the end. Everything else — the loss function, the optimization, the regularization — follows from that one decision.</p>
+<p>The real superpower of logistic regression, and the reason it dominates in regulated industries, is how you interpret the weights. Each coefficient has a direct, quantifiable meaning through <strong>odds ratios</strong>.</p>
 
-<p>The output <em>p</em> represents P(y = 1 | x). If p > 0.5, predict class 1. If p < 0.5, predict class 0. But the real power is that you get a <em>calibrated probability</em>, not just a label. "This patient has a 73% chance of readmission" is far more useful than "this patient will be readmitted."</p>
+<p>A one-unit increase in feature xⱼ multiplies the odds of the positive class by e^(wⱼ). If the weight for "number of nearby competitors" is −0.4, then e^(−0.4) ≈ 0.67 — each additional competitor reduces the survival odds by about 33%. If the weight for "foot traffic (hundreds per day)" is 0.8, then e^(0.8) ≈ 2.23 — each additional hundred daily pedestrians more than doubles the survival odds.</p>
 
-<!-- ════════════════════════════════════════════ -->
+<p>A banker can understand this. A regulator can audit this. A business owner can act on this. Try getting the same precision of explanation from a random forest.</p>
 
-<h3>The Sigmoid Function</h3>
+<p>One common trap: confusing odds with probability. "Doubles the odds" does NOT mean "doubles the probability." When the baseline probability is 5%, doubling the odds moves it to about 10%. When the baseline is 40%, doubling the odds moves it to about 57%. The conversion is nonlinear. Always specify the baseline when translating odds ratios into probabilities for stakeholders.</p>
 
-<p>Why this specific squashing function and not, say, just clipping values to [0, 1]?</p>
+<!-- ═══════════ FINDING WEIGHTS ═══════════ -->
 
-<pre><code class="language-python">σ(z) = 1 / (1 + e^(−z))</code></pre>
+<h2>Finding the Weights: Why We Must Iterate</h2>
 
-<p>Three properties make it special:</p>
+<p>Linear regression gave us the normal equation — plug in data, get the answer. Logistic regression has <strong>no closed-form solution</strong>. The sigmoid makes the gradient equations nonlinear. Set the derivatives to zero and you get a system of equations that can't be solved algebraically. You must iterate.</p>
 
-<ul>
-  <li><strong>Maps (−∞, +∞) to (0, 1)</strong> — valid probabilities, always.</li>
-  <li><strong>Differentiable everywhere</strong> — gradient descent works without special cases.</li>
-  <li><strong>Clean derivative:</strong> σ'(z) = σ(z) · (1 − σ(z)) — you compute the derivative from the function value you already have. No extra work.</li>
-</ul>
+<p>The workhorse algorithms:</p>
 
-<p>It also isn't arbitrary. If you start from the assumption that the <em>log-odds</em> of the positive class are a linear function of the features — log(p / (1 − p)) = w·x + b — and solve for p, you get the sigmoid. We didn't pick the shape; the math gave it to us.</p>
+<p><strong>Gradient descent</strong> follows the negative gradient of log-loss, stepping downhill each iteration. It scales well to large datasets and is conceptually the simplest approach. For logistic regression's convex loss, any local minimum is the global minimum, so you don't worry about getting stuck in bad optima the way you do with neural networks.</p>
 
-<p>At z = 0, σ = 0.5 (maximum uncertainty). At z = 5, σ ≈ 0.993. At z = −5, σ ≈ 0.007. The transition from "almost certainly no" to "almost certainly yes" happens in roughly the interval [−5, 5]. (Probit regression swaps the sigmoid for a normal CDF — predictions are nearly identical, so ML sticks with sigmoid.)</p>
+<p><strong>Newton's method</strong> uses not only the gradient (which direction is downhill) but also the curvature — the Hessian matrix of second derivatives — to take smarter, larger steps. It converges quadratically, meaning the number of correct digits roughly doubles each iteration. For logistic regression, Newton's method takes the elegant form of <strong>Iteratively Reweighted Least Squares</strong> (IRLS): at each step, you construct a weighted linear regression problem and solve it. Then you update the weights based on the current predictions and solve again. The fact that logistic regression optimization reduces to repeatedly solving weighted least squares problems is one of those connections that makes the mathematical framework feel deeply coherent. Each iteration costs O(p³) though, so it's impractical for large p.</p>
 
-<!-- ════════════════════════════════════════════ -->
+<p><strong>L-BFGS</strong> approximates the Hessian from recent gradient information, giving you most of Newton's speed at a fraction of the memory cost. It's sklearn's default solver, and for most problems, it's the right choice.</p>
 
-<h3>Log-Loss (Binary Cross-Entropy)</h3>
+<!-- ═══════════ REST STOP 2 ═══════════ -->
 
-<p>In linear regression you minimize MSE. Can you use MSE here? Technically yes. Practically, it's a disaster.</p>
+<div class="tldr">
+  <div class="tldr-label">Rest Stop</div>
+  <p>If you've made it here, you can now build and train both regression and classification models from the linear family. You understand the loss functions, the optimization approaches, regularization with its geometric and Bayesian interpretations, and how to interpret coefficients as odds ratios. That's a formidable toolkit.</p>
+  <p>What follows is the deeper layer: the unified framework that reveals linear and logistic regression as special cases of the same idea, and the production realities that separate a notebook experiment from a deployed model.</p>
+  <p>But if the discomfort of not knowing what's underneath is nagging at you, read on.</p>
+</div>
 
-<p>MSE applied to sigmoid outputs creates a <strong>non-convex</strong> loss landscape — multiple local minima, flat regions where the gradient vanishes. Gradient descent gets stuck. What you want is a loss function that's convex (one minimum, no traps) and that punishes <em>confident wrong predictions</em> brutally.</p>
+<!-- ═══════════ GLM ═══════════ -->
 
-<pre><code class="language-python">L = −(1/n) Σ [ yᵢ · log(pᵢ) + (1 − yᵢ) · log(1 − pᵢ) ]</code></pre>
+<h2>The Bigger Picture: Generalized Linear Models</h2>
 
-<p>Build the intuition case by case:</p>
+<p>Here's something that took me a while to appreciate: linear regression and logistic regression aren't two separate models. They're two instances of a single framework called <strong>Generalized Linear Models</strong> (GLMs), introduced by Nelder and Wedderburn in 1972.</p>
 
-<table>
-  <thead>
-    <tr><th>True label</th><th>Predicted p</th><th>Loss for this sample</th><th>Verdict</th></tr>
-  </thead>
-  <tbody>
-    <tr><td>1</td><td>0.99</td><td>−log(0.99) ≈ 0.01</td><td>Confident & right → tiny loss</td></tr>
-    <tr><td>1</td><td>0.50</td><td>−log(0.50) ≈ 0.69</td><td>Uncertain → moderate loss</td></tr>
-    <tr><td>1</td><td>0.01</td><td>−log(0.01) ≈ 4.61</td><td>Confident & wrong → <strong>massive</strong> loss</td></tr>
-  </tbody>
-</table>
+<p>A GLM has three components. The <strong>random component</strong> specifies the probability distribution of the response variable — Gaussian for continuous data, Bernoulli for binary outcomes, Poisson for counts. The <strong>systematic component</strong> is the familiar linear predictor η = Xβ — a weighted sum of features. The <strong>link function</strong> connects the two: it maps the expected value of the response to the linear predictor.</p>
 
-<p>The logarithm makes the penalty asymptotic — as your predicted probability for the true class approaches zero, the loss shoots toward infinity. This is exactly the behavior you want: being 99% sure about the wrong answer should cost you enormously more than being 60% sure about the wrong answer.</p>
+<p>For linear regression, the link function is the identity: g(μ) = μ. The expected value of y equals the linear predictor directly. For logistic regression, the link function is the logit: g(μ) = log(μ / (1 − μ)). The log-odds of the probability equals the linear predictor. For Poisson regression (modeling count data like "number of customer complaints per day"), the link function is the log: g(μ) = log(μ).</p>
 
-<p>This loss is also called <strong>negative log-likelihood</strong>, because minimizing it is equivalent to maximum likelihood estimation. Two names, same math.</p>
+<p>Same framework. Same estimation machinery (IRLS works for all GLMs). Different distribution assumption, different link function. Once you internalize this, meeting a new GLM — gamma regression for insurance claims, negative binomial regression for overdispersed counts — isn't learning a new model. It's picking a new row from the table.</p>
 
-<!-- ════════════════════════════════════════════ -->
+<p>The link functions aren't arbitrary either. Each distribution in the exponential family has a <strong>canonical link</strong> — the link that falls out naturally from the math of the distribution. The identity link for Gaussian, the logit for Bernoulli, the log for Poisson — these are the canonical links. Using them gives the nicest mathematical properties, though you're free to use others if the problem demands it.</p>
 
-<h3>The Decision Boundary</h3>
+<p>My favorite thing about the GLM framework is that it took two models I'd been treating as unrelated for years and revealed them as the same engine with different fuel. That realization changed how I think about modeling — from "which model should I use?" to "what distribution does my response follow, and what's the natural link?"</p>
 
-<p>Here's a fact that surprises people: the sigmoid isn't the decision boundary. The decision boundary is where w·x + b = 0. That's a <strong>hyperplane</strong> — a line in 2D, a plane in 3D.</p>
+<!-- ═══════════ PRODUCTION ═══════════ -->
 
-<p>The sigmoid just converts <em>signed distance from that hyperplane</em> into a probability. Points far on the positive side get p ≈ 1. Points far on the negative side get p ≈ 0. Points right on the boundary get p = 0.5.</p>
+<h2>Production Realities</h2>
 
-<p>This is why it's called logistic <em>regression</em>, not logistic <em>classification</em>. The underlying model is still a linear function. The boundary is LINEAR. If your classes aren't linearly separable in the original feature space, logistic regression will do its best with a straight cut — but it can't curve around clusters. (Add polynomial or interaction features if you need curves.)</p>
+<h3>Feature Scaling Is Non-Negotiable for Regularization</h3>
 
-<!-- ════════════════════════════════════════════ -->
+<p>If foot traffic ranges from 50 to 3,000 and rent ranges from $500 to $5,000, the regularizer penalizes the foot traffic coefficient unfairly — it's larger only because the units are smaller. Standardize all features before any regularized model. Use sklearn's Pipeline so the scaler is fitted only on training data and applied consistently to test data.</p>
 
-<h3>Maximum Likelihood Estimation</h3>
+<h3>The C vs. Alpha Confusion</h3>
 
-<p>How do we actually find w and b? In linear regression, you set derivatives to zero and solve a system of linear equations — the normal equation. Clean, closed-form, done.</p>
+<p>I'll be honest — I still occasionally get tripped up by sklearn's parameterization. In Ridge and Lasso, the regularization strength is alpha (larger = stronger). In LogisticRegression, it's C — the <em>inverse</em> of regularization strength (larger C = weaker regularization). C = 1/λ. The convention comes from SVMs. Memorize this or you'll tune in the wrong direction and wonder why your model gets worse.</p>
 
-<p>Logistic regression has <strong>no closed-form solution</strong>. The sigmoid makes the derivative equations nonlinear. You <em>must</em> iterate.</p>
+<h3>Perfect Separation</h3>
 
-<p>The standard approaches:</p>
-
-<table>
-  <thead>
-    <tr><th>Method</th><th>How it works</th><th>When to use</th></tr>
-  </thead>
-  <tbody>
-    <tr><td><strong>Gradient descent</strong></td><td>Follow the negative gradient of log-loss</td><td>Large-scale, simple to implement</td></tr>
-    <tr><td><strong>Newton's method (IRLS)</strong></td><td>Uses second-order info (Hessian) for smarter steps</td><td>Small/medium data, converges fast</td></tr>
-    <tr><td><strong>L-BFGS</strong></td><td>Approximates Hessian cheaply</td><td>sklearn's default — good all-rounder</td></tr>
-  </tbody>
-</table>
-
-<p>The key insight: log-loss is <strong>convex</strong> for logistic regression. That means any local minimum is the global minimum. Unlike neural networks, you don't worry about getting stuck in bad local optima. You just run the optimizer until it converges.</p>
-
-<p>Newton's method converges quadratically (roughly: errors square each iteration) but costs O(d³) per step for d features. L-BFGS approximates the Hessian from recent gradients, trading some convergence speed for massive memory savings. For most real problems, L-BFGS is the right default.</p>
-
-<!-- ════════════════════════════════════════════ -->
-
-<h3>Regularization</h3>
-
-<p>Same L1/L2 story as linear regression. Same reasons (prevent overfitting, handle collinearity). But there's one sklearn gotcha that trips up <em>everyone</em>:</p>
-
-<pre><code class="language-python"># sklearn's C parameter is the INVERSE of regularization strength
-LogisticRegression(C=0.01)   # strong regularization (small C)
-LogisticRegression(C=100)    # weak regularization  (large C)
-# This is backwards from Ridge/Lasso's alpha!</code></pre>
-
-<p>Why? Historical convention from SVMs. C = 1/λ. Higher C means "trust the data more, regularize less." Lower C means "shrink those weights harder." Memorize this or you'll tune in the wrong direction.</p>
-
-<table>
-  <thead>
-    <tr><th>Penalty</th><th>Effect</th><th>sklearn parameter</th></tr>
-  </thead>
-  <tbody>
-    <tr><td><strong>L2</strong> (default)</td><td>Shrinks all weights, keeps all features</td><td><code>penalty='l2'</code></td></tr>
-    <tr><td><strong>L1</strong></td><td>Drives weights to exactly zero → feature selection</td><td><code>penalty='l1', solver='liblinear'</code></td></tr>
-    <tr><td><strong>ElasticNet</strong></td><td>Mix of both</td><td><code>penalty='elasticnet', solver='saga', l1_ratio=0.5</code></td></tr>
-  </tbody>
-</table>
-
-<p><strong>Feature scaling matters for regularization.</strong> If feature A ranges 0–1 and feature B ranges 0–10,000, the regularizer hammers B's coefficient unfairly. Always scale first. Use a <code>Pipeline</code> so the scaler fits only on training data.</p>
-
-<!-- ════════════════════════════════════════════ -->
-
-<h3>Multiclass: One-vs-Rest vs. Softmax</h3>
-
-<p>Binary logistic regression handles two classes. What about 10? Two strategies:</p>
-
-<h4>One-vs-Rest (OvR)</h4>
-
-<p>Train K separate binary classifiers. Classifier 1 learns "class A vs. everything else." Classifier 2 learns "class B vs. everything else." At prediction time, pick the class whose classifier is most confident.</p>
-
-<p>Pros: simple, embarrassingly parallelizable, works with any binary classifier. Cons: the K models don't know about each other, so their probabilities don't sum to 1.</p>
-
-<h4>Softmax (Multinomial)</h4>
-
-<p>Train one model with K output nodes. Each class gets its own weight vector. The softmax function converts raw scores to probabilities that sum to 1:</p>
-
-<pre><code class="language-python">P(class k) = e^(zₖ) / Σⱼ e^(zⱼ)    # softmax over K classes</code></pre>
-
-<p>This is the generalization of the sigmoid to K classes. When K = 2, softmax collapses to sigmoid. The loss becomes categorical cross-entropy: −log(predicted probability of the true class).</p>
-
-<p><strong>Softmax is generally better</strong> because it jointly optimizes all class boundaries. OvR can produce inconsistent probability estimates. Modern sklearn defaults to <code>multi_class='auto'</code>, which picks multinomial when the solver supports it.</p>
-
-<!-- ════════════════════════════════════════════ -->
-
-<h3>Interpreting Coefficients: Odds Ratios</h3>
-
-<p>This is logistic regression's killer feature for stakeholder communication. Every coefficient has a direct, real-world meaning.</p>
-
-<p>A one-unit increase in feature x₁ multiplies the <strong>odds</strong> by e^(w₁). That's the odds ratio.</p>
-
-<pre><code class="language-python"># If w₁ = 0.7 for "years of experience" in a hiring model:
-odds_ratio = e^(0.7) ≈ 2.01
-# "Each additional year of experience roughly doubles the odds of being hired."
-
-# If w₂ = -0.3 for "number of job gaps":
-odds_ratio = e^(-0.3) ≈ 0.74
-# "Each additional job gap reduces the odds by about 26%."</code></pre>
-
-<p>A doctor can understand this. A judge can understand this. A VP of marketing can understand this. Try explaining a random forest's feature importance with the same precision — you can't. Odds ratios are why logistic regression dominates in healthcare, finance, and any domain where <em>explaining</em> the model is as important as its accuracy.</p>
-
-<p><strong>Common mistake:</strong> confusing odds with probability. "Doubles the odds" does NOT mean "doubles the probability." When baseline probability is 2%, doubling the odds moves it to ~4%. When baseline probability is 40%, doubling the odds moves it to ~57%. Always specify the baseline when converting to probabilities.</p>
-
-<!-- ════════════════════════════════════════════ -->
+<p>If a feature or combination of features perfectly predicts the outcome — every shop with foot traffic above 500 survived, every one below 500 failed — the MLE doesn't exist. The optimizer tries to push the coefficient to infinity to make the sigmoid output exactly 0 or 1. Symptoms: absurdly large coefficients, convergence warnings, NaN values. The fix is regularization (add an L2 penalty, which caps the weights) or Firth's penalized likelihood for small-sample settings. This has bitten me in production with rare-event models more than once.</p>
 
 <h3>Calibration: The Hidden Superpower</h3>
 
-<p>When logistic regression says "this email has a 70% chance of being spam," it means that among all emails it scores around 70%, roughly 70% actually are spam. That's <strong>calibration</strong> — predicted probabilities match observed frequencies.</p>
+<p>When logistic regression says "this shop has a 70% chance of surviving," it means that among all shops it scores around 70%, roughly 70% actually survive. That's <strong>calibration</strong> — predicted probabilities match observed frequencies. Logistic regression gets this essentially for free because it optimizes log-loss, which is a <em>proper scoring rule</em>.</p>
 
-<p>Logistic regression gets this for free because it directly optimizes log-loss, which is a <em>proper scoring rule</em>. Most other classifiers are NOT naturally calibrated:</p>
+<p>Most other classifiers are not naturally calibrated. Random forests push probabilities toward 0.5. SVMs don't output probabilities at all. Naive Bayes produces extreme probabilities. In production — insurance pricing, medical triage, fraud thresholds — you need the probability to mean something. Check calibration with a <strong>reliability diagram</strong> (predicted vs. actual positive rate in binned buckets) and the <strong>Brier score</strong> (lower is better).</p>
 
-<ul>
-  <li><strong>Random forests</strong> tend to push probabilities toward 0.5 (underconfident)</li>
-  <li><strong>SVMs</strong> don't output probabilities at all (Platt scaling adds them post-hoc)</li>
-  <li><strong>Naive Bayes</strong> produces extreme probabilities (overconfident)</li>
-  <li><strong>Gradient boosting</strong> varies — often needs calibration</li>
-</ul>
+<h3>Class Imbalance</h3>
 
-<p>This matters enormously in production. If you're setting a threshold for fraud detection, or pricing insurance risk, or triaging patients — you need the probability to <em>mean something</em>. A miscalibrated model that says "90% fraud" when it's really 50% will cost you real money.</p>
+<p>If 95% of shops in your dataset survived and 5% failed, the model will happily predict "survives" for everything and achieve 95% accuracy. Useless. The clean fix is reweighting the loss function:</p>
 
-<p>Check calibration with a <strong>reliability diagram</strong>: bin predictions into buckets (0–10%, 10–20%, etc.), plot predicted vs. actual positive rate. A perfectly calibrated model hugs the diagonal. The <strong>Brier score</strong> (mean squared error of probabilities) gives you a single number — lower is better.</p>
+<pre><code class="language-python">LogisticRegression(class_weight='balanced')</code></pre>
 
-<!-- ════════════════════════════════════════════ -->
+<p>This upweights the minority class proportionally. It's almost always better than resampling (SMOTE, etc.) for logistic regression because resampling changes your data distribution while reweighting changes your loss function — same effect, less risk of data leakage.</p>
 
-<h3>When Logistic Regression Wins</h3>
+<h3>Multiclass Extension</h3>
 
-<table>
-  <thead>
-    <tr><th>Situation</th><th>Why logistic regression</th></tr>
-  </thead>
-  <tbody>
-    <tr><td>You need to explain the model</td><td>Odds ratios beat any "feature importance" metric</td></tr>
-    <tr><td>Relationships are roughly linear</td><td>It's the optimal model — adding complexity just adds noise</td></tr>
-    <tr><td>You need calibrated probabilities</td><td>Free calibration; others require post-hoc fixes</td></tr>
-    <tr><td>You're building a baseline</td><td>Always start here. If it works, ship it</td></tr>
-    <tr><td>Small dataset (&lt; 1,000 rows)</td><td>Complex models overfit; logistic regression generalizes</td></tr>
-    <tr><td>Low-latency serving required</td><td>A dot product + sigmoid is as fast as it gets</td></tr>
-    <tr><td>Regulatory requirements</td><td>Healthcare, finance, and law often require interpretable models</td></tr>
-  </tbody>
-</table>
+<p>Binary logistic regression handles two classes. For K classes, <strong>softmax regression</strong> (multinomial logistic regression) generalizes the sigmoid. Each class gets its own weight vector, and the softmax function converts K raw scores into K probabilities that sum to 1: P(class k) = e^(zₖ) / Σⱼ e^(zⱼ). When K = 2, softmax collapses to sigmoid. The loss becomes categorical cross-entropy. The alternative — <strong>One-vs-Rest</strong>, training K separate binary classifiers — is simpler but produces probabilities that don't sum to 1. Softmax is generally preferred because it jointly optimizes all decision boundaries.</p>
 
-<p>The honest rule: start with logistic regression. If it gets you within 90% of a complex model's performance, keep it. You'll thank yourself when debugging at 2 AM.</p>
+<h3>Residual Diagnostics</h3>
 
-<!-- ════════════════════════════════════════════ -->
+<p>OLS assumes linearity, independent errors, normally distributed residuals, and constant variance — the LINE assumptions. When they hold, OLS is the <strong>Best Linear Unbiased Estimator</strong> (the Gauss-Markov theorem). But "unbiased" isn't always optimal. A little bias from regularization often buys a lot of variance reduction, and your test error drops. Always plot residuals versus fitted values. Random scatter is good. Curves mean you're missing a nonlinear relationship. Funnels mean the variance isn't constant — use Weighted Least Squares or robust standard errors. <strong>Cook's Distance</strong> flags data points that disproportionately influence the fit: D > 4/n deserves investigation.</p>
 
-<h3>Production Gotchas</h3>
+<!-- ═══════════ WRAP-UP ═══════════ -->
 
-<h4>Class Imbalance</h4>
+<h2>Wrap-Up</h2>
 
-<p>If 95% of transactions are legitimate and 5% are fraud, the model will happily predict "legitimate" for everything and hit 95% accuracy. Useless.</p>
+<p>If you're still with me, thank you. I hope it was worth the trip.</p>
 
-<pre><code class="language-python"># Option 1: reweight the loss function
-LogisticRegression(class_weight='balanced')
-# Automatically upweights minority class proportional to imbalance
+<p>We started with the observation that "linear" means linear in parameters, not in features — which makes the framework far more flexible than a straight line. We built a loss function by squaring errors, discovered the normal equation that solves it exactly, and reached for gradient descent when the matrix got too large. We added regularization — first as a practical fix for overfitting, then through the geometric lens that explains why L1 produces zeros and L2 doesn't, and finally through the Bayesian lens that reveals regularization as a statement of prior belief. We extended the same framework to classification with the sigmoid (which the math chose for us, not the other way around), a new loss function, and odds ratios for interpretation. And we zoomed out to see that linear and logistic regression are two views of the same unified framework — Generalized Linear Models.</p>
 
-# Option 2: manual weights
-LogisticRegression(class_weight={0: 1, 1: 19})  # 19:1 ratio</code></pre>
+<p>My hope is that the next time you're in an interview and someone asks "why does Lasso produce sparse solutions," or the next time you're debugging a production model and the coefficients look insane, instead of reaching for a vague half-remembered answer, you'll have a clear mental picture of diamonds and circles, Gaussian and Laplace priors, and the bowl-shaped valley that makes all of this work — having a pretty darn good mental model of what's going on under the hood.</p>
 
-<p>This is almost always better than resampling (SMOTE, etc.) for logistic regression. Resampling changes your data distribution; reweighting changes your loss function. Same effect, less risk of leakage.</p>
+<!-- ═══════════ RESOURCES ═══════════ -->
 
-<h4>Feature Scaling</h4>
+<h2>Resources</h2>
 
-<p>Without regularization, scaling doesn't affect predictions — just rescales coefficients. <strong>With regularization (which you should always use), scaling is mandatory.</strong> Unscaled features get penalized unevenly.</p>
-
-<h4>Check Your Calibration Curves</h4>
-
-<p>Even though logistic regression is naturally well-calibrated, heavy regularization or class imbalance can distort calibration. Always verify with a reliability diagram before trusting the probabilities in production.</p>
-
-<h4>Convergence Warnings</h4>
-
-<p>If sklearn warns "LBFGS failed to converge," increase <code>max_iter</code>. If coefficients are absurdly large, you likely have perfect or near-perfect separation — increase regularization (lower C). Both are common in practice and easy to fix once you know what to look for.</p>
-
-<!-- ════════════════════════════════════════════ -->
-
-<h3>Putting It All Together</h3>
-
-<pre><code class="language-python">import numpy as np
-from sklearn.datasets import load_breast_cancer
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import make_pipeline
-from sklearn.metrics import brier_score_loss
-from sklearn.calibration import calibration_curve
-
-X, y = load_breast_cancer(return_X_y=True)
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42, stratify=y)
-
-pipe = make_pipeline(StandardScaler(),
-                     LogisticRegression(C=1.0, max_iter=5000))
-pipe.fit(X_train, y_train)
-
-y_prob = pipe.predict_proba(X_test)[:, 1]
-print(f"Accuracy:    {pipe.score(X_test, y_test):.3f}")
-print(f"Brier score: {brier_score_loss(y_test, y_prob):.4f}")
-
-# Calibration check: bin predictions, compare to actual rate
-fraction_pos, mean_pred = calibration_curve(y_test, y_prob, n_bins=5)
-for mp, fp in zip(mean_pred, fraction_pos):
-    print(f"  Predicted ~{mp:.2f} → actual rate {fp:.2f}")</code></pre>
-
-<p>Pipeline handles scaling. Brier score measures calibration quality. The calibration curve lets you verify that predicted probabilities track reality. This is what a production-ready binary classifier looks like — 15 lines, not 150.</p>
-
-<!-- ════════════════════════════════════════════ -->
-
-<h3>What You Should Now Be Able To Do</h3>
+<p>A curated handful of things I found genuinely useful, not an exhaustive bibliography:</p>
 
 <ul>
-  <li>☑ Explain why logistic regression squashes linear output through a sigmoid — and derive σ(z) from the log-odds assumption</li>
-  <li>☑ Write the log-loss formula and explain why MSE is wrong for classification (non-convex landscape)</li>
-  <li>☑ Describe the decision boundary as a hyperplane where w·x + b = 0, and explain why it's linear</li>
-  <li>☑ Explain why there's no closed-form solution — and know which optimizers sklearn uses (L-BFGS, liblinear, saga)</li>
-  <li>☑ Set sklearn's <code>C</code> parameter correctly (higher C = <em>less</em> regularization) and choose between L1, L2, ElasticNet</li>
-  <li>☑ Compare One-vs-Rest and Softmax for multiclass — and know when each is appropriate</li>
-  <li>☑ Interpret a coefficient as an odds ratio: "a one-unit increase in x₁ multiplies the odds by e^(w₁)"</li>
-  <li>☑ Explain calibration, why logistic regression has it, why most other models don't, and how to check it</li>
-  <li>☑ Handle class imbalance with <code>class_weight='balanced'</code> instead of resampling</li>
-  <li>☑ Build a complete binary classification pipeline with scaling, regularization, and a calibration check</li>
+  <li><strong>The Elements of Statistical Learning</strong> (Hastie, Tibshirani, Friedman) — The O.G. reference. Chapters 3 and 4 cover everything in this section with mathematical rigor. Free PDF from the authors' website. Dense but insightful.</li>
+  <li><strong>An Introduction to Statistical Learning (ISLR)</strong> — The gentler sibling of the above. If ESL feels like drinking from a firehose, start here. Also free.</li>
+  <li><strong>Zou & Hastie (2005), "Regularization and Variable Selection via the Elastic Net"</strong> — The paper that introduced ElasticNet and the grouping effect. Surprisingly readable for a statistics paper.</li>
+  <li><strong>Nelder & Wedderburn (1972), "Generalized Linear Models"</strong> — The paper that unified linear and logistic regression. A landmark in statistical modeling.</li>
+  <li><strong>sklearn's Linear Models documentation</strong> — Wildly practical. Every solver option, every parameter, worked examples. Bookmark it.</li>
+  <li><strong>Brandon Rohrer's "How Does Linear Regression Work?"</strong> — A visual walkthrough that builds the intuition without drowning you in equations. Unforgettable illustrations.</li>
 </ul>
 
       <div class="page-nav">
