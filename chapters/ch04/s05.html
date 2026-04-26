@@ -297,161 +297,283 @@
 <div class="chapter-meta">
   <span class="tag">Chapter 4: ML Fundamentals &amp; Core Concepts</span>
   <span class="tag">Section 5 of 8</span>
-  <span class="tag">12 subtopics</span>
-</div>
-
-<div class="tldr">
-  <div class="tldr-label">TL;DR</div>
-  <p>A model that predicts "not fraud" every time scores 99% accuracy on a dataset with 1% fraud — and catches nothing. Accuracy lies when classes are imbalanced. Precision asks "of everything you flagged, how much was real?" Recall asks "of all the real positives, how many did you catch?" F1 balances them. ROC-AUC measures ranking quality across all thresholds; PR-AUC is better when the positive class is rare. For regression, RMSE punishes big misses, MAE treats all errors equally. The right metric is the one that hurts when it's wrong — start with the business cost and work backward.</p>
+  <span class="tag">16 subtopics</span>
 </div>
 
 <!-- ════════════════════════════════════════════════════════ -->
-<h2>The Confusion Matrix: Where Everything Starts</h2>
+<!-- OPENING -->
 
-<p>Every classification metric you'll ever see is some arithmetic on four numbers. Before we get to any of them, you need to know where those numbers come from.</p>
+<p>I avoided evaluation metrics for an embarrassingly long time. Every project, I'd train a model, call <code>accuracy_score</code>, see a comforting number like 98.7%, and pat myself on the back. Then one day I deployed a fraud detector that scored 99% accuracy in testing. In production, it caught zero fraud. Zero. It had learned to predict "not fraud" for every single transaction, and because only 1% of transactions were actually fraudulent, that was enough to look brilliant on paper. That was the day the number I trusted betrayed me, and I finally sat down to understand what it was actually measuring. Here is that dive.</p>
 
-<p>Your binary classifier looks at each example and makes a call: positive or negative. Sometimes it's right, sometimes it's wrong. That gives you four buckets:</p>
+<p><strong>Evaluation metrics</strong> are the scorecards we use to judge how well a model performs. They date back to signal detection theory in the 1940s (radar operators trying to distinguish enemy planes from flocks of birds), and they've been refined across medicine, information retrieval, and machine learning ever since. The core question hasn't changed: how do we measure whether our predictions are any good?</p>
+
+<p>Before we start, a heads-up. We're going to be building up from a two-by-two table all the way to calibration curves, ranking metrics, and the hard-earned wisdom of what breaks in production. We'll talk about some formulas, but you don't need any of them memorized in advance. We'll construct each one from scratch, and by the time we write it down, it'll feel obvious. We'll add what we need, one piece at a time.</p>
+
+<p>This isn't a short journey, but I hope you'll be glad you came.</p>
+
+<!-- TOC -->
+
+<div style="margin: 1.5em 0 2em 1.5em; line-height: 2;">
+The Four Buckets<br>
+The Accuracy Trap<br>
+Precision — The Courtroom Standard<br>
+Recall — The Cancer Screening Standard<br>
+The Smoke Detector Dial<br>
+F1 and the Harmonic Mean Trick<br>
+Rest Stop<br>
+Threshold Selection — The Dial You Actually Turn<br>
+ROC-AUC — Ranking Quality Across All Thresholds<br>
+PR-AUC — When Positives Are Rare<br>
+Log Loss — Punishing Overconfidence<br>
+MCC — The Metric That's Hard to Game<br>
+Calibration — When Probabilities Need to Mean Something<br>
+The Regression Scoreboard<br>
+Ranking Metrics — When Order Is Everything<br>
+When Metrics Go Wrong in Production<br>
+</div>
+
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>The Four Buckets</h2>
+
+<p>Every classification metric you'll encounter in your career is some arithmetic on four numbers. Every one. Before we get to any metric, we need to see where these numbers come from, because once you can see the four buckets, the rest of evaluation metrics is an exercise in deciding which ratios matter to you.</p>
+
+<p>Here's the scenario we'll carry through this entire section. You work at a bank. Your job is to build a fraud detection system. Out of every 10,000 transactions that flow through the system each day, about 100 are fraudulent — a 1% fraud rate. You've trained a model. Now you run it against your test set and it makes a prediction on each of the 10,000 transactions: "fraud" or "not fraud." Some of those predictions will be right, some will be wrong. That gives us four possible outcomes.</p>
 
 <table>
   <thead>
-    <tr><th></th><th>Predicted Positive</th><th>Predicted Negative</th></tr>
+    <tr><th></th><th>Model Said "Fraud"</th><th>Model Said "Legit"</th></tr>
   </thead>
   <tbody>
-    <tr><td><strong>Actually Positive</strong></td><td>True Positive (TP) ✓</td><td>False Negative (FN) ✗</td></tr>
-    <tr><td><strong>Actually Negative</strong></td><td>False Positive (FP) ✗</td><td>True Negative (TN) ✓</td></tr>
+    <tr><td><strong>Actually Fraud</strong></td><td>True Positive (TP) — caught a real thief</td><td>False Negative (FN) — thief walked free</td></tr>
+    <tr><td><strong>Actually Legit</strong></td><td>False Positive (FP) — honest customer hassled</td><td>True Negative (TN) — correctly left alone</td></tr>
   </tbody>
 </table>
 
-<p><strong>TP</strong> — you said yes, reality said yes. Correct alarm. <strong>TN</strong> — you said no, reality said no. Correct silence. <strong>FP</strong> — you said yes, reality said no. False alarm. <strong>FN</strong> — you said no, reality said yes. Missed catch.</p>
+<p>That's the <strong>confusion matrix</strong>. The name is apt — most of the confusion in evaluation metrics comes from not knowing which of these four cells a metric cares about and which it ignores.</p>
 
-<p>Commit this to muscle memory. Everything below is just a ratio of these four cells.</p>
+<p>Let's put concrete numbers to our scenario. Say the model catches 85 of the 100 frauds, misses 15, and also wrongly flags 50 legitimate transactions as fraud.</p>
 
 <pre><code>import numpy as np
-from sklearn.metrics import confusion_matrix, classification_report
+from sklearn.metrics import confusion_matrix
 
-# Fraud scenario: 10,000 transactions, 1% fraud
 y_true = np.array([1]*100 + [0]*9900)
 
-# A decent model: catches 85 frauds, also flags 50 legit ones
 y_pred = np.zeros(10000, dtype=int)
-y_pred[:85] = 1     # 85 of the 100 frauds caught
+y_pred[:85] = 1      # catches 85 of 100 frauds
 y_pred[100:150] = 1  # 50 false alarms on legit transactions
 
 cm = confusion_matrix(y_true, y_pred)
-print(cm)
-# [[9850,   50],
-#  [  15,   85]]
-# TN=9850, FP=50, FN=15, TP=85</code></pre>
+# [[9850,   50],    ← TN=9850, FP=50
+#  [  15,   85]]    ← FN=15,   TP=85</code></pre>
+
+<p>Four cells. That's it. Everything that follows is a question about which cells to put in the numerator and which in the denominator.</p>
 
 <!-- ════════════════════════════════════════════════════════ -->
-<h2>Classification Metrics</h2>
+<h2>The Accuracy Trap</h2>
 
-<h3>Accuracy — And Why It Lies</h3>
+<p>The most natural thing to compute is <strong>accuracy</strong>: how many did we get right out of everything?</p>
 
-<p><strong>Accuracy</strong> = <code>(TP + TN) / (TP + TN + FP + FN)</code>. In our fraud example: (85 + 9850) / 10000 = 99.35%. Sounds fantastic — until you realize a model that prints <code>return "not fraud"</code> for every single input also scores 99.0%. That 0.35 percentage-point "improvement" hides the fact that your model actually catches 85% of fraud. Accuracy is fine when classes are roughly balanced. The moment they aren't, it's nearly worthless.</p>
+<p><code>Accuracy = (TP + TN) / (TP + TN + FP + FN)</code></p>
 
-<h3>Precision — "Of Everything You Flagged, How Much Was Real?"</h3>
+<p>In our fraud scenario: (85 + 9850) / 10000 = 99.35%. That sounds fantastic. And here's where the trap snaps shut. A model that does <em>absolutely nothing</em> — one that prints <code>return "not fraud"</code> for every single transaction, a model that literally has no idea what fraud looks like — scores 99.0%. Our "good" model's improvement over total ignorance is 0.35 percentage points.</p>
 
-<p><strong>Precision</strong> = <code>TP / (TP + FP)</code>. Our model: 85 / (85 + 50) = 63%. About 4 in 10 alarms are false. If a human investigator reviews every flag, low precision means they're drowning in noise.</p>
+<p>I'll be honest — the first time I actually worked through this arithmetic, I felt like I'd been lied to for years. All those accuracy numbers I'd been reporting in meetings suddenly felt hollow. The problem is structural: accuracy treats every correct prediction as equally important. Getting a legitimate transaction right and catching a fraud are both worth one point. But in a world where 99% of transactions are legitimate, being right about the majority class drowns out everything that matters.</p>
 
-<p><strong>When precision matters most:</strong> spam filters (a false positive buries a real email), content moderation (wrongly removing legitimate posts erodes trust), criminal justice (a false positive is an innocent person convicted). Anywhere the cost of a false alarm is high.</p>
+<p>Think of it like a courtroom where the judge always says "not guilty." In a world where 99% of defendants are innocent, that judge has 99% accuracy. That judge is useless. Accuracy works when the classes are roughly balanced — cats versus dogs at 50/50. The moment one class dominates, accuracy becomes a metric that rewards laziness. We need something better.</p>
 
-<h3>Recall (Sensitivity) — "Of All Actual Positives, How Many Did You Catch?"</h3>
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>Precision — The Courtroom Standard</h2>
 
-<p><strong>Recall</strong> = <code>TP / (TP + FN)</code>. Our model: 85 / (85 + 15) = 85%. We're missing 15% of real fraud — each one potentially thousands of dollars walking out the door.</p>
+<p>Let's stay in the courtroom for a moment. One philosophy of justice says: "It is better that ten guilty persons escape than that one innocent suffer." That philosophy is about <strong>precision</strong>.</p>
 
-<p><strong>When recall matters most:</strong> cancer screening (a false negative is a missed tumor), fraud detection, manufacturing defect inspection. Anywhere missing a positive is dangerous or expensive.</p>
+<p><code>Precision = TP / (TP + FP)</code></p>
 
-<h3>The Precision–Recall Tradeoff</h3>
+<p>Of all the transactions our model flagged as fraud, how many actually were? In our scenario: 85 / (85 + 50) = 63%. About 4 in every 10 alarms are false. If you have a human fraud analyst who has to investigate every flag, a precision of 63% means they spend a third of their day chasing ghosts. That's expensive, and it erodes trust in the system. After a few weeks of false alarms, the analyst starts ignoring flags altogether.</p>
 
-<p>Here's the mechanical reality. Most classifiers don't output a hard yes/no — they output a probability score. You pick a <strong>threshold</strong> to turn that score into a decision. Lower the threshold and you flag more things as positive. You catch more true positives (recall goes up), but you also catch more false positives (precision goes down). Raise the threshold and the opposite happens.</p>
+<p>Precision matters most when the cost of a false alarm is high. A spam filter that sends a legal contract to junk — that's a false positive, and it could cost a deal. A content moderation system that takes down a legitimate post — that's a false positive, and it erodes user trust. A criminal justice system that convicts an innocent person — that's a false positive, and the cost is a human life.</p>
 
-<p>Think of it like a smoke detector's sensitivity dial. Crank it up: catches every fire, also goes off when you make toast. Dial it down: no false alarms, might miss a real fire. There is no free lunch. The right setting depends entirely on which mistake costs more.</p>
+<p>The limitation of precision is that it's easy to game. A model can achieve 100% precision by being absurdly cautious — only flag something as fraud when you're 99.99% certain. You'll flag three transactions a year, get all three right, and miss the other 97 frauds. Precision alone is half the story.</p>
+
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>Recall — The Cancer Screening Standard</h2>
+
+<p>The opposite philosophy says: "Never let a guilty person walk free, no matter the cost." That's <strong>recall</strong>.</p>
+
+<p><code>Recall = TP / (TP + FN)</code></p>
+
+<p>Of all actual frauds, how many did we catch? Our model: 85 / (85 + 15) = 85%. Fifteen fraudulent transactions slipped through. At, say, $5,000 per fraud, that's $75,000 in losses the model failed to prevent today alone.</p>
+
+<p>Recall matters most when missing a positive is dangerous or expensive. Cancer screening — a false negative is a tumor that goes undetected, and the patient doesn't get treatment until it's too late. Airport security — a false negative is a threat that gets through. Manufacturing quality control — a false negative is a defective part that ships to a customer.</p>
+
+<p>And recall has the opposite gaming problem. You can get 100% recall trivially: flag every single transaction as fraud. You'll catch all 100 frauds. You'll also flag 9,900 legitimate transactions, and your precision will be 100/10000 = 1%. Your fraud team quits. Your customers cancel their cards. Recall alone is the other half of the story.</p>
+
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>The Smoke Detector Dial</h2>
+
+<p>Here's the thing that ties precision and recall together mechanically, and it took me a while to feel it in my bones rather than read it off a slide.</p>
+
+<p>Most classifiers don't actually output a hard yes or no. They output a probability — a score between 0 and 1 that represents how suspicious a transaction looks. A score of 0.92 means the model is fairly convinced it's fraud. A score of 0.15 means it's fairly convinced it's legitimate. To get an actual prediction, you pick a <strong>threshold</strong> and say "anything above this threshold, I'll call fraud."</p>
+
+<p>Think of a smoke detector with a sensitivity dial. Crank the dial all the way up: it catches every fire, every smoldering wire, every hint of smoke. It also goes off when you make toast, when you take a hot shower, when you boil water. That's high recall, low precision. Now dial it all the way down: it never goes off for toast or showers. It also doesn't go off until the house is fully engulfed. That's high precision, low recall.</p>
+
+<p>There is no setting that gives you both. This isn't a flaw in the metric — it's a fundamental property of any system that has to make a binary decision from a continuous score. The right setting depends entirely on which mistake is more dangerous in your specific situation. And that's a business question, not a statistics question.</p>
 
 <figure class="diagram">
 <svg viewBox="0 0 500 280" xmlns="http://www.w3.org/2000/svg" style="max-width:480px">
   <rect width="500" height="280" fill="none"/>
-  <!-- Axes -->
   <line x1="60" y1="20" x2="60" y2="230" stroke="var(--text)" stroke-width="1.5"/>
   <line x1="60" y1="230" x2="470" y2="230" stroke="var(--text)" stroke-width="1.5"/>
-  <!-- Axis labels -->
   <text x="260" y="270" text-anchor="middle" fill="var(--text)" font-size="13" font-family="var(--font-sans)">Threshold (low → high) →</text>
   <text x="18" y="130" text-anchor="middle" fill="var(--text)" font-size="13" font-family="var(--font-sans)" transform="rotate(-90 18 130)">Score →</text>
-  <!-- Precision (rises as threshold increases) -->
   <polyline points="80,190 140,170 200,140 260,110 320,80 380,55 440,35" fill="none" stroke="#3b82f6" stroke-width="2.5" stroke-linecap="round"/>
-  <!-- Recall (falls as threshold increases) -->
   <polyline points="80,30 140,50 200,75 260,110 320,150 380,185 440,210" fill="none" stroke="#ef4444" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="7,4"/>
-  <!-- Crossover point -->
   <circle cx="260" cy="110" r="5" fill="#10b981" stroke="#fff" stroke-width="1.5"/>
   <text x="272" y="104" fill="#10b981" font-size="11" font-family="var(--font-sans)">Crossover</text>
-  <!-- Legend -->
   <line x1="300" y1="12" x2="330" y2="12" stroke="#3b82f6" stroke-width="2.5"/>
   <text x="335" y="16" fill="var(--text)" font-size="11" font-family="var(--font-sans)">Precision</text>
   <line x1="300" y1="30" x2="330" y2="30" stroke="#ef4444" stroke-width="2.5" stroke-dasharray="7,4"/>
   <text x="335" y="34" fill="var(--text)" font-size="11" font-family="var(--font-sans)">Recall</text>
 </svg>
-<figcaption>As you raise the decision threshold, precision increases and recall decreases. They're mechanically linked — you can't crank both up simultaneously.</figcaption>
+<figcaption>As you turn the threshold dial higher, precision rises (fewer false alarms) and recall falls (more misses). They're mechanically linked — the smoke detector can't be both perfectly cautious and perfectly aggressive.</figcaption>
 </figure>
 
-<h3>F1 Score — When You Need One Number</h3>
+<p>We'll come back to this smoke detector and its dial when we talk about threshold selection. For now, the question is: can we somehow compress the precision–recall tradeoff into a single number?</p>
 
-<p>The <strong>F1 score</strong> is the harmonic mean of precision and recall:</p>
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>F1 and the Harmonic Mean Trick</h2>
 
-<pre><code>F1 = 2 × (precision × recall) / (precision + recall)</code></pre>
+<p>The <strong>F1 score</strong> tries to give you one number that captures both precision and recall. It uses the harmonic mean:</p>
 
-<p>Why harmonic mean instead of a regular average? Because it punishes lopsided performance. If precision is 100% and recall is 1%, the arithmetic mean is a rosy 50.5%. The harmonic mean is 1.98% — which correctly screams that something is broken.</p>
+<p><code>F1 = 2 × (precision × recall) / (precision + recall)</code></p>
 
-<p>Our fraud model: F1 = 2 × (0.63 × 0.85) / (0.63 + 0.85) = <strong>0.72</strong>.</p>
+<p>Why harmonic mean instead of a plain average? This is worth pausing on, because it's one of those "why" questions that separates someone who memorized the formula from someone who understands what it's doing.</p>
 
-<p>When you <em>don't</em> care equally about precision and recall, use <strong>F-beta</strong>: <code>F_β = (1 + β²) × (P × R) / (β² × P + R)</code>. β = 2 weights recall twice as much (fraud detection). β = 0.5 weights precision more (spam filtering). F1 is just F-beta with β = 1.</p>
+<p>Suppose a model has precision of 100% and recall of 1%. The arithmetic mean (the regular average) would be (1.0 + 0.01) / 2 = 50.5%. That sounds pretty okay, right? Half decent? But that model catches 1% of all positives — it's essentially broken. The harmonic mean gives 2 × (1.0 × 0.01) / (1.0 + 0.01) = 0.0198, or roughly 2%. That number correctly screams that something is deeply wrong. The harmonic mean is bounded by the smaller value — it refuses to let a strong number on one side paper over a disaster on the other.</p>
 
-<h3>ROC Curve &amp; AUC</h3>
+<p>Our fraud model: F1 = 2 × (0.63 × 0.85) / (0.63 + 0.85) = <strong>0.72</strong>. Decent, not great. The 63% precision is dragging it down.</p>
 
-<p>The <strong>ROC curve</strong> plots True Positive Rate (recall) vs. False Positive Rate at every possible threshold. A perfect model hugs the top-left corner. A random coin flip traces the diagonal.</p>
+<p>Now, F1 treats precision and recall as equally important. In many real situations, they aren't. A cancer screening test should lean heavily toward recall — missing a tumor is worse than sending someone for an extra biopsy. A spam filter should lean toward precision — filtering a real email into junk is worse than letting some spam through. For these cases, there's <strong>F-beta</strong>:</p>
 
-<p><strong>AUC</strong> (Area Under the ROC Curve) collapses the entire curve into one number between 0 and 1. The intuitive interpretation: pick a random positive and a random negative — AUC is the probability the model scores the positive higher. AUC = 0.5 is random guessing. AUC = 0.85 means "85% of the time, a random fraud gets a higher score than a random legit transaction."</p>
+<p><code>F_β = (1 + β²) × (P × R) / (β² × P + R)</code></p>
 
-<pre><code>from sklearn.metrics import roc_curve, roc_auc_score
+<p>The β parameter controls the leaning. β = 2 makes recall twice as important as precision — good for fraud detection and medical screening. β = 0.5 makes precision twice as important — good for spam filters and content moderation. F1 is F-beta with β = 1. The way to think about β² is that it's the ratio of how much you care about recall relative to precision.</p>
 
-# Simulated probability scores
+<p>The limitation of F1 (and all the F-beta family) is that it completely ignores true negatives. It doesn't care how well you classify the majority class. For most imbalanced problems, that's fine — you already know the model can identify legitimate transactions. But it does mean F1 can sometimes tell an incomplete story, and that gap is what motivates the next metric we'll meet after our rest stop.</p>
+
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>Rest Stop</h2>
+
+<p>Congratulations on making it this far. You can stop here if you want.</p>
+
+<p>You now have a solid mental model of evaluation: a confusion matrix with four cells, accuracy and its trap, precision for when false alarms are expensive, recall for when misses are dangerous, the tradeoff between them (the smoke detector dial), and F1 as a single-number summary. That's genuinely useful. You can walk into most data science conversations and hold your own with what you know right now.</p>
+
+<p>It doesn't tell the complete story, though. We haven't talked about what happens when you need to compare models across all possible thresholds (ROC and PR curves). We haven't talked about what happens when your model's confidence scores are lies (calibration). We haven't talked about regression, ranking, or the sneaky way metrics break in production. And we haven't talked about the one metric that's hardest to game — MCC.</p>
+
+<p>The short version, if you want to bail: use F1 for balanced-cost binary classification, PR-AUC for imbalanced data, RMSE for regression where big misses matter, and always connect the metric back to what it costs when the model is wrong. There. You're 80% of the way there.</p>
+
+<p>But if the discomfort of not knowing what's underneath is nagging at you, read on.</p>
+
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>Threshold Selection — The Dial You Actually Turn</h2>
+
+<p>Let's go back to our smoke detector. We said most classifiers output a continuous score, and you pick a threshold to turn that score into a decision. The default threshold in most libraries is 0.5. I need to be blunt about this: 0.5 is arbitrary, and in my experience it's almost never optimal.</p>
+
+<p>In our fraud detector, the model assigns every transaction a suspicion score between 0 and 1. At a threshold of 0.5, we flag anything above 50% suspicion. But think about the asymmetry: a missed fraud costs $5,000 in chargebacks, while a false alarm costs maybe $50 in analyst time. If misses cost 100× more than false alarms, why are we splitting the threshold down the middle?</p>
+
+<p>Drop the threshold to 0.2 — flag anything with a 20%+ suspicion score. You'll catch more fraud (recall goes up), you'll also trigger more false alarms (precision goes down), but the total dollar cost might drop dramatically because each caught fraud saves $5,000 while each extra false alarm only costs $50. The right threshold is where your total business cost is minimized. If you can put dollar amounts on false positives and false negatives, you can compute this directly: <code>total_cost = cost_FN × FN + cost_FP × FP</code>. Sweep through thresholds, pick the one where total_cost is smallest. That's the dial setting your smoke detector actually needs.</p>
+
+<pre><code>from sklearn.metrics import precision_recall_curve
+import numpy as np
+
+# Find the threshold that gives at least 90% recall
+precisions, recalls, thresholds = precision_recall_curve(y_true, y_scores)
+idx = np.where(recalls >= 0.90)[0][-1]
+print(f"For 90% recall: threshold = {thresholds[idx]:.3f}, "
+      f"precision = {precisions[idx]:.3f}")</code></pre>
+
+<p>This is one of those things that seems obvious once someone says it out loud, but I've seen production systems running on the default 0.5 for years because no one thought to ask "what does a mistake actually cost?"</p>
+
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>ROC-AUC — Ranking Quality Across All Thresholds</h2>
+
+<p>Threshold selection gives you the best setting for a specific cost structure. But what if you want to compare two models before you've decided on a threshold? What if you want to say "model A is better than model B, regardless of where we set the dial"? That's what the ROC curve is for.</p>
+
+<p>The <strong>ROC curve</strong> (Receiver Operating Characteristic — the name is a relic from WWII radar, which is kind of wonderful) plots True Positive Rate (that's recall) on the y-axis against False Positive Rate on the x-axis, at every possible threshold. A perfect model hugs the top-left corner — perfect recall, zero false positives, at every threshold. A model that's flipping coins traces the diagonal line from bottom-left to top-right.</p>
+
+<p><strong>AUC</strong> (Area Under the ROC Curve) collapses that entire curve into one number between 0 and 1. The intuitive interpretation is wonderfully concrete: pick a random fraud and a random legitimate transaction. AUC is the probability that the model assigns a higher suspicion score to the fraud. AUC = 0.5 means the model can't tell them apart — coin flip. AUC = 0.85 means 85% of the time, a random fraud will look more suspicious than a random legitimate transaction.</p>
+
+<pre><code>from sklearn.metrics import roc_auc_score
+
 np.random.seed(42)
 y_true = np.array([1]*100 + [0]*9900)
 scores_fraud = np.random.beta(5, 2, size=100)
 scores_legit = np.random.beta(1.5, 5, size=9900)
 y_scores = np.concatenate([scores_fraud, scores_legit])
 
-fpr, tpr, thresholds = roc_curve(y_true, y_scores)
 auc = roc_auc_score(y_true, y_scores)
 print(f"AUC: {auc:.3f}")  # ~ 0.96</code></pre>
 
-<p><strong>When to use ROC-AUC:</strong> comparing models across all thresholds, especially when classes are reasonably balanced. <strong>When NOT to use it:</strong> heavily imbalanced data. The false positive rate stays deceptively low because it's divided by a huge number of negatives — 500 false positives out of 99,000 negatives is only 0.5% FPR, but 500 false alarms might bury your ops team.</p>
+<p>ROC-AUC is the standard for comparing models when classes are reasonably balanced. But here's the catch, and this one bit me in production more than once: on heavily imbalanced data, ROC-AUC can be dangerously optimistic.</p>
 
-<h3>PR Curve &amp; Average Precision</h3>
+<p>The False Positive Rate is FP / (FP + TN). When you have 99,000 legitimate transactions, even 500 false positives gives an FPR of only 0.5%. The curve looks beautiful. But 500 false alarms will absolutely bury your operations team. ROC-AUC is blind to this because it's divided by that massive denominator of true negatives. The curve smiles at you while your team drowns.</p>
 
-<p>The <strong>Precision-Recall curve</strong> plots precision (y-axis) vs. recall (x-axis) at every threshold. Unlike ROC, it focuses entirely on the positive class — exactly what you care about in imbalanced problems. A random model's baseline here isn't 0.5; it's the fraction of positives in your data (1% in our fraud case). That makes differences between models much more visible.</p>
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>PR-AUC — When Positives Are Rare</h2>
 
-<p><strong>Average Precision (AP)</strong> summarizes the PR curve as a single number — the weighted mean of precision at each threshold step, weighted by the change in recall. It's your go-to metric when positive examples are rare.</p>
+<p>The <strong>Precision-Recall curve</strong> fixes this problem by never looking at true negatives at all. It plots precision (y-axis) against recall (x-axis) at every threshold. When the positive class is rare — and in fraud, medical diagnosis, and anomaly detection, it almost always is — the PR curve tells the honest story that the ROC curve sugar-coats.</p>
 
-<h3>Log Loss — Punishing Confident Mistakes</h3>
+<p>Here's the key difference. For a random model, the ROC baseline is always 0.5 (the diagonal). For a PR curve, the baseline is the prevalence of the positive class — in our fraud case, 1%. That means even small improvements above 1% are visible and meaningful on the PR curve, while they'd be imperceptible noise on the ROC curve. When positives are rare, the PR curve is a magnifying glass where the ROC curve is a telescope pointed at the wrong galaxy.</p>
 
-<p><strong>Log loss</strong> (cross-entropy) evaluates predicted probabilities directly: <code>-(1/N) × Σ[y·log(p) + (1-y)·log(1-p)]</code>. If a true fraud case gets a predicted probability of 0.01 — you were 99% confident it was legit, and you were dead wrong — log loss hammers you. A correct but timid prediction (say, 0.6 for a true positive) gets a smaller penalty but still a penalty. Use log loss when you need <em>calibrated</em> probabilities, not just rankings.</p>
+<p><strong>Average Precision (AP)</strong> summarizes the PR curve as a single number — the weighted mean of precision at each threshold, weighted by the change in recall. It's the go-to metric when the positive class is the one you care about and it's outnumbered.</p>
 
-<h3>MCC (Matthews Correlation Coefficient)</h3>
+<p>I'm still developing my intuition for when exactly to switch from ROC to PR. The rough heuristic I use: if the class ratio is worse than 1:10, I look at PR-AUC first and ROC-AUC second. If it's worse than 1:100, I often don't look at ROC-AUC at all.</p>
 
-<p>MCC is arguably the single best metric for binary classification on imbalanced data:</p>
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>Log Loss — Punishing Overconfidence</h2>
 
-<pre><code>MCC = (TP×TN − FP×FN) / √((TP+FP)(TP+FN)(TN+FP)(TN+FN))</code></pre>
+<p>Everything we've talked about so far evaluates hard decisions — did you flag it or not? Did you rank it correctly? But most models output a probability score, and sometimes you care about the quality of that probability itself, not what decision it leads to.</p>
 
-<p>Ranges from −1 (perfect inverse) to +1 (perfect prediction), with 0 meaning "no better than random." Unlike F1, it uses all four confusion matrix cells and treats both classes symmetrically. A high MCC is hard to game — your model genuinely has to perform well on both positives <em>and</em> negatives. If you can only report one number on an imbalanced binary problem, make it MCC.</p>
+<p><strong>Log loss</strong> (also called cross-entropy) evaluates predicted probabilities directly:</p>
+
+<p><code>log_loss = -(1/N) × Σ[y·log(p) + (1-y)·log(1-p)]</code></p>
+
+<p>The intuition comes from information theory. Log loss measures <em>surprise</em>. If the model says "99% chance this is legitimate" and it turns out to be fraud, the model is maximally surprised — and log loss punishes it severely. How severely? Let's work through the math. If the model assigns probability 0.01 to the true class, the penalty is -log(0.01) ≈ 4.6. If it assigns 0.5 (complete uncertainty), the penalty is -log(0.5) ≈ 0.69. If it assigns 0.99 (confident and correct), the penalty is -log(0.99) ≈ 0.01.</p>
+
+<p>That asymmetry is the whole point. Being confidently wrong is catastrophically expensive. Being confidently right is nearly free. Being uncertain is somewhere in the middle. This makes log loss a <strong>proper scoring rule</strong> — a fancy way of saying that the model minimizes its expected loss by reporting its true beliefs. There's no gaming strategy: the best thing the model can do is be honest about its uncertainty.</p>
+
+<p>Log loss connects to something deeper that we'll get to in a moment: the question of whether a model's probability outputs actually mean what they claim to mean.</p>
+
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>MCC — The Metric That's Hard to Game</h2>
+
+<p>I'll be honest — I didn't pay attention to the <strong>Matthews Correlation Coefficient</strong> for years. F1 felt like enough. Then I saw a paper (Chicco &amp; Jurman, 2020) that made a persuasive case that MCC is the single most reliable metric for binary classification on imbalanced data, and I started using it. Here's why.</p>
+
+<p><code>MCC = (TP×TN − FP×FN) / √((TP+FP)(TP+FN)(TN+FP)(TN+FN))</code></p>
+
+<p>MCC ranges from −1 (every prediction is wrong) through 0 (no better than random) to +1 (perfect). The critical difference from F1: MCC uses all four cells of the confusion matrix. F1 ignores true negatives entirely. That means a model that predicts all negatives gets F1 = 0 (which correctly signals "useless for the positive class") but also MCC = 0 (which correctly signals "useless overall"). So far, same story. But consider a model that makes some predictions but is subtly biased — say it over-flags positives to inflate recall. F1 might be reasonable, but MCC will tank because the product FP×FN in the numerator grows, dragging the score down. MCC treats both classes symmetrically. A high MCC is hard to achieve without genuinely performing well on both positives <em>and</em> negatives.</p>
+
+<p>If you can only report one number on an imbalanced binary problem — one number to a VP who won't read a paragraph — make it MCC.</p>
 
 <pre><code>from sklearn.metrics import matthews_corrcoef
+print(f"MCC: {matthews_corrcoef(y_true, y_pred):.3f}")</code></pre>
 
-print(f"MCC: {matthews_corrcoef(y_true, y_pred):.3f}")  # Uses the y_pred from earlier</code></pre>
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>Calibration — When Probabilities Need to Mean Something</h2>
+
+<p>ROC-AUC, PR-AUC, and even F1 all measure ranking or decision quality. They answer: "Does the model score positives higher than negatives?" or "Does it make good decisions at this threshold?" None of them care whether the model's probability outputs are truthful. A model that says "92% chance of fraud" when the real probability is 40% will still rank well — it scores fraud higher than non-fraud — but that 92% number is a lie.</p>
+
+<p>When does the lie matter? When downstream decisions use the probability value itself. Insurance pricing: the premium depends on the predicted risk probability. Medical testing: whether to order an expensive follow-up depends on the predicted probability of disease. Ad bidding: the bid amount is literally a function of the predicted click probability. In all these cases, you need <strong>calibration</strong> — the property that when a model says "80% likely," it's correct about 80% of the time.</p>
+
+<p>Think of a weather forecaster. A well-calibrated forecaster's "70% chance of rain" predictions should, over time, result in actual rain about 70% of the time. If it rains 95% of the time the forecaster says 70%, the forecaster is <em>underconfident</em>. If it rains only 30% of the time, <em>overconfident</em>. A <strong>reliability diagram</strong> checks this visually: bin the predicted probabilities into buckets (0–10%, 10–20%, etc.), plot the average prediction against the observed frequency. Perfect calibration falls on the diagonal.</p>
+
+<p>What if your model isn't calibrated? Two post-hoc fixes are standard. <strong>Platt scaling</strong> fits a logistic regression on the model's raw scores — it works well when the miscalibration is roughly sigmoid-shaped (common for SVMs and neural nets). <strong>Isotonic regression</strong> fits a more flexible piecewise monotonic function — it handles weirder miscalibration patterns but needs more data to avoid overfitting. Both require a held-out calibration set. Neither changes the model itself — they're a wrapper around its output.</p>
+
+<p>We'll come back to our weather forecaster analogy one more time when we talk about what breaks in production. For now, the takeaway: if you need the model's probability to be an actual probability and not a score, check calibration. Most models out of the box are not calibrated.</p>
 
 <!-- ════════════════════════════════════════════════════════ -->
 <h2>Multi-Class Metrics</h2>
 
-<p>Everything above was binary. With K classes, you get a K×K confusion matrix and per-class precision/recall/F1. The question is how to roll those into a single number. Three ways, each with different politics:</p>
+<p>Everything above was binary — two classes, one confusion matrix. With K classes, you get a K×K confusion matrix and per-class precision, recall, and F1. The question is how to roll those per-class numbers into a single number. Three approaches, each with different politics:</p>
 
 <table>
   <thead>
@@ -460,15 +582,14 @@ print(f"MCC: {matthews_corrcoef(y_true, y_pred):.3f}")  # Uses the y_pred from e
   <tbody>
     <tr><td><strong>Macro</strong></td><td>Compute metric per class, take unweighted mean</td><td>Every class is equally important — even the tiny ones</td></tr>
     <tr><td><strong>Micro</strong></td><td>Pool all TP/FP/FN globally, compute once</td><td>Every <em>sample</em> is equally important (micro-F1 = accuracy for single-label)</td></tr>
-    <tr><td><strong>Weighted</strong></td><td>Compute metric per class, average weighted by class size</td><td>Compromise — big classes dominate, small classes still contribute</td></tr>
+    <tr><td><strong>Weighted</strong></td><td>Compute metric per class, weight by class support</td><td>Compromise — big classes dominate, small classes still contribute</td></tr>
   </tbody>
 </table>
 
-<p>Quick rule of thumb: if you have 10,000 cats and 50 rare birds and the birds matter, use macro. If you just want an overall accuracy-like number, use micro. Weighted is the safe default when you're not sure.</p>
+<p>The politics are real. Imagine a wildlife camera that classifies animals: 10,000 deer, 500 coyotes, 12 mountain lions. Macro averaging says the mountain lion class is equally important as the deer class — miss all 12 mountain lions and macro F1 collapses, even if you're perfect on deer and coyotes. Micro averaging would barely notice the mountain lions are gone. Weighted is the middle ground. The right choice depends on who's affected when the model is wrong.</p>
 
 <pre><code>from sklearn.metrics import f1_score
 
-# Multi-class example
 y_true_mc = [0, 0, 0, 1, 1, 2, 2, 2, 2, 2]
 y_pred_mc = [0, 0, 1, 1, 0, 2, 2, 2, 1, 0]
 
@@ -477,44 +598,43 @@ print(f"Micro F1:    {f1_score(y_true_mc, y_pred_mc, average='micro'):.3f}")
 print(f"Weighted F1: {f1_score(y_true_mc, y_pred_mc, average='weighted'):.3f}")</code></pre>
 
 <!-- ════════════════════════════════════════════════════════ -->
-<h2>Regression Metrics</h2>
+<h2>The Regression Scoreboard</h2>
 
-<p>Classification asks "which bucket?" Regression asks "how much?" Different game, different scoreboard.</p>
+<p>Classification asks "which bucket?" Regression asks "how far off?" Different game, different scoreboard. Let's extend our running scenario: alongside the fraud classifier, the bank also predicts expected transaction amounts for anomaly detection. When the predicted amount is way off from the actual, it's a signal worth investigating.</p>
 
 <h3>MAE — Mean Absolute Error</h3>
 
 <p><code>MAE = (1/N) × Σ|y_i − ŷ_i|</code></p>
 
-<p>The average absolute miss. If you predict a house is worth $300K and it sells for $320K, the error is $20K. MAE treats all errors linearly — a $10K miss is exactly twice as bad as a $5K miss. Easy to explain to anyone: "on average, our predictions are off by $X." Robust to outliers because it doesn't square anything.</p>
+<p>The simplest regression metric. If we predict a transaction is $300 and it's actually $320, the error is $20. MAE averages all these absolute errors across the dataset. A $10 miss counts exactly twice as much as a $5 miss — no more, no less. You can tell a non-technical person "on average, our predictions are off by $X" and they immediately get it. MAE is robust to outliers because it doesn't amplify anything — one wildly wrong prediction is penalized linearly, same as any other.</p>
 
-<h3>MSE / RMSE — When Big Misses Are Unacceptable</h3>
+<h3>RMSE — When Big Misses Are Catastrophic</h3>
 
 <p><code>MSE = (1/N) × Σ(y_i − ŷ_i)²</code> &nbsp;&nbsp; <code>RMSE = √MSE</code></p>
 
-<p>Squaring the errors does two things: makes everything positive, and <em>disproportionately</em> punishes large errors. A $100K miss contributes 100× more to MSE than a $10K miss. RMSE takes the square root to get back to the original units (dollars, not dollars-squared), making it interpretable.</p>
+<p>Squaring the errors before averaging does something important: it <em>disproportionately</em> punishes large errors. A $100 miss contributes 100× more to MSE than a $10 miss (because 100² / 10² = 100). RMSE takes the square root to get back to the original units — dollars, not dollars-squared — so it stays interpretable.</p>
 
-<p>Use MSE/RMSE when a large error isn't just "proportionally bad" — it's catastrophically bad. Insurance pricing, structural engineering, energy demand forecasting. Use MAE when all errors are created equal.</p>
+<p>When is this disproportionate punishment desirable? When a large error isn't "proportionally bad" but catastrophically bad. Energy demand forecasting: underestimate peak load and the grid goes down. Insurance pricing: underestimate risk by 10× and you lose millions. Structural engineering: enough said. In these domains, one big miss is worse than many small misses, and RMSE reflects that. Use MAE when all errors are created equal. Use RMSE when big misses keep you up at night.</p>
 
 <h3>R² — Proportion of Variance Explained</h3>
 
 <p><code>R² = 1 − (SS_res / SS_tot)</code></p>
 
-<p>R² = 1.0 means your model explains all the variance. R² = 0 means you're no better than predicting the mean every time. R² < 0 means you're actually <em>worse</em> than the mean — yes, that's possible, and yes, it means something went very wrong.</p>
+<p>R² answers a different question: "How much of the variance in the target did my model capture?" R² = 1.0 means the model explains everything — predictions match reality perfectly. R² = 0 means you're no better than predicting the mean every time — your model captured zero signal. R² &lt; 0 means you're actively <em>worse</em> than the mean. That last one surprises people, but it's real, and it means something went fundamentally wrong — wrong features, wrong model, or a bug in preprocessing.</p>
 
-<p><strong>The gotcha:</strong> R² always increases (or stays flat) when you add more features — even useless ones. The model has more knobs to turn and will always find a way to overfit slightly more. <strong>Adjusted R²</strong> penalizes for feature count: it goes <em>down</em> if a new feature doesn't pull its weight. Always use adjusted R² when comparing models with different numbers of features.</p>
+<p>The gotcha: R² always increases (or stays flat) when you add more features, even useless random noise. The model has more knobs and will always find a way to fit the noise a tiny bit. <strong>Adjusted R²</strong> penalizes for feature count — it drops if a new feature doesn't pull its weight. When comparing models with different numbers of features, always use adjusted R².</p>
 
-<h3>MAPE — The Business-Friendly Metric</h3>
+<h3>MAPE — The Executive Metric</h3>
 
 <p><code>MAPE = (1/N) × Σ|y_i − ŷ_i| / |y_i| × 100%</code></p>
 
-<p>"Our predictions are off by 5% on average" is a sentence that executives actually understand. That's MAPE's superpower. Its kryptonite: when actual values are near zero, you divide by something tiny and MAPE explodes to infinity. Don't use it for data that crosses zero or hovers near it.</p>
+<p>"Our predictions are off by 5% on average." That's a sentence a VP actually understands. That's MAPE's superpower. Its kryptonite: when actual values are near zero, you divide by something tiny and MAPE rockets to infinity. A transaction of $0.50 with a $2.00 prediction gives a 300% error on a single point. Don't use MAPE for data that crosses zero or hovers near it.</p>
 
 <pre><code>from sklearn.metrics import (mean_absolute_error, mean_squared_error,
                              r2_score, mean_absolute_percentage_error)
-import numpy as np
 
-y_true_reg = np.array([300, 450, 200, 520, 380])  # actual prices ($K)
-y_pred_reg = np.array([310, 430, 215, 490, 395])   # predicted prices
+y_true_reg = np.array([300, 450, 200, 520, 380])
+y_pred_reg = np.array([310, 430, 215, 490, 395])
 
 print(f"MAE:   ${mean_absolute_error(y_true_reg, y_pred_reg):.0f}K")
 print(f"RMSE:  ${np.sqrt(mean_squared_error(y_true_reg, y_pred_reg)):.0f}K")
@@ -522,175 +642,87 @@ print(f"R²:    {r2_score(y_true_reg, y_pred_reg):.3f}")
 print(f"MAPE:  {mean_absolute_percentage_error(y_true_reg, y_pred_reg)*100:.1f}%")</code></pre>
 
 <!-- ════════════════════════════════════════════════════════ -->
-<h2>The Decision Table</h2>
+<h2>Ranking Metrics — When Order Is Everything</h2>
 
-<p>This is the table you'll actually use at work. Bookmark it.</p>
+<p>Not everything is classification or regression. Search engines, recommendation systems, and ad platforms care about <em>order</em> — did the best results show up near the top? If you've ever typed a query and the right answer was buried on page three, you've felt the pain that ranking metrics try to quantify.</p>
+
+<p>Let's adjust our running scenario. The bank is building a transaction monitoring dashboard. When an analyst opens the dashboard, they see a ranked list of suspicious transactions, most suspicious first. They have time to investigate maybe 10 per day. The ranking metric tells us: are the actual frauds concentrated at the top of the list, where they'll actually get seen?</p>
+
+<p><strong>MRR (Mean Reciprocal Rank)</strong> asks: where does the first real fraud appear in the list? If it's position 1, the score for that query is 1. Position 3? Score of 1/3. Position 10? Score of 1/10. Average across all queries to get MRR. It's the right metric when you have one clear target — navigational search ("find me the homepage of X"), question-answering ("what's the capital of Y"). Its limitation is that it ignores everything after the first hit. If positions 2 through 10 are also frauds, MRR doesn't notice.</p>
+
+<p><strong>MAP (Mean Average Precision)</strong> fixes that by considering all relevant results and where they appear. For each position where a fraud appears, compute precision at that position, then average those values. This rewards putting all the frauds at the top and penalizes scattering them randomly through the list. MAP uses binary relevance — a transaction is either fraud or it isn't.</p>
+
+<p><strong>NDCG (Normalized Discounted Cumulative Gain)</strong> goes further by handling <em>graded</em> relevance. Not all frauds are equally severe — a $50,000 fraud is more important than a $50 fraud. NDCG lets you assign relevance scores (say, 0 = legit, 1 = suspicious, 2 = likely fraud, 3 = confirmed fraud), discounts the gain of each result by its position (using a logarithmic discount — top positions count far more), and normalizes by the ideal ordering. NDCG@10 is the industry standard for search quality. It ranges from 0 to 1, where 1 means the ranking is perfect.</p>
+
+<p>The one-liner summary: MRR asks "did you find THE answer?", MAP asks "did you find ALL the answers and put them first?", NDCG asks "did you put the BEST answers highest?"</p>
+
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>The Reference Table</h2>
+
+<p>This is the table I keep pinned above my desk. It's not for learning — it's for deciding.</p>
 
 <table>
   <thead>
-    <tr>
-      <th>Metric</th>
-      <th>What It Measures</th>
-      <th>Use When</th>
-      <th>Watch Out For</th>
-    </tr>
+    <tr><th>Metric</th><th>Measures</th><th>Reach For It When</th><th>Watch Out</th></tr>
   </thead>
   <tbody>
-    <tr>
-      <td><strong>Accuracy</strong></td>
-      <td>% of all predictions correct</td>
-      <td>Balanced classes, symmetric costs</td>
-      <td>Useless on imbalanced data. The "99% accuracy" trap.</td>
-    </tr>
-    <tr>
-      <td><strong>Precision</strong></td>
-      <td>Of flagged positives, % actually positive</td>
-      <td>False positives are costly (spam filters, content moderation)</td>
-      <td>Can be gamed by only predicting positive when extremely confident (high precision, garbage recall)</td>
-    </tr>
-    <tr>
-      <td><strong>Recall</strong></td>
-      <td>Of actual positives, % caught</td>
-      <td>False negatives are costly (cancer, fraud, security)</td>
-      <td>Can be trivially 100% by flagging everything as positive</td>
-    </tr>
-    <tr>
-      <td><strong>F1</strong></td>
-      <td>Harmonic mean of precision &amp; recall</td>
-      <td>You care about both equally</td>
-      <td>Ignores true negatives. Use F-beta when costs aren't symmetric.</td>
-    </tr>
-    <tr>
-      <td><strong>F-beta</strong></td>
-      <td>Weighted harmonic mean (β controls bias)</td>
-      <td>β=2 → recall matters more; β=0.5 → precision matters more</td>
-      <td>Choosing β requires knowing relative costs — which you should know anyway</td>
-    </tr>
-    <tr>
-      <td><strong>ROC-AUC</strong></td>
-      <td>Ranking quality across all thresholds</td>
-      <td>Comparing models, balanced or mildly imbalanced data</td>
-      <td>Misleading on heavily imbalanced data (FPR stays artificially low)</td>
-    </tr>
-    <tr>
-      <td><strong>PR-AUC / AP</strong></td>
-      <td>Precision-recall quality for positive class</td>
-      <td>Imbalanced data where the positive class is rare</td>
-      <td>Baseline depends on class prevalence — not directly comparable across datasets</td>
-    </tr>
-    <tr>
-      <td><strong>Log Loss</strong></td>
-      <td>Quality of predicted probabilities</td>
-      <td>You need calibrated confidence, not just rankings</td>
-      <td>Severely punishes confident wrong predictions — one bad outlier dominates</td>
-    </tr>
-    <tr>
-      <td><strong>MCC</strong></td>
-      <td>Correlation between predicted and actual labels</td>
-      <td>Imbalanced binary classification (best single metric)</td>
-      <td>Less intuitive than F1 for stakeholder communication</td>
-    </tr>
-    <tr>
-      <td><strong>MAE</strong></td>
-      <td>Average absolute error</td>
-      <td>All errors equally bad; want robust-to-outlier metric</td>
-      <td>Doesn't penalize big misses harder — if big misses matter, use RMSE</td>
-    </tr>
-    <tr>
-      <td><strong>RMSE</strong></td>
-      <td>Root mean squared error</td>
-      <td>Large errors are disproportionately bad</td>
-      <td>Sensitive to outliers — one wildly wrong prediction can dominate</td>
-    </tr>
-    <tr>
-      <td><strong>R²</strong></td>
-      <td>Proportion of variance explained</td>
-      <td>Quick "how much signal did I capture?" check</td>
-      <td>Always increases with more features — use adjusted R² for model comparison</td>
-    </tr>
-    <tr>
-      <td><strong>MAPE</strong></td>
-      <td>Average % error</td>
-      <td>Business reporting ("we're off by 5%")</td>
-      <td>Explodes when actual values are near zero; asymmetric penalties</td>
-    </tr>
-    <tr>
-      <td><strong>MRR</strong></td>
-      <td>Rank of first relevant result</td>
-      <td>Single-answer retrieval (navigational search)</td>
-      <td>Ignores all relevant results after the first</td>
-    </tr>
-    <tr>
-      <td><strong>MAP</strong></td>
-      <td>Precision at each relevant result, averaged</td>
-      <td>Information retrieval with multiple relevant docs</td>
-      <td>Binary relevance only — no graded judgments</td>
-    </tr>
-    <tr>
-      <td><strong>NDCG</strong></td>
-      <td>Gain from results, discounted by position</td>
-      <td>Ranking with graded relevance (search, recommendations)</td>
-      <td>Requires relevance labels; NDCG@K depends heavily on cutoff choice</td>
-    </tr>
+    <tr><td><strong>Accuracy</strong></td><td>% correct overall</td><td>Balanced classes, symmetric costs</td><td>The 99% trap on imbalanced data</td></tr>
+    <tr><td><strong>Precision</strong></td><td>% of flags that are real</td><td>False alarms are costly</td><td>Gameable by only flagging slam dunks</td></tr>
+    <tr><td><strong>Recall</strong></td><td>% of real positives caught</td><td>Misses are dangerous</td><td>Trivially 100% by flagging everything</td></tr>
+    <tr><td><strong>F1</strong></td><td>Harmonic mean of P &amp; R</td><td>Both matter equally</td><td>Ignores TN; use F-beta for asymmetric costs</td></tr>
+    <tr><td><strong>ROC-AUC</strong></td><td>Ranking across all thresholds</td><td>Model comparison, balanced data</td><td>Optimistic on heavy imbalance</td></tr>
+    <tr><td><strong>PR-AUC / AP</strong></td><td>Positive-class ranking quality</td><td>Rare positives</td><td>Baseline varies by prevalence</td></tr>
+    <tr><td><strong>Log Loss</strong></td><td>Probability quality</td><td>Calibrated confidence needed</td><td>One confident mistake dominates</td></tr>
+    <tr><td><strong>MCC</strong></td><td>Overall correlation, all 4 cells</td><td>Imbalanced binary (best single metric)</td><td>Harder to explain to non-technical people</td></tr>
+    <tr><td><strong>MAE</strong></td><td>Average absolute error</td><td>All errors equally bad</td><td>Doesn't punish big misses extra</td></tr>
+    <tr><td><strong>RMSE</strong></td><td>Root mean squared error</td><td>Big errors are disproportionately bad</td><td>Sensitive to outliers</td></tr>
+    <tr><td><strong>R²</strong></td><td>Variance explained</td><td>Quick signal-capture check</td><td>Always improves with more features — use adjusted</td></tr>
+    <tr><td><strong>MAPE</strong></td><td>Average % error</td><td>Executive reporting</td><td>Explodes near zero</td></tr>
+    <tr><td><strong>MRR</strong></td><td>Position of first relevant result</td><td>Single-answer retrieval</td><td>Ignores all results after the first</td></tr>
+    <tr><td><strong>MAP</strong></td><td>Precision at each relevant hit</td><td>Multi-relevant retrieval</td><td>Binary relevance only</td></tr>
+    <tr><td><strong>NDCG</strong></td><td>Discounted gain by position</td><td>Graded relevance ranking</td><td>Needs relevance labels; cutoff-sensitive</td></tr>
   </tbody>
 </table>
 
 <!-- ════════════════════════════════════════════════════════ -->
-<h2>Choosing the Right Metric</h2>
+<h2>When Metrics Go Wrong in Production</h2>
 
-<h3>Start with the Business Cost</h3>
+<p>Everything above assumes that the metric you optimize offline is the metric that matters in the real world. I wish that were true. It usually isn't, and I've learned this the hard way more than once.</p>
 
-<p>This is the single most important question in evaluation: <strong>what happens when the model is wrong?</strong></p>
+<p>There's a saying from economics that captures this perfectly: <em>"When a measure becomes a target, it ceases to be a good measure."</em> That's Goodhart's Law, and it haunts production ML systems. Optimize a recommendation system for click-through rate, and it learns to surface clickbait — engagement goes up, user satisfaction goes down. Optimize a content moderation system for precision, and it becomes so conservative that harmful content flows freely — precision is high, harm is high.</p>
 
-<p>If false negatives are 100× more expensive than false positives (fraud, cancer), optimize for recall or F2. If false positives are more dangerous (spam filtering a legal contract, convicting an innocent person), optimize for precision or F0.5. If costs are roughly symmetric, F1 or MCC. If you can actually attach dollar amounts — "$5,000 per missed fraud, $50 per false alarm" — compute the total cost directly: <code>cost = 5000 × FN + 50 × FP</code>. Now you're optimizing for money, which is what the business actually cares about.</p>
+<p>The gap between offline metrics and real-world outcomes shows up in three ways. First, <strong>distribution shift</strong>: your test set represents the past, but production data represents the future, and the future is different. Second, <strong>feedback loops</strong>: a fraud model that catches fraud changes the behavior of fraudsters, who adapt, which changes the data the model sees next. Your offline PR-AUC was measured on yesterday's fraudsters, not tomorrow's. Third, <strong>proxy misalignment</strong>: the metric you can measure (predicted probability, F1 on historical data) is a proxy for the thing you actually care about (dollars saved, lives improved, user trust). Sometimes the proxy diverges from the thing itself.</p>
 
-<h3>Threshold Selection</h3>
+<p>Remember the weather forecaster? A well-calibrated forecaster's probabilities are honest. But even a perfectly calibrated model can be optimized in a way that makes it useless for the actual decision at hand — because the metric it was trained on isn't the metric the decision-maker needs.</p>
 
-<p>The default 0.5 threshold is arbitrary and almost never optimal. In fraud detection, you might drop to 0.2 — flag anything with a 20%+ chance. You'll catch more fraud (higher recall) at the cost of more false alarms (lower precision). The right threshold is where your business cost function is minimized.</p>
-
-<pre><code>from sklearn.metrics import precision_recall_curve
-
-precisions, recalls, thresholds = precision_recall_curve(y_true, y_scores)
-
-# Find threshold that gives at least 90% recall
-idx = np.where(recalls >= 0.90)[0][-1]
-print(f"For 90% recall, set threshold = {thresholds[idx]:.3f}")
-print(f"Precision at that threshold = {precisions[idx]:.3f}")</code></pre>
-
-<h3>Calibration: When Probabilities Need to Mean Something</h3>
-
-<p>ROC-AUC only cares about ranking — does the model score positives higher than negatives? It doesn't care if the model says "92% chance" when the true probability is 40%. But if your system <em>uses</em> those probabilities to make downstream decisions (pricing insurance, ordering medical tests, setting bid amounts), you need <strong>calibration</strong>. A well-calibrated model's "80% confident" predictions are actually correct about 80% of the time. If your model isn't calibrated, look into Platt scaling or isotonic regression as post-hoc fixes.</p>
-
-<!-- ════════════════════════════════════════════════════════ -->
-<h2>Ranking Metrics</h2>
-
-<p>Not everything is classification or regression. Search engines, recommendation systems, and ad platforms care about <em>order</em> — did the best results appear near the top?</p>
-
-<p><strong>MRR (Mean Reciprocal Rank)</strong> — where does the <em>first</em> correct result appear? Position 1 → score of 1. Position 3 → score of 1/3. Average across queries. Good for navigational search where there's one right answer.</p>
-
-<p><strong>MAP (Mean Average Precision)</strong> — considers <em>all</em> relevant results, not just the first. Computes precision at every position where a relevant result appears, averages those. Rewards putting relevant results early. The workhorse metric for information retrieval.</p>
-
-<p><strong>NDCG (Normalized Discounted Cumulative Gain)</strong> — handles <em>graded</em> relevance (not just "relevant or not" but "how relevant on a scale"). Discounts gains by log-position, normalizes by the ideal ordering. NDCG@10 is the standard for search quality. Ranges 0 to 1, where 1 means perfect ranking.</p>
-
-<!-- ════════════════════════════════════════════════════════ -->
-<h2>Putting It All Together: The Decision Flowchart</h2>
-
-<p>When you get a new problem, walk through this in order:</p>
-
-<p><strong>1. Classification or regression?</strong> Classification → start with precision, recall, F1. Regression → start with RMSE or MAE. Ranking → start with NDCG or MAP.</p>
-
-<p><strong>2. Are classes imbalanced?</strong> If yes, accuracy is dead to you. Use F1, PR-AUC, or MCC. If extremely imbalanced (1:1000+), PR-AUC beats ROC-AUC.</p>
-
-<p><strong>3. What's the cost asymmetry?</strong> False negatives worse → recall, F2. False positives worse → precision, F0.5. Symmetric → F1, MCC.</p>
-
-<p><strong>4. Do you need calibrated probabilities?</strong> If downstream decisions use the probability values (not just rankings), check calibration with a reliability diagram. Fix with Platt scaling or isotonic regression.</p>
-
-<p><strong>5. Is this going to production?</strong> Offline metrics get you to a shortlist. A/B tests give you the real answer. When offline and online metrics disagree — and they will — trust online.</p>
+<p>The practical defense is layered. Use offline metrics as a first filter — they're cheap and fast. Use A/B tests to measure what actually happens with real users. Monitor <strong>guardrail metrics</strong> alongside your primary metric: if click-through rate goes up but session length drops, something's wrong. And when offline and online metrics disagree — and they will — trust the online ones. The lab is not the field.</p>
 
 <div class="callout callout-warning">
   <div class="callout-label">⚠️ The Most Common Mistake</div>
-  <p>Optimizing for the metric that's easiest to compute instead of the one that matches your business objective. A model with 0.95 AUC and a model with 0.90 AUC can have wildly different business impact depending on where on the ROC curve your operating point falls. Always connect the metric back to dollars, lives, or user experience.</p>
+  <p>Optimizing for the metric that's easiest to compute instead of the one that matches your business objective. A model with 0.95 AUC and a model with 0.90 AUC can have wildly different business impact depending on where your operating point sits. The metric that matters is the one that hurts when it's wrong. Start with the cost, work backward to the number.</p>
 </div>
+
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>Wrap-Up</h2>
+
+<p>If you're still with me, thank you. I hope it was worth it.</p>
+
+<p>We started with four cells in a confusion matrix and the unsettling discovery that accuracy lies when classes are imbalanced. We built precision and recall as two opposing philosophies — the courtroom versus the cancer ward — and watched them fight over the smoke detector's sensitivity dial. We compressed that tradeoff into F1, learned when to break the symmetry with F-beta, and then stepped back from individual thresholds to see the full picture with ROC and PR curves. We confronted what it means for a model's probabilities to be honest (calibration), met the metric that's hardest to game (MCC), crossed into regression's different scoreboard (MAE, RMSE, R², MAPE), measured the quality of ranked lists (MRR, MAP, NDCG), and ended with the humbling realization that the best offline metric is still a proxy for what actually matters in the real world.</p>
+
+<p>My hope is that the next time someone shows you a model with 99% accuracy and a proud smile, instead of nodding along, you'll ask "on what class distribution?" and "what's the cost when it's wrong?" — and you'll have a pretty darn good mental model of which number to look at instead, and why.</p>
+
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>Resources</h2>
+
+<p>A curated set of things that helped me understand evaluation metrics at a deeper level:</p>
+
+<ul style="line-height:2;">
+  <li><strong>Saito &amp; Rehmsmeier (2015)</strong> — "The precision-recall plot is more informative than the ROC plot when evaluating binary classifiers on imbalanced datasets." The paper that should have settled the ROC-vs-PR debate years ago. Wildly helpful.</li>
+  <li><strong>Chicco &amp; Jurman (2020)</strong> — "The advantages of the Matthews correlation coefficient over F1 score and accuracy in binary classification evaluation." The persuasive case for MCC. Changed how I report results.</li>
+  <li><strong>scikit-learn metrics documentation</strong> — The reference implementations, clearly explained, with the right formulas and edge cases handled. If you ever wonder "what exactly does sklearn compute?" start here.</li>
+  <li><strong>Niculescu-Mizil &amp; Caruana (2005)</strong> — "Predicting Good Probabilities With Supervised Learning." The O.G. paper on calibration. Shows which models are naturally calibrated and which aren't.</li>
+  <li><strong>Google's Rules of ML: Rule #2</strong> — "First, design and implement metrics." A short, unforgettable essay on why choosing the right metric is the single most important decision in a production ML project.</li>
+</ul>
 
 <!-- ════════════════════════════════════════════════════════ -->
 <h2>What You Should Now Be Able To Do</h2>
@@ -698,16 +730,19 @@ print(f"Precision at that threshold = {precisions[idx]:.3f}")</code></pre>
 <div class="callout callout-info">
   <div class="callout-label">✅ Checklist</div>
   <ul>
-    <li>Draw a confusion matrix from scratch and label all four cells (TP, TN, FP, FN)</li>
-    <li>Explain why accuracy fails on imbalanced data — with a concrete numerical example</li>
-    <li>Given a business scenario, decide whether to prioritize precision or recall and pick the right F-beta</li>
-    <li>Interpret an ROC curve and explain what AUC = 0.85 actually means in plain English</li>
-    <li>Know when to use PR-AUC instead of ROC-AUC (imbalanced data)</li>
-    <li>Choose between MAE and RMSE for a regression problem based on whether outliers matter</li>
-    <li>Explain R² to a non-technical stakeholder — including what a negative R² means</li>
-    <li>Use the decision table to pick the right metric for a new ML project in under 60 seconds</li>
-    <li>Set a classification threshold based on business costs, not the arbitrary 0.5 default</li>
-    <li>Know when MCC is a better choice than F1 for reporting model quality</li>
+    <li>Draw a confusion matrix from scratch and explain what each of the four cells means in a real scenario</li>
+    <li>Demonstrate the accuracy trap with a concrete numerical example on imbalanced data</li>
+    <li>Given a business scenario with asymmetric costs, choose between precision, recall, and the right F-beta</li>
+    <li>Explain the precision–recall tradeoff using the smoke detector analogy</li>
+    <li>Interpret AUC = 0.85 in a single plain-English sentence (the random pair interpretation)</li>
+    <li>Know when to use PR-AUC instead of ROC-AUC, and explain why ROC-AUC is misleading on imbalanced data</li>
+    <li>Explain why log loss uses the logarithm (surprisal / proper scoring rule) rather than squared error</li>
+    <li>Argue why MCC is a better single metric than F1 for imbalanced problems (uses all four cells)</li>
+    <li>Choose between MAE and RMSE based on whether one catastrophic miss is worse than many small ones</li>
+    <li>Explain R² to a non-technical person — including what a negative R² means</li>
+    <li>Pick the right ranking metric (MRR vs MAP vs NDCG) for a given search or recommendation scenario</li>
+    <li>Set a classification threshold using business cost, not the default 0.5</li>
+    <li>Describe Goodhart's Law and how it applies to ML metrics in production</li>
   </ul>
 </div>
 
