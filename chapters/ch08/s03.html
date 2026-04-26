@@ -297,68 +297,87 @@
       <div class="chapter-meta">
         <span class="tag">Chapter 8: Training Deep Networks</span>
         <span class="tag">Section 3 of 16</span>
-        <span class="tag">~30 min read</span>
+        <span class="tag">~45 min read</span>
       </div>
 
       <div class="tldr">
         <div class="tldr-label">TL;DR</div>
-        <p>PyTorch is the dominant deep learning framework — it won the research world years ago and is now taking over production too. Its core ideas: tensors with GPU support and automatic differentiation, a dynamic computation graph built on-the-fly as you write Python, and <code>nn.Module</code> as the building block for everything. The training loop is explicit and yours to control — no magic hidden behind <code>.fit()</code>. This section gives you the patterns you'll use in every PyTorch project: the training loop, custom datasets, model definition, saving/loading, device management, and inference. If you learn one framework deeply, make it PyTorch.</p>
+        <p>PyTorch won the framework war — and it won by being honest about what it is. There's no <code>.fit()</code> hiding the machinery behind a curtain. You write the loop. You own every line. That means understanding what a tensor actually remembers, how autograd tapes your computation graph and then eats the tape during <code>.backward()</code>, why <code>nn.Module</code> quietly registers parameters behind your back, and how DataLoader's multiprocessing pipeline can silently bottleneck your entire training run. This section builds PyTorch from the ground up — tensors, then autograd, then the training loop, then Dataset/DataLoader, then <code>nn.Module</code> internals, then the real-world patterns that separate a training script that works from one that works <em>well</em>: mixed precision, gradient accumulation, gradient checkpointing, <code>torch.compile</code>, and distributed training. If you learn one framework deeply, make it this one.</p>
       </div>
 
       <!-- ============================================================ -->
-      <h2>Why PyTorch</h2>
+      <h2>The Confession</h2>
 
-      <p>PyTorch won. It's the default in ML research, dominant on arXiv, the backbone of Hugging Face, and increasingly the choice for production systems (via TorchServe, ONNX export, and <code>torch.compile</code>). Three things make it work:</p>
+      <p>I avoided writing a real training loop for longer than I'd like to admit. Every time someone showed me PyTorch code, I'd nod along, copy-paste the loop from a tutorial, change the model class, and pray it worked. When it didn't, I'd stare at the loss curve and wiggle hyperparameters. I didn't understand what <code>zero_grad()</code> actually cleared, or why the graph vanished after <code>.backward()</code>, or what <code>pin_memory</code> was pinning. Finally the discomfort of not understanding the machinery I depended on every day grew unbearable. Here is that dive.</p>
 
-      <ul>
-        <li><strong>Dynamic computation graph (define-by-run):</strong> The graph is built as your Python code executes. Every <code>if</code> statement, every <code>for</code> loop, every conditional branch — they're all part of the graph. No separate "compile the graph, then run it" step. This makes debugging trivial: you can set breakpoints, print intermediate tensors, and use standard Python tooling.</li>
-        <li><strong>Pythonic:</strong> PyTorch feels like NumPy with superpowers. If you know Python, you'll read PyTorch code naturally. There's no domain-specific language, no graph placeholders, no sessions.</li>
-        <li><strong>The ecosystem:</strong> Hugging Face Transformers, PyTorch Lightning, torchvision, torchaudio, torchtext, TIMM, Detectron2 — virtually every major ML library is PyTorch-first.</li>
-      </ul>
+      <p>PyTorch was released by Facebook AI Research in 2016, building on the Lua-based Torch library. It introduced a radical idea for its time: build the computation graph dynamically as your Python code runs, instead of pre-declaring a static graph. That idea — <strong>define-by-run</strong> — turned out to be what researchers and engineers actually wanted. PyTorch now dominates arXiv, powers Hugging Face, and is increasingly the default in production via TorchServe, ONNX export, and <code>torch.compile</code>.</p>
 
-      <p>If you learn one framework deeply, make it PyTorch. Everything else becomes easier once you have this foundation.</p>
+      <p>Before we start, a heads-up. We're going to walk through tensors, automatic differentiation, multiprocessing, GPU memory management, and even some compiler internals. You don't need to know any of it beforehand. We'll add what we need, one piece at a time.</p>
+
+      <p>This isn't a short journey, but I hope you'll be glad you came.</p>
 
       <!-- ============================================================ -->
-      <h2>Tensors &amp; Autograd</h2>
+      <h2>What We'll Cover</h2>
 
-      <p>The entire framework rests on two ideas: <strong>tensors</strong> and <strong>automatic differentiation</strong>.</p>
+      <p>Tensors: The Thing That Remembers · Autograd: The Tape Recorder · The Training Loop — Seven Lines That Run the World · Dataset and DataLoader: The Data Pipeline · nn.Module: The Building Block That Registers Itself · Device Management: The Same-Room Rule · Saving and Loading: Checkpoints Done Right · Inference: Two Switches, Not One · Rest Stop · The Patterns That Matter: Gradient Accumulation · Mixed Precision: Two Number Systems · Gradient Checkpointing: Trading Compute for Memory · torch.compile: The JIT That Actually Works · Distributed Training: DDP and FSDP · The Gotchas That Will Eat Your Afternoon · Putting It All Together</p>
 
-      <p>A tensor is a multi-dimensional array — conceptually identical to a NumPy <code>ndarray</code>, but with two critical additions: it can live on a GPU, and it can track the operations performed on it so that gradients can be computed automatically.</p>
+      <!-- ============================================================ -->
+      <h2>Tensors: The Thing That Remembers</h2>
+
+      <p>Everything in PyTorch starts with a <strong>tensor</strong>. A tensor is a multi-dimensional array — conceptually identical to a NumPy <code>ndarray</code>, but carrying two capabilities that change everything: it can live on a GPU, and it can remember how it was created.</p>
+
+      <p>Let's build our running example. Imagine we're training a tiny sentiment classifier — three movie reviews, each represented as a small vector of features. We'll use this classifier throughout the section, starting absurdly small and gradually adding complexity until we have a production-grade training pipeline.</p>
 
 <pre><code class="language-python">import torch
 
-# Create tensors — just like NumPy
-x = torch.tensor([1.0, 2.0, 3.0])
-W = torch.randn(3, 3)                    # random normal
-zeros = torch.zeros(2, 4)                # explicit shape
-eye = torch.eye(3)                       # identity matrix
+# Our three movie reviews as feature vectors (3 samples, 4 features each)
+reviews = torch.tensor([
+    [0.8, 0.1, 0.9, 0.2],   # positive review
+    [0.1, 0.9, 0.2, 0.8],   # negative review
+    [0.5, 0.5, 0.5, 0.5],   # ambiguous review
+], dtype=torch.float32)
 
-# NumPy interop (shared memory — no copy!)
-import numpy as np
-np_array = np.array([1.0, 2.0, 3.0])
-t = torch.from_numpy(np_array)           # numpy → tensor
-back = t.numpy()                         # tensor → numpy
-
-# GPU tensors
-if torch.cuda.is_available():
-    x_gpu = x.to('cuda')                 # move to GPU
-    x_gpu = x.cuda()                     # equivalent shorthand
+labels = torch.tensor([1, 0, 1], dtype=torch.long)  # 1=positive, 0=negative
 </code></pre>
 
-      <h3>Autograd: Automatic Differentiation</h3>
+      <p>That <code>dtype=torch.float32</code> matters more than it looks. Tensors track their data type, device, and shape as first-class properties. When two tensors meet in an operation, all three must be compatible — or PyTorch throws a RuntimeError. This strictness feels annoying at first. It saves you from silent numerical bugs later.</p>
 
-      <p>Setting <code>requires_grad=True</code> on a tensor tells PyTorch to track every operation performed on it. This builds a <strong>computational graph</strong> on the fly — and when you call <code>.backward()</code> on a scalar output, PyTorch walks that graph in reverse (backpropagation) to compute gradients for every tracked tensor.</p>
+      <p>NumPy interop is nearly free. <code>torch.from_numpy()</code> shares the underlying memory — no copy — and <code>.numpy()</code> goes the other way. But there's a catch: shared memory means changing one changes the other. If that surprises you during debugging, you're not the first.</p>
 
-<pre><code class="language-python"># Autograd in action
-x = torch.tensor(3.0, requires_grad=True)
-y = x ** 2 + 2 * x + 1          # y = x² + 2x + 1
+<pre><code class="language-python">import numpy as np
+arr = np.array([1.0, 2.0, 3.0])
+t = torch.from_numpy(arr)     # shared memory — no copy
+arr[0] = 99.0
+print(t[0])                    # tensor(99.) — surprise
+</code></pre>
 
-y.backward()                     # dy/dx = 2x + 2 = 8.0
-print(x.grad)                    # tensor(8.)
+      <p>For GPU tensors, the story changes. <code>.to('cuda')</code> copies data to GPU memory. The CPU and GPU tensors are now independent.</p>
 
-# The graph is dynamic — built fresh each forward pass
-# This means you can use Python control flow freely:
-def weird_function(x):
+      <!-- ============================================================ -->
+      <h2>Autograd: The Tape Recorder</h2>
+
+      <p>If tensors are the nouns of PyTorch, autograd is the verb. It's the system that makes training possible, and understanding it — really understanding it — is the difference between writing a training loop and knowing what your training loop does.</p>
+
+      <p>The analogy I keep coming back to: imagine you're recording a cooking show. Every time you chop a vegetable, every time you add a spice, the camera records it. That recording is the computation graph. At the end of the meal, someone asks "how did the salt affect the final taste?" — and you rewind the tape to trace the path from salt to the finished dish. That rewind is <code>.backward()</code>.</p>
+
+      <p>Setting <code>requires_grad=True</code> on a tensor is like turning the camera on. From that moment, every operation involving that tensor gets recorded. Each operation creates a <strong>Function</strong> node in the graph, and each tensor carries a <code>grad_fn</code> attribute pointing back to the Function that created it.</p>
+
+<pre><code class="language-python">x = torch.tensor(3.0, requires_grad=True)
+y = x ** 2 + 2 * x + 1      # y = x² + 2x + 1
+
+print(y.grad_fn)              # &lt;AddBackward0&gt; — the last operation that created y
+
+y.backward()                  # rewind the tape: dy/dx = 2x + 2 = 8.0
+print(x.grad)                 # tensor(8.)
+</code></pre>
+
+      <p>Here's what happened under the hood. When we computed <code>x ** 2</code>, PyTorch created a PowBackward node and saved <code>x</code> inside it (needed to compute the derivative of x²). When we computed <code>+ 2 * x</code>, it created a MulBackward and an AddBackward. When we computed <code>+ 1</code>, another AddBackward. These nodes form a directed acyclic graph from <code>y</code> back to <code>x</code>.</p>
+
+      <p>Calling <code>y.backward()</code> walks this graph in reverse — that's the "back" in backpropagation — computing ∂y/∂x using the chain rule at each step. The result lands in <code>x.grad</code>. And then the graph is destroyed. Gone. Freed from memory. Next forward pass builds a fresh one.</p>
+
+      <p>This is why it's called define-by-run: the graph IS your Python code. Want an <code>if</code> statement? Fine. Want a <code>for</code> loop whose length depends on the input? Fine. The graph captures whatever actually executed.</p>
+
+<pre><code class="language-python">def weird_function(x):
     if x.item() > 0:
         return x ** 2
     else:
@@ -367,606 +386,536 @@ def weird_function(x):
 x = torch.tensor(2.0, requires_grad=True)
 y = weird_function(x)
 y.backward()
-print(x.grad)                    # tensor(4.) — gradient of x², as expected
+print(x.grad)                 # tensor(4.) — gradient of x², because x > 0
 </code></pre>
 
-      <p>The key mental model: <strong>every operation you write IS the graph</strong>. There's no separate graph definition step. The graph exists only during the forward pass and is consumed during <code>.backward()</code>. Next forward pass? A fresh graph is built. This is why it's called "define-by-run."</p>
+      <p>I'll be honest — the first time I saw that a dynamic graph could handle arbitrary Python control flow and still compute correct gradients, I didn't believe it. The trick is that autograd doesn't know about the <code>if</code> statement. It only sees the operations that actually ran. If <code>x > 0</code>, it recorded <code>x ** 2</code> and never saw <code>x ** 3</code>. The graph is a recording of what happened, not a description of what could happen.</p>
+
+      <p>A few things to internalize about autograd, because they'll bite you otherwise. Gradients <strong>accumulate</strong> by default. Calling <code>.backward()</code> adds to whatever is already in <code>.grad</code>, rather than replacing it. This is a deliberate design choice (we'll use it for gradient accumulation later), but it means you must zero gradients before each training step. Also, the tape is gone after <code>.backward()</code> — if you call it twice on the same graph, you get a RuntimeError unless you pass <code>retain_graph=True</code>. And <code>.detach()</code> severs a tensor from the graph, producing a new tensor that looks identical but has no history. Use this for logging values without leaking memory.</p>
 
       <!-- ============================================================ -->
-      <h2>The Training Loop — The Pattern You Should Know Cold</h2>
+      <h2>The Training Loop — Seven Lines That Run the World</h2>
 
-      <p>Unlike Keras' <code>.fit()</code>, PyTorch gives you the raw loop. This is a feature, not a bug — you have total control over every step. Here's the canonical pattern:</p>
+      <p>Keras gives you <code>.fit()</code>. PyTorch gives you seven lines and says "your problem now." This is a feature, not a limitation. Those seven lines are the heartbeat of every PyTorch project, and knowing why each one exists — not what it does, but <em>why</em> — is what separates someone who uses PyTorch from someone who understands it.</p>
 
-<pre><code class="language-python">model.train()                    # Enable training mode (dropout, BN)
+      <p>Let's train our sentiment classifier. One weight matrix, one bias, one loss function, one optimizer:</p>
+
+<pre><code class="language-python">import torch
+import torch.nn as nn
+
+# Our toy data
+reviews = torch.tensor([[0.8,0.1,0.9,0.2],[0.1,0.9,0.2,0.8],[0.5,0.5,0.5,0.5]])
+labels = torch.tensor([1, 0, 1])
+
+# A single linear layer: 4 features → 2 classes
+model = nn.Linear(4, 2)
+criterion = nn.CrossEntropyLoss()
+optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+
+for epoch in range(5):
+    optimizer.zero_grad()            # 1. clear old gradients
+    outputs = model(reviews)         # 2. forward pass — builds the graph
+    loss = criterion(outputs, labels)# 3. compute scalar loss
+    loss.backward()                  # 4. walk graph backward — compute gradients
+    optimizer.step()                 # 5. update parameters using gradients
+    print(f"Epoch {epoch}: loss={loss.item():.4f}")
+</code></pre>
+
+      <p>Five lines inside the loop, but the real training loop in practice has seven core operations. Let's see the full canonical pattern with batched data, GPU handling, and everything a real project needs:</p>
+
+<pre><code class="language-python">model.train()                             # set training mode
 
 for epoch in range(num_epochs):
-    running_loss = 0.0
-    for batch_idx, (inputs, targets) in enumerate(dataloader):
-        # 1. Move data to the right device
-        inputs, targets = inputs.to(device), targets.to(device)
+    for inputs, targets in dataloader:
+        inputs = inputs.to(device)        # move data to GPU
+        targets = targets.to(device)
 
-        # 2. Zero out gradients from the previous step
-        optimizer.zero_grad()
+        optimizer.zero_grad()             # clear accumulated gradients
+        outputs = model(inputs)           # forward pass (graph is built here)
+        loss = criterion(outputs, targets)# compute loss
+        loss.backward()                   # backward pass (graph is consumed here)
+        optimizer.step()                  # update weights
 
-        # 3. Forward pass — compute predictions
-        outputs = model(inputs)
-
-        # 4. Compute loss
-        loss = criterion(outputs, targets)
-
-        # 5. Backward pass — compute gradients
-        loss.backward()
-
-        # 6. (Optional) Clip gradients to prevent explosion
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-
-        # 7. Update parameters
-        optimizer.step()
-
-        running_loss += loss.item()
-
-    # 8. Step the learning rate scheduler (once per epoch)
-    scheduler.step()
-
-    avg_loss = running_loss / len(dataloader)
-    print(f"Epoch {epoch+1}/{num_epochs}, Loss: {avg_loss:.4f}")
+    scheduler.step()                      # adjust learning rate
 </code></pre>
 
-      <p>Let's dissect every line, because each one matters:</p>
+      <p>Let me walk through each line, because I've been bitten by every single one.</p>
 
-      <h3>model.train()</h3>
-      <p>Sets the model to training mode. This affects layers that behave differently during training vs. inference: <b>Dropout</b> layers randomly zero out neurons (active during training, disabled during eval), and <b>BatchNorm</b> layers use per-batch statistics (training) vs. running statistics (eval). If you forget this after calling <code>model.eval()</code>, your model will train with dropout disabled and frozen BN stats. Your loss will look weird and you'll spend hours debugging.</p>
+      <p><strong><code>model.train()</code></strong> toggles two specific layer behaviors. Dropout layers start randomly zeroing neurons (they're dormant during eval). BatchNorm layers switch to computing statistics from the current batch instead of using stored running averages. That's all it does — it has zero effect on gradient computation. But forget to call it after an <code>eval()</code>, and your model trains with dropout disabled and BatchNorm frozen. The loss curve will look fine-ish. Your model will underperform. You'll blame the learning rate. I've done this.</p>
 
-      <h3>inputs.to(device), targets.to(device)</h3>
-      <p>Moves data to the same device as your model (CPU or GPU). If your model is on <code>cuda</code> and your data is on <code>cpu</code>, you get a <code>RuntimeError</code>. Every tensor involved in computation must be on the same device. The <code>.to()</code> call on tensors returns a <b>new tensor</b> (it's not in-place), so you must reassign: <code>inputs = inputs.to(device)</code>.</p>
+      <p><strong><code>inputs.to(device)</code></strong> moves tensors to whatever device your model lives on. If your model is on GPU and your data is on CPU, you get an immediate RuntimeError. Every tensor in an operation must be on the same device — think of it as the same-room rule. I'll cover the subtle asymmetry between <code>.to()</code> on modules vs. tensors later.</p>
 
-      <h3>optimizer.zero_grad()</h3>
-      <p>This is the line people forget and then spend an hour debugging. By default, PyTorch <b>accumulates</b> gradients — calling <code>.backward()</code> adds to the existing <code>.grad</code> attributes rather than replacing them. This is actually useful for gradient accumulation (we'll see later), but during normal training you want a clean slate each step. <code>zero_grad()</code> sets all parameter gradients to zero. Call it <b>before</b> the forward pass.</p>
+      <p><strong><code>optimizer.zero_grad()</code></strong> is the line that catches everyone at least once. Because gradients accumulate by default, skipping this means each step's gradients pile on top of the previous step's. Your loss appears to converge, but the model behaves erratically because the effective gradient is a running sum of everything that came before. The fix is trivially easy once you know the problem — the diagnosis is not, because nothing crashes.</p>
 
-      <div class="callout">
-        <div class="callout-title">💡 Performance Tip</div>
-        <p>Use <code>optimizer.zero_grad(set_to_none=True)</code> instead of the default. Instead of filling gradient tensors with zeros, it sets them to <code>None</code>, which is slightly faster and uses less memory. This is the default in PyTorch 2.0+.</p>
-      </div>
+      <p><strong><code>outputs = model(inputs)</code></strong> runs the forward pass. Calling a model like a function invokes its <code>forward()</code> method plus any registered hooks (more on those later). This is where the computation graph gets built — every matmul, every activation, every normalization becomes a node that <code>.backward()</code> will later traverse.</p>
 
-      <h3>outputs = model(inputs)</h3>
-      <p>The forward pass. Calling a model as a function invokes its <code>forward()</code> method (plus some internal hooks). This is where the computational graph is built — every matrix multiply, activation, and normalization creates graph nodes that <code>.backward()</code> will traverse later.</p>
+      <p><strong><code>loss = criterion(outputs, targets)</code></strong> computes a scalar loss. A detail worth knowing: <code>nn.CrossEntropyLoss</code> expects raw logits, not probabilities. It applies LogSoftmax internally using the LogSumExp trick, which is more numerically stable than doing <code>softmax()</code> followed by <code>log()</code> yourself. If you feed it softmax'd outputs, your loss function is effectively computing softmax twice, and your gradients are wrong. This has ruined entire training runs for people.</p>
 
-      <h3>loss = criterion(outputs, targets)</h3>
-      <p>Computes a scalar loss. Common choices: <code>nn.CrossEntropyLoss()</code> for classification (expects raw logits, not softmax), <code>nn.MSELoss()</code> for regression, <code>nn.BCEWithLogitsLoss()</code> for binary classification. The loss tensor is the root node that backward will differentiate from.</p>
+      <p><strong><code>loss.backward()</code></strong> is where the magic happens. Starting from the loss scalar, autograd traverses the computational graph backward, applying the chain rule at each node, and deposits ∂loss/∂param into every parameter's <code>.grad</code> attribute. After this call, the graph is destroyed — freed from memory. This is why you can't call <code>.backward()</code> twice without <code>retain_graph=True</code>.</p>
 
-      <h3>loss.backward()</h3>
-      <p>The magic line. Walks the computational graph backward from the loss, computing <code>∂loss/∂param</code> for every parameter with <code>requires_grad=True</code>. After this call, every <code>param.grad</code> contains the gradient. The graph is then destroyed (freed from memory) — this is why each forward pass builds a fresh graph.</p>
+      <p><strong><code>optimizer.step()</code></strong> reads the <code>.grad</code> on each parameter and updates the parameter accordingly. For SGD, it's literally <code>param -= lr * param.grad</code>. For Adam, it's more involved — maintaining running averages of gradients and squared gradients to compute adaptive learning rates. The optimizer holds references to your model's parameters from when you created it with <code>model.parameters()</code>.</p>
 
-      <h3>clip_grad_norm_</h3>
-      <p>Optional but increasingly standard. Clips the total norm of all gradients to <code>max_norm</code>. Without this, a single bad batch can produce enormous gradients that blow up your weights. Essential for RNNs and transformers, good practice everywhere.</p>
-
-      <h3>optimizer.step()</h3>
-      <p>Uses the gradients stored in <code>.grad</code> to update the parameters. For SGD: <code>param = param - lr * param.grad</code>. For Adam: something more complex involving momentum and adaptive learning rates. The optimizer holds references to your model's parameters — that's why you passed <code>model.parameters()</code> when creating it.</p>
-
-      <h3>scheduler.step()</h3>
-      <p>Updates the learning rate according to the schedule. Typically called once per epoch (some schedulers, like <code>OneCycleLR</code>, are called once per batch). Always call this <b>after</b> <code>optimizer.step()</code>.</p>
+      <p>There's one more line worth mentioning: <code>scheduler.step()</code> adjusts the learning rate. Some schedulers (CosineAnnealing, StepLR) are called per-epoch. Others (OneCycleLR) are called per-batch. Calling it at the wrong frequency is a subtle bug — your LR schedule will either be too aggressive or barely noticeable. Always check the scheduler's documentation.</p>
 
       <!-- ============================================================ -->
-      <h2>Dataset &amp; DataLoader</h2>
+      <h2>Dataset and DataLoader: The Data Pipeline</h2>
 
-      <p>PyTorch separates <em>what</em> your data is (Dataset) from <em>how</em> it's batched, shuffled, and loaded (DataLoader).</p>
+      <p>The training loop above fed all three reviews at once. That works for toy data. Real datasets have millions of samples, live on disk, and need transformations. PyTorch separates this into two pieces: Dataset defines <em>what</em> each sample is, and DataLoader handles <em>how</em> samples become batches.</p>
 
-      <h3>Custom Dataset</h3>
-
-      <p>Inherit from <code>torch.utils.data.Dataset</code> and implement two methods: <code>__len__</code> and <code>__getitem__</code>.</p>
+      <p>Let's grow our sentiment classifier. Instead of three hardcoded vectors, imagine we have a CSV of movie reviews with features pre-extracted.</p>
 
 <pre><code class="language-python">from torch.utils.data import Dataset, DataLoader
-import pandas as pd
 
-class TabularDataset(Dataset):
-    """Custom dataset for tabular data from a CSV file."""
-
-    def __init__(self, csv_path, target_col='label'):
+class ReviewDataset(Dataset):
+    def __init__(self, csv_path):
+        import pandas as pd
         df = pd.read_csv(csv_path)
-        self.features = torch.tensor(
-            df.drop(columns=[target_col]).values, dtype=torch.float32
-        )
-        self.targets = torch.tensor(
-            df[target_col].values, dtype=torch.long
-        )
+        self.features = torch.tensor(df.drop('label', axis=1).values, dtype=torch.float32)
+        self.labels = torch.tensor(df['label'].values, dtype=torch.long)
 
     def __len__(self):
         return len(self.features)
 
     def __getitem__(self, idx):
-        return self.features[idx], self.targets[idx]
-
-
-class ImageDataset(Dataset):
-    """Custom dataset for image classification."""
-
-    def __init__(self, image_paths, labels, transform=None):
-        self.image_paths = image_paths
-        self.labels = labels
-        self.transform = transform
-
-    def __len__(self):
-        return len(self.image_paths)
-
-    def __getitem__(self, idx):
-        from PIL import Image
-        image = Image.open(self.image_paths[idx]).convert('RGB')
-        label = self.labels[idx]
-
-        if self.transform:
-            image = self.transform(image)
-
-        return image, label
+        return self.features[idx], self.labels[idx]
 </code></pre>
 
-      <h3>DataLoader</h3>
+      <p>Two methods. That's the contract. <code>__len__</code> returns the number of samples. <code>__getitem__</code> returns one sample given an index. PyTorch never calls your Dataset on a batch of indices at once — it calls <code>__getitem__</code> individually and the DataLoader assembles the batch.</p>
 
-      <p>The DataLoader wraps a Dataset and handles batching, shuffling, and parallel data loading. These are the parameters you'll use constantly:</p>
+      <p>The DataLoader is where things get interesting — and where performance bottlenecks silently live.</p>
 
 <pre><code class="language-python">train_loader = DataLoader(
     dataset=train_dataset,
-    batch_size=64,             # samples per batch
-    shuffle=True,              # randomize order each epoch (ALWAYS for training)
-    num_workers=4,             # parallel data loading processes
-    pin_memory=True,           # faster CPU→GPU transfer (use when training on GPU)
-    drop_last=True,            # drop incomplete final batch (avoids BN issues)
-    persistent_workers=True,   # keep workers alive between epochs (saves startup time)
-)
-
-val_loader = DataLoader(
-    dataset=val_dataset,
-    batch_size=128,            # can be larger — no gradients stored
-    shuffle=False,             # no need to shuffle validation data
-    num_workers=4,
-    pin_memory=True,
+    batch_size=64,
+    shuffle=True,              # randomize order each epoch
+    num_workers=4,             # parallel loading processes
+    pin_memory=True,           # page-locked memory for faster GPU transfer
+    prefetch_factor=2,         # batches prefetched per worker
+    persistent_workers=True,   # keep workers alive between epochs
+    drop_last=True,            # drop incomplete final batch
 )
 </code></pre>
 
-      <p><strong><code>num_workers</code></strong> is the one that bites people. Set it to the number of CPU cores available (or start with 4 and tune). Setting it too high wastes memory; setting it to 0 means the main process does all loading (slow). On Windows, <code>num_workers > 0</code> requires wrapping your training code inside an <code>if __name__ == '__main__':</code> guard due to how Python multiprocessing works.</p>
+      <p>When <code>num_workers=0</code>, data loading happens in the main process, sequentially. Your GPU finishes a training step, waits for the next batch, processes it, waits again. A significant chunk of training time is wasted on loading.</p>
 
-      <p><strong><code>pin_memory=True</code></strong> allocates data in page-locked (pinned) CPU memory, which enables faster async transfers to the GPU. Always use this when training on CUDA devices.</p>
+      <p>With <code>num_workers=4</code>, PyTorch spawns four separate Python processes. Each one independently calls your <code>__getitem__</code>, loads data, applies transforms, and places the result in a shared-memory queue. The main process pulls from this queue. While the GPU crunches one batch, workers are already preparing the next. With <code>prefetch_factor=2</code>, each worker prefetches two batches ahead — so up to <code>num_workers × prefetch_factor</code> batches are waiting in the queue at any time.</p>
+
+      <p>Think of it like a kitchen with four prep cooks and one chef. The chef (GPU) should never be waiting for ingredients. If the chef finishes a dish and there's nothing prepped, the restaurant slows down. You want enough prep cooks to keep the chef busy, but not so many that they're bumping into each other and eating up all the counter space (RAM).</p>
+
+      <p><code>pin_memory=True</code> is the detail that ties the pipeline to the GPU. Page-locked (pinned) CPU memory enables asynchronous, non-blocking transfers to the GPU via <code>cuda.Stream</code>. Without it, each CPU→GPU transfer must wait for the copy to complete before continuing. With it, the transfer happens in the background while other work proceeds. Always use this when training on CUDA.</p>
+
+      <p><code>persistent_workers=True</code> keeps worker processes alive between epochs. Without it, PyTorch kills and respawns all workers at every epoch boundary — that's 5-15 seconds of pure overhead per epoch for large datasets. With it, workers stay warm.</p>
+
+      <p>A word about <code>worker_init_fn</code>: if your Dataset applies random augmentations, each worker process is forked from the same parent — and inherits the same random seed. Without setting a per-worker seed, all four workers produce identical augmentations. The fix:</p>
+
+<pre><code class="language-python">def worker_init(worker_id):
+    np.random.seed(42 + worker_id)
+
+loader = DataLoader(dataset, num_workers=4, worker_init_fn=worker_init)
+</code></pre>
 
       <!-- ============================================================ -->
-      <h2>nn.Module — The Building Block</h2>
+      <h2>nn.Module: The Building Block That Registers Itself</h2>
 
-      <p>Every model in PyTorch is an <code>nn.Module</code>. Every layer is an <code>nn.Module</code>. Models composed of layers? Also <code>nn.Module</code>s. It's modules all the way down.</p>
+      <p>Every model in PyTorch is an <code>nn.Module</code>. Every layer is an <code>nn.Module</code>. A model composed of layers is a Module of Modules. It's turtles all the way down.</p>
 
-      <p>The contract is simple: define your layers in <code>__init__</code>, define the computation in <code>forward</code>. PyTorch automatically registers every <code>nn.Module</code> or <code>nn.Parameter</code> you assign as an attribute.</p>
+      <p>The contract is two methods: define your layers in <code>__init__</code>, define the computation in <code>forward</code>. But the machinery underneath that contract is what makes <code>nn.Module</code> powerful — and occasionally surprising.</p>
+
+      <p>Let's build a proper classifier for our reviews:</p>
 
 <pre><code class="language-python">import torch.nn as nn
 import torch.nn.functional as F
 
-class ConvClassifier(nn.Module):
-    """A clean CNN for image classification."""
-
-    def __init__(self, num_classes=10):
+class SentimentClassifier(nn.Module):
+    def __init__(self, input_dim=4, hidden_dim=32, num_classes=2):
         super().__init__()
-
-        # Feature extraction
-        self.features = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=3, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(2),
-
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(2),
-
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.AdaptiveAvgPool2d(1),       # global average pooling
-        )
-
-        # Classification head
-        self.classifier = nn.Sequential(
-            nn.Flatten(),
-            nn.Dropout(0.5),
-            nn.Linear(128, num_classes),
-        )
+        self.layer1 = nn.Linear(input_dim, hidden_dim)
+        self.bn = nn.BatchNorm1d(hidden_dim)
+        self.dropout = nn.Dropout(0.3)
+        self.layer2 = nn.Linear(hidden_dim, num_classes)
 
     def forward(self, x):
-        x = self.features(x)
-        x = self.classifier(x)
-        return x                           # return raw logits (not softmax!)
-
-
-# Instantiate and inspect
-model = ConvClassifier(num_classes=10)
-print(model)                               # prints full architecture
-
-# model.parameters() gives all learnable params — pass this to the optimizer
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-
-# Count parameters
-total_params = sum(p.numel() for p in model.parameters())
-trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-print(f"Total: {total_params:,}  Trainable: {trainable_params:,}")
+        x = self.layer1(x)
+        x = self.bn(x)
+        x = F.relu(x)
+        x = self.dropout(x)
+        x = self.layer2(x)
+        return x    # raw logits — never apply softmax here
 </code></pre>
 
-      <p>A few important patterns with <code>nn.Module</code>:</p>
+      <p>When you write <code>self.layer1 = nn.Linear(input_dim, hidden_dim)</code>, something quiet happens. <code>nn.Module</code> overrides Python's <code>__setattr__</code>. It inspects the thing being assigned. If it's an <code>nn.Parameter</code>, it goes into an internal <code>_parameters</code> dictionary. If it's another <code>nn.Module</code>, it goes into <code>_modules</code>. This is how <code>model.parameters()</code> can recursively discover every learnable weight in a nested model — it walks <code>_modules</code> and <code>_parameters</code> all the way down.</p>
 
-      <ul>
-        <li><strong>Always return raw logits from <code>forward()</code></strong> — don't apply softmax. <code>nn.CrossEntropyLoss</code> applies log-softmax internally and is more numerically stable than doing it yourself.</li>
-        <li><strong>Use <code>nn.Sequential</code></strong> for straightforward stacks of layers. Use explicit <code>forward()</code> logic when you need skip connections, multiple inputs, or conditional paths.</li>
-        <li><strong>Assign layers as attributes</strong> — if you store them in a plain Python list, PyTorch won't find them. Use <code>nn.ModuleList</code> or <code>nn.ModuleDict</code> for dynamic collections.</li>
-      </ul>
+      <p>This auto-registration is why storing layers in a plain Python list is a trap:</p>
 
-<pre><code class="language-python"># WRONG — parameters won't be registered
+<pre><code class="language-python"># BROKEN — parameters invisible to optimizer
 class BadModel(nn.Module):
     def __init__(self):
         super().__init__()
         self.layers = [nn.Linear(10, 10) for _ in range(3)]  # plain list!
 
-# RIGHT — use nn.ModuleList
+# CORRECT — use nn.ModuleList
 class GoodModel(nn.Module):
     def __init__(self):
         super().__init__()
         self.layers = nn.ModuleList([nn.Linear(10, 10) for _ in range(3)])
+</code></pre>
+
+      <p>The plain list bypasses <code>__setattr__</code>. PyTorch never knows those layers exist. <code>model.parameters()</code> returns nothing. The optimizer has nothing to update. Training runs, loss never improves, and nothing crashes. I've spent an afternoon on this exact bug.</p>
+
+      <p>There's another registration mechanism that's less well-known but equally important: <code>register_buffer</code>. It stores tensors that are part of the model's state but aren't parameters — things like BatchNorm's running mean and variance. Buffers are saved in <code>state_dict()</code>, moved with <code>.to(device)</code>, but never updated by the optimizer.</p>
+
+<pre><code class="language-python">class ModelWithState(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.linear = nn.Linear(10, 10)
+        self.register_buffer('running_count', torch.zeros(1))
 
     def forward(self, x):
-        for layer in self.layers:
-            x = F.relu(layer(x))
-        return x
+        self.running_count += 1    # tracked in state_dict, moves with .to()
+        return self.linear(x)
 </code></pre>
 
+      <p>Hooks are the third mechanism worth knowing. <code>register_forward_hook</code> attaches a function that runs after every forward pass of a module — useful for extracting intermediate features, debugging, or monitoring activations. <code>register_full_backward_hook</code> does the same for the backward pass — useful for gradient analysis or custom gradient modification. The old <code>register_backward_hook</code> was deprecated because it could give incorrect results with modules that have multiple outputs.</p>
+
       <!-- ============================================================ -->
-      <h2>Device Management</h2>
+      <h2>Device Management: The Same-Room Rule</h2>
 
-      <p>GPU training requires that your model and data live on the same device. Here's the standard pattern:</p>
+      <p>Every tensor in an operation must be on the same device. Model on GPU, data on CPU? RuntimeError. Two tensors on different GPUs? RuntimeError. This is the same-room rule, and it's PyTorch's most common source of errors for beginners.</p>
 
-<pre><code class="language-python"># Pick the best available device
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(f"Using device: {device}")
+<pre><code class="language-python">device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-# For Apple Silicon Macs:
-# device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
-
-# Move model to device — this IS in-place for modules
-model = ConvClassifier(num_classes=10)
-model.to(device)                          # modifies model in-place, returns self
-
-# Move data to device — this is NOT in-place for tensors
-inputs = torch.randn(16, 3, 32, 32)
-inputs = inputs.to(device)               # must reassign! .to() returns a new tensor
-
-# In the training loop, always move batch data:
-for inputs, targets in dataloader:
-    inputs = inputs.to(device)            # tensor: must reassign
-    targets = targets.to(device)
-    outputs = model(inputs)               # both on same device — works
+model = SentimentClassifier().to(device)   # in-place for modules
+inputs = torch.randn(16, 4)
+inputs = inputs.to(device)                 # NOT in-place for tensors — must reassign
 </code></pre>
 
-      <p>Critical subtlety: <code>.to(device)</code> behaves differently for modules and tensors. For <code>nn.Module</code>, it moves all parameters and buffers in-place and returns <code>self</code>. For tensors, it returns a <b>new tensor</b> on the target device — the original tensor is unchanged. This asymmetry trips up everyone at least once.</p>
+      <p>Here's the critical asymmetry that trips everyone up at least once. For <code>nn.Module</code>, <code>.to(device)</code> moves all parameters and buffers in-place and returns <code>self</code>. For tensors, it returns a <em>new</em> tensor on the target device — the original stays where it was. Writing <code>tensor.to(device)</code> without reassigning is a no-op that silently does nothing. Your model crashes on the next line with a device mismatch, and the error message doesn't tell you the real cause.</p>
+
+      <p>For Apple Silicon: use <code>torch.device('mps')</code> instead of <code>'cuda'</code>. Not all operations are supported on MPS yet, but coverage improves with every PyTorch release.</p>
 
       <!-- ============================================================ -->
-      <h2>Saving &amp; Loading</h2>
+      <h2>Saving and Loading: Checkpoints Done Right</h2>
 
-      <p>Always save the <code>state_dict</code>, not the model object. Saving the entire model uses Python's pickle, which breaks when you move files between projects, rename classes, or refactor code.</p>
+      <p>Always save the <code>state_dict()</code>, never the model object. Saving the whole model uses Python's pickle, which embeds your class structure, import paths, and module layout into the saved file. Rename a class? Move a file? Change an import? Your checkpoint is broken.</p>
 
-<pre><code class="language-python"># === Save just the model weights ===
+<pre><code class="language-python"># Save weights only
 torch.save(model.state_dict(), 'model_weights.pt')
 
-# === Load weights ===
-model = ConvClassifier(num_classes=10)     # create model with same architecture
+# Load weights — create architecture first, then load state
+model = SentimentClassifier()
 model.load_state_dict(torch.load('model_weights.pt', map_location=device))
 model.to(device)
 model.eval()
 </code></pre>
 
-      <h3>Full Checkpoint (For Resuming Training)</h3>
+      <p>For resuming training after a crash, you need the full training state — not just model weights, but optimizer state (momentum buffers for Adam), scheduler state, the current epoch, and your best validation loss. Without the optimizer state, Adam's adaptive learning rates reset to zero, and your training takes a visible hit.</p>
 
-      <p>If you want to resume training after a crash or interruption, you need more than just model weights. Save everything:</p>
-
-<pre><code class="language-python"># === Save a full training checkpoint ===
+<pre><code class="language-python"># Save full checkpoint
 checkpoint = {
     'epoch': epoch,
     'model_state_dict': model.state_dict(),
     'optimizer_state_dict': optimizer.state_dict(),
     'scheduler_state_dict': scheduler.state_dict(),
-    'train_loss': avg_train_loss,
-    'val_loss': avg_val_loss,
     'best_val_loss': best_val_loss,
 }
 torch.save(checkpoint, f'checkpoint_epoch_{epoch}.pt')
 
-# === Resume from checkpoint ===
-checkpoint = torch.load('checkpoint_epoch_42.pt', map_location=device)
-
-model = ConvClassifier(num_classes=10)
-model.load_state_dict(checkpoint['model_state_dict'])
-model.to(device)
-
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=100)
-scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-
-start_epoch = checkpoint['epoch'] + 1
-best_val_loss = checkpoint['best_val_loss']
-
-print(f"Resumed from epoch {start_epoch}, best val loss: {best_val_loss:.4f}")
+# Resume
+ckpt = torch.load('checkpoint_epoch_42.pt', map_location=device)
+model.load_state_dict(ckpt['model_state_dict'])
+optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+start_epoch = ckpt['epoch'] + 1
 </code></pre>
 
-      <p>The <code>map_location</code> argument in <code>torch.load()</code> is essential. If you saved a checkpoint on GPU and load on CPU (or a different GPU), <code>map_location=device</code> handles the remapping automatically.</p>
+      <p>The <code>map_location=device</code> argument is essential. If you saved on GPU 0 and load on CPU (or a different GPU), <code>map_location</code> handles the remapping. Without it, PyTorch tries to load onto the original device, which may not exist on your current machine.</p>
+
+      <p>For partial loading — say you've added new layers to a model but want to keep the old weights — use <code>strict=False</code>:</p>
+
+<pre><code class="language-python">model.load_state_dict(ckpt['model_state_dict'], strict=False)
+# Missing keys: new layers initialized randomly
+# Unexpected keys: old layers that no longer exist are ignored
+</code></pre>
 
       <!-- ============================================================ -->
-      <h2>Inference Mode</h2>
+      <h2>Inference: Two Switches, Not One</h2>
 
-      <p>Running inference correctly requires <b>two</b> things — and forgetting either one is a common source of subtle bugs:</p>
+      <p>Running inference correctly requires flipping two independent switches. Forgetting either one is a bug — and the bugs are different.</p>
 
-<pre><code class="language-python"># Both are needed for correct, efficient inference
-model.eval()                              # 1. Switch to evaluation mode
+<pre><code class="language-python">model.eval()                              # switch 1: change layer behavior
 
-with torch.inference_mode():              # 2. Disable gradient computation
-    inputs = test_batch.to(device)
-    outputs = model(inputs)
+with torch.inference_mode():              # switch 2: disable gradient tracking
+    outputs = model(inputs.to(device))
     predictions = outputs.argmax(dim=1)
 </code></pre>
 
-      <p><strong><code>model.eval()</code></strong> changes layer behavior: Dropout is disabled (all neurons active), and BatchNorm uses its stored running mean/variance instead of computing batch statistics. Without this, dropout randomly zeros out neurons during inference — your predictions become nondeterministic and worse.</p>
+      <p><strong><code>model.eval()</code></strong> changes how specific layers behave. Dropout stops zeroing neurons — all neurons are active. BatchNorm switches from per-batch statistics to its stored running mean and variance. Without this, dropout randomly kills neurons during inference, making your predictions nondeterministic, and BatchNorm uses noisy single-batch statistics instead of the stable running averages it accumulated during training.</p>
 
-      <p><strong><code>torch.inference_mode()</code></strong> (or the older <code>torch.no_grad()</code>) disables gradient tracking. Since you don't need gradients for inference, this saves significant memory (no computational graph stored) and speeds up computation. Prefer <code>inference_mode()</code> over <code>no_grad()</code> — it's stricter (tensors created inside can't accidentally flow into gradient computations later) and faster.</p>
+      <p><strong><code>torch.inference_mode()</code></strong> disables the tape recorder entirely. No computation graph is built, no gradient metadata is stored. This saves significant memory (the graph for a large model can consume gigabytes) and speeds up computation. It's the modern replacement for <code>torch.no_grad()</code> — stricter (tensors created inside can't accidentally flow into later gradient computations) and faster.</p>
 
-      <div class="callout">
-        <div class="callout-title">💡 eval() vs no_grad() — They Do Different Things</div>
-        <p><code>model.eval()</code> changes layer behavior (dropout, batchnorm). <code>torch.no_grad()</code> / <code>torch.inference_mode()</code> disables gradient computation. They are independent and you need both. Using only one and not the other is a bug.</p>
-      </div>
+      <p>These two switches are independent. <code>eval()</code> changes layer behavior but doesn't touch gradients. <code>inference_mode()</code> disables gradients but doesn't touch layer behavior. You need both. Using one without the other is a real bug that real people ship to production.</p>
 
-      <h3>Complete Evaluation Loop</h3>
-
-<pre><code class="language-python">def evaluate(model, dataloader, criterion, device):
-    """Standard evaluation loop with metrics."""
-    model.eval()
-    total_loss = 0.0
-    correct = 0
-    total = 0
-
-    with torch.inference_mode():
-        for inputs, targets in dataloader:
-            inputs, targets = inputs.to(device), targets.to(device)
-
-            outputs = model(inputs)
-            loss = criterion(outputs, targets)
-
-            total_loss += loss.item() * inputs.size(0)
-            _, predicted = outputs.max(dim=1)
-            correct += predicted.eq(targets).sum().item()
-            total += targets.size(0)
-
-    avg_loss = total_loss / total
-    accuracy = correct / total
-    return avg_loss, accuracy
-
-
-# Usage
-val_loss, val_acc = evaluate(model, val_loader, criterion, device)
-print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2%}")
-
-# IMPORTANT: switch back to training mode after evaluation
-model.train()
-</code></pre>
+      <p>After evaluation, remember to switch back: <code>model.train()</code>. Otherwise your next training epoch runs with dropout disabled.</p>
 
       <!-- ============================================================ -->
-      <h2>Common Gotchas</h2>
+      <h2>Rest Stop</h2>
 
-      <div class="callout-danger">
-        <div class="callout-title">⚠️ PyTorch Pitfalls That Will Waste Your Time</div>
-        <ul>
-          <li><strong>Forgetting <code>optimizer.zero_grad()</code></strong> — Gradients accumulate by default. Without zeroing, each batch adds to the previous batch's gradients. Your loss will look like it's converging, but the effective gradient is a messy average of many batches. Insidious because it doesn't crash — it just silently degrades performance.</li>
-          <li><strong>Forgetting <code>model.eval()</code> during inference</strong> — Dropout is still randomly zeroing out neurons. BatchNorm uses noisy per-batch statistics instead of smooth running averages. Your eval metrics look worse than they should, and they vary between runs.</li>
-          <li><strong>Device mismatch</strong> — Model on GPU, data on CPU (or vice versa). You'll get <code>RuntimeError: Expected all tensors to be on the same device</code>. Always check: is everything on the same device?</li>
-          <li><strong>Using <code>torch.no_grad()</code> instead of <code>torch.inference_mode()</code></strong> — <code>no_grad()</code> still creates tensors that could be used in gradient computation later (it just disables tracking). <code>inference_mode()</code> is stricter and faster. Use <code>inference_mode()</code> unless you have a specific reason not to.</li>
-          <li><strong><code>DataLoader(num_workers > 0)</code> on Windows</strong> — Without <code>if __name__ == '__main__':</code> guard, Python's multiprocessing will fail with cryptic errors or infinite spawning. Always wrap your training entry point.</li>
-          <li><strong><code>.to(device)</code> not reassigned for tensors</strong> — Writing <code>tensor.to(device)</code> without <code>tensor = tensor.to(device)</code> does nothing. The original tensor stays on CPU. Modules are in-place; tensors are not.</li>
-          <li><strong>Calling <code>loss.item()</code> inside autograd</strong> — <code>loss.item()</code> extracts a Python number, breaking the graph. Fine for logging, but don't use it in computations that need gradients. Use <code>loss.detach()</code> if you need the value as a tensor without graph.</li>
-          <li><strong>Storing batch tensors in a list for logging</strong> — If you append <code>loss</code> (not <code>loss.item()</code>) to a list, you're keeping the entire computational graph alive. Memory usage grows linearly with training steps. Always call <code>.item()</code> or <code>.detach()</code> for logging values.</li>
-        </ul>
-      </div>
+      <p>Congratulations on making it this far. You can stop here if you want.</p>
+
+      <p>You now have a complete mental model of PyTorch training: tensors that record their history, autograd that rewinds the tape, the seven-line training loop, Dataset/DataLoader for feeding data, <code>nn.Module</code> for building models, device management, checkpointing, and inference. This is enough to write a working training pipeline for most projects.</p>
+
+      <p>But it doesn't tell the whole story. Real training runs hit GPU memory limits, take hours or days, run across multiple GPUs, and need every bit of speed the hardware can offer. The next sections cover the patterns that address these realities: gradient accumulation, mixed precision, gradient checkpointing, <code>torch.compile</code>, and distributed training.</p>
+
+      <p>The short version: gradient accumulation simulates larger batches without more memory, mixed precision runs most operations in float16 for 2× speed, gradient checkpointing trades compute for memory by recomputing activations during backward, <code>torch.compile</code> JIT-compiles your model for 15-40% speedup, and DDP/FSDP scale training across GPUs. There. You're 70% of the way.</p>
+
+      <p>But if the discomfort of not knowing what's underneath is nagging at you, read on.</p>
 
       <!-- ============================================================ -->
-      <h2>Practical Patterns</h2>
+      <h2>The Patterns That Matter: Gradient Accumulation</h2>
 
-      <h3>Gradient Accumulation</h3>
+      <p>You want a batch size of 256 but your GPU can only fit 64 samples. The typical advice is "use gradient accumulation." But what does that actually mean, mechanically?</p>
 
-      <p>When your GPU can't fit the batch size you want, simulate a larger batch by accumulating gradients across multiple smaller batches:</p>
+      <p>Remember that autograd accumulates gradients by default — that thing that seemed like a footgun earlier? It's now a feature. Call <code>.backward()</code> four times before calling <code>optimizer.step()</code>, and the <code>.grad</code> on each parameter contains the sum of four backward passes' worth of gradients. Divide the loss by the accumulation count to keep the gradient magnitude equivalent to what a single large batch would produce.</p>
 
-<pre><code class="language-python">accumulation_steps = 4                    # effective batch = batch_size × 4
+<pre><code class="language-python">accum_steps = 4                            # effective batch = 64 × 4 = 256
 optimizer.zero_grad()
 
-for step, (inputs, targets) in enumerate(dataloader):
+for step, (inputs, targets) in enumerate(train_loader):
     inputs, targets = inputs.to(device), targets.to(device)
-
     outputs = model(inputs)
-    loss = criterion(outputs, targets)
-    loss = loss / accumulation_steps      # normalize loss
-    loss.backward()                       # gradients accumulate
+    loss = criterion(outputs, targets) / accum_steps   # normalize
+    loss.backward()                                     # gradients accumulate
 
-    if (step + 1) % accumulation_steps == 0:
+    if (step + 1) % accum_steps == 0:
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         optimizer.zero_grad()
 </code></pre>
 
-      <p>The key insight: because <code>.backward()</code> accumulates gradients by default, you can call it multiple times before calling <code>optimizer.step()</code>. Divide the loss by <code>accumulation_steps</code> to keep the gradient magnitude equivalent to a single large batch.</p>
+      <p>The math works out: if each mini-batch contributes gradients g₁, g₂, g₃, g₄, the accumulated gradient is (g₁ + g₂ + g₃ + g₄) / 4, which is the mean gradient over 256 samples — exactly what you'd get from a single batch of 256. Going back to our kitchen analogy: the chef is tasting four dishes and averaging the feedback before adjusting the recipe, rather than adjusting after every single dish.</p>
 
-      <h3>Mixed Precision Training</h3>
+      <p>One subtlety: BatchNorm still sees batches of 64, not 256. Its running statistics and per-batch normalization use the actual batch size. For very small effective batches, consider using GroupNorm or LayerNorm instead.</p>
 
-      <p>Modern GPUs have specialized hardware (Tensor Cores) for float16 operations. Mixed precision uses float16 for forward/backward passes and float32 for weight updates — 2× faster training with minimal accuracy impact:</p>
+      <!-- ============================================================ -->
+      <h2>Mixed Precision: Two Number Systems</h2>
 
-<pre><code class="language-python">from torch.cuda.amp import GradScaler, autocast
+      <p>Modern GPUs have specialized hardware — Tensor Cores on NVIDIA, Matrix Engines on AMD — that operate on float16 or bfloat16 values at roughly 2× the throughput of float32. Mixed precision training exploits this: run the expensive operations (matrix multiplications, convolutions) in lower precision for speed, keep the sensitive operations (loss computation, softmax, weight updates) in float32 for accuracy.</p>
 
-scaler = GradScaler()
+      <p>PyTorch's Automatic Mixed Precision (AMP) handles the precision routing automatically:</p>
 
-for inputs, targets in dataloader:
+<pre><code class="language-python">from torch.amp import GradScaler, autocast
+
+scaler = GradScaler('cuda')
+
+for inputs, targets in train_loader:
     inputs, targets = inputs.to(device), targets.to(device)
     optimizer.zero_grad()
 
-    # Forward pass in float16 (where safe)
-    with autocast(device_type='cuda'):
+    with autocast('cuda'):                # forward pass in mixed precision
         outputs = model(inputs)
         loss = criterion(outputs, targets)
 
-    # Backward pass — scaler handles float16 gradient underflow
-    scaler.scale(loss).backward()
-    scaler.unscale_(optimizer)
+    scaler.scale(loss).backward()         # backward in scaled float16
+    scaler.unscale_(optimizer)            # unscale gradients for clipping
     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-    scaler.step(optimizer)
-    scaler.update()
+    scaler.step(optimizer)                # step only if no inf/nan
+    scaler.update()                       # adjust scale factor
 </code></pre>
 
-      <p>We cover mixed precision in detail in the dedicated section — this is just the pattern to recognize.</p>
+      <p>The <code>autocast</code> context manager hooks into PyTorch's dispatcher. For each operation, it checks a policy: safe operations (matmul, conv, linear) get cast to float16; risky operations (softmax, log, loss functions) stay in float32. You don't choose which operations are cast — PyTorch does, based on extensive numerical analysis by the core team.</p>
 
-      <h3>Model Summary with torchinfo</h3>
+      <p>The <code>GradScaler</code> solves a specific problem with float16: its dynamic range is tiny (roughly 6×10⁻⁵ to 6.5×10⁴). Small gradients — especially in early layers of deep networks — can underflow to zero. GradScaler multiplies the loss by a large factor (say 1024) before backward, which scales all gradients up into the representable range. Before the optimizer step, it divides them back down. If it detects inf or nan (meaning the scale was too large), it skips the optimizer step and reduces the scale factor. Over time, the scale factor finds a sweet spot automatically.</p>
 
-<pre><code class="language-python"># pip install torchinfo
-from torchinfo import summary
+      <p>An important development: <strong>bfloat16</strong> has the same exponent range as float32 (8 exponent bits vs. float16's 5), so gradient underflow is much less likely. On Ampere and newer NVIDIA GPUs (A100, H100), bfloat16 is increasingly preferred because you often don't need GradScaler at all:</p>
 
-model = ConvClassifier(num_classes=10)
-summary(model, input_size=(1, 3, 32, 32), col_names=[
-    "input_size", "output_size", "num_params", "trainable"
-])
-# Shows layer-by-layer shapes, parameter counts, and memory usage
+<pre><code class="language-python">with autocast('cuda', dtype=torch.bfloat16):
+    outputs = model(inputs)
+    loss = criterion(outputs, targets)
+loss.backward()            # no scaler needed with bfloat16
+optimizer.step()
 </code></pre>
 
-      <h3>Reproducibility</h3>
+      <!-- ============================================================ -->
+      <h2>Gradient Checkpointing: Trading Compute for Memory</h2>
 
-      <p>If you need deterministic results (for debugging or paper submissions), set all the seeds:</p>
+      <p>During a forward pass, PyTorch stores intermediate activations at every layer — because they're needed during backward to compute gradients. For a transformer with 24 layers and batch size 32, those activations can consume 10+ GB. Gradient checkpointing says: don't store them. Recompute them during backward.</p>
 
-<pre><code class="language-python">import random
-import numpy as np
-import torch
+<pre><code class="language-python">from torch.utils.checkpoint import checkpoint
 
-def set_seed(seed=42):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+class CheckpointedModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.block1 = nn.Sequential(nn.Linear(256, 256), nn.ReLU())
+        self.block2 = nn.Sequential(nn.Linear(256, 256), nn.ReLU())
+        self.head = nn.Linear(256, 10)
 
-    # Force deterministic algorithms (may be slower)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    # PyTorch 2.0+:
-    torch.use_deterministic_algorithms(True)
-
-set_seed(42)
+    def forward(self, x):
+        x = checkpoint(self.block1, x, use_reentrant=False)
+        x = checkpoint(self.block2, x, use_reentrant=False)
+        return self.head(x)
 </code></pre>
 
-      <p>Be aware: <code>torch.backends.cudnn.deterministic = True</code> and <code>torch.use_deterministic_algorithms(True)</code> can slow down training significantly. Use them for debugging and reproducibility checks, but consider disabling them for final training runs. Setting <code>torch.backends.cudnn.benchmark = True</code> (the opposite) can actually speed up training when input sizes are constant, by letting cuDNN auto-tune convolution algorithms.</p>
+      <p>With checkpointing, during forward, only the inputs to each block are saved. During backward, when autograd needs the intermediate activations from block1, it re-runs block1's forward pass on the fly to regenerate them. This roughly halves memory usage for a model with many sequential blocks, at the cost of one additional forward pass. For N layers, memory drops from O(N) to O(√N) in the optimal checkpointing strategy.</p>
+
+      <p>I'm still developing my intuition for exactly when checkpointing pays off. The tradeoff depends on the ratio of memory savings to compute overhead. For transformers with many identical blocks, it's almost always worth it. For models with lightweight layers, the overhead of recomputation may not justify the memory savings.</p>
+
+      <p>One critical requirement: the checkpointed function must be deterministic. If it contains dropout with a different random seed on recomputation, the gradients will be wrong. PyTorch handles this by saving and restoring the RNG state, but custom stochastic operations need explicit care.</p>
+
+      <!-- ============================================================ -->
+      <h2>torch.compile: The JIT That Actually Works</h2>
+
+      <p>PyTorch 2.0 introduced <code>torch.compile</code>, and — I'll be honest — after years of abandoned JIT attempts (TorchScript, I'm looking at you), I was skeptical. But <code>torch.compile</code> is different. It actually works on real code, and the speedups are meaningful.</p>
+
+<pre><code class="language-python">model = SentimentClassifier().to(device)
+model = torch.compile(model)               # one line — that's it
+</code></pre>
+
+      <p>Under the hood, three systems work together. <strong>TorchDynamo</strong> hooks into the Python interpreter at the bytecode level, watching your model's forward pass execute and capturing the PyTorch operations into an FX graph — a clean intermediate representation. <strong>TorchInductor</strong>, the compiler backend, takes that FX graph and generates optimized machine code: fusing operations, eliminating memory round-trips, and generating custom Triton kernels for GPU (or C++ for CPU). The compiled code gets cached, and future calls skip the compilation step entirely.</p>
+
+      <p>When Dynamo encounters Python code it can't trace — dynamic control flow, calls to non-PyTorch libraries — it creates a <strong>graph break</strong>. The code on one side of the break runs as compiled code, the break itself runs in eager mode, and the code after the break is compiled separately. This fallback mechanism is why <code>torch.compile</code> works on real-world models where TorchScript would choke.</p>
+
+      <p>Three compilation modes to know:</p>
+
+<pre><code class="language-python">torch.compile(model, mode='default')          # safe, moderate speedup
+torch.compile(model, mode='reduce-overhead')  # uses CUDA graphs — lower launch overhead
+torch.compile(model, mode='max-autotune')     # benchmarks multiple kernel variants — slowest compile, fastest run
+</code></pre>
+
+      <p>Typical speedups range from 15-40% depending on the model architecture and how memory-bound the operations are. The first forward pass is slow (compilation happens), but subsequent calls run at compiled speed. For training, this means the first batch of each epoch may be slow, but the rest fly.</p>
+
+      <!-- ============================================================ -->
+      <h2>Distributed Training: DDP and FSDP</h2>
+
+      <p>When one GPU isn't enough — because your dataset is massive or your model takes days to converge — you need distributed training. PyTorch offers two main strategies: <strong>DistributedDataParallel (DDP)</strong> for data parallelism, and <strong>FullyShardedDataParallel (FSDP)</strong> when the model itself doesn't fit on one GPU.</p>
+
+      <p>DDP is the workhorse. Each GPU gets a complete copy of the model and a different slice of the data. After each backward pass, DDP synchronizes gradients across all GPUs using an <strong>all-reduce</strong> operation — typically a ring all-reduce via NCCL, where each GPU communicates only with its two neighbors in a ring topology, passing chunks of gradient tensors in N-1 steps for N GPUs. The clever part: DDP overlaps this communication with the backward pass. It groups gradients into <strong>buckets</strong>, and as soon as a bucket's gradients are ready, the all-reduce starts while the rest of backward continues. The GPU is computing and communicating simultaneously.</p>
+
+<pre><code class="language-python">import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+
+dist.init_process_group(backend='nccl')
+local_rank = int(os.environ['LOCAL_RANK'])
+model = SentimentClassifier().to(local_rank)
+model = DDP(model, device_ids=[local_rank])
+
+# Training loop is almost identical — DDP handles gradient sync
+# Launch with: torchrun --nproc_per_node=4 train.py
+</code></pre>
+
+      <p>FSDP goes further. Instead of replicating the full model on each GPU, it <strong>shards</strong> parameters, gradients, and optimizer states across GPUs. Each GPU holds only a fraction of the model. During forward, it gathers the parameters it needs from other GPUs, computes, and releases them. This is the PyTorch equivalent of DeepSpeed's ZeRO-3 — it enables training models that are far larger than a single GPU's memory.</p>
+
+      <p>The tradeoff: DDP is simpler, more mature, and faster for models that fit in GPU memory. FSDP has more communication overhead but unlocks models that are otherwise untrain-able. If your model fits on one GPU, use DDP. If it doesn't, FSDP is your path.</p>
+
+      <!-- ============================================================ -->
+      <h2>The Gotchas That Will Eat Your Afternoon</h2>
+
+      <p>I've catalogued these from personal experience and from watching others debug the same issues repeatedly. Each one is a real bug that doesn't crash — it silently degrades your results.</p>
+
+      <p><strong>Forgetting <code>optimizer.zero_grad()</code></strong> — Gradients pile up across batches. Loss appears to converge. Model performance plateaus far below what it should be. Nothing crashes. You blame the learning rate, the architecture, the data. I've wasted entire afternoons on this.</p>
+
+      <p><strong>Forgetting <code>model.eval()</code> during inference</strong> — Dropout is still randomly killing neurons. BatchNorm uses noisy per-batch statistics instead of its smooth running averages. Eval metrics look worse than they should, and they vary between runs. You think your model is bad. It might not be.</p>
+
+      <p><strong>The <code>.to(device)</code> asymmetry</strong> — Writing <code>tensor.to('cuda')</code> without <code>tensor = tensor.to('cuda')</code> does nothing. The tensor stays on CPU. You get a device mismatch error on the next line. Modules are in-place; tensors are not.</p>
+
+      <p><strong>Storing <code>loss</code> instead of <code>loss.item()</code> for logging</strong> — If you append the loss tensor (not the scalar) to a list, you're keeping the entire computation graph alive. Memory usage grows linearly with training steps. Eventually your process gets OOM-killed and you blame your model's size. The fix: <code>loss.item()</code> extracts a Python float, severing the graph.</p>
+
+      <p><strong>In-place operations breaking autograd</strong> — Operations like <code>relu_()</code> (note the underscore) or <code>tensor[0] = value</code> modify tensors in-place. If autograd saved that tensor for backward, and you modify it after, PyTorch throws "one of the variables needed for gradient computation has been modified by an inplace operation." The error message is confusing because the in-place operation might be far from where autograd saved the tensor. Avoid in-place ops during training unless you're sure they're safe.</p>
+
+      <p><strong><code>.detach()</code> vs <code>.data</code></strong> — Both sever a tensor from the graph, but <code>.data</code> is dangerous: it returns a view that shares storage with the original, bypassing autograd safety checks. If you modify the result, you can silently corrupt gradients. Use <code>.detach()</code> — it's safe because autograd still knows about the original tensor.</p>
+
+      <p><strong>CrossEntropyLoss with softmax'd inputs</strong> — <code>nn.CrossEntropyLoss</code> expects raw logits. It applies log-softmax internally. If your model already applies softmax in <code>forward()</code>, you're computing softmax twice — once explicitly and once inside the loss. Gradients become wrong, and the model converges to a worse solution. Return raw logits from <code>forward()</code>. Always.</p>
 
       <!-- ============================================================ -->
       <h2>Putting It All Together</h2>
 
-      <p>Here's a complete, runnable training script that combines everything from this section. This is the template you'll start from for nearly every project:</p>
+      <p>Here is a complete, production-grade training script — our tiny sentiment classifier grown up. It combines every pattern from this section: the training loop, DataLoader, device management, mixed precision, gradient clipping, checkpointing, and evaluation.</p>
 
 <pre><code class="language-python">import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
+from torch.amp import GradScaler, autocast
 
-# ── Setup ────────────────────────────────────────────────────────────
+# ── Setup ──────────────────────────────────────────────────
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-# Synthetic data for demonstration
-X_train = torch.randn(1000, 3, 32, 32)
-y_train = torch.randint(0, 10, (1000,))
-X_val = torch.randn(200, 3, 32, 32)
-y_val = torch.randint(0, 10, (200,))
+X_train = torch.randn(1000, 4)
+y_train = torch.randint(0, 2, (1000,))
+X_val = torch.randn(200, 4)
+y_val = torch.randint(0, 2, (200,))
 
-train_dataset = TensorDataset(X_train, y_train)
-val_dataset = TensorDataset(X_val, y_val)
+train_loader = DataLoader(TensorDataset(X_train, y_train),
+    batch_size=64, shuffle=True, num_workers=2, pin_memory=True)
+val_loader = DataLoader(TensorDataset(X_val, y_val),
+    batch_size=128, shuffle=False, num_workers=2, pin_memory=True)
 
-train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True,
-                          num_workers=2, pin_memory=True)
-val_loader = DataLoader(val_dataset, batch_size=128, shuffle=False,
-                        num_workers=2, pin_memory=True)
-
-# ── Model ────────────────────────────────────────────────────────────
-model = ConvClassifier(num_classes=10).to(device)
+# ── Model ──────────────────────────────────────────────────
+model = SentimentClassifier(input_dim=4, hidden_dim=64, num_classes=2)
+model = model.to(device)
+# model = torch.compile(model)  # uncomment for PyTorch 2.0+ speedup
 
 criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-2)
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-    optimizer, T_max=20, eta_min=1e-6
-)
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=20)
+scaler = GradScaler('cuda', enabled=(device.type == 'cuda'))
 
-# ── Training ─────────────────────────────────────────────────────────
-num_epochs = 20
+# ── Training ───────────────────────────────────────────────
 best_val_loss = float('inf')
 
-for epoch in range(num_epochs):
-    # --- Training phase ---
+for epoch in range(20):
     model.train()
     train_loss = 0.0
 
     for inputs, targets in train_loader:
         inputs, targets = inputs.to(device), targets.to(device)
-
         optimizer.zero_grad(set_to_none=True)
-        outputs = model(inputs)
-        loss = criterion(outputs, targets)
-        loss.backward()
+
+        with autocast('cuda', enabled=(device.type == 'cuda')):
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
+        scaler.step(optimizer)
+        scaler.update()
 
         train_loss += loss.item() * inputs.size(0)
 
     scheduler.step()
-    avg_train_loss = train_loss / len(train_dataset)
 
-    # --- Validation phase ---
+    # ── Validation ─────────────────────────────────────────
     model.eval()
-    val_loss = 0.0
-    correct = 0
-
+    val_loss, correct = 0.0, 0
     with torch.inference_mode():
         for inputs, targets in val_loader:
             inputs, targets = inputs.to(device), targets.to(device)
             outputs = model(inputs)
-            loss = criterion(outputs, targets)
-            val_loss += loss.item() * inputs.size(0)
+            val_loss += criterion(outputs, targets).item() * inputs.size(0)
             correct += (outputs.argmax(1) == targets).sum().item()
 
-    avg_val_loss = val_loss / len(val_dataset)
-    val_acc = correct / len(val_dataset)
+    avg_train = train_loss / len(train_loader.dataset)
+    avg_val = val_loss / len(val_loader.dataset)
+    val_acc = correct / len(val_loader.dataset)
 
-    print(f"Epoch {epoch+1:>2}/{num_epochs}  "
-          f"Train Loss: {avg_train_loss:.4f}  "
-          f"Val Loss: {avg_val_loss:.4f}  "
-          f"Val Acc: {val_acc:.2%}")
+    print(f"Epoch {epoch+1:>2}/20  Train: {avg_train:.4f}  "
+          f"Val: {avg_val:.4f}  Acc: {val_acc:.1%}")
 
-    # --- Checkpointing ---
-    if avg_val_loss < best_val_loss:
-        best_val_loss = avg_val_loss
+    if avg_val < best_val_loss:
+        best_val_loss = avg_val
         torch.save({
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'scheduler_state_dict': scheduler.state_dict(),
-            'val_loss': avg_val_loss,
+            'val_loss': avg_val,
         }, 'best_model.pt')
-
-print(f"\nTraining complete. Best val loss: {best_val_loss:.4f}")
 </code></pre>
 
-      <!-- ============================================================ -->
-      <h2>What You Should Now Be Able To Do</h2>
+      <p>If you're still with me, thank you. I hope it was worth it.</p>
 
-      <div class="callout">
-        <div class="callout-title">✅ Checklist</div>
-        <ul>
-          <li>Write a complete PyTorch training loop from memory — forward pass, loss, backward, step — and explain why each line exists.</li>
-          <li>Create a custom <code>Dataset</code> class for your own data and configure a <code>DataLoader</code> with appropriate batching, shuffling, and parallel loading.</li>
-          <li>Define models using <code>nn.Module</code> with proper layer registration, and know the difference between <code>nn.Sequential</code>, <code>nn.ModuleList</code>, and plain Python lists.</li>
-          <li>Move models and data to GPU correctly, and explain why <code>.to(device)</code> behaves differently for modules vs. tensors.</li>
-          <li>Save and load model checkpoints — both weights-only and full training state for resuming interrupted training.</li>
-          <li>Run inference correctly with <code>model.eval()</code> and <code>torch.inference_mode()</code>, and explain what each one does.</li>
-          <li>Implement gradient accumulation to simulate larger batch sizes on limited hardware.</li>
-          <li>Diagnose the most common PyTorch bugs: forgotten <code>zero_grad()</code>, missing <code>eval()</code>, device mismatches, and memory leaks from un-detached tensors.</li>
-        </ul>
-      </div>
+      <p>We started with three hardcoded tensors and a five-line loop. We learned how autograd records a computation graph like a tape recorder and then erases the tape during backward. We built the canonical training loop and understood why each of its seven lines exists. We saw how DataLoader orchestrates parallel workers, pinned memory, and prefetching to keep the GPU fed. We opened up <code>nn.Module</code> and found the hidden <code>__setattr__</code> that auto-registers parameters. And we covered the patterns that make real training fast: mixed precision, gradient accumulation, checkpointing, compilation, and distribution.</p>
+
+      <p>My hope is that the next time you stare at a PyTorch training script — whether it's a hundred lines or ten thousand — instead of copy-pasting and hoping, you'll read each line and know exactly what it does, what it costs, and what breaks if you remove it. That's the difference between using a framework and understanding it.</p>
 
       <div class="page-nav">
         <a href="s02.html">
