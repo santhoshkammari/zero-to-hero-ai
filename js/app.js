@@ -9,16 +9,6 @@
     basePath = '../../';
   }
 
-  /* ── Make sidebar links navigable ── */
-  document.querySelectorAll('.nav-section').forEach(el => {
-    const href = el.getAttribute('data-href');
-    if (href) el.setAttribute('href', basePath + 'chapters/' + href);
-  });
-  document.querySelectorAll('.nav-chapter').forEach(el => {
-    const href = el.getAttribute('data-href');
-    if (href) el.setAttribute('data-index', basePath + 'chapters/' + href + '/index.html');
-  });
-
   /* ── Theme toggle (default: dark, persists across pages) ── */
   const theme = localStorage.getItem('theme') || 'dark';
   document.documentElement.setAttribute('data-theme', theme);
@@ -38,25 +28,6 @@
       document.querySelectorAll('.theme-toggle').forEach(btn => {
         btn.textContent = next === 'dark' ? '☀️' : '🌙';
       });
-    }
-  });
-
-  /* ── Sidebar chapter expand/collapse ── */
-  document.addEventListener('click', e => {
-    const ch = e.target.closest('.nav-chapter');
-    if (!ch) return;
-    const sections = ch.nextElementSibling;
-    if (sections && sections.classList.contains('nav-sections')) {
-      const isExpanded = ch.classList.contains('expanded');
-      if (isExpanded) {
-        // Collapse — navigate to chapter index
-        const indexUrl = ch.getAttribute('data-index');
-        if (indexUrl) window.location.href = indexUrl;
-      } else {
-        // Expand sections
-        ch.classList.add('expanded');
-        sections.classList.add('open');
-      }
     }
   });
 
@@ -84,29 +55,13 @@
   /* ── Highlight active sidebar link ── */
   function setActive() {
     const loc = window.location.pathname;
-    document.querySelectorAll('.nav-section, .nav-chapter').forEach(el => {
+    document.querySelectorAll('.nav-chapter').forEach(el => {
       el.classList.remove('active');
     });
-    // Match section links
-    document.querySelectorAll('.nav-section').forEach(el => {
-      const dh = el.getAttribute('data-href');
-      if (dh && loc.includes(dh)) {
-        el.classList.add('active');
-        const parent = el.closest('.nav-sections');
-        if (parent) {
-          parent.classList.add('open');
-          const ch = parent.previousElementSibling;
-          if (ch) ch.classList.add('expanded', 'active');
-        }
-      }
-    });
-    // Match chapter index pages
     document.querySelectorAll('.nav-chapter').forEach(el => {
       const dh = el.getAttribute('data-href');
-      if (dh && loc.includes(dh + '/')) {
-        el.classList.add('active', 'expanded');
-        const sections = el.nextElementSibling;
-        if (sections) sections.classList.add('open');
+      if (dh && loc.includes('/' + dh + '/')) {
+        el.classList.add('active');
       }
     });
   }
