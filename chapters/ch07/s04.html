@@ -301,148 +301,177 @@
 
 <div class="tldr">
   <div class="tldr-label">TL;DR</div>
-  <p>Training a neural network means: run input forward, measure error, figure out which weights caused the error, nudge them. Backpropagation is the "figure out which weights caused the error" part. It's the chain rule from calculus, applied backwards through the network. That's literally all it is. Each layer computes a local gradient — how much its output changes when you wiggle its input — and these local gradients get multiplied together to tell every single weight in the network exactly how much it contributed to the final loss. No weight gets special treatment. No layer is exempt. The gradient flows backwards from the loss through every operation, and every weight gets its own personalized "blame signal." The algorithm is elegant, efficient, and the reason deep learning works at all.</p>
+  <p>Backpropagation is the chain rule from calculus, applied backward through a neural network's computational graph. It answers one question: for each weight, how much did it contribute to the error? The answer comes in a single backward pass — no matter whether the network has nine parameters or nine billion. Each node computes a tiny local derivative, and multiplying these local derivatives together through the chain rule gives every weight its personal "blame signal." That signal is the gradient, and it's all the optimizer needs to know which direction to nudge. The algorithm is the reason deep learning works. Without something this efficient, training anything deeper than a toy network would be computationally impossible.</p>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
-<h2>The Core Insight</h2>
+<h2>Why This Matters — The Problem That Demands Backprop</h2>
 
-<p>Here's the situation. You have a neural network with millions of parameters. You feed in an input, it produces an output, and that output is wrong. The loss function gives you a single number quantifying <em>how</em> wrong. Now you need to answer the hardest question in all of machine learning: <strong>which of these millions of weights should change, and by how much?</strong></p>
+<p>I avoided deriving backpropagation by hand for longer than I'd like to admit. Every time a textbook said "and then we apply the chain rule," I'd nod along and move on. I could write <code>loss.backward()</code> in PyTorch and watch the loss go down, and for a while that was enough. But there was always this nagging discomfort — I didn't truly know what was happening between the loss and the weight update. Finally, that discomfort grew too great for me. Here is that dive.</p>
 
-<p>You could try changing each weight one at a time, re-running the forward pass, and seeing if the loss goes down. That's numerical differentiation. For a network with <em>n</em> parameters, you'd need <em>n</em> forward passes to get one gradient vector. GPT-3 has 175 billion parameters. That's 175 billion forward passes per training step. Not happening.</p>
+<p><strong>Backpropagation</strong> is the algorithm that computes the gradient of a loss function with respect to every parameter in a neural network. It was first described as reverse-mode automatic differentiation by Seppo Linnainmaa in 1970, applied to neural networks by Paul Werbos in his 1974 PhD thesis, and <a href="https://www.nature.com/articles/323533a0">popularized by Rumelhart, Hinton, and Williams in 1986</a>. Every neural network trained since — every ResNet, every Transformer, every GPT — uses it.</p>
 
-<p>Backpropagation computes the gradient of the loss with respect to <em>every weight in the network</em> in just <strong>two passes</strong> — one forward, one backward. It does this by exploiting the chain rule of calculus and the fact that a neural network is a composition of differentiable functions. Each layer computes a simple local derivative, and the backward pass multiplies these local derivatives together in the right order. The result: every weight gets its gradient, and the total cost is roughly 2× one forward pass regardless of how many parameters you have.</p>
+<p>Before we start, a heads-up. We're going to be working through derivatives, the chain rule, and computational graphs. You don't need to remember any of it beforehand. We'll add what we need, one piece at a time.</p>
 
-<p>That efficiency is not a minor detail. It's the reason deep learning exists. Without backprop (or something equivalently efficient), training networks with more than a few hundred parameters would be computationally infeasible. The algorithm was <a href="https://www.nature.com/articles/323533a0">popularized by Rumelhart, Hinton, and Williams in 1986</a>, and every neural network trained since then — every ResNet, every Transformer, every GPT — uses it.</p>
+<p>This isn't a short journey, but I hope you'll be glad you came.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
-<h2>Forward Pass: A Concrete Example</h2>
+<h3>Contents</h3>
 
-<p>Before we can backpropagate, we need something to backpropagate <em>through</em>. Let's build a tiny network and trace every computation. Two inputs, two hidden neurons with ReLU, one output neuron with sigmoid, binary cross-entropy loss. Small enough to compute by hand, large enough to contain every pattern that scales to real networks.</p>
+<div style="margin-left:1.5em; line-height:2; margin-bottom:2em;">
+  Why This Matters — The Problem That Demands Backprop<br>
+  The Brute Force Approach (And Why It Fails)<br>
+  Forward Pass: Building Something to Backpropagate Through<br>
+  The Chain Rule — Signal Through Stages<br>
+  Backward Pass: Tracing the Blame<br>
+  The Universal Pattern<br>
+  Rest Stop<br>
+  Three Ways to Compute a Derivative<br>
+  Computational Graphs and the Machinery of Autograd<br>
+  Forward Mode vs. Reverse Mode — Why Reverse Wins<br>
+  When the Signal Dies: Vanishing and Exploding Gradients<br>
+  PyTorch Autograd in Practice<br>
+  The Details That Bite You: Accumulation, Detaching, Checkpointing<br>
+  What Backpropagation Does NOT Do<br>
+  Wrap-Up<br>
+  Resources<br>
+</div>
 
-<p>The setup:</p>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2>The Brute Force Approach (And Why It Fails)</h2>
 
-<pre><code>Inputs:  x₁ = 1.0,  x₂ = 0.5
-Target:  y = 1  (true class)
+<p>Here's the situation. You have a neural network with millions of parameters. You feed in an input, get an output, and it's wrong. The loss function hands you a single number — <em>how</em> wrong. Now you need to answer the hardest operational question in deep learning: which of these millions of weights should change, and by how much?</p>
+
+<p>The most obvious approach: wiggle each weight one at a time. Increase w₁ by a tiny amount, re-run the forward pass, see if the loss goes down. Then reset w₁ and repeat for w₂. Then w₃. This is called <strong>numerical differentiation</strong> — approximating the gradient by finite differences. For a network with <em>n</em> parameters, it requires <em>n + 1</em> forward passes to get one gradient vector.</p>
+
+<p>GPT-3 has 175 billion parameters. That's 175 billion forward passes per training step. A single forward pass takes seconds on a massive GPU cluster. The math doesn't work out. The universe doesn't have enough time.</p>
+
+<p>Backpropagation computes the gradient of the loss with respect to <em>every weight in the network</em> in two passes — one forward, one backward. The total cost is roughly 2× a single forward pass, regardless of whether the network has nine parameters or nine billion. That efficiency gap is not a minor optimization detail. It's the reason deep learning exists as a field.</p>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2>Forward Pass: Building Something to Backpropagate Through</h2>
+
+<p>Before we can backpropagate, we need something to backpropagate <em>through</em>. Let's build a deliberately tiny network and trace every computation by hand. Imagine we're predicting whether a customer will buy a product (1 = yes, 0 = no) based on two features: how long they browsed the website (x₁) and how many items they viewed (x₂).</p>
+
+<p>Two inputs, two hidden neurons with ReLU activation, one output neuron with sigmoid, binary cross-entropy loss. Small enough to fit in your head, large enough to contain every pattern that scales to real networks.</p>
+
+<pre><code>Inputs:  x₁ = 1.0 (browsing time, normalized)
+         x₂ = 0.5 (items viewed, normalized)
+Target:  y = 1  (did buy)
 
 Hidden layer weights and biases:
-  w₁₁ = 0.3   w₁₂ = 0.7   b₁ = 0.1   (→ hidden neuron 1)
-  w₂₁ = −0.2  w₂₂ = 0.5   b₂ = 0.0   (→ hidden neuron 2)
+  w₁₁ = 0.3   w₁₂ = 0.7   b₁ = 0.1   (→ hidden neuron h₁)
+  w₂₁ = −0.2  w₂₂ = 0.5   b₂ = 0.0   (→ hidden neuron h₂)
 
 Output layer weights and bias:
   v₁ = 0.6   v₂ = −0.4   b₃ = 0.1</code></pre>
 
-<p><strong>Step 1 — Hidden pre-activations</strong> (weighted sums):</p>
+<p>Nine parameters in total. Six weights, three biases. Let's push our input through.</p>
+
+<p>First, each hidden neuron computes a weighted sum of the inputs and adds its bias. This is the <strong>pre-activation</strong> — the raw value before the activation function touches it:</p>
 
 <pre><code>z₁ = w₁₁·x₁ + w₁₂·x₂ + b₁ = 0.3(1.0) + 0.7(0.5) + 0.1 = 0.75
 z₂ = w₂₁·x₁ + w₂₂·x₂ + b₂ = −0.2(1.0) + 0.5(0.5) + 0.0 = 0.05</code></pre>
 
-<p><strong>Step 2 — Hidden activations</strong> (ReLU):</p>
+<p>Now <strong>ReLU</strong> — a function that passes positive values through unchanged and clamps negative values to zero. Both z₁ and z₂ happen to be positive, so they pass through untouched:</p>
 
-<pre><code>h₁ = ReLU(z₁) = ReLU(0.75) = 0.75
-h₂ = ReLU(z₂) = ReLU(0.05) = 0.05</code></pre>
+<pre><code>h₁ = ReLU(0.75) = 0.75
+h₂ = ReLU(0.05) = 0.05</code></pre>
 
-<p><strong>Step 3 — Output pre-activation</strong>:</p>
+<p>The output neuron takes these hidden activations, computes its own weighted sum, and applies <strong>sigmoid</strong> — a function that squashes any real number into the range (0, 1), which we interpret as a probability:</p>
 
-<pre><code>z₃ = v₁·h₁ + v₂·h₂ + b₃ = 0.6(0.75) + (−0.4)(0.05) + 0.1 = 0.53</code></pre>
+<pre><code>z₃ = v₁·h₁ + v₂·h₂ + b₃ = 0.6(0.75) + (−0.4)(0.05) + 0.1 = 0.53
+ŷ  = σ(z₃) = 1 / (1 + e⁻⁰·⁵³) ≈ 0.6295</code></pre>
 
-<p><strong>Step 4 — Output activation</strong> (sigmoid):</p>
+<p>Finally, the <strong>binary cross-entropy loss</strong> measures how far this prediction is from the truth. When the target is 1, the formula simplifies to −log(ŷ):</p>
 
-<pre><code>ŷ = σ(z₃) = 1 / (1 + e⁻⁰·⁵³) ≈ 0.6295</code></pre>
+<pre><code>L = −[y·log(ŷ) + (1−y)·log(1−ŷ)] = −log(0.6295) ≈ 0.4629</code></pre>
 
-<p><strong>Step 5 — Loss</strong> (binary cross-entropy, with y = 1):</p>
-
-<pre><code>L = −[y·log(ŷ) + (1−y)·log(1−ŷ)]
-  = −log(0.6295)
-  ≈ 0.4629</code></pre>
-
-<p>The network predicted 0.63 when the answer was 1. Not terrible, but not great. Loss is 0.4629. Now the question: how do we adjust all nine parameters (six weights + three biases) to make this loss smaller?</p>
+<p>The network predicted 0.63 when the answer was 1. Not terrible, but wrong enough that the loss is 0.4629. Every intermediate value we computed — z₁, z₂, h₁, h₂, z₃, ŷ — will be needed again during the backward pass. This is important: the forward pass doesn't only produce a prediction, it also produces the raw materials for computing derivatives.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
-<h2>The Chain Rule — Why It Works</h2>
+<h2>The Chain Rule — Signal Through Stages</h2>
 
-<p>Before we go backward through the network, let's make sure the chain rule is bone-deep intuitive, because everything else is just applying it repeatedly.</p>
+<p>Before we go backward through the network, we need the chain rule to be bone-deep intuitive, because everything that follows is applying it over and over.</p>
 
-<p>Suppose you have a composition of three functions: <code>output = f(g(h(x)))</code>. You want to know: if I nudge <code>x</code> by a tiny amount ε, how much does <code>output</code> change? The chain rule says:</p>
+<p>Imagine a factory assembly line with three stations. Station A shapes the metal. Station B paints it. Station C adds a label. A defective product rolls off the end. You want to know: if we made the raw material slightly better, how much would the final product improve?</p>
 
-<pre><code>d(output)/d(x) = f'(g(h(x))) · g'(h(x)) · h'(x)</code></pre>
+<p>The chain rule says: multiply the local effects at each stage. If Station A amplifies a change by a factor of 2 (better raw material → much better shaped piece), Station B preserves it (factor of 1), and Station C dampens it slightly (factor of 0.5), then the total amplification from raw material to final product is 2 × 1 × 0.5 = 1. A small improvement at the input produces an equal-sized improvement at the output.</p>
 
-<p>In plain English: multiply the local derivatives at each stage. First, <code>h</code> amplifies or dampens the nudge by <code>h'(x)</code>. Then <code>g</code> amplifies or dampens what it receives by <code>g'(h(x))</code>. Then <code>f</code> does the same by <code>f'(g(h(x)))</code>. The total effect is the product. If <code>h</code> doubles the nudge, <code>g</code> triples it, and <code>f</code> halves it, the total amplification is 2 × 3 × 0.5 = 3.</p>
+<p>Mathematically, if you have three nested functions — <code>output = f(g(h(x)))</code> — and you want to know how output changes when you nudge x, the chain rule says:</p>
 
-<p>A neural network <strong>is</strong> a composition of functions. Each layer is one function. The chain rule tells you exactly how a tiny change in any weight ripples through all subsequent layers to affect the final loss. That's it. That's backpropagation.</p>
+<pre><code>d(output)/dx = f'(g(h(x))) · g'(h(x)) · h'(x)</code></pre>
 
-<p>You start at the loss, compute the local gradient at each layer, and multiply backwards. Each weight gets its own gradient — its own "blame signal" for the error. Weights that contributed a lot to the error get large gradients. Weights that barely influenced the output get tiny gradients. Weights behind a dead ReLU (which outputs zero, so its derivative is zero) get exactly zero gradient — the chain rule multiplies by zero and the blame signal dies.</p>
+<p>Each function contributes its own local derivative — how much it amplifies or dampens what passes through it. The total derivative is the product of all these local amplifications. That product is the gradient.</p>
 
-<h3>The Assembly Line Analogy</h3>
+<p>A neural network <em>is</em> a composition of functions. The weighted sum is one function. ReLU is another. Sigmoid is another. The loss is another. The chain rule tells you exactly how a tiny change in any weight ripples through all subsequent layers to affect the final loss.</p>
 
-<p>Imagine a factory with five workstations, each performing one operation on a product. A defective product comes off the end of the line. You need to figure out which station screwed up.</p>
+<p>That's backpropagation. Start at the loss, compute the local derivative at each operation, and multiply backward. Each weight gets its own gradient — its own blame signal for the error.</p>
 
-<p>Station 5 added a crooked label — small contribution to the defect. Station 4 applied the paint evenly — no contribution. Station 3 drilled a hole off-center — big contribution. Station 2 cut the metal to spec — no contribution. Station 1 selected slightly impure raw material — moderate contribution.</p>
-
-<p>Each station gets blame proportional to its contribution to the defect. That blame is the gradient. The process of tracing backwards from the defect through each station is backpropagation. And the mathematical tool that makes the blame-assignment precise — that lets you multiply local contributions to get the total effect — is the chain rule.</p>
-
-<p>The key insight that makes this efficient: you don't need to trace a separate path for every station. You compute the blame at the end (station 5), pass it backward to station 4 (multiplying by station 5's local contribution), then to station 3, and so on. One backward pass gives you blame for <em>every</em> station. That's why backprop is O(n) and not O(n²).</p>
+<p>We'll keep returning to this assembly line. When gradients vanish, it's because one of the stations has a near-zero amplification factor, and that zero multiplied through the product kills the signal for everything upstream. When gradients explode, the amplification factors are all greater than one, and their product grows out of control. The chain rule is a product, and products are at the mercy of their factors.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
-<h2>Backward Pass: Following the Gradient</h2>
+<h2>Backward Pass: Tracing the Blame</h2>
 
-<p>Let's continue the concrete example. We have the loss L = 0.4629 and we need <code>∂L/∂w</code> for every weight and bias. We work backward through the computational graph, applying the chain rule at every node.</p>
+<p>Let's walk backward through our example. We have L ≈ 0.4629 and we need ∂L/∂w for every one of the nine parameters. We'll start at the loss and work our way back, applying the chain rule at every operation.</p>
 
-<h3>Step 1 — From Loss to Output Pre-activation</h3>
+<h3>From Loss to Output Pre-activation</h3>
 
-<p>For binary cross-entropy with sigmoid, there's a famously clean combined derivative. Instead of computing ∂L/∂ŷ and then ∂ŷ/∂z₃ separately, the product simplifies to:</p>
+<p>For binary cross-entropy combined with sigmoid, there's a clean simplification that took me a while to trust the first time I saw it. Instead of computing ∂L/∂ŷ and ∂ŷ/∂z₃ separately and multiplying, the product collapses to:</p>
 
 <pre><code>∂L/∂z₃ = ŷ − y = 0.6295 − 1.0 = −0.3705</code></pre>
 
-<p>This is negative — the loss decreases if z₃ increases. Makes sense: ŷ = 0.63 is too low (target is 1), so we need z₃ to be larger to push the sigmoid output closer to 1. This single number is the "error signal" that will propagate backward through the entire network.</p>
+<p>I'll be honest — when I first saw this, I didn't believe it was this clean. But if you expand the derivatives of −log(σ(z)) and apply the chain rule, the sigmoid derivative σ(z)(1−σ(z)) cancels perfectly with terms in the cross-entropy derivative. The math checks out. I still find this cancellation one of the more satisfying things in all of machine learning.</p>
 
-<h3>Step 2 — Gradients for Output Layer Weights</h3>
+<p>The sign tells us something real. Negative means the loss decreases if z₃ increases. That makes sense: ŷ = 0.63 is too low (target is 1), so we need z₃ to be larger to push sigmoid's output closer to 1. This number — −0.3705 — is the error signal that will ripple backward through the entire network.</p>
 
-<p>The output pre-activation is <code>z₃ = v₁·h₁ + v₂·h₂ + b₃</code>. Each weight's gradient is the upstream gradient times the local derivative:</p>
+<h3>Gradients for the Output Layer</h3>
 
-<pre><code>∂L/∂v₁ = ∂L/∂z₃ · ∂z₃/∂v₁ = (−0.3705) × h₁ = (−0.3705)(0.75)  = −0.2779
-∂L/∂v₂ = ∂L/∂z₃ · ∂z₃/∂v₂ = (−0.3705) × h₂ = (−0.3705)(0.05)  = −0.0185
-∂L/∂b₃ = ∂L/∂z₃ · ∂z₃/∂b₃ = (−0.3705) × 1  =                    −0.3705</code></pre>
+<p>The output pre-activation was <code>z₃ = v₁·h₁ + v₂·h₂ + b₃</code>. To get the gradient for each weight, we multiply the upstream error signal by the local derivative — which, for a linear combination, is the input that weight connects to:</p>
 
-<p>Notice the pattern: the gradient for a weight is always <strong>(upstream error signal) × (input to that weight)</strong>. Weight v₁ connects to h₁ = 0.75, so its gradient is large. Weight v₂ connects to h₂ = 0.05, so its gradient is tiny — h₂ barely contributed to the output, so v₂ barely contributed to the error.</p>
+<pre><code>∂L/∂v₁ = (∂L/∂z₃) × h₁ = (−0.3705)(0.75)  = −0.2779
+∂L/∂v₂ = (∂L/∂z₃) × h₂ = (−0.3705)(0.05)  = −0.0185
+∂L/∂b₃ = (∂L/∂z₃) × 1  =                     −0.3705</code></pre>
 
-<h3>Step 3 — Propagate Error to Hidden Layer</h3>
+<p>Look at the magnitudes. Weight v₁ connects to h₁ = 0.75, a substantial activation, so v₁ gets a large gradient — it had significant influence on the output and therefore significant blame for the error. Weight v₂ connects to h₂ = 0.05, which barely fired, so v₂ gets a tiny gradient. That neuron contributed almost nothing to the prediction, so adjusting v₂ wouldn't help much. The math captures exactly the intuition you'd have if you thought about it.</p>
 
-<p>We're not done. We also need gradients for the hidden layer weights. To get those, we first need the error signal at each hidden neuron — how much did h₁ and h₂ contribute to the loss?</p>
+<h3>Propagating Error to the Hidden Layer</h3>
 
-<pre><code>∂L/∂h₁ = ∂L/∂z₃ · ∂z₃/∂h₁ = (−0.3705) × v₁ = (−0.3705)(0.6)   = −0.2223
-∂L/∂h₂ = ∂L/∂z₃ · ∂z₃/∂h₂ = (−0.3705) × v₂ = (−0.3705)(−0.4)  = +0.1482</code></pre>
+<p>To get gradients for the hidden layer weights, we first need the error signal at each hidden neuron — how much did h₁ and h₂ each contribute to the loss? The weights between layers act as routing coefficients, distributing the upstream error signal:</p>
 
-<p>The error signal splits at the hidden layer. h₁ has a negative gradient (we want it to increase), and h₂ has a positive gradient (we want it to decrease). The <em>weights between layers act as routing coefficients</em> for the error signal — v₂ is negative, so it flips the sign of the blame.</p>
+<pre><code>∂L/∂h₁ = (∂L/∂z₃) × v₁ = (−0.3705)(0.6)   = −0.2223
+∂L/∂h₂ = (∂L/∂z₃) × v₂ = (−0.3705)(−0.4)  = +0.1482</code></pre>
 
-<h3>Step 4 — Through the ReLU</h3>
+<p>Something interesting happens here. h₁ gets a negative gradient (we want it to increase), but h₂ gets a <em>positive</em> gradient (we want it to decrease). Why? Because v₂ is negative. A negative weight flips the sign of the blame. This is how the network's own structure shapes the gradient flow — the weights between layers don't only route signals forward, they route blame backward.</p>
 
-<p>ReLU's derivative is either 1 (input was positive) or 0 (input was negative). Both z₁ = 0.75 and z₂ = 0.05 were positive, so ReLU passes the gradient through unchanged:</p>
+<h3>Through the ReLU Gate</h3>
 
-<pre><code>∂L/∂z₁ = ∂L/∂h₁ · ReLU'(z₁) = (−0.2223) × 1 = −0.2223
-∂L/∂z₂ = ∂L/∂h₂ · ReLU'(z₂) = (+0.1482) × 1 = +0.1482</code></pre>
+<p>ReLU's derivative is either 1 (if the input was positive) or 0 (if the input was negative or zero). It's a gate — either fully open or fully shut. Both z₁ = 0.75 and z₂ = 0.05 were positive, so the gate is open and the gradient passes through unchanged:</p>
+
+<pre><code>∂L/∂z₁ = (∂L/∂h₁) × ReLU'(z₁) = (−0.2223) × 1 = −0.2223
+∂L/∂z₂ = (∂L/∂h₂) × ReLU'(z₂) = (+0.1482) × 1 = +0.1482</code></pre>
 
 <div class="callout callout-warning">
-  <div class="callout-label">⚠️ Dead Neurons</div>
-  <p>If z₂ had been negative (say, −0.3), then ReLU would have output 0, and ReLU'(z₂) = 0. The gradient ∂L/∂z₂ would be zero, and <em>every weight feeding into hidden neuron 2</em> would get zero gradient. That neuron is dead — it contributes nothing to the output, and backprop assigns it zero blame, so it never learns. This is the "dying ReLU" problem, and it's why Leaky ReLU and other variants exist.</p>
+  <div class="callout-label">⚠️ The Dying ReLU Problem</div>
+  <p>If z₂ had been negative — say, −0.3 — then ReLU would have output 0, and its derivative would be 0. The gradient ∂L/∂z₂ would be zero, and <em>every weight feeding into that neuron</em> would get zero gradient. That neuron is dead. It contributes nothing to the output, backprop assigns it zero blame, and zero blame means zero update. The neuron never recovers. This is called the <strong>dying ReLU problem</strong>. Back at our assembly line, it's as if one station's amplification factor is permanently zero — no signal from upstream can ever pass through it. Leaky ReLU and other variants exist specifically to keep this gate slightly ajar even for negative inputs.</p>
 </div>
 
-<h3>Step 5 — Gradients for Hidden Layer Weights</h3>
+<h3>Gradients for the Hidden Layer</h3>
 
-<p>Same pattern as before: (upstream error signal) × (input to that weight).</p>
+<p>Same pattern as before — upstream error signal times the input to that weight:</p>
 
-<pre><code>∂L/∂w₁₁ = ∂L/∂z₁ · x₁ = (−0.2223)(1.0) = −0.2223
-∂L/∂w₁₂ = ∂L/∂z₁ · x₂ = (−0.2223)(0.5) = −0.1112
-∂L/∂b₁  = ∂L/∂z₁ · 1   =                  −0.2223
+<pre><code>∂L/∂w₁₁ = (∂L/∂z₁) × x₁ = (−0.2223)(1.0) = −0.2223
+∂L/∂w₁₂ = (∂L/∂z₁) × x₂ = (−0.2223)(0.5) = −0.1112
+∂L/∂b₁  = (∂L/∂z₁) × 1   =                  −0.2223
 
-∂L/∂w₂₁ = ∂L/∂z₂ · x₁ = (+0.1482)(1.0) = +0.1482
-∂L/∂w₂₂ = ∂L/∂z₂ · x₂ = (+0.1482)(0.5) = +0.0741
-∂L/∂b₂  = ∂L/∂z₂ · 1   =                  +0.1482</code></pre>
+∂L/∂w₂₁ = (∂L/∂z₂) × x₁ = (+0.1482)(1.0) = +0.1482
+∂L/∂w₂₂ = (∂L/∂z₂) × x₂ = (+0.1482)(0.5) = +0.0741
+∂L/∂b₂  = (∂L/∂z₂) × 1   =                  +0.1482</code></pre>
 
-<p>And we're done. Every parameter in the network has a gradient. Let's step back and see the full picture:</p>
+<p>Every parameter has a gradient now. One backward pass. Nine gradients. Let's see the full picture:</p>
 
-<pre><code>Parameter   Value    Gradient    Interpretation
-─────────   ─────    ────────    ──────────────────────
+<pre><code>Parameter   Value    Gradient    What it means
+─────────   ─────    ────────    ──────────────────────────
 w₁₁         0.300    −0.2223     increase it (reduces loss)
 w₁₂         0.700    −0.1112     increase it
 b₁          0.100    −0.2223     increase it
@@ -453,144 +482,203 @@ v₁          0.600    −0.2779     increase it
 v₂         −0.400    −0.0185     increase it (make less negative)
 b₃          0.100    −0.3705     increase it</code></pre>
 
-<p>The gradients tell us the direction of <em>steepest ascent</em>. To minimize the loss, the optimizer subtracts some fraction (the learning rate) of each gradient from the corresponding weight. That's gradient descent — but that's the optimizer's job, not backprop's. Backprop's job was computing these nine numbers, and it did it in one backward pass.</p>
+<p>The gradient points in the direction of steepest <em>ascent</em>. To reduce the loss, the optimizer subtracts some fraction (the learning rate) of each gradient from the corresponding weight. That's gradient descent — but that's the <em>optimizer's</em> job, not backprop's. Backprop's entire contribution was computing these nine numbers in one backward pass.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
-<h2>Computational Graphs and Autograd</h2>
+<h2>The Universal Pattern</h2>
 
-<p>When you write <code>y = torch.relu(x @ W + b)</code> in PyTorch, it doesn't just compute the result. It builds a <strong>computational graph</strong> — a directed acyclic graph (DAG) where each node is an operation (matmul, add, relu) and each edge is a tensor flowing between operations. The graph records every operation that happened during the forward pass, along with the information needed to compute derivatives.</p>
+<p>After tracing through that example, a pattern has probably started to crystallize. At every node in the backward pass, the same thing happened:</p>
 
-<p>When you call <code>loss.backward()</code>, PyTorch walks this graph in reverse topological order — from the loss back to the inputs. At each node, it applies the chain rule: take the incoming gradient (from downstream), multiply by the local Jacobian (derivative of this operation with respect to its inputs), and pass the result upstream. This is <strong>reverse-mode automatic differentiation</strong>, and it's what every deep learning framework implements under the hood.</p>
+<pre><code>gradient for a weight = (upstream error signal) × (local input to that weight)
+gradient for an input  = (upstream error signal) × (weight connecting to that input)</code></pre>
 
-<p>The reason we use reverse-mode (and not forward-mode) is efficiency. Reverse-mode computes the gradient of one scalar (the loss) with respect to <em>all</em> parameters in a single backward pass. Forward-mode computes the derivative of <em>all</em> outputs with respect to one parameter per pass. Since we have one loss scalar and millions of parameters, reverse-mode wins by a factor of millions. That's the whole story on forward-mode vs reverse-mode — reverse-mode is backprop.</p>
+<p>That first line — upstream signal times local input — is the <em>only formula you need to remember</em> for the backward pass of a linear layer. It shows up everywhere because the derivative of <code>z = w·x + b</code> with respect to w is x, and the derivative with respect to x is w. The chain rule packages the "blame from downstream" into the upstream signal, and the local derivative tells you how much this particular weight or input contributed.</p>
+
+<p>Activation functions add their own local derivative as a multiplier. ReLU multiplies by 1 or 0. Sigmoid multiplies by σ(z)(1−σ(z)). Tanh multiplies by 1−tanh²(z). Each one shapes the error signal as it passes through — amplifying, dampening, or killing it entirely.</p>
+
+<p>Once you see this pattern, the backward pass through any layer — convolutional, recurrent, attention, normalization — is the same game. Compute the local derivatives. Multiply by the upstream signal. Pass the result further upstream. Every architecture ever invented plays by these rules.</p>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2>Rest Stop</h2>
 
 <div class="callout callout-info">
-  <div class="callout-label">Autograd Is Not Symbolic Differentiation</div>
-  <p>Symbolic differentiation (what Wolfram Alpha does) takes an expression like <code>sin(x²)</code> and produces the expression <code>2x·cos(x²)</code>. It manipulates symbols. Automatic differentiation doesn't produce expressions — it produces <em>values</em>. It evaluates the derivative at a specific point by tracing the computation and applying the chain rule to actual numbers. This is why autograd works on arbitrary Python code with control flow, loops, and conditionals. There's no symbolic expression to simplify. There's just a recorded trace of operations and numbers.</p>
+  <div class="callout-label">☕ You Can Stop Here If You Want</div>
+  <p>If you've followed along to here, you understand backpropagation. Not the hand-wavy version — the real one. You can trace a forward pass, compute the loss, walk backward through each operation multiplying local derivatives, and arrive at a gradient for every weight. You understand why the cost is O(n) — one backward pass, all gradients — and why that efficiency is what makes deep learning computationally feasible.</p>
+
+  <p>That's a solid 80% of what matters. You could stop here, write <code>loss.backward()</code> in PyTorch with genuine understanding of what's happening under the hood, and be ahead of most practitioners.</p>
+
+  <p>What we haven't covered yet: <em>how</em> frameworks actually implement this (computational graphs, automatic differentiation), <em>why</em> there are two modes of automatic differentiation and which one wins for neural networks, <em>what happens when</em> the gradient signal degrades through many layers (vanishing and exploding gradients), and the practical PyTorch details that trip people up in production.</p>
+
+  <p>But if the discomfort of not knowing what's underneath is nagging at you, read on.</p>
 </div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2>Three Ways to Compute a Derivative</h2>
+
+<p>Before we look at how PyTorch implements backprop, it helps to understand why it chose the approach it did. There are three fundamentally different ways to compute a derivative, and they trade off in ways that matter enormously at scale.</p>
+
+<p><strong>Numerical differentiation</strong> is the brute-force approach we started with: wiggle each input by a tiny amount ε, measure the change in output, divide. The formula is f'(x) ≈ (f(x+ε) − f(x)) / ε. It's dead-simple to implement and it works for any function, differentiable or not. But it requires one forward pass per parameter, and it's approximate — too small an ε and floating-point rounding errors dominate, too large and the approximation is inaccurate. It has one practical use: <strong>gradient checking</strong>. When you write a custom backward pass and want to verify it, you compare your analytical gradients against numerical ones. That's about all it's good for.</p>
+
+<p><strong>Symbolic differentiation</strong> is what Wolfram Alpha does. Given the expression sin(x²), it applies differentiation rules to produce the expression 2x·cos(x²). It manipulates symbols, not numbers. The result is exact and gives you a closed-form formula. The problem is <strong>expression swell</strong> — for deeply nested functions, each application of the chain rule can double the size of the expression. A 50-layer network would produce a derivative expression so large it would choke any computer algebra system. Symbolic differentiation works beautifully for single equations. It falls apart for programs.</p>
+
+<p><strong>Automatic differentiation</strong> (AD) is the sweet spot that deep learning frameworks use. It doesn't produce expressions — it produces <em>values</em>. During the forward pass, it records every operation that happened (multiply, add, relu, etc.) in a trace. During the backward pass, it replays that trace in reverse, applying the chain rule to actual numbers at each step. No expression swell because there's no expression — there are numbers being multiplied at each node. Exact to machine precision because it uses analytical local derivatives, not finite differences. And it handles arbitrary program structure: loops, conditionals, recursion. If Python can execute it, autograd can differentiate through it.</p>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2>Computational Graphs and the Machinery of Autograd</h2>
+
+<p>When you write <code>y = torch.relu(x @ W + b)</code> in PyTorch, something subtle happens beyond the obvious computation. PyTorch builds a <strong>computational graph</strong> — a directed acyclic graph (DAG) where each node represents an operation (matrix multiply, add, relu) and each edge represents a tensor flowing between operations. Every tensor with <code>requires_grad=True</code> participates in this graph. The tensor itself stores a reference back to the operation that created it — that's the <code>.grad_fn</code> attribute you see when you inspect a computed tensor.</p>
+
+<p>This graph is the "tape" in tape-based automatic differentiation. PyTorch records the forward pass as it executes, building the tape on-the-fly. This is what people mean by a <strong>dynamic computational graph</strong> — the graph is constructed fresh every time the forward pass runs. If your code has an <code>if</code> statement that takes a different branch on different inputs, the graph structure changes accordingly. Old TensorFlow (1.x) used a static graph that you defined once and then ran — you couldn't use normal Python control flow. PyTorch's dynamic approach won the community over because it means you can use any Python you want and the gradients still work.</p>
+
+<p>When you call <code>loss.backward()</code>, PyTorch walks this graph in reverse topological order — from the loss node back to the leaf parameters. At each node, it performs a <strong>vector-Jacobian product</strong> (VJP): take the incoming gradient vector from downstream, multiply it by the local Jacobian (the derivative of this operation with respect to its inputs), and pass the result upstream. The framework doesn't compute or store the full Jacobian matrix — that would be enormous for operations like matrix multiplication. Instead, each operation has a custom backward function that directly computes the VJP efficiently. The result for each leaf parameter accumulates in its <code>.grad</code> attribute.</p>
+
+<p>I'm still developing my full intuition for why the vector-Jacobian product framing is the right abstraction. But the key realization is this: at each node, the "vector" flowing backward is the gradient of the loss with respect to that node's output. The Jacobian captures how that node's output depends on its inputs. Multiplying them gives you the gradient of the loss with respect to that node's inputs. That's the chain rule, expressed as a matrix-vector product, applied one node at a time.</p>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2>Forward Mode vs. Reverse Mode — Why Reverse Wins</h2>
+
+<p>Automatic differentiation comes in two flavors, and the choice between them has a dramatic impact on efficiency.</p>
+
+<p><strong>Forward mode</strong> propagates derivatives from inputs to outputs. You pick one input parameter, seed it with a derivative of 1, and trace how that derivative flows forward through every operation to every output. At the end, you have the derivative of all outputs with respect to that one input. To get the gradient with respect to a different input, you start over. For a function with <em>n</em> inputs and <em>m</em> outputs, forward mode costs <em>n</em> forward passes to get the full gradient.</p>
+
+<p><strong>Reverse mode</strong> propagates derivatives from outputs to inputs. You start with one output (the loss), seed it with a derivative of 1, and trace how that derivative flows backward through every operation to every input. At the end, you have the derivative of that one output with respect to <em>all</em> inputs. For <em>n</em> inputs and <em>m</em> outputs, reverse mode costs <em>m</em> backward passes.</p>
+
+<p>Neural networks have millions of input parameters and one scalar loss. Forward mode would require millions of passes. Reverse mode requires one. The efficiency gap isn't 2× or 10× — it's a factor of <em>millions</em>.</p>
+
+<p>Reverse-mode automatic differentiation is backpropagation. They are the same algorithm. The name "backpropagation" comes from the neural network community. The name "reverse-mode AD" comes from the numerical computing community. They converged on the same insight independently: when you have many inputs and few outputs, work backward.</p>
+
+<p>Forward mode isn't useless — it's ideal when you have few inputs and many outputs, like computing the Jacobian of a physics simulation with three control knobs and a million mesh points. But for training neural networks, reverse mode is the only game in town.</p>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2>When the Signal Dies: Vanishing and Exploding Gradients</h2>
+
+<p>The chain rule computes a gradient as a product of local derivatives. And products are fragile things. If any factor is small, the whole product shrinks. If many factors are small, the product vanishes.</p>
+
+<p>Think back to the assembly line. Each station has an amplification factor — its local derivative. If Station A's factor is 0.25, and so is Station B's, and Station C's, and Station D's, the error signal that reaches the first station is 0.25⁴ = 0.004. That's 99.6% of the signal gone after four layers. After ten layers? 0.25¹⁰ ≈ 0.000001. The first layers of the network get essentially no gradient. They can't learn. This is the <strong>vanishing gradient problem</strong>.</p>
+
+<p>Here's why it haunted early deep learning. The sigmoid activation function has a maximum derivative of 0.25 — it occurs when the input is exactly zero, and the derivative gets smaller in both directions from there. If every layer uses sigmoid, the gradient signal decays by at least a factor of 4 at every layer. Hochreiter documented this in 1991, and it's the core reason people couldn't train networks deeper than a few layers for decades.</p>
+
+<p>The mirror problem is <strong>exploding gradients</strong>. If the local derivatives are consistently greater than 1, the product grows exponentially. After 50 layers with amplification factors of 2, the gradient is 2⁵⁰ ≈ 10¹⁵. Weight updates become enormous, the loss oscillates wildly, and training diverges. This is particularly common in recurrent neural networks where <strong>backpropagation through time</strong> (BPTT) unrolls the same recurrence for hundreds of time steps — the "depth" is the sequence length, and the same weight matrix gets multiplied into the gradient product at every step.</p>
+
+<p>The solutions that unlocked deep learning all attack this product-of-many-numbers problem:</p>
+
+<p><strong>ReLU</strong> (2011, popularized by Glorot et al.) has a derivative of exactly 1 for positive inputs. Unlike sigmoid's maximum of 0.25, ReLU doesn't systematically shrink the gradient. The chain rule product stays closer to 1 through many layers. This single change — swapping sigmoid for ReLU — was a turning point.</p>
+
+<p><strong>Careful weight initialization</strong> keeps the variance of activations and gradients stable across layers. Xavier initialization (Glorot, 2010) was designed for sigmoid/tanh. He initialization (2015) was designed for ReLU. Both set the initial weight scale based on the fan-in and fan-out of each layer, so that the expected magnitude of signals neither grows nor shrinks as they pass through.</p>
+
+<p><strong>Residual connections</strong> (He et al., 2015) add the input of a block directly to its output: <code>output = block(x) + x</code>. During backprop, the gradient flows through the addition unchanged — the derivative of <code>x + something</code> with respect to x is always 1, regardless of what the block does. This creates a "gradient highway" that bypasses the block entirely. Even if the block's gradients vanish, the residual path keeps the signal alive. This is how ResNets train hundreds of layers where plain networks collapse.</p>
+
+<p><strong>Batch normalization</strong> (Ioffe and Szegedy, 2015) normalizes each layer's inputs to have zero mean and unit variance. This prevents activations from drifting into the saturated regions of sigmoid/tanh where derivatives are tiny.</p>
+
+<p><strong>Gradient clipping</strong> caps the gradient norm at a threshold during training. If the gradient vector's norm exceeds the threshold, the entire vector is scaled down. This doesn't prevent vanishing gradients but it tames exploding ones, and it's standard practice for training RNNs and Transformers.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <h2>PyTorch Autograd in Practice</h2>
 
-<p>The computational graph is an implementation detail you rarely think about. In practice, backprop in PyTorch looks like this:</p>
+<p>With all that theory behind us, let's look at what you actually write. The computational graph, VJPs, and reverse-mode traversal are all invisible. What you see in PyTorch is this:</p>
 
 <pre><code class="language-python">import torch
 import torch.nn as nn
 
-# ── A simple network ────────────────────────────────────
 model = nn.Sequential(
-    nn.Linear(2, 2),    # hidden layer: 2 inputs → 2 neurons
+    nn.Linear(2, 2),
     nn.ReLU(),
-    nn.Linear(2, 1),    # output layer: 2 → 1
+    nn.Linear(2, 1),
     nn.Sigmoid()
 )
 loss_fn = nn.BCELoss()
 
-# ── Forward pass ────────────────────────────────────────
-x = torch.tensor([[1.0, 0.5]])       # input
-y = torch.tensor([[1.0]])            # target
-y_hat = model(x)                     # forward: builds the graph
-loss = loss_fn(y_hat, y)             # compute loss
+x = torch.tensor([[1.0, 0.5]])
+y = torch.tensor([[1.0]])
 
-# ── Backward pass ───────────────────────────────────────
-loss.backward()                      # compute ALL gradients
+y_hat = model(x)          # forward pass — builds the computational graph
+loss = loss_fn(y_hat, y)   # compute loss — extends the graph
 
-# ── Every parameter now has a .grad ─────────────────────
+loss.backward()            # backward pass — computes ALL gradients
+
 for name, param in model.named_parameters():
-    print(f"{name:20s} shape={str(list(param.shape)):10s} "
-          f"grad_norm={param.grad.norm().item():.4f}")</code></pre>
+    print(f"{name:15s}  grad_norm = {param.grad.norm().item():.4f}")</code></pre>
 
-<p>That's the whole pattern. <code>model(x)</code> runs the forward pass and records the graph. <code>loss.backward()</code> walks the graph backward and populates <code>.grad</code> on every parameter that has <code>requires_grad=True</code> (which is the default for <code>nn.Parameter</code>). After that, the optimizer reads those gradients and updates the weights.</p>
+<p><code>model(x)</code> runs the forward pass and records the tape. <code>loss.backward()</code> walks the tape backward and populates <code>.grad</code> on every parameter with <code>requires_grad=True</code> (which is the default for anything inside <code>nn.Module</code>). After that, the optimizer reads those gradients and updates the weights.</p>
 
-<p>A complete training step:</p>
+<p>A complete training loop has three lines at its core:</p>
 
 <pre><code class="language-python">optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
 for epoch in range(1000):
-    # Forward
     y_hat = model(x)
     loss = loss_fn(y_hat, y)
 
-    # Backward
-    optimizer.zero_grad()    # CRITICAL: clear old gradients first
+    optimizer.zero_grad()    # clear old gradients
     loss.backward()          # compute new gradients
+    optimizer.step()         # update weights using those gradients</code></pre>
 
-    # Update
-    optimizer.step()         # nudge weights in the direction that reduces loss</code></pre>
+<p><code>zero_grad()</code>, <code>backward()</code>, <code>step()</code>. Every training loop you'll ever write has this skeleton. Why zero_grad is necessary — we'll get to that in a moment.</p>
 
-<p>Three lines in the loop. That's it. <code>zero_grad()</code>, <code>backward()</code>, <code>step()</code>. Every training loop you'll ever write has this skeleton.</p>
+<p>During inference, you don't need gradients. Turning off graph construction saves memory and speeds things up:</p>
 
-<p>For inference, you don't need gradients. Disable graph construction to save memory and compute:</p>
-
-<pre><code class="language-python"># During inference — no graph, no gradients
-with torch.no_grad():
+<pre><code class="language-python">with torch.no_grad():
     predictions = model(test_inputs)
 
-# Equivalent: decorate the whole function
+# Or, for an entire function:
 @torch.inference_mode()
 def predict(model, inputs):
     return model(inputs)</code></pre>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
-<h2>Key Practical Details</h2>
+<h2>The Details That Bite You: Accumulation, Detaching, Checkpointing</h2>
 
-<h3>Gradient Accumulation</h3>
+<h3>Gradient Accumulation — The Most Common Backprop Bug</h3>
 
-<p>This is the most common backprop bug in PyTorch: <strong>gradients accumulate by default</strong>. Each call to <code>.backward()</code> <em>adds</em> to the existing <code>.grad</code> tensors rather than replacing them. If you forget <code>zero_grad()</code>, your gradients grow with every batch, your weight updates become enormous, and your loss explodes.</p>
+<p>PyTorch accumulates gradients by default. Each call to <code>.backward()</code> <em>adds</em> to existing <code>.grad</code> tensors instead of replacing them. Forget <code>zero_grad()</code>, and gradients grow with every batch. Weight updates become enormous. Loss explodes. I still occasionally get tripped up by this when prototyping quickly.</p>
 
-<pre><code class="language-python"># BUG: gradients grow every iteration
+<pre><code class="language-python"># BUG: gradients accumulate and grow every iteration
 for batch in dataloader:
     loss = compute_loss(model, batch)
-    loss.backward()          # accumulates onto existing .grad!
+    loss.backward()
     optimizer.step()
 
-# FIX: zero gradients before each backward pass
+# FIX: reset gradients before each backward pass
 for batch in dataloader:
-    optimizer.zero_grad()    # reset .grad to zero
+    optimizer.zero_grad()
     loss = compute_loss(model, batch)
     loss.backward()
     optimizer.step()</code></pre>
 
-<p>But accumulation isn't a bug — it's a feature. It lets you simulate larger batch sizes when you don't have enough GPU memory:</p>
+<p>But accumulation isn't a design flaw — it's a deliberate feature. It lets you simulate larger batch sizes when GPU memory is limited. Compute gradients on four small batches, accumulate them, then take one optimizer step. The effective batch size is 4× the actual batch size:</p>
 
-<pre><code class="language-python"># Gradient accumulation: effective batch size = 4 × actual batch size
-accumulation_steps = 4
+<pre><code class="language-python">accumulation_steps = 4
 optimizer.zero_grad()
 
 for i, batch in enumerate(dataloader):
     loss = compute_loss(model, batch) / accumulation_steps
-    loss.backward()                    # accumulate gradients
+    loss.backward()
 
     if (i + 1) % accumulation_steps == 0:
-        optimizer.step()               # update with accumulated gradient
-        optimizer.zero_grad()          # reset for next accumulation cycle</code></pre>
+        optimizer.step()
+        optimizer.zero_grad()</code></pre>
 
-<h3>Detaching from the Graph</h3>
+<h3>Detaching Tensors from the Graph</h3>
 
-<p><code>.detach()</code> creates a tensor that shares the same data but is disconnected from the computational graph. Gradients will not flow through a detached tensor. This is essential in several scenarios:</p>
+<p><code>.detach()</code> creates a tensor that shares the same data but is disconnected from the computational graph. Gradients will not flow through it. This is essential when you need to use a computed value without it influencing gradient computation — target networks in reinforcement learning, teacher models in distillation, stop-gradient tricks in self-supervised learning:</p>
 
-<pre><code class="language-python"># Target networks in reinforcement learning (DQN, etc.)
-# The target should NOT influence gradient computation
+<pre><code class="language-python"># RL: target Q-values must NOT influence gradient computation
 with torch.no_grad():
     target_q = target_network(next_state).max(dim=1).values
 loss = F.mse_loss(current_q, target_q.detach())
 
-# Teacher-student distillation — teacher gradients are frozen
-teacher_logits = teacher_model(x).detach()
-student_logits = student_model(x)
-loss = F.kl_div(student_logits.log_softmax(dim=-1),
-                teacher_logits.softmax(dim=-1))
-
-# Stopping gradient in part of a network (e.g., SimSiam, BYOL)
+# Self-supervised learning (SimSiam): stop gradient on one branch
 z1 = projector(encoder(x1))
-z2 = projector(encoder(x2)).detach()  # stop-gradient on one branch
+z2 = projector(encoder(x2)).detach()
 loss = -F.cosine_similarity(z1, z2).mean()</code></pre>
 
-<h3>Gradient Checkpointing</h3>
+<p>The difference between <code>.detach()</code> and <code>torch.no_grad()</code>: <code>detach()</code> disconnects a specific tensor from the graph while the rest of the graph stays intact. <code>torch.no_grad()</code> prevents graph construction entirely for all operations inside the context manager. Use <code>no_grad()</code> for inference. Use <code>detach()</code> when part of the computation needs gradients and part doesn't.</p>
 
-<p>During the forward pass, PyTorch stores every intermediate activation (every h₁, z₃, etc.) because the backward pass needs them to compute gradients. For a deep network, this memory cost is enormous — it scales linearly with depth. A 100-layer ResNet stores 100 layers worth of activations.</p>
+<h3>Gradient Checkpointing — Trading Compute for Memory</h3>
 
-<p><strong>Gradient checkpointing</strong> trades compute for memory. Instead of storing all activations, you store only a few "checkpoints." During the backward pass, when you need an activation that wasn't stored, you recompute it by re-running the forward pass from the nearest checkpoint. This reduces memory from O(n) to O(√n) at the cost of one extra forward pass.</p>
+<p>During the forward pass, PyTorch stores every intermediate activation because the backward pass needs them to compute gradients. For a network with 100 layers, that's 100 layers' worth of tensors sitting in memory. For large models with long sequences, this memory cost dwarfs the model weights themselves.</p>
+
+<p><strong>Gradient checkpointing</strong> attacks this by storing only a subset of activations — the "checkpoints." During the backward pass, when a non-stored activation is needed, PyTorch re-runs the forward pass from the nearest checkpoint to recompute it. Memory drops from O(n) to O(√n) at the cost of roughly one additional forward pass. In practice, this translates to about 30% more compute for 60% less activation memory.</p>
 
 <pre><code class="language-python">from torch.utils.checkpoint import checkpoint
 
@@ -602,45 +690,70 @@ class DeepModel(nn.Module):
         self.block3 = HeavyBlock()
 
     def forward(self, x):
-        # Activations for block1 and block2 are recomputed during backward
         x = checkpoint(self.block1, x, use_reentrant=False)
         x = checkpoint(self.block2, x, use_reentrant=False)
-        x = self.block3(x)  # last block stores activations normally
+        x = self.block3(x)
         return x</code></pre>
 
-<p>This is how people train models that would otherwise not fit in GPU memory. LLM fine-tuning with gradient checkpointing is standard practice — you're trading ~30% more compute for ~60% less activation memory.</p>
+<p>This is standard practice for LLM fine-tuning and training deep models on limited hardware. The tradeoff is almost always worth it.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <h2>What Backpropagation Does NOT Do</h2>
 
-<p>Backprop is powerful, but its scope is narrow. Three things people frequently misattribute to backprop:</p>
+<p>Backprop is powerful, but its scope is narrower than people think. Three things frequently get misattributed to it.</p>
 
-<p><strong>Backprop does not update weights.</strong> It computes gradients — that's all. The actual weight update is the optimizer's job. SGD subtracts <code>lr × gradient</code>. Adam maintains per-parameter momentum and adaptive learning rates. These are separate algorithms that consume backprop's output. Backprop doesn't know or care which optimizer you use.</p>
+<p><strong>Backprop does not update weights.</strong> It computes gradients, nothing more. The actual update — subtracting lr × gradient, maintaining momentum, adapting per-parameter learning rates — is the optimizer's job. SGD, Adam, AdaGrad, LAMB — these are entirely separate algorithms that consume backprop's output. Backprop doesn't know or care which one you use.</p>
 
-<p><strong>Backprop does not guarantee finding the global minimum.</strong> The loss landscape of a neural network is non-convex — it's riddled with local minima, saddle points, and flat regions. Backprop gives you the gradient at your current location, which points toward the steepest local descent. Following it will decrease the loss locally, but there's no guarantee you'll reach the best possible loss. Whether you converge to a good solution depends on initialization, learning rate, optimizer, and the geometry of the loss surface — not on backprop itself.</p>
+<p><strong>Backprop does not find the global minimum.</strong> The loss landscape of a neural network is non-convex, riddled with local minima, saddle points, and flat plateaus. Backprop gives you the gradient at your current location — the direction of steepest local descent. Whether following that direction leads to a good solution depends on initialization, learning rate schedule, optimizer choice, and the geometry of the loss surface. My favorite thing about neural network loss landscapes is that, aside from high-level explanations about wide minima generalizing better, no one is completely certain why SGD converges to solutions that work as well as they do.</p>
 
-<p><strong>Backprop does not tell you which architecture to use.</strong> It works on any differentiable computation graph — feed-forward networks, convnets, transformers, graph networks, whatever. It computes gradients for the architecture you give it. Whether that architecture is well-suited to your problem is an entirely separate question.</p>
+<p><strong>Backprop does not choose your architecture.</strong> It works on any differentiable computational graph — feed-forward, convolutional, recurrent, attention-based, graph networks. It computes gradients for whatever structure you give it. Whether that structure is well-suited to your problem is an entirely separate question that backprop has no opinion on.</p>
 
 <div class="callout callout-info">
-  <div class="callout-label">The Full Training Pipeline</div>
-  <p><strong>Forward pass:</strong> input → prediction → loss. <em>(What the network currently does.)</em><br>
-  <strong>Backward pass (backprop):</strong> loss → gradients for all parameters. <em>(How each parameter contributed to the error.)</em><br>
-  <strong>Optimizer step:</strong> update each parameter using its gradient. <em>(How to fix the error.)</em><br><br>
-  Backprop is step 2. That's its entire job. Steps 1 and 3 are separate algorithms, covered in their own sections.</p>
+  <div class="callout-label">The Three-Step Dance</div>
+  <p><strong>Forward pass:</strong> input → prediction → loss. <em>What the network currently does.</em><br>
+  <strong>Backward pass (backprop):</strong> loss → gradients for every parameter. <em>How each weight contributed to the error.</em><br>
+  <strong>Optimizer step:</strong> update weights using their gradients. <em>How to fix the error.</em><br><br>
+  Backprop is step 2. That's its entire job.</p>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<h2>Wrap-Up</h2>
+
+<p>If you're still with me, thank you. I hope it was worth it.</p>
+
+<p>We started with a problem — millions of weights, one loss number, and the question of which knobs to turn. We traced a forward pass through a tiny network by hand, computed every intermediate value, then walked backward through the chain rule, multiplying local derivatives to produce a gradient for all nine parameters in one pass. We saw the universal pattern — upstream signal times local input — and recognized it as the engine behind every architecture ever trained. We lifted the hood on automatic differentiation, understood why reverse mode wins by a factor of millions for neural networks, confronted the vanishing and exploding gradient problems that kept deep learning stuck for decades, and landed on the practical PyTorch code that makes all of this three lines in a training loop.</p>
+
+<p>My hope is that the next time you write <code>loss.backward()</code>, instead of treating it as a magic incantation that makes the loss go down, you'll picture that backward walk through the computational graph — the error signal splitting at branches, routing through weights, passing through ReLU gates, accumulating blame at every parameter — and have a solid mental model of what's actually happening under the hood.</p>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2>Resources</h2>
+
+<p>The <a href="https://www.nature.com/articles/323533a0">1986 Rumelhart, Hinton &amp; Williams paper</a> — the paper that launched a thousand networks. Shorter and more readable than you'd expect.</p>
+
+<p>Andrej Karpathy's <a href="https://www.youtube.com/watch?v=VMj-3S1tku0">micrograd video</a> — builds backprop from scratch in Python. The best "build it yourself to understand it" resource I've found.</p>
+
+<p><a href="https://cs231n.stanford.edu/">Stanford CS231n lecture notes on backprop</a> — the computational graph walkthrough is wildly clear. The gradient checking section is also insightful for building trust in your own implementations.</p>
+
+<p><a href="https://pytorch.org/docs/stable/notes/autograd.html">PyTorch Autograd Mechanics docs</a> — the official deep dive into how the tape, grad_fn, and backward engine work. Denser than the tutorials, but comprehensive.</p>
+
+<p>Bengio et al., <a href="https://ieeexplore.ieee.org/document/279181">"Learning long-term dependencies with gradient descent is difficult" (1994)</a> — the definitive analysis of vanishing gradients. Still worth reading to understand why this problem was so fundamental.</p>
+
+<p>Baydin et al., <a href="https://arxiv.org/abs/1502.05767">"Automatic Differentiation in Machine Learning: A Survey" (2018)</a> — the most complete treatment of forward-mode, reverse-mode, and everything in between. Unforgettable if you want the full picture.</p>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
 <h2>What You Should Now Be Able To Do</h2>
 
 <ul class="checklist">
-  <li>Explain backpropagation as "the chain rule applied in reverse through a computational graph" and mean it — not as a memorized phrase, but as a deep understanding of why multiplying local derivatives gives you the gradient for any weight in the network.</li>
-  <li>Trace a forward pass through a small network by hand — compute weighted sums, apply activations, compute the loss — and know exactly which intermediate values are needed for the backward pass.</li>
-  <li>Compute the backward pass by hand: start with ∂L/∂output, multiply by local derivatives at each layer, and arrive at ∂L/∂w for every weight. Verify that the gradient's sign makes intuitive sense (negative means "increase this weight to reduce loss").</li>
-  <li>Explain why backprop is O(n) — one backward pass gives gradients for all n parameters — and why this efficiency is what makes deep learning computationally feasible.</li>
-  <li>Write the <code>zero_grad() → backward() → step()</code> training loop in PyTorch and explain what each call does, including why <code>zero_grad()</code> is necessary.</li>
-  <li>Use <code>.detach()</code> and <code>torch.no_grad()</code> correctly — know when gradient flow should be stopped and why (target networks, inference, stop-gradient tricks).</li>
-  <li>Explain gradient checkpointing as a compute-memory tradeoff and know when to reach for it (large models, limited GPU memory, long sequences).</li>
-  <li>Clearly distinguish what backprop does (computes gradients) from what it doesn't do (update weights, find global minima, choose architectures).</li>
+  <li>Explain backpropagation as "the chain rule applied in reverse through a computational graph" — not as a memorized phrase, but grounded in having traced the backward pass step by step and seen how multiplying local derivatives gives every weight its gradient.</li>
+  <li>Trace both the forward and backward pass through a small network by hand. Compute weighted sums, apply activations, compute the loss forward, then walk backward multiplying upstream signal by local derivative at each node.</li>
+  <li>State the universal pattern: gradient for a weight = (upstream error signal) × (input to that weight). Verify that gradient signs make intuitive sense — negative means "increase this to reduce loss."</li>
+  <li>Explain the three types of differentiation (numerical, symbolic, automatic) and why automatic differentiation dominates for deep learning — no expression swell, exact to machine precision, handles arbitrary program structure.</li>
+  <li>Articulate why reverse-mode AD wins over forward-mode for neural networks: one loss scalar, millions of parameters, so reverse mode's cost of one backward pass beats forward mode's cost of millions of forward passes.</li>
+  <li>Explain vanishing and exploding gradients as a consequence of the chain rule being a product — small factors compound to kill the signal, large factors compound to blow it up. Name the solutions: ReLU, proper initialization, residual connections, batch norm, gradient clipping.</li>
+  <li>Write the <code>zero_grad() → backward() → step()</code> training loop and explain every line, including why accumulation is both a common bug and a deliberate feature.</li>
+  <li>Use <code>.detach()</code> and <code>torch.no_grad()</code> correctly, and explain gradient checkpointing as trading ~30% more compute for ~60% less memory.</li>
+  <li>Clearly distinguish what backprop does (computes gradients) from what it doesn't (update weights, find global minima, choose architectures).</li>
 </ul>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
