@@ -296,312 +296,355 @@
 <h1>Interpretability &amp; Visualization</h1>
 <div class="chapter-meta">
   <span class="tag">Chapter 9: CNNs &amp; Computer Vision</span>
-  <span class="tag">Grad-CAM · Saliency maps · What the network sees</span>
+  <span class="tag">Grad-CAM · Saliency · SHAP · Feature Viz · Mechanistic Interpretability</span>
 </div>
 
 <div class="tldr">
   <div class="tldr-label">TL;DR</div>
-  <p>Your CNN makes a prediction — but <em>what did it look at?</em> Interpretability tools answer this by producing heatmaps, saliency maps, and attention visualizations that highlight which regions of the input drove the output. Grad-CAM is the go-to: fast, class-specific, and works on any CNN without retraining. Saliency maps show pixel-level sensitivity. Occlusion sensitivity is simple but slow. For Vision Transformers, you can visualize attention maps directly. Use these tools to debug spurious correlations, explain predictions to stakeholders, and catch data leakage before it bites you in production.</p>
+  <p>Your CNN makes a prediction — but <em>what did it actually look at?</em> This section builds interpretability from scratch: we start with a single pixel's gradient, construct saliency maps, discover why they're noisy, fix that with SmoothGrad and Integrated Gradients, then graduate to Grad-CAM's spatial heatmaps. We explore model-agnostic methods (LIME, SHAP, occlusion), peer inside neurons with feature visualization, and touch on the frontier — mechanistic interpretability, where researchers are literally reverse-engineering what individual neurons compute. Throughout, we use a running example of debugging a skin-lesion classifier that's suspiciously good, because interpretability isn't decoration. It's the difference between a model that works and a model that <em>cheats</em>.</p>
 </div>
 
-<p>Your model classified this X-ray as "pneumonia." The doctor asks: <em>"What did it look at?"</em> If you can't answer that, your model doesn't ship. Interpretability tools show you where the network is focusing — and whether it's cheating.</p>
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- OPENING -->
+<!-- ═══════════════════════════════════════════════════════════ -->
 
-<p>This isn't about philosophy or abstract notions of "explainability." It's about practical debugging. A model that achieves 99% accuracy by reading a hospital watermark in the corner is worse than useless — it's dangerous. The tools in this section let you catch that problem <em>before</em> deployment.</p>
+<p>I'll be honest — I treated interpretability as an afterthought for an embarrassingly long time. I'd train a model, check accuracy, maybe glance at a confusion matrix, and move on. The model said "malignant." The number was 0.94. Good enough, right? Then I saw a Grad-CAM heatmap of one of my "best" models, and the hotspot was on the ruler in the corner of a dermoscopy image. Not the lesion. The ruler. The model had learned that rulers appear more often in images that dermatologists thought were worth measuring — and measuring correlates with malignancy. My 94% accuracy was a lie.</p>
+
+<p>That experience changed how I think about every model I build. Interpretability isn't a nice-to-have academic exercise. It's the only way to know whether your model learned the right thing or the convenient thing. The tools in this section are your X-ray machine for X-ray machines — they let you look inside the network and see what it actually learned.</p>
+
+<p>Before we start, a heads-up. We're going to be computing gradients, manipulating feature maps, and building some intuition for game theory (Shapley values). You don't need to know any of it beforehand. We'll add what we need, one piece at a time.</p>
+
+<p>This isn't a short journey, but I hope you'll be glad you came.</p>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
-<h2>Grad-CAM: The Go-To</h2>
+<!-- TABLE OF CONTENTS -->
+<!-- ═══════════════════════════════════════════════════════════ -->
 
-<p><strong>Gradient-weighted Class Activation Mapping (Grad-CAM)</strong> is the most widely used CNN interpretability method. It produces a coarse heatmap highlighting which spatial regions of the final convolutional layer were most important for a specific class prediction. Here's the recipe:</p>
+<div class="callout callout-info">
+  <div class="callout-label">What We'll Cover</div>
+  <p>
+    The Question Every Model Must Answer<br>
+    Saliency Maps — The Simplest Window<br>
+    Fixing the Noise — SmoothGrad and Integrated Gradients<br>
+    Grad-CAM — From Pixels to Regions<br>
+    Occlusion Sensitivity — The Brute-Force Sanity Check<br>
+    LIME — Explaining Without Seeing the Weights<br>
+    SHAP for Images — Game Theory Meets Pixels<br>
+    Rest Stop<br>
+    Feature Visualization — What Neurons Dream About<br>
+    Concept Activation Vectors — Thinking in Human Terms<br>
+    Attention Maps in Vision Transformers<br>
+    The Sanity Check That Shook the Field<br>
+    Mechanistic Interpretability — The Frontier<br>
+    The Debugging Playbook<br>
+  </p>
+</div>
 
-<ol>
-  <li><strong>Forward pass</strong> — run the image through the network, record the feature maps from the last conv layer.</li>
-  <li><strong>Backward pass</strong> — compute the gradient of the target class score with respect to those feature maps.</li>
-  <li><strong>Weight the channels</strong> — global average pool each gradient map to get one importance weight per channel.</li>
-  <li><strong>Weighted combination</strong> — multiply each feature map by its weight, sum across channels, apply ReLU.</li>
-  <li><strong>Upscale</strong> — resize the heatmap to the input image size and overlay it.</li>
-</ol>
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>The Question Every Model Must Answer</h2>
+
+<p>Imagine you've trained a CNN to classify skin lesions from dermoscopy images. It hits 96% accuracy on your test set. Your stakeholder — a dermatologist with 20 years of experience — asks a single question: <em>"What is the model looking at when it says melanoma?"</em></p>
+
+<p>If you can't answer that, the model doesn't ship. Not because the dermatologist is being difficult, but because a model that achieves 96% by detecting rulers, color cards, or ink marks on the skin is <em>worse</em> than no model at all. It would give confident wrong answers on images without those artifacts. In medicine, confident wrong answers kill people.</p>
+
+<p>This is the problem interpretability tools solve. They take the billions of multiplications happening inside a network and produce something a human can look at and say: "Yes, it's focusing on the lesion border irregularity" or "No, it's focusing on the hair follicles."</p>
+
+<p>We'll call our skin-lesion classifier <strong>DermNet</strong> throughout this section — a ResNet-50 fine-tuned on 25,000 dermoscopy images across 7 lesion types. Every technique we build will be applied to DermNet, so you can see each tool doing real work on the same model.</p>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>Saliency Maps — The Simplest Window</h2>
+
+<p>The most basic question we can ask about a neural network's decision is: <em>"Which input pixels, if I wiggled them slightly, would change the output the most?"</em> That question has a precise mathematical answer — the gradient of the output with respect to the input.</p>
+
+<p>Let's make this concrete with DermNet. We feed in a dermoscopy image. The network outputs a score for each of the 7 lesion classes. We pick the predicted class — say, melanoma — and ask PyTorch to compute how that score changes if we nudge each of the 224×224×3 = 150,528 input values by a tiny amount. The magnitude of each gradient tells us how sensitive the prediction is to that pixel.</p>
+
+<pre><code>tensor.requires_grad_(True)
+output = model(tensor)
+score = output[0, predicted_class]
+score.backward()
+
+# Each pixel now has a gradient — take absolute value, collapse RGB channels
+saliency = tensor.grad.data.abs().squeeze()   # [3, 224, 224]
+saliency, _ = saliency.max(dim=0)             # [224, 224]
+</code></pre>
+
+<p>This gives us a <strong>saliency map</strong> — a pixel-level heat map of sensitivity. The term was introduced by Simonyan et al. in 2013, making it one of the oldest neural network visualization techniques still in use. The idea is elegant: pixels with large gradients are the ones the model "cares about" most.</p>
+
+<p>But here's the catch. If you actually look at a raw saliency map, it's... noisy. Speckled. Individual pixels light up like static on an old TV. The map doesn't show clean regions — it shows scattered bright dots everywhere, and it's hard to tell whether the model is looking at the lesion or at noise in the image sensor. I remember staring at my first saliency map thinking it must be a bug.</p>
+
+<p>It's not a bug. It's a fundamental limitation. Gradients are <em>local</em> — they tell you what would happen if you moved a single pixel by an infinitesimal amount, holding everything else fixed. Real features span many pixels, and the gradient at any one pixel is a noisy estimate of a broader pattern.</p>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>Fixing the Noise — SmoothGrad and Integrated Gradients</h2>
+
+<p>That noisy saliency map is frustrating, but the underlying idea — use gradients to measure importance — is sound. The noise is the problem, not the principle. Two techniques fix it in different ways, and understanding both matters because they reveal different things about the model.</p>
+
+<p><strong>SmoothGrad</strong> takes the brute-force approach. Instead of computing one saliency map, it computes fifty. Each time, it adds a small amount of random Gaussian noise to the input before computing gradients. Then it averages all fifty maps. The noise is different each time, so the speckle averages out, but the consistent signal — the regions the model truly depends on — survives.</p>
+
+<pre><code>import torch
+
+def smooth_grad(model, tensor, target_class, n_samples=50, noise_level=0.15):
+    mean_grad = torch.zeros_like(tensor)
+    for _ in range(n_samples):
+        noisy = tensor + noise_level * torch.randn_like(tensor)
+        noisy.requires_grad_(True)
+        score = model(noisy)[0, target_class]
+        score.backward()
+        mean_grad += noisy.grad.data.abs()
+    return (mean_grad / n_samples).squeeze().max(dim=0).values
+</code></pre>
+
+<p>The improvement is dramatic. Where the vanilla map was speckled static, SmoothGrad produces coherent regions you can actually interpret. For DermNet, the smoothed map clearly highlights the lesion boundary — which is exactly where dermatologists look for irregularity.</p>
+
+<p><strong>Integrated Gradients</strong> (Sundararajan et al., 2017) takes a more principled approach. Instead of adding noise, it asks: "What's the path from nothing to this image, and how much does each pixel contribute along that path?" It starts with a <strong>baseline</strong> — typically a black image (all zeros) — and interpolates in small steps toward the actual input. At each step, it computes the gradient. The final attribution for each pixel is the average gradient across all those steps, multiplied by the difference between input and baseline.</p>
+
+<p>Why go to this trouble? Because Integrated Gradients satisfies two mathematical axioms that raw gradients don't. <strong>Sensitivity</strong>: if a feature matters to the prediction, it gets a non-zero attribution. <strong>Implementation invariance</strong>: two networks that produce identical outputs always get identical attributions, regardless of internal architecture differences. These properties matter when you need to trust your explanations, not approximate them.</p>
+
+<div class="callout callout-warning">
+  <div class="callout-label">The Baseline Trap</div>
+  <p>Integrated Gradients requires a baseline — the "nothing" you interpolate from. A black image works for natural photos, but for medical imaging where black regions carry meaning (like the dark background in X-rays), a black baseline can produce misleading attributions. For dermoscopy, I've found that using the per-channel dataset mean as the baseline gives more reliable results. The choice of baseline is not a minor detail — it can completely change your explanation.</p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>Grad-CAM — From Pixels to Regions</h2>
+
+<p>Saliency maps, even the smoothed varieties, answer the question at the pixel level. But when the dermatologist asks "what is the model looking at?", they don't want to hear about pixel (147, 203). They want to hear "the irregular border in the upper-left quadrant." We need to zoom out from pixels to regions.</p>
+
+<p>This is where <strong>Gradient-weighted Class Activation Mapping</strong> — Grad-CAM — comes in, and it's the single most important interpretability tool in the CNN practitioner's toolkit. Selvaraju et al. introduced it in 2017, and it became the default visualization method for good reason: it's fast, works on any CNN architecture without modification, and produces class-specific heatmaps that match human intuition about what the model should be looking at.</p>
+
+<p>The core insight is beautiful. Deep inside a CNN, the last convolutional layer produces a stack of <strong>feature maps</strong> — let's say 2,048 of them in ResNet-50, each one a 7×7 spatial grid. Each feature map responds to a different learned pattern: one might fire when it sees irregular borders, another when it sees brown pigment, another when it sees a particular texture. These maps still carry spatial information — they know <em>where</em> in the image the pattern occurred — but they're semantically rich enough to relate to specific classes.</p>
+
+<p>Grad-CAM figures out which of those 2,048 feature maps matter for the target class. It does this with gradients. Backpropagate the target class score, and for each feature map, compute the average of its gradient across all spatial positions. That average becomes the <strong>importance weight</strong> for that channel. Multiply each feature map by its weight, sum them all up, pass through ReLU (we only care about features that <em>positively</em> influence the class), and you've got a 7×7 heatmap showing which spatial regions mattered most. Upscale it to 224×224, overlay it on the original image, and you can see exactly where the model was looking.</p>
 
 <pre><code>import torch
 import torch.nn.functional as F
-from torchvision import models, transforms
-from PIL import Image
 
-# Load a pretrained model
-model = models.resnet50(pretrained=True).eval()
-
-# Hook into the last conv layer
+# Hook into the last conv layer to capture activations and gradients
 activations, gradients = {}, {}
 
-def save_activation(module, input, output):
-    activations['value'] = output.detach()
+def save_act(module, inp, out):
+    activations['val'] = out.detach()
 
-def save_gradient(module, grad_input, grad_output):
-    gradients['value'] = grad_output[0].detach()
+def save_grad(module, grad_in, grad_out):
+    gradients['val'] = grad_out[0].detach()
 
 target_layer = model.layer4[-1]
-target_layer.register_forward_hook(save_activation)
-target_layer.register_full_backward_hook(save_gradient)
+target_layer.register_forward_hook(save_act)
+target_layer.register_full_backward_hook(save_grad)
 
-# Preprocess the image
-img = Image.open("xray.jpg").resize((224, 224))
-tensor = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Normalize([0.485, 0.456, 0.406],
-                         [0.229, 0.224, 0.225])
-])(img).unsqueeze(0)
-
-# Forward + backward for target class
+# Forward pass, then backprop the target class
 output = model(tensor)
-target_class = output.argmax(dim=1).item()
 model.zero_grad()
 output[0, target_class].backward()
 
-# Compute Grad-CAM
-weights = gradients['value'].mean(dim=[2, 3], keepdim=True)  # global avg pool
-cam = (weights * activations['value']).sum(dim=1, keepdim=True)
-cam = F.relu(cam)                          # only positive contributions
-cam = F.interpolate(cam, size=(224, 224),
-                    mode='bilinear', align_corners=False)
+# The Grad-CAM recipe:
+# 1) Global average pool the gradients → one weight per channel
+weights = gradients['val'].mean(dim=[2, 3], keepdim=True)
+
+# 2) Weighted sum of feature maps, then ReLU
+cam = (weights * activations['val']).sum(dim=1, keepdim=True)
+cam = F.relu(cam)
+
+# 3) Upscale to input size
+cam = F.interpolate(cam, size=(224, 224), mode='bilinear', align_corners=False)
 cam = cam.squeeze().numpy()
-cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)  # normalize to [0, 1]
+cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
 </code></pre>
 
-<p>The resulting heatmap tells you exactly which region drove the classification. If the model classified a chest X-ray as pneumonia and the heatmap highlights the lung opacities — great, it's working. If it highlights the text label in the corner — you have a data leakage problem.</p>
+<p>When I ran this on DermNet's melanoma predictions, the story became immediately clear. On correctly diagnosed images, the heatmap sat right over the lesion — specifically over regions with asymmetric borders and color variegation, the textbook dermoscopic features. On my "ruler images" that had fooled me before, the heatmap was firmly planted on the measurement artifact. Two minutes of Grad-CAM revealed what a week of metric-staring had missed.</p>
 
-<div class="callout callout-info">
-  <div class="callout-label">Why the Last Conv Layer?</div>
-  <p>Earlier layers detect low-level features (edges, textures) that aren't class-specific. The last conv layer has the best balance: features are still spatially localized but semantically rich enough to relate to specific classes. You <em>can</em> apply Grad-CAM to earlier layers — the heatmaps will be higher resolution but less class-discriminative.</p>
-</div>
+<p>There's a variant called <strong>Grad-CAM++</strong> that uses second-order gradients (the gradient of the gradient) to produce better localization when multiple instances of the same object appear in one image. In practice, vanilla Grad-CAM is sufficient for most debugging workflows.</p>
 
-<p><strong>Grad-CAM++</strong> is a refinement that uses second-order gradients for better localization when multiple instances of the same class appear in the image. In practice, vanilla Grad-CAM works fine for most debugging tasks.</p>
+<p>The limitation of Grad-CAM is its resolution. That 7×7 grid means the heatmap is inherently coarse — it can tell you "upper-left quadrant" but not "this specific cluster of 20 pixels." When you need pixel-level attribution, you're back to Integrated Gradients or the methods we'll see next.</p>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
-<h2>Saliency Maps</h2>
+<h2>Occlusion Sensitivity — The Brute-Force Sanity Check</h2>
 
-<p>Saliency maps are the simplest gradient-based visualization. Compute the gradient of the output class score with respect to the <em>input pixels</em>. That's it.</p>
+<p>All the methods so far rely on gradients — they peek inside the model's computational graph. Occlusion sensitivity does something refreshingly dumb: it covers up part of the image and checks whether the model's confidence drops.</p>
 
-<pre><code># Saliency map — gradient of class score w.r.t. input
-tensor.requires_grad_(True)
-output = model(tensor)
-score = output[0, target_class]
-score.backward()
-
-saliency = tensor.grad.data.abs().squeeze()  # shape: [3, 224, 224]
-saliency, _ = saliency.max(dim=0)            # collapse color channels
-saliency = (saliency - saliency.min()) / (saliency.max() - saliency.min())
-</code></pre>
-
-<p>The question a saliency map answers: <em>"Which pixels, if changed by a tiny amount, would most affect the prediction?"</em> High-gradient pixels are the ones the model is most sensitive to.</p>
-
-<p><strong>The catch:</strong> raw saliency maps are noisy. They highlight individual pixels rather than coherent regions, making them harder to interpret visually than Grad-CAM. Two common improvements:</p>
-
-<ul>
-  <li><strong>SmoothGrad</strong> — add random noise to the input many times, compute the saliency map each time, and average. This smooths out the noise dramatically.</li>
-  <li><strong>Integrated Gradients</strong> — interpolate between a blank baseline image and the actual input in small steps, compute gradients at each step, and average. This gives a theoretically grounded attribution that satisfies axioms like sensitivity and implementation invariance.</li>
-</ul>
-
-<!-- ═══════════════════════════════════════════════════════════ -->
-<h2>Attention Visualization (for Vision Transformers)</h2>
-
-<p>Vision Transformers (ViTs) split images into patches and process them with self-attention. This gives you interpretability almost for free — just visualize the attention maps.</p>
-
-<pre><code># Pseudo-code for ViT attention extraction
-# Most ViT implementations let you return attention weights
-
-with torch.no_grad():
-    output = vit_model(tensor, output_attentions=True)
-    # attentions: list of [batch, heads, patches, patches]
-    # one entry per transformer layer
-
-# Visualize attention from [CLS] token to all patches
-# in the last layer, averaged across heads
-attn = output.attentions[-1]          # last layer
-cls_attn = attn[0, :, 0, 1:]         # [heads, num_patches] — CLS to others
-cls_attn = cls_attn.mean(dim=0)      # average across heads
-patch_grid = int(cls_attn.shape[0] ** 0.5)
-attn_map = cls_attn.reshape(patch_grid, patch_grid)
-</code></pre>
-
-<p>Each attention head focuses on different things. Some look at edges, some at textures, some at specific objects. Visualizing individual heads often reveals surprisingly interpretable specialization — one head might consistently attend to eyes in face images, another to backgrounds.</p>
-
-<div class="callout callout-warning">
-  <div class="callout-label">Attention ≠ Attribution</div>
-  <p>Attention maps show where the model <em>looks</em>, not necessarily what <em>causes</em> the prediction. A head might attend strongly to a region but downstream layers might ignore it. For rigorous attribution in ViTs, use methods like Attention Rollout (multiply attention matrices across layers) or apply Grad-CAM to the ViT's intermediate representations.</p>
-</div>
-
-<!-- ═══════════════════════════════════════════════════════════ -->
-<h2>Occlusion Sensitivity</h2>
-
-<p>The most intuitive method. No gradients, no hooks — just brute force.</p>
-
-<ol>
-  <li>Take the original image. Record the model's prediction confidence.</li>
-  <li>Slide a grey (or black) patch across the image, one position at a time.</li>
-  <li>At each position, record how the prediction confidence changes.</li>
-  <li>Where confidence drops most → that region matters most.</li>
-</ol>
+<p>Slide a grey square across DermNet's input, one position at a time. At each position, run the (now partially occluded) image through the network and record the confidence for the target class. Where the confidence drops the most, that region was carrying the most important information. No hooks, no gradients, no assumptions about the model's internals.</p>
 
 <pre><code>import numpy as np
 
-def occlusion_sensitivity(model, img_tensor, target_class,
-                          patch_size=32, stride=8):
-    """Slide a grey patch and record confidence drop."""
+def occlusion_map(model, img_tensor, target_class, patch=32, stride=8):
     _, _, H, W = img_tensor.shape
-    baseline_score = model(img_tensor).softmax(1)[0, target_class].item()
-
+    base = model(img_tensor).softmax(1)[0, target_class].item()
     heatmap = np.zeros((H, W))
     count = np.zeros((H, W))
 
-    for y in range(0, H - patch_size + 1, stride):
-        for x in range(0, W - patch_size + 1, stride):
-            occluded = img_tensor.clone()
-            occluded[:, :, y:y+patch_size, x:x+patch_size] = 0.5  # grey
+    for y in range(0, H - patch + 1, stride):
+        for x in range(0, W - patch + 1, stride):
+            masked = img_tensor.clone()
+            masked[:, :, y:y+patch, x:x+patch] = 0.5
+            score = model(masked).softmax(1)[0, target_class].item()
+            heatmap[y:y+patch, x:x+patch] += (base - score)
+            count[y:y+patch, x:x+patch] += 1
 
-            score = model(occluded).softmax(1)[0, target_class].item()
-            drop = baseline_score - score  # positive = region matters
-
-            heatmap[y:y+patch_size, x:x+patch_size] += drop
-            count[y:y+patch_size, x:x+patch_size] += 1
-
-    heatmap /= np.maximum(count, 1)
-    return heatmap
+    return heatmap / np.maximum(count, 1)
 </code></pre>
 
-<p>It's dead simple and model-agnostic — works on any architecture without modification. The downside is speed: for a 224×224 image with a 32×32 patch and stride 8, you're running ~576 forward passes. For a quick sanity check on a few images it's fine; for large-scale analysis, use Grad-CAM.</p>
+<p>The appeal is that this method is <strong>model-agnostic</strong>. It works on CNNs, transformers, even a model wrapped behind an API where you only get predictions. No access to weights needed — you're treating the model as a pure black box.</p>
+
+<p>The cost is speed. For a 224×224 image with a 32×32 patch and stride of 8, you're running about 576 forward passes per image. That's fine for inspecting a handful of suspicious predictions. It's impractical for large-scale analysis, which is why Grad-CAM (one forward + one backward pass) remains the default for routine work.</p>
+
+<p>But here's why occlusion still matters: when Grad-CAM and occlusion sensitivity agree — when both methods highlight the same region — your confidence that the model is genuinely using that region goes way up. Gradient-based methods can sometimes be misleading (more on that later), but occlusion can't lie. If covering up a region tanks the prediction, that region <em>was</em> carrying the signal. Period.</p>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
-<h2>Feature Map Visualization</h2>
+<h2>LIME — Explaining Without Seeing the Weights</h2>
 
-<p>Sometimes you want to see what individual convolutional filters have learned. Hook into any layer and visualize the activations directly:</p>
+<p>Occlusion sensitivity is model-agnostic but gives you a heatmap, not an explanation in natural terms. <strong>LIME</strong> — Local Interpretable Model-agnostic Explanations (Ribeiro et al., 2016) — takes the black-box idea further by building an entire interpretable model around a single prediction.</p>
 
-<pre><code># Visualize feature maps from a specific layer
-activation = {}
+<p>For images, LIME works like this. First, it segments the image into <strong>superpixels</strong> — coherent blobs of similar color, typically 50–150 of them, using an algorithm called SLIC. Each superpixel becomes a "feature." Then LIME generates hundreds of perturbed versions of the image, randomly turning superpixels on (visible) or off (greyed out). Each perturbed image is run through the model, and the prediction is recorded.</p>
 
-def hook_fn(module, input, output):
-    activation['maps'] = output.detach()
+<p>Now comes the clever bit: LIME fits a simple weighted linear regression. The features are which superpixels were on/off (a binary vector), and the target is the model's predicted probability. Perturbations closer to the original image get higher weight. The resulting coefficients tell you how much each superpixel contributed to the prediction. The top positive coefficients are highlighted as the explanation.</p>
 
-handle = model.layer2[0].conv1.register_forward_hook(hook_fn)
-_ = model(tensor)
-handle.remove()
+<p>For DermNet, LIME might show that superpixels covering the dark, asymmetric core of a lesion are the most important for the melanoma prediction, while the surrounding healthy skin contributes nothing. That's an explanation a dermatologist can evaluate — "the model focused on the dark irregular region" is actionable in a way that "pixel (147, 203) has gradient 0.003" is not.</p>
 
-# activation['maps'] shape: [1, num_channels, H, W]
-# Plot the first 16 channels as a grid
-maps = activation['maps'][0, :16]  # [16, H, W]
-</code></pre>
-
-<p>Early layers show edge detectors and color blobs. Middle layers show texture patterns and parts. Deep layers show abstract, class-specific features that are harder to interpret visually but map closely to semantic concepts.</p>
+<p>The limitation is stability. Run LIME twice on the same image, and you might get slightly different explanations, because the random perturbations differ. For deployment scenarios where you need reproducible explanations, pin the random seed or consider SHAP.</p>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
-<h2>Method Comparison</h2>
+<h2>SHAP for Images — Game Theory Meets Pixels</h2>
 
-<table>
-  <thead>
-    <tr>
-      <th>Method</th>
-      <th>Speed</th>
-      <th>Resolution</th>
-      <th>What It Shows</th>
-      <th>Use When</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><strong>Grad-CAM</strong></td>
-      <td>Fast (1 forward + 1 backward)</td>
-      <td>Coarse (conv layer grid)</td>
-      <td>Which regions matter for a class</td>
-      <td>Default choice — first thing to try</td>
-    </tr>
-    <tr>
-      <td><strong>Saliency Maps</strong></td>
-      <td>Fast (1 backward pass)</td>
-      <td>Pixel-level (but noisy)</td>
-      <td>Per-pixel sensitivity</td>
-      <td>Quick sanity check on input sensitivity</td>
-    </tr>
-    <tr>
-      <td><strong>SmoothGrad</strong></td>
-      <td>Medium (N backward passes)</td>
-      <td>Pixel-level (smoother)</td>
-      <td>Denoised pixel attribution</td>
-      <td>When raw saliency is too noisy to read</td>
-    </tr>
-    <tr>
-      <td><strong>Integrated Gradients</strong></td>
-      <td>Medium (N forward+backward)</td>
-      <td>Pixel-level</td>
-      <td>Theoretically grounded attribution</td>
-      <td>When you need formal guarantees</td>
-    </tr>
-    <tr>
-      <td><strong>Occlusion Sensitivity</strong></td>
-      <td>Slow (hundreds of forwards)</td>
-      <td>Patch-level</td>
-      <td>Which regions are necessary</td>
-      <td>Model-agnostic debugging, small datasets</td>
-    </tr>
-    <tr>
-      <td><strong>Attention Maps</strong></td>
-      <td>Free (already computed)</td>
-      <td>Patch-level (ViTs)</td>
-      <td>Where the model attends</td>
-      <td>ViTs — quick visual inspection</td>
-    </tr>
-    <tr>
-      <td><strong>Feature Maps</strong></td>
-      <td>Fast (1 forward pass)</td>
-      <td>Layer-dependent</td>
-      <td>What individual filters detect</td>
-      <td>Understanding learned representations</td>
-    </tr>
-  </tbody>
-</table>
+<p>The instability of LIME bothered researchers, and the fix came from an unexpected direction: cooperative game theory. <strong>SHAP</strong> — SHapley Additive exPlanations (Lundberg &amp; Lee, 2017) — computes the <strong>Shapley value</strong> for each feature, a concept from the 1950s that asks: "If every possible coalition of features were tried, what's the average marginal contribution of this particular feature?"</p>
+
+<p>For images, computing exact Shapley values for every pixel is intractable — with 150,528 pixels, you'd need to evaluate more coalitions than there are atoms in the universe. So SHAP uses the same superpixel trick as LIME: segment the image, treat each superpixel as a player in a cooperative game. <strong>DeepSHAP</strong> goes further by exploiting the network's layer structure to approximate Shapley values efficiently using a technique called DeepLIFT propagation rules.</p>
+
+<p>What makes SHAP special is its theoretical foundation. Shapley values are the <em>only</em> attribution method satisfying three properties simultaneously: if a feature doesn't affect the output at all, it gets zero attribution; if two models produce the same output, they produce the same attributions; and the attributions for all features sum to the difference between the model's output and the baseline. No other attribution method satisfies all three.</p>
+
+<p>The practical trade-off is compute. Even with DeepSHAP's approximations, generating SHAP explanations for a batch of images is significantly slower than Grad-CAM. In my workflow, I use Grad-CAM for fast iteration and pull out SHAP when I need attributions I can defend in front of a regulatory body or a skeptical clinician.</p>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
-<h2>The Debugging Workflow</h2>
+<!-- REST STOP -->
+<!-- ═══════════════════════════════════════════════════════════ -->
 
-<p>These tools aren't just for pretty pictures in papers. They're debugging instruments. Here's when you reach for them:</p>
-
-<h3>Scenario 1: Model Predicts Wrong</h3>
-<p>Run Grad-CAM on the misclassified image. If the heatmap highlights the background instead of the object, your model learned a shortcut. The labels are leaking context — maybe all "outdoor cat" images have grass and all "indoor cat" images have sofas, and the model learned "grass vs. sofa" instead of "cat."</p>
-
-<p><strong>Fix:</strong> diversify your backgrounds, or use data augmentation (random crops, background replacement) to break the spurious correlation.</p>
-
-<h3>Scenario 2: Suspiciously High Accuracy</h3>
-<p>Your model hits 99.5% on a medical dataset. That's almost certainly too good. Run Grad-CAM on a batch of correct predictions. If the heatmaps cluster on watermarks, patient ID text, or scanner artifacts instead of anatomical features — you've found data leakage.</p>
-
-<p><strong>Fix:</strong> strip metadata, crop margins, and check whether accuracy holds on images from a different hospital or scanner.</p>
-
-<h3>Scenario 3: Model Fails on One Class</h3>
-<p>Accuracy is great overall, but one class consistently underperforms. Visualize feature maps for that class vs. well-performing classes. Maybe the failing class has high intra-class variance (many different appearances) or the model is confusing it with a visually similar class.</p>
-
-<p><strong>Fix:</strong> add class-specific augmentations, collect more diverse examples, or add hard-negative mining.</p>
-
-<div class="callout callout-danger">
-  <div class="callout-label">The Clever Hans Problem</div>
-  <p>Named after a horse that appeared to do arithmetic but was actually reading its trainer's body language. CNNs do the same thing. A famous example: a model trained to detect wolves vs. huskies learned to detect <em>snow in the background</em> — wolves were photographed in snow, huskies on grass. The model never learned what a wolf looks like. Grad-CAM would have caught this immediately.</p>
+<div class="callout callout-info">
+  <div class="callout-label">Rest Stop</div>
+  <p>Congratulations on making it this far. You can stop here if you want.</p>
+  <p>You now have a working mental model of the core interpretability toolkit: saliency maps for pixel-level sensitivity, SmoothGrad and Integrated Gradients for cleaner versions, Grad-CAM for spatial region attribution, occlusion for model-agnostic verification, LIME for human-readable explanations, and SHAP for theoretically grounded attributions. That's enough to debug any production CNN.</p>
+  <p>What comes next goes deeper — we'll look inside individual neurons with feature visualization, bridge human concepts to model internals with TCAV, examine why some of these methods can lie to you, and peek at the frontier of mechanistic interpretability where researchers are literally reverse-engineering neural circuits. These topics show up in senior ML interviews and are increasingly important in regulated industries.</p>
+  <p>But if the discomfort of not knowing what's underneath is nagging at you, read on.</p>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
-<h2>Practical Tips</h2>
+<h2>Feature Visualization — What Neurons Dream About</h2>
 
-<ul>
-  <li><strong>Always visualize before deploying.</strong> Run Grad-CAM on at least 50–100 images per class before calling a model "done." It takes 10 minutes and catches problems that metrics miss.</li>
-  <li><strong>Use the right baseline.</strong> Integrated Gradients requires a baseline (usually a black image). A bad baseline gives meaningless attributions. For medical images, consider using the dataset mean as the baseline.</li>
-  <li><strong>Libraries save time.</strong> Don't reimplement these from scratch in production. Use <code>pytorch-grad-cam</code>, <code>captum</code> (by Meta), or <code>tf-explain</code> (TensorFlow). They handle edge cases and support dozens of methods.</li>
-  <li><strong>Multiple methods, same image.</strong> If Grad-CAM and occlusion sensitivity both highlight the same region, you can be much more confident that region truly matters.</li>
-  <li><strong>Quantitative evaluation.</strong> For rigorous work, use insertion/deletion metrics — progressively reveal (or remove) the most important pixels and measure how quickly the prediction changes.</li>
-</ul>
+<p>Everything so far has been about explaining a specific prediction: "Why did the model say melanoma for <em>this</em> image?" Feature visualization asks a different question: "What has this neuron <em>learned to recognize</em>, across all images?"</p>
+
+<p>The technique, popularized by Chris Olah and colleagues in a landmark 2017 Distill article, is <strong>activation maximization</strong>. Pick a neuron — say, channel 137 in ResNet-50's layer3. Start with a random noise image. Then use gradient ascent (not descent — we're maximizing, not minimizing) to iteratively modify the image so that it makes that neuron fire as strongly as possible. After a few hundred iterations, the resulting image shows what the neuron "wants to see."</p>
+
+<p>The results are striking. Early-layer neurons dream of edges and color gradients — exactly what you'd expect from Gabor-like filters. Mid-layer neurons produce textures: honeycomb patterns, fur, scales, repeating geometric motifs. Deep-layer neurons produce recognizable objects or parts of objects — eyes, wheels, dog faces — though they often look surreal, like a hallucination. That's not a coincidence. Google's <strong>DeepDream</strong> was built on exactly this technique: run activation maximization on an entire image rather than starting from noise, and the network's learned features get amplified into those psychedelic, eye-covered landscapes that went viral in 2015.</p>
+
+<p>Without regularization, activation-maximized images look like high-frequency noise that happens to excite the neuron. Adding jitter (randomly shifting the image by a few pixels each step), applying small rotations, and penalizing high-frequency patterns produces images that look much more natural and interpretable. The regularization isn't a cosmetic trick — it acts as a prior for "the kinds of images that actually occur in the real world."</p>
+
+<p>For DermNet, feature visualization revealed something interesting. Several deep neurons had learned to respond to specific dermoscopic patterns — blue-white structures, pigment network, regression areas — that correspond almost exactly to features dermatologists are trained to look for. That's reassuring. But other neurons had clearly learned to respond to the circular border of the dermoscope itself. Those neurons would fire whenever they saw the characteristic dark vignette, regardless of what lesion was inside. That's the kind of insight that no accuracy metric would ever reveal.</p>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>Concept Activation Vectors — Thinking in Human Terms</h2>
+
+<p>Feature visualization shows what neurons respond to, but interpreting those dream-like images still requires guesswork. <strong>Testing with Concept Activation Vectors</strong> — TCAV (Kim et al., 2018) — flips the script. Instead of asking "what does this neuron represent?", it asks "how important is <em>this human-defined concept</em> to the model's prediction?"</p>
+
+<p>The mechanism is clever. You pick a concept — say, "irregular border." You collect a set of images that exhibit irregular borders and a set that don't. You pass both sets through the network and extract activations from a chosen layer. Then you train a simple linear classifier (logistic regression or linear SVM) to separate "has irregular border" from "doesn't." The normal vector of that classifier's decision boundary becomes the <strong>Concept Activation Vector</strong> — a direction in activation space that corresponds to your concept.</p>
+
+<p>The TCAV score then answers: "For images the model classifies as melanoma, what fraction get a <em>higher</em> melanoma score when you nudge their activations in the 'irregular border' direction?" If the score is high — say, 0.85 — the model is strongly influenced by border irregularity when predicting melanoma. If it's 0.50 (random), the concept doesn't matter. If you test the concept "ruler present" and get a high TCAV score, you've caught the model using a shortcut.</p>
+
+<p>TCAV's power is that it speaks in the language of domain experts. Instead of showing a dermatologist a heatmap and asking "does this look right?", you can say: "The model's melanoma predictions are 82% influenced by border irregularity, 74% by color variegation, and 15% by the presence of a ruler." That's a conversation a clinician can engage with.</p>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>Attention Maps in Vision Transformers</h2>
+
+<p>Vision Transformers (ViTs) split images into patches — typically 16×16 pixels — and process them as a sequence with self-attention. This architecture gives us interpretability almost for free: the attention weights are right there, telling us which patches the model attends to.</p>
+
+<pre><code>with torch.no_grad():
+    out = vit_model(tensor, output_attentions=True)
+
+# Last layer, all heads, CLS token attending to image patches
+attn = out.attentions[-1]               # [batch, heads, patches, patches]
+cls_attn = attn[0, :, 0, 1:]           # CLS → image patches, all heads
+cls_attn = cls_attn.mean(dim=0)        # average across heads
+grid = int(cls_attn.shape[0] ** 0.5)
+attn_map = cls_attn.reshape(grid, grid) # spatial map
+</code></pre>
+
+<p>Individual attention heads often show surprisingly clean specialization. In ViT models trained on dermoscopy, I've seen heads that consistently attend to lesion borders, heads that attend to color patches, and heads that attend to the image center regardless of content. Visualizing heads separately is more informative than averaging them.</p>
+
+<div class="callout callout-warning">
+  <div class="callout-label">Attention ≠ Attribution</div>
+  <p>This is a trap worth flagging explicitly, because it comes up in interviews. Attention maps show where the model <em>looks</em>, not what <em>causes</em> the prediction. A head might attend strongly to a region, but downstream layers might completely ignore that information. For rigorous causal attribution in ViTs, use <strong>Attention Rollout</strong> (multiply attention matrices across all layers to trace information flow from input to output) or apply Grad-CAM to the ViT's patch embeddings. Raw single-layer attention is suggestive, not conclusive.</p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>The Sanity Check That Shook the Field</h2>
+
+<p>In 2018, Adebayo et al. published a paper called "Sanity Checks for Saliency Maps" that made a lot of people uncomfortable — myself included. The experiment was devastatingly simple: take a trained model, <em>randomize its weights</em> (destroying everything it learned), and then re-run the saliency method. If the explanation changes dramatically, the method is actually sensitive to what the model learned. If it looks roughly the same... the method was showing you the input image's structure, not the model's reasoning.</p>
+
+<p>Several popular methods failed. <strong>Guided Backpropagation</strong> — which produces visually stunning, sharp-looking explanations — produced nearly identical outputs before and after weight randomization. It was effectively performing edge detection on the input, with no connection to the model's decision process. Pretty, but meaningless.</p>
+
+<p>Grad-CAM fared better but not perfectly. It changes when weights are randomized, which is good, but some researchers have shown cases where the changes are smaller than you'd expect. The takeaway isn't that Grad-CAM is useless — it isn't — but that <strong>no single attribution method should be trusted in isolation</strong>. When Grad-CAM and occlusion sensitivity agree, you can be confident. When they disagree, investigate further.</p>
+
+<p>I still use Grad-CAM as my first tool. But after the Adebayo paper, I always corroborate with at least one other method before making claims about what the model "learned." That extra five minutes has caught problems more than once.</p>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>Mechanistic Interpretability — The Frontier</h2>
+
+<p>Everything we've covered so far treats the network as something to be probed from the outside — we poke at it with inputs and watch what happens to outputs. <strong>Mechanistic interpretability</strong> is an entirely different philosophy: reverse-engineer the network from the inside, neuron by neuron, circuit by circuit, until you understand <em>how</em> it computes what it computes.</p>
+
+<p>The challenge is a phenomenon called <strong>superposition</strong>. In an ideal world, each neuron would represent one clean, interpretable feature. In practice, networks learn to pack far more concepts into their neurons than they have dimensions — a single neuron might encode "striped texture," "diagonal edge at 45 degrees," and "part of a boat" simultaneously, in different activation contexts. This makes individual neurons hard to interpret.</p>
+
+<p>Anthropic's research (2023–2025) pioneered a promising approach: train <strong>sparse autoencoders</strong> on a layer's activations. The autoencoder has many more output dimensions than the layer has neurons, forcing a sparse, overcomplete representation. Each output dimension tends to correspond to a single, human-interpretable concept — disentangling the superposition. Researchers have used this to identify features in large language models that correspond to specific concepts, and the same ideas are being applied to vision models.</p>
+
+<p>I'm still developing my intuition for where mechanistic interpretability is heading. It's the most exciting work in the field, but it's also the least mature. For production CNN debugging today, Grad-CAM and SHAP are your workhorses. But five years from now, mechanistic tools might let us make guarantees like "this network <em>cannot</em> use background color as a feature" — not by testing, but by inspecting the circuit directly. That would change everything about how we trust models.</p>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>The Debugging Playbook</h2>
+
+<p>These tools aren't decorations for paper figures. They're diagnostic instruments. Here's how they fit into a real debugging workflow, using DermNet as our running example.</p>
+
+<p><strong>The model predicts wrong on an image you expected it to get right.</strong> Start with Grad-CAM. If the heatmap highlights the background instead of the lesion, the model learned a shortcut — maybe all melanoma training images came from one hospital with a distinctive skin marker, and the model learned "skin marker = melanoma." The fix is data-side: diversify your sources, augment aggressively, or crop out the irrelevant regions.</p>
+
+<p><strong>Accuracy is suspiciously high.</strong> DermNet hitting 99% on a dermatology dataset should trigger alarm bells, not celebration. Run Grad-CAM on a batch of 50–100 correctly classified images. If the heatmaps cluster on watermarks, ruler marks, or the circular vignette of the dermoscope rather than the lesion, you've found data leakage. Strip the metadata, crop the margins, and re-evaluate on images from a hospital not in your training set.</p>
+
+<p><strong>One class consistently underperforms.</strong> Overall accuracy looks fine, but "dermatofibroma" keeps getting confused with "benign keratosis." Run feature visualization on the neurons most active for each class. If they look similar, the model hasn't found discriminative features. You need more training examples of the underperforming class, or harder negative mining to force the model to learn the subtle differences.</p>
+
+<p><strong>A stakeholder asks "can you prove it's not using race/skin-tone?"</strong> This is a TCAV question. Define the concept "dark skin tone" with example images, compute the concept activation vector, and check the TCAV score for each diagnosis class. If the score is significantly above 0.5, the model's predictions are influenced by skin tone — a fairness problem that needs addressing before deployment.</p>
+
+<div class="callout callout-danger">
+  <div class="callout-label">The Clever Hans Problem</div>
+  <p>Named after a horse in 1900s Berlin that appeared to do arithmetic but was actually reading its trainer's unconscious body language. CNNs do the same thing. The most famous example: a model trained to distinguish wolves from huskies learned to detect <em>snow in the background</em> — because wolves were photographed in snow and huskies on grass. The model never learned what a wolf looks like. It learned what snow looks like. Grad-CAM would have caught this in minutes. The researchers who discovered it had to use LIME. The lesson: never deploy a model whose Grad-CAM you haven't checked.</p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>The Toolbox — Libraries and Practicalities</h2>
+
+<p>You don't need to implement Grad-CAM from scratch for production work. The ecosystem has matured significantly.</p>
+
+<p><strong>Captum</strong> (Meta) is the most comprehensive library for PyTorch. It implements Integrated Gradients, Layer Conductance, Grad-CAM, SHAP, and dozens more — all through a consistent API where you pass your model and input, specify a target layer, and get attributions back. It also includes visualization utilities that produce publication-quality overlay images.</p>
+
+<p><strong>pytorch-grad-cam</strong> is laser-focused on CAM variants. If all you need is Grad-CAM, Grad-CAM++, Score-CAM, and their relatives, this library is smaller and faster to get started with. It handles multi-GPU models and works with both CNNs and ViTs.</p>
+
+<p><strong>SHAP</strong> (the library) includes DeepExplainer for deep networks and GradientExplainer as a faster approximation. For image work, it handles the superpixel segmentation automatically.</p>
+
+<p>One practical tip that has saved me hours: <strong>always run at least two methods on the same image before drawing conclusions.</strong> If Grad-CAM says "the model is looking at the lesion" but occlusion sensitivity says "confidence doesn't change when you cover the lesion," something is wrong — and the gradient-based method is more likely to be misleading than the brute-force one.</p>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- WRAP-UP -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<p>If you're still with me, thank you. I hope it was worth it.</p>
+
+<p>We started with the simplest possible question — "which pixels have the largest gradients?" — and discovered that the answer was noisy. So we smoothed it with SmoothGrad and built a principled version with Integrated Gradients. We zoomed out from pixels to regions with Grad-CAM, verified our trust with brute-force occlusion, and built human-readable explanations with LIME and SHAP. Then we went deeper: peering inside neurons with feature visualization, bridging human concepts to model internals with TCAV, watching Vision Transformer attention, learning from the Adebayo sanity checks that some explanations are less trustworthy than they look, and glimpsing the frontier of mechanistic interpretability where circuits are being reverse-engineered one neuron at a time.</p>
+
+<p>My hope is that the next time your model hits an impressive accuracy number, instead of celebrating and shipping, you'll open Grad-CAM, run it across a batch of predictions, and <em>look</em>. Because a model that's right for the right reasons is worth ten models that are right by accident — and the only way to tell the difference is to look under the hood.</p>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <h2>What You Should Now Be Able To Do</h2>
 
 <ul class="checklist">
-  <li><strong>Generate a Grad-CAM heatmap</strong> — hook into the last conv layer, compute gradient-weighted feature maps, and overlay the result on the input image to see what drove a classification.</li>
-  <li><strong>Compute a saliency map</strong> — backpropagate to the input pixels and visualize per-pixel sensitivity, using SmoothGrad or Integrated Gradients when raw gradients are too noisy.</li>
-  <li><strong>Visualize ViT attention</strong> — extract attention weights from transformer layers and display which image patches the [CLS] token attends to.</li>
-  <li><strong>Debug with occlusion sensitivity</strong> — systematically occlude image regions and map confidence drops to identify critical areas, especially when working with non-differentiable or black-box models.</li>
-  <li><strong>Run a 3-step diagnostic</strong> — when a model misbehaves, use Grad-CAM to check for shortcut learning, spurious features, or class-specific failure modes before touching the architecture.</li>
+  <li><strong>Generate and interpret a Grad-CAM heatmap</strong> — hook into the last conv layer, compute gradient-weighted feature maps, overlay the result on the input image, and explain whether the model is focusing on the right region for the right reason.</li>
+  <li><strong>Compute saliency maps and know their limits</strong> — use vanilla gradients for a quick look, SmoothGrad for noise reduction, and Integrated Gradients when you need theoretically grounded attributions. Know that baseline choice matters.</li>
+  <li><strong>Apply model-agnostic methods</strong> — use occlusion sensitivity to verify gradient-based results, LIME to produce superpixel-level explanations, and SHAP when you need Shapley-value guarantees.</li>
+  <li><strong>Visualize what neurons have learned</strong> — use activation maximization to see what individual neurons respond to, and TCAV to test whether the model uses specific human-defined concepts.</li>
+  <li><strong>Debug with a multi-method workflow</strong> — never trust a single attribution method. Corroborate with at least two, and always check for the Clever Hans problem before deploying to production.</li>
+  <li><strong>Evaluate attribution quality</strong> — understand why the Adebayo sanity checks matter, what parameter randomization tests reveal, and why visually pretty explanations aren't necessarily faithful ones.</li>
 </ul>
 
       <div class="page-nav">
