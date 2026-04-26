@@ -300,383 +300,542 @@
   <span class="tag">Classical pipeline · BoW · TF-IDF · Preprocessing decisions</span>
 </div>
 
-<div class="tldr">
-  <div class="tldr-label">TL;DR</div>
-  <p>Before any model can learn from text, you need a pipeline: tokenize, normalize, optionally remove stop words and stem/lemmatize, then convert to numbers. Bag of Words counts word occurrences. TF-IDF refines that by down-weighting common words and boosting rare ones. Both ignore word order and semantics — but they're fast, interpretable, and still power many production systems. Understanding this pipeline is what makes the jump to embeddings and transformers make sense.</p>
+<p>I avoided text preprocessing for longer than I'd like to admit. Every time I started an NLP project, I'd skip straight to the model — the interesting part, the neural network, the thing that actually <em>learns</em>. Cleaning text felt like washing dishes before cooking: necessary, unglamorous, and surely someone else's problem. Then I watched a sentiment model confidently classify "not good" as positive, and I realized the dishes were on fire. Here is that dive.</p>
+
+<p><strong>Text pipelines</strong> are the sequence of transformations that turn raw, messy human language into numerical vectors a machine learning model can process. The core ideas — tokenization, normalization, stop word removal, stemming, bag-of-words, TF-IDF — have been around since the 1970s in information retrieval research, and they remain the backbone of countless production systems today.</p>
+
+<p>Before we start, a heads-up. We're going to be building a spam filter from scratch, getting into some logarithms and matrix operations, and writing Python code with sklearn and spaCy. You don't need to know any of it beforehand. We'll add what we need, one piece at a time.</p>
+
+<p>This isn't a short journey, but I hope you'll be glad you came.</p>
+
+<div style="margin: 2em 0; padding-left: 1.5em; border-left: 3px solid var(--accent, #666); font-style: italic; line-height: 1.8;">
+  Why Computers Can't Read<br>
+  The Mise en Place: Text Normalization<br>
+  Breaking Text Apart: Tokenization<br>
+  The Stop Word Dilemma<br>
+  Stemming: The Meat Cleaver<br>
+  Lemmatization: The Scalpel<br>
+  Rest Stop<br>
+  Bag of Words: Counting Our Way to Numbers<br>
+  TF-IDF: Making Counts Intelligent<br>
+  N-grams: A Partial Fix for Word Order<br>
+  Domain-Specific Cleaning: Where Rules Change<br>
+  Putting It All Together<br>
+  Wrap-Up<br>
+  Resources
 </div>
-<h2>Tokenization</h2>
 
-<h3>Why We Need It</h3>
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>Why Computers Can't Read</h2>
 
-<p>Computers don't understand words. They understand numbers. So the very first thing you do with any text is break it into smaller pieces — <strong>tokens</strong> — that you can map to numbers. A token might be a word, a subword, a character, or even a sentence. The choice matters enormously because it defines the atoms your model will reason over. Get tokenization wrong and everything downstream suffers: your vocabulary explodes, your embeddings become meaningless, and your model wastes capacity learning things it shouldn't have to.</p>
+<p>Imagine we're building a spam filter for a tiny email inbox. We have five emails:</p>
+
+<p><em>Email 1:</em> "Buy cheap pills now!!!"<br>
+<em>Email 2:</em> "Meeting at 3pm tomorrow"<br>
+<em>Email 3:</em> "You won FREE tickets — claim NOW"<br>
+<em>Email 4:</em> "Can you review the quarterly report?"<br>
+<em>Email 5:</em> "DISCOUNT pills!! Buy buy buy"</p>
+
+<p>To us, the spam is obvious. Emails 1, 3, and 5 have that desperate, shouting quality — all caps, exclamation marks, words like "free" and "buy." But a machine learning model has no eyes. It can't read. It needs numbers: vectors it can multiply, distances it can compute, gradients it can follow. A model is, at its core, a function that takes an array of floats as input and produces an array of floats as output.</p>
+
+<p>So how do we get from "Buy cheap pills now!!!" to an array of floats? That's the entire purpose of a text pipeline. Think of it like <strong>mise en place</strong> in a kitchen — the prep work a chef does before any cooking begins. You wash the vegetables, dice the onions, measure the spices. None of it is the actual cooking, but skip it and the meal falls apart. Raw text is our pile of unprepped ingredients. The text pipeline is every cut, wash, and measurement that turns it into something a model can work with.</p>
+
+<p>Our spam filter will be the running example throughout this section. We'll keep coming back to these five emails as we build up the pipeline piece by piece.</p>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>The Mise en Place: Text Normalization</h2>
+
+<p>The first thing we notice about our emails is the mess. Email 1 says "Buy" while Email 5 says "buy" and "BUY." Email 3 screams "FREE" and "NOW." To a computer comparing raw strings, "Buy" and "buy" and "BUY" are three completely different tokens. That triples our vocabulary for no good reason. We need to collapse these variations — to bring order to chaos before we do anything else.</p>
+
+<p>This is <strong>text normalization</strong>: a set of transformations that reduce surface-level variation so that words which carry the same meaning get treated the same way.</p>
+
+<h3>Lowercasing</h3>
+
+<p><strong>Lowercasing</strong> is the most common normalization step. We convert everything to lowercase, so "Buy", "BUY", and "buy" all become "buy." For our spam filter, this is a clear win — we want the model to recognize that screaming "BUY" and whispering "buy" carry the same intent.</p>
+
+<p>But lowercasing destroys information. "US" (the country) becomes "us" (the pronoun). "Apple" (the company) becomes "apple" (the fruit). For tasks like named entity recognition, that lost casing is the only signal distinguishing a proper noun from a common one. The rule of thumb: lowercase for bag-of-words models and search. Keep case for models that learn their own representations, like BERT, which was trained on cased text and uses capitalization as a feature.</p>
+
+<h3>Unicode Normalization</h3>
+
+<p>I'll be honest — I once spent two hours debugging why two strings that looked identical on screen weren't matching in a comparison. The culprit was <strong>Unicode normalization</strong>, and it taught me a lesson I haven't forgotten.</p>
+
+<p>The character "é" can be stored two different ways in Unicode. As a single code point — U+00E9, "latin small letter e with acute." Or as two code points — U+0065 (plain "e") followed by U+0301 (a combining acute accent). On screen, they're pixel-for-pixel identical. In memory, they're different byte sequences. String equality returns <code>False</code>.</p>
+
+<pre><code>import unicodedata
+
+s1 = "café"                      # é as single code point
+s2 = "cafe\u0301"                # e + combining accent
+
+print(s1 == s2)                  # False — same pixels, different bytes
+print(len(s1), len(s2))          # 4, 5 — even the lengths differ
+
+# NFC normalization: compose into single code points
+s1_nfc = unicodedata.normalize("NFC", s1)
+s2_nfc = unicodedata.normalize("NFC", s2)
+print(s1_nfc == s2_nfc)          # True — now they match
+</code></pre>
+
+<p><strong>NFC</strong> stands for Canonical Decomposition followed by Canonical Composition. It smashes decomposed characters back into their single-codepoint form. There's also <strong>NFKC</strong>, which goes further — it flattens compatibility characters like fullwidth letters ("ａ" → "a") and ligatures ("ﬀ" → "ff"). For NLP pipelines, NFKC is usually the safest bet. Always normalize before doing anything else with your text. It takes microseconds and prevents bizarre, silent bugs.</p>
+
+<h3>Stripping and Punctuation</h3>
+
+<p>What about the exclamation marks in "Buy cheap pills now!!!"? For our spam filter, those triple exclamation marks are actually useful signal — spammers love exclamation marks. But for a topic classifier, punctuation is noise. For sentiment analysis, "great!!!" carries stronger positive sentiment than "great" — stripping punctuation would erase that intensity.</p>
+
+<p>There's no universal right answer here. It depends entirely on what your downstream task needs. The same goes for numbers. If you're classifying financial documents, "10,000" matters. If you're classifying movie reviews, it doesn't. Some pipelines replace all numbers with a placeholder token like &lt;NUM&gt;, preserving the information that a number appeared without caring which one.</p>
+
+<p>Our mise en place analogy holds. A chef preparing sushi handles the fish differently from one making stew. What you strip, what you keep, what you transform — those are decisions that depend on the dish you're cooking.</p>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>Breaking Text Apart: Tokenization</h2>
+
+<p>With our text normalized, we face the next question: where does one word end and the next begin? This process of splitting text into individual pieces is called <strong>tokenization</strong>, and each piece is a <strong>token</strong>. A token might be a word, a subword, a character, or a punctuation mark. The choice defines the atoms your model will reason over.</p>
+
+<p>Let's try tokenizing Email 3 from our spam filter: "You won FREE tickets — claim NOW". After lowercasing, it becomes "you won free tickets — claim now". How do we break that into tokens?</p>
 
 <h3>Whitespace Tokenization</h3>
 
-<p>The simplest approach is splitting on spaces. In Python, that's just <code>"Hello world".split()</code>. It's fast, it's obvious, and it works surprisingly well for clean English text. But it falls apart quickly. Consider the string <code>"Don't stop — it's $3.50!"</code>. Whitespace splitting gives you <code>["Don't", "stop", "—", "it's", "$3.50!"]</code>. The punctuation is glued to the words. "Don't" stays as one token when you probably want "Do" and "n't" (or "not"). The dollar amount and exclamation mark are fused. For a toy project this is fine. For anything serious, you need more.</p>
+<p>The most naive approach: split on spaces.</p>
 
-<h3>Regex-Based Tokenization</h3>
+<pre><code>text = "you won free tickets — claim now"
+tokens = text.split()
+print(tokens)
+# ['you', 'won', 'free', 'tickets', '—', 'claim', 'now']
+</code></pre>
 
-<p>A step up is using regular expressions to define what a token looks like. NLTK's <code>regexp_tokenize</code> lets you specify a pattern and extract all matches. For example, the pattern <code>\w+</code> grabs sequences of alphanumeric characters, effectively stripping punctuation. You can get fancier — <code>\w+(?:'\w+)?</code> keeps contractions together. The advantage is full control. The disadvantage is that you're writing rules by hand, and natural language has more edge cases than you'll ever anticipate. Abbreviations like "U.S.A.", URLs, email addresses, emoticons — each one needs its own regex. This path leads to madness for production systems.</p>
+<p>This works for our clean example. But consider a messier string: <code>"dr. smith didn't pay $3.50 for the u.s.a. trip!"</code>. Whitespace splitting gives us <code>["dr.", "smith", "didn't", "pay", "$3.50", "for", "the", "u.s.a.", "trip!"]</code>. The period after "dr" is glued to the word. The exclamation mark is fused with "trip." The contraction "didn't" stays as one token when we might want "did" and "n't" separated. For our five little emails, whitespace splitting would be fine. For anything real, we need more.</p>
 
-<h3>Proper NLP Tokenizers</h3>
+<h3>Regex Tokenization</h3>
 
-<p>Libraries like spaCy and NLTK ship with tokenizers that handle the edge cases for you. NLTK's <code>word_tokenize</code> uses a combination of regex rules and the Penn Treebank tokenization standard. It knows that "don't" should become ["do", "n't"] and that "Mr." doesn't end a sentence. spaCy's tokenizer goes further — it uses a rule-based system with exception lists and prefix/suffix/infix rules that handle most English text correctly out of the box.</p>
+<p>A step up is defining what a token looks like using a <strong>regular expression</strong>. The pattern <code>\w+</code> grabs sequences of word characters (letters, digits, underscores), effectively stripping punctuation. Fancier patterns like <code>\w+(?:'\w+)?</code> keep contractions intact.</p>
 
-<p>Here's a practical comparison:</p>
+<p>The advantage is control. The disadvantage is that natural language has more edge cases than any regex can anticipate. Abbreviations ("U.S.A."), URLs, email addresses, emoticons, currency symbols — each demands its own pattern. I've seen production regex tokenizers grow to hundreds of lines, and they still had bugs. This path leads to a place you don't want to go.</p>
+
+<h3>Library Tokenizers</h3>
+
+<p>Libraries like spaCy and NLTK have already walked through that fire for you. They ship with tokenizers that handle abbreviations, contractions, currency, URLs, and dozens of other edge cases. Let's see the difference on a tricky sentence:</p>
 
 <pre><code>import spacy
-from nltk.tokenize import word_tokenize, regexp_tokenize
+from nltk.tokenize import word_tokenize
 
-text = "Dr. Smith didn't pay $3.50 for the U.S.A. trip — he couldn't!"
-
-# Whitespace (naive)
-print("Whitespace:", text.split())
-# ['Dr.', 'Smith', "didn't", 'pay', '$3.50', 'for', 'the',
-#  'U.S.A.', 'trip', '—', 'he', "couldn't!"]
-
-# Regex (alphanumeric only)
-print("Regex:", regexp_tokenize(text, r"\w+(?:'\w+)?"))
-# ['Dr', 'Smith', "didn't", 'pay', '3', '50', 'for', 'the',
-#  'U', 'S', 'A', 'trip', 'he', "couldn't"]
-
-# NLTK word_tokenize
-print("NLTK:", word_tokenize(text))
-# ['Dr.', 'Smith', 'did', "n't", 'pay', '$', '3.50', 'for',
-#  'the', 'U.S.A.', 'trip', '—', 'he', 'could', "n't", '!']
+text = "Dr. Smith didn't pay $3.50 for the U.S.A. trip!"
 
 # spaCy
 nlp = spacy.load("en_core_web_sm")
 doc = nlp(text)
-print("spaCy:", [token.text for token in doc])
+print("spaCy:", [t.text for t in doc])
 # ['Dr.', 'Smith', 'did', "n't", 'pay', '$', '3.50', 'for',
-#  'the', 'U.S.A.', 'trip', '—', 'he', 'could', "n't", '!']
+#  'the', 'U.S.A.', 'trip', '!']
+
+# NLTK
+print("NLTK:", word_tokenize(text))
+# ['Dr.', 'Smith', 'did', "n't", 'pay', '$', '3.50', 'for',
+#  'the', 'U.S.A.', 'trip', '!']
 </code></pre>
 
-<p>Notice how the naive approaches mangle contractions and currency, while spaCy and NLTK handle them gracefully. The lesson: don't reinvent the tokenizer unless you have a very good reason.</p>
+<p>Both correctly split "didn't" into "did" + "n't", separate the dollar sign from the amount, keep "U.S.A." as one token, and detach the exclamation mark. NLTK's <code>word_tokenize</code> uses the Penn Treebank standard — a set of rules designed for English text that has been refined for decades. spaCy uses a rule-based system with exception lists and prefix/suffix/infix patterns.</p>
+
+<p>The lesson: don't build your own tokenizer unless your domain is so unusual that no existing tool handles it. And even then, think twice.</p>
 
 <h3>Sentence Tokenization</h3>
 
-<p><strong>Sentence tokenization</strong> (also called sentence segmentation) is harder than it looks. You might think you can just split on periods. But "Dr. Smith went to Washington. He arrived at 3 p.m." has three periods that don't end sentences and two that do. Abbreviations, decimal numbers, ellipses, URLs — all contain periods that aren't sentence boundaries. NLTK's <code>sent_tokenize</code> uses the Punkt algorithm, which is a trained unsupervised model that learns abbreviations and sentence starters from data. spaCy handles sentence boundaries during its full parsing pipeline, using dependency parse information to determine where sentences end.</p>
+<p><strong>Sentence tokenization</strong> — splitting text into sentences — is harder than it looks. "Dr. Smith went to Washington. He arrived at 3 p.m." has three periods that <em>don't</em> end sentences and two that do. NLTK's <code>sent_tokenize</code> uses the Punkt algorithm, an unsupervised model trained to recognize abbreviations and sentence boundaries. spaCy identifies sentence breaks during its dependency parsing. Both handle the common cases well. Neither is perfect — long, convoluted legal sentences still trip them up.</p>
 
-<h3>Language-Specific Challenges</h3>
+<h3>Beyond English</h3>
 
-<p>Everything above assumes English. Other languages make tokenization even harder. Chinese and Japanese don't use spaces between words at all — the string "我喜欢机器学习" (I like machine learning) is a continuous sequence of characters, and deciding where one word ends and another begins requires a statistical model or dictionary lookup. German creates compound words by smashing nouns together: "Donaudampfschifffahrtsgesellschaft" is one word meaning "Danube steamship company." Turkish is agglutinative — a single word can contain what English expresses as an entire phrase. The takeaway: always use a tokenizer designed for your target language. Universal solutions are rare.</p>
+<p>Everything above assumes spaces between words. Chinese, Japanese, and Thai don't use spaces — the string "我喜欢机器学习" ("I like machine learning") is a continuous stream of characters, and finding word boundaries requires a statistical model or dictionary. German smashes nouns into compounds: "Donaudampfschifffahrtsgesellschaft" (Danube steamship company) is one word. Turkish is agglutinative — a single word can encode what English needs an entire phrase to express. The takeaway: always use a tokenizer designed for your target language. There is no universal tokenizer.</p>
 
-<h2>Text Normalization</h2>
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>The Stop Word Dilemma</h2>
 
-<h3>Lowercasing</h3>
+<p>Back to our spam filter. After tokenizing all five emails, we have lists of tokens. Many of those tokens are words like "the", "at", "you", "can" — words that appear in practically every English sentence and carry almost no meaning about whether something is spam or not. These are <strong>stop words</strong>: the most frequent words in a language that carry little discriminating power on their own.</p>
 
-<p>Converting all text to lowercase is the most common normalization step. It collapses "The", "the", and "THE" into one token, shrinking your vocabulary and reducing sparsity. For most tasks — topic classification, search, clustering — this is a clear win. But it's not free. <strong>Lowercasing</strong> destroys information. "US" (the country) becomes "us" (the pronoun). "Apple" (the company) becomes "apple" (the fruit). Named entity recognition, coreference resolution, and any task that cares about proper nouns will suffer. The rule of thumb: lowercase for bag-of-words models and search; keep case for sequence models and anything involving names or acronyms.</p>
+<p>NLTK ships with an English stop word list of about 179 words. spaCy has around 326. The idea behind removing them is straightforward: they dominate frequency counts without contributing topical information. For our spam filter using TF-IDF, removing "the" and "at" and "you" would let the model focus on words that actually distinguish spam from legitimate email — words like "buy", "free", "pills", "discount."</p>
 
-<h3>Punctuation Removal and Number Handling</h3>
+<p>For years, I removed stop words from every pipeline I built. It seemed like obvious good practice. Then I built a sentiment classifier and watched it classify "this movie is not good" as positive. The word "not" was on the stop word list. Removing it turned "not good" into "good." That one deleted word flipped the entire meaning of the sentence.</p>
 
-<p>Stripping punctuation is another common step, and another one with hidden costs. For sentiment analysis, "great!!!" carries more weight than "great" — those exclamation marks are signal, not noise. For topic modeling, they're probably noise. Numbers are similar. You can remove them, replace them all with a placeholder like <code>&lt;NUM&gt;</code>, or keep them. If you're classifying financial documents, the number "10,000" matters. If you're classifying movie reviews, it probably doesn't. There's no universal right answer. Think about what information your downstream task actually needs.</p>
+<p>The phrase "to be or not to be" — after stop word removal — becomes nothing. Every word in it is a stop word.</p>
 
-<h3>Unicode Normalization</h3>
+<p>So when do we remove them? For bag-of-words models and TF-IDF where we're counting individual words in isolation, stop word removal usually helps. The model doesn't understand word order anyway, so "not" wasn't doing much for it. For topic modeling, removing stop words keeps "the" from dominating the word counts. For search engine indexing, it shrinks the index dramatically.</p>
 
-<p><strong>Unicode normalization</strong> is one of those things you don't think about until it bites you. The character "é" can be represented two ways in Unicode: as a single code point (U+00E9, the precomposed form) or as two code points (U+0065 "e" + U+0301 combining accent). They look identical on screen but are different byte sequences. String comparison fails silently. Python's <code>unicodedata.normalize("NFC", text)</code> converts to the precomposed form (<strong>NFC</strong> — Canonical Decomposition followed by Canonical Composition), and <code>"NFD"</code> does the opposite (<strong>NFD</strong> — Canonical Decomposition). Always normalize to NFC before doing anything else with your text. It takes milliseconds and prevents bizarre bugs.</p>
+<p>When do we keep them? For any model that understands word order — LSTMs, transformers, BERT. These models were trained with stop words present. Removing them before feeding text to BERT is like tearing pages out of a book before asking someone to read it. The model needs those little connector words to understand the grammar and flow of the sentence.</p>
 
-<h3>Contraction Expansion</h3>
+<p>There's a third category worth knowing about: <strong>domain-specific stop words</strong>. In a corpus of legal documents, "court", "plaintiff", and "defendant" appear in nearly every document. They're not on any standard stop word list, but within that domain, they carry no discriminating power. You can find them by checking <strong>document frequency</strong> — any word appearing in more than 90% of documents is a candidate. But be careful: removing them is irreversible, and you might need them for a different task later.</p>
 
-<p>Expanding contractions — turning "don't" into "do not", "I'm" into "I am", "they've" into "they have" — is a normalization step that helps some pipelines. It reduces vocabulary size and makes downstream analysis cleaner. But it's also lossy: "don't" has a slightly different pragmatic tone than "do not" in real speech. Most people implement this with a simple dictionary lookup. Libraries like <code>contractions</code> in Python handle common cases. For most NLP pipelines, expansion is a sensible default unless you're doing stylistic or sociolinguistic analysis.</p>
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>Stemming: The Meat Cleaver</h2>
 
-<h2>Stop Words</h2>
+<p>Our spam filter has another problem. Email 1 says "pills" and Email 5 says "pills" — no issue there. But what if one email said "buying" and another said "buy"? What about "discounted" vs "discount"? These are the same concept in different grammatical clothing. We want our model to recognize them as the same word.</p>
 
-<p><strong>Stop words</strong> are the most common words in a language — "the", "is", "at", "which", "on" — that carry little semantic meaning on their own. Both NLTK and spaCy ship with standard stop word lists. NLTK's English list has about 179 words; spaCy's has around 326. The idea is that removing them reduces noise and dimensionality. If you're building a TF-IDF search engine or a topic model, stop word removal usually helps because these words dominate frequency counts without adding topical information.</p>
+<p><strong>Stemming</strong> is the blunt approach: chop off suffixes using a set of rules until you reach something that looks like a root. No dictionary, no grammar — pure string surgery. Think of it as a meat cleaver in our kitchen analogy. It gets the job done, but it's not precise.</p>
 
-<p>But here's where people get into trouble: stop word removal is not always safe. In sentiment analysis, "not" is on most stop word lists, yet "not good" means the opposite of "good." Removing "not" flips the sentiment. Phrases like "to be or not to be" become meaningless. For deep learning models that learn their own representations, stop word removal is often unnecessary and sometimes harmful — the model can learn to ignore irrelevant words on its own, and you're just throwing away context it might use.</p>
+<p>The most famous stemmer is the <strong>Porter Stemmer</strong>, designed by Martin Porter in 1980. It applies cascading rules: strip plurals ("cats" → "cat"), strip past tenses ("running" → "run"), strip derivational suffixes ("happiness" → "happi"). The <strong>Snowball Stemmer</strong> (Porter2) is a refined version that fixes some quirks and supports multiple languages.</p>
 
-<p><strong>Domain-specific stop words</strong> are also worth considering. In a corpus of legal documents, "court", "plaintiff", and "defendant" might appear in nearly every document. They're not on any standard stop word list, but they carry no discriminating power within that domain. You can identify them by looking at document frequency — words that appear in more than 90% of documents are usually good candidates. But be careful: removing them is irreversible, and you might want them later for a different task.</p>
+<pre><code>from nltk.stem import PorterStemmer
 
-<div class="callout callout-warning">
-  <div class="callout-label">When NOT to Remove Stop Words</div>
-  <p>If your task depends on word order, negation, or phrase-level meaning, keep stop words. Modern transformer models (BERT, GPT) were trained with stop words present, and removing them before feeding text to these models will degrade performance. Stop word removal is most useful for classical bag-of-words approaches: TF-IDF, topic models, keyword extraction. When in doubt, keep them and let the model decide what matters.</p>
-</div>
+stemmer = PorterStemmer()
+words = ["buying", "buys", "bought", "pills", "discount",
+         "discounted", "university", "universal", "flies"]
 
-<h2>Stemming</h2>
+for w in words:
+    print(f"  {w:>15}  →  {stemmer.stem(w)}")
 
-<p><strong>Stemming</strong> is the process of reducing a word to its root form by chopping off suffixes (and sometimes prefixes). It's a crude, rule-based operation — no dictionary lookup, no understanding of grammar. The goal is to collapse related word forms: "running", "runs", and "ran" should all map to something like "run" so that your model treats them as the same concept.</p>
-
-<h3>Porter Stemmer and Snowball Stemmer</h3>
-
-<p>The most famous stemmer is the <strong>Porter Stemmer</strong>, designed by Martin Porter in 1980. It applies a series of rules in phases: strip plurals, strip past tenses, strip derivational suffixes. NLTK makes it one import away. The <strong>Snowball Stemmer</strong> (also called Porter2) is a refined version that fixes some of the original's quirks and supports multiple languages.</p>
-
-<p>Stemming is fast — it's just string manipulation. That speed makes it attractive for search engines and information retrieval where you're processing millions of documents. But the tradeoff is accuracy.</p>
-
-<h3>Over-Stemming and Under-Stemming</h3>
-
-<p><strong>Over-stemming</strong> happens when the stemmer collapses words that shouldn't be grouped. "University" becomes "univers", and so does "universal" — but a university and something universal are very different things. "Operating" and "operation" both stem to "oper", but an operating system and a surgical operation share little meaning. <strong>Under-stemming</strong> is the opposite: failing to collapse words that should be grouped. "Alumnus" and "alumni" won't get stemmed to the same root because the Latin plural doesn't follow English suffix rules. Stemmers work best for regular English morphology and struggle with irregular forms and borrowed words.</p>
-
-<h2>Lemmatization</h2>
-
-<p><strong>Lemmatization</strong> is the smarter sibling of stemming. Instead of blindly chopping suffixes, it uses a dictionary (or morphological analysis) to return the actual base form of a word — its <strong>lemma</strong>. "Better" lemmatizes to "good". "Ran" lemmatizes to "run". "Mice" lemmatizes to "mouse". A stemmer would never get these right because they require knowing the word, not just the suffix pattern.</p>
-
-<h3>Dictionary-Based vs Morphological Analysis</h3>
-
-<p>The simplest lemmatizers just do a dictionary lookup: they have a table mapping word forms to lemmas. WordNet-based lemmatization in NLTK works this way. More sophisticated approaches (like what spaCy uses) perform morphological analysis — understanding that "unhappiness" is "un-" + "happy" + "-ness" and the lemma is "happy". The dictionary approach is fast but brittle (if the word isn't in the dictionary, it returns it unchanged). Morphological analysis is more robust but slower.</p>
-
-<h3>POS-Aware Lemmatization</h3>
-
-<p><strong>POS-aware lemmatization</strong> uses the word's part of speech to disambiguate. The word "saw" can be a noun (a cutting tool) or a verb (past tense of "see"). Without POS information, the lemmatizer has to guess. With it, verb-"saw" correctly becomes "see" and noun-"saw" stays "saw". NLTK's WordNet lemmatizer accepts a POS tag argument; spaCy does this automatically because its pipeline runs POS tagging before lemmatization.</p>
-
-<p>Here's a direct comparison of stemming and lemmatization:</p>
-
-<pre><code>from nltk.stem import PorterStemmer, SnowballStemmer
-from nltk.stem import WordNetLemmatizer
-from nltk import pos_tag, word_tokenize
-import nltk
-nltk.download('averaged_perceptron_tagger_eng', quiet=True)
-nltk.download('wordnet', quiet=True)
-nltk.download('punkt_tab', quiet=True)
-
-porter = PorterStemmer()
-snowball = SnowballStemmer("english")
-lemmatizer = WordNetLemmatizer()
-
-words = ["running", "better", "universities", "mice", "saw",
-         "happily", "studies", "geese", "operating", "flies"]
-
-print(f"{'Word':<15} {'Porter':<15} {'Snowball':<15} {'Lemma (n)':<15} {'Lemma (v)':<15}")
-print("-" * 75)
-for word in words:
-    print(f"{word:<15} "
-          f"{porter.stem(word):<15} "
-          f"{snowball.stem(word):<15} "
-          f"{lemmatizer.lemmatize(word, pos='n'):<15} "   # as noun
-          f"{lemmatizer.lemmatize(word, pos='v'):<15}")    # as verb
-
-# Output:
-# Word            Porter          Snowball        Lemma (n)       Lemma (v)
-# ---------------------------------------------------------------------------
-# running         run             run             running         run
-# better          better          better          better          better
-# universities    univers         univers         university      university
-# mice            mice            mice            mouse           mice
-# saw             saw             saw             saw             see
-# happily         happili         happili         happily         happily
-# studies         studi           studi           study           study
-# geese           gees            gees            goose           geese
-# operating       oper            oper            operating       operate
-# flies           fli             fli             fly             fly
+#          buying  →  buy
+#            buys  →  buy
+#          bought  →  bought
+#           pills  →  pill
+#        discount  →  discount
+#      discounted  →  discount
+#      university  →  univers
+#       universal  →  univers
+#           flies  →  fli
 </code></pre>
 
-<p>The table makes the tradeoffs obvious. Stemming is aggressive and sometimes wrong ("univers", "happili", "fli" are not real words). Lemmatization produces actual words but needs POS context to get the right one — look at how "saw" and "mice" change depending on whether you treat them as nouns or verbs.</p>
+<p>Look at what happened. "Buying", "buys" → "buy" — good. "Discount", "discounted" → "discount" — good. But "bought" stays as "bought" because the stemmer doesn't know irregular English verbs. And "university" and "universal" both collapse to "univers" — but a university and something universal are completely different concepts. That's <strong>over-stemming</strong>: collapsing words that shouldn't be grouped. Meanwhile "flies" becomes "fli", which isn't a real word. And "alumnus" and "alumni" won't stem to the same root because Latin plurals don't follow English suffix rules. That's <strong>under-stemming</strong>: failing to group words that should be together.</p>
 
-<h3>Stemming vs Lemmatization — When to Use Which</h3>
+<p>Stemming is fast — it's raw string manipulation, no model loading, no dictionary lookups. That speed makes it attractive for search engines processing millions of documents. The price is accuracy. For our spam filter, stemming would work well enough — "buying" and "buy" don't need to be distinguished. But for tasks needing precision, we want something sharper.</p>
 
-<p>For search engines and information retrieval, stemming is often good enough. Speed matters when you're indexing millions of documents, and the rough collapsing is acceptable. For text classification and sentiment analysis, lemmatization usually performs better because it preserves more meaning. For modern deep learning pipelines (BERT, GPT), you typically need neither — these models use subword tokenizers (BPE, WordPiece) that handle morphological variation implicitly. The model learns from context that "running" and "run" are related without you having to tell it.</p>
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>Lemmatization: The Scalpel</h2>
 
-<div class="callout callout-info">
-  <div class="callout-label">Stemming vs Lemmatization at a Glance</div>
-  <p><strong>Stemming:</strong> fast, rule-based, no dictionary needed, produces non-words, language-specific rules, best for search and IR. <strong>Lemmatization:</strong> slower, dictionary or model-based, produces real words, benefits from POS tags, best for tasks needing semantic precision. <strong>Neither:</strong> modern transformer models use subword tokenization and don't need either step — applying stemming or lemmatization before BERT will likely hurt performance.</p>
-</div>
+<p>If stemming is a meat cleaver, <strong>lemmatization</strong> is a scalpel. Instead of blindly hacking off suffixes, it uses a dictionary (or morphological analysis) to return the actual base form of a word — its <strong>lemma</strong>. "Better" lemmatizes to "good". "Ran" becomes "run". "Mice" becomes "mouse". A stemmer would never get these right because they require knowing the word, not the suffix pattern.</p>
 
-<!-- ════════════════════════════════════════════ -->
-<h2>From Clean Text to Numbers</h2>
+<p>The catch is that lemmatization often needs to know a word's <strong>part of speech</strong> to choose the right lemma. The word "saw" is a noun (a cutting tool) or a verb (past tense of "see"). Without POS context, the lemmatizer guesses. With it, verb-"saw" correctly becomes "see" while noun-"saw" stays "saw". spaCy handles this automatically — its pipeline runs POS tagging before lemmatization. NLTK's WordNet lemmatizer requires you to pass the POS tag yourself.</p>
 
-<p>You've tokenized, normalized, and cleaned your text. Now what? A machine learning model needs numbers — vectors it can multiply, distances it can compute. The simplest family of techniques for this conversion has been around for decades and still works remarkably well.</p>
+<pre><code>from nltk.stem import PorterStemmer, WordNetLemmatizer
+import nltk
+nltk.download('wordnet', quiet=True)
 
-<h2>The Problem: Text Is Not Numbers</h2>
+stemmer = PorterStemmer()
+lemmatizer = WordNetLemmatizer()
 
-<p>A machine learning model is, at its core, a function that takes numbers in and pushes numbers out. Matrix multiplications, dot products, gradient updates — all of it requires numerical input. But text is a sequence of characters grouped into words grouped into sentences. There's no obvious way to multiply "the cat sat on the mat" by a weight matrix.</p>
+test_words = [
+    ("better",    "a"),   # adjective
+    ("mice",      "n"),   # noun
+    ("saw",       "v"),   # verb
+    ("flies",     "n"),   # noun
+    ("operating", "v"),   # verb
+    ("studies",   "n"),   # noun
+]
 
-<p>So we need a translation step. We need to convert a document — whether it's a tweet, a legal contract, or a product review — into a fixed-length vector of numbers that a model can chew on. The simplest family of techniques for doing this is called <strong>classical text representations</strong>, and the two workhorses are Bag of Words and TF-IDF. They've been around for decades, they're dead simple, and they still power a surprising number of production systems.</p>
+print(f"  {'Word':>12}  {'Stemmed':>12}  {'Lemmatized':>12}")
+print(f"  {'─'*12}  {'─'*12}  {'─'*12}")
+for word, pos in test_words:
+    print(f"  {word:>12}  {stemmer.stem(word):>12}  "
+          f"{lemmatizer.lemmatize(word, pos=pos):>12}")
 
-<p>Let's build the intuition from scratch.</p>
+#          Word       Stemmed    Lemmatized
+#    ────────────  ────────────  ────────────
+#        better        better          good
+#          mice          mice         mouse
+#           saw           saw           see
+#         flies           fli           fly
+#     operating          oper       operate
+#       studies         studi         study
+</code></pre>
 
-<h2>Bag of Words</h2>
+<p>The differences are stark. The stemmer produces fragments that aren't real words — "oper", "studi", "fli." The lemmatizer produces actual English words, but it needs that POS hint to do it. "Better" → "good" is something the stemmer could never achieve because it requires knowing that "better" is the comparative form of the adjective "good." That's vocabulary knowledge, not string manipulation.</p>
 
-<h3>Vocabulary Construction</h3>
+<p>For our spam filter, either approach works — the vocabulary is simple enough that stemming's errors won't matter much. For a medical NLP system where "operating" (a surgical procedure) and "operation" (a business operation) need to stay distinct, lemmatization is worth the slower speed. For modern transformer models (BERT, GPT), you need neither — these models use subword tokenizers like BPE and WordPiece that handle morphological variation implicitly. The model learns that "running" and "run" are related from context alone.</p>
 
-<p>The first step is deciding which words we care about. You collect every unique word across all your documents. This set is your <strong>vocabulary</strong>. If your dataset contains 50,000 unique words, your vocabulary has 50,000 entries. Each entry gets a fixed position — an index. "apple" might be index 0, "banana" index 1, "cat" index 2, all the way up to "zebra" at index 49,999.</p>
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>Rest Stop</h2>
 
-<p>This vocabulary becomes the backbone of your representation. Every document, regardless of its actual length, will be turned into a vector of length 50,000 — one slot per vocabulary word.</p>
+<p>Congratulations on making it this far. You can stop here if you want.</p>
 
-<h3>Count Vectorization</h3>
+<p>You now have a mental model of the entire text cleaning toolkit: normalization brings order to messy text, tokenization breaks it into pieces, stop word removal filters out noise (when appropriate), and stemming or lemmatization collapses word variations. That's the <em>mise en place</em> — the prep work. With these tools, you can take any raw document and produce a clean list of meaningful tokens.</p>
 
-<p>The <strong>Bag of Words</strong> model is almost comically simple. For each document, you count how many times each vocabulary word appears. That's it. You literally ignore word order, grammar, sentence structure, punctuation — everything except raw word counts.</p>
+<p>That's useful, but it doesn't tell the complete story. We still have the fundamental problem we started with: a model needs <em>numbers</em>, not lists of words. The next few sections tackle how we convert those clean tokens into numerical vectors that a model can actually process — starting with the simplest possible approach and building up to something surprisingly powerful.</p>
 
-<p>Let's walk through a concrete example. Suppose we have three tiny documents:</p>
+<p>If the discomfort of not knowing what comes after the prep work is nagging at you, read on.</p>
 
-<p><em>Doc 1:</em> "the cat sat on the mat"<br>
-<em>Doc 2:</em> "the dog sat on the log"<br>
-<em>Doc 3:</em> "the cat chased the dog"</p>
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>Bag of Words: Counting Our Way to Numbers</h2>
 
-<p>First, we build the vocabulary from all three documents: {the, cat, sat, on, mat, dog, log, chased}. That's 8 unique words, so each document becomes a vector of length 8.</p>
+<p>Let's return to our spam filter's five emails, now cleaned and tokenized. We need to convert them into numbers. The absolute simplest way to do this is to count words.</p>
 
-<p>Now we count. Doc 1 has "the" twice, "cat" once, "sat" once, "on" once, "mat" once, and zero occurrences of "dog", "log", and "chased". So Doc 1's vector is <code>[2, 1, 1, 1, 1, 0, 0, 0]</code>. Doc 2 becomes <code>[2, 0, 1, 1, 0, 1, 1, 0]</code>. Doc 3 becomes <code>[2, 1, 0, 0, 0, 1, 0, 1]</code>.</p>
+<p>Our kitchen analogy returns: if the earlier normalization steps were the <em>mise en place</em>, this is where we actually start cooking. We're going to build a <strong>vocabulary</strong> — a card catalog for our library of words, where every unique word gets its own numbered slot.</p>
 
-<p>Notice what just happened. We turned variable-length text into fixed-length numerical vectors. A model can now compute distances between documents, feed them into logistic regression, run k-means clustering — whatever it wants. The representation is crude, but it works.</p>
+<p>Across all five emails, suppose we have these unique tokens (after lowercasing and removing punctuation): {buy, cheap, pills, now, meeting, tomorrow, won, free, tickets, claim, review, quarterly, report, discount}. That's 14 unique words. Each email will become a vector of length 14 — one slot per vocabulary word.</p>
 
-<h3>Binary Bag of Words</h3>
+<p>The <strong>Bag of Words</strong> model fills each slot with a count of how many times that word appears in the email. Email 5 ("discount pills buy buy buy") gets a 3 in the "buy" slot, a 1 for "pills", a 1 for "discount", and zeros everywhere else. Email 2 ("meeting at 3pm tomorrow") — after stop word and number removal — might get a 1 for "meeting" and a 1 for "tomorrow", zeros everywhere else.</p>
 
-<p>Sometimes you don't care about counts — just presence. The <strong>binary BoW</strong> variant replaces every nonzero count with 1. Doc 1 becomes <code>[1, 1, 1, 1, 1, 0, 0, 0]</code>. This can actually work better for short documents where word frequency isn't very informative. If a word appears once or three times in a tweet, the fact that it appears at all is the signal.</p>
+<p>That's the entire algorithm. Count words. Ignore everything else — word order, grammar, sentence structure, tone, meaning. It's called "bag of words" because you're treating the document like a bag: you dump all the words in, shake it up, and all you know is what fell out and how many of each.</p>
 
-<h3>N-grams: Capturing Word Pairs</h3>
-
-<p>Plain BoW has a glaring weakness: it loses all word order. The sentences "the dog bit the man" and "the man bit the dog" produce identical BoW vectors. That's a problem.</p>
-
-<p><strong>N-grams</strong> offer a partial fix. Instead of treating individual words (unigrams) as your vocabulary units, you also include consecutive word pairs (<strong>bigrams</strong>) or triples (<strong>trigrams</strong>). With bigrams, your vocabulary grows to include entries like "not good", "very happy", "machine learning". Now "not good" is a distinct vocabulary item from just "good", so the model can learn that they carry opposite sentiment.</p>
-
-<p>The tradeoff is vocabulary size. If you have 50,000 unigrams, adding bigrams might push you to 500,000 entries. Trigrams push you into the millions. Each document vector gets correspondingly longer and sparser.</p>
-
-<h3>The Sparsity Problem</h3>
-
-<p>Here's the uncomfortable truth about BoW. If your vocabulary has 50,000 words and a typical document contains 200 words, then roughly 49,800 entries in that document's vector are zero. That's 99.6% zeros. This is what we call a <strong>sparse</strong> representation.</p>
-
-<p>Sparsity isn't automatically bad — sparse matrix libraries handle it efficiently — but it creates real issues. Models need more data to learn meaningful patterns because the signal is spread thinly across a huge space. Distance metrics start misbehaving in very high dimensions (the <strong>curse of dimensionality</strong>). And storage scales with vocabulary size, not document length. These limitations motivate everything that comes later: TF-IDF, dimensionality reduction, and eventually dense embeddings.</p>
-
-<h3>Code: Bag of Words with sklearn</h3>
+<p>"The dog bit the man" and "the man bit the dog" produce identical BoW vectors. That feels like a serious flaw, and it is. We'll address it later.</p>
 
 <pre><code>from sklearn.feature_extraction.text import CountVectorizer
 
-docs = [
-    "the cat sat on the mat",
-    "the dog sat on the log",
-    "the cat chased the dog",
+emails = [
+    "buy cheap pills now",
+    "meeting tomorrow",
+    "won free tickets claim now",
+    "review the quarterly report",
+    "discount pills buy buy buy",
 ]
 
-# Unigram BoW
 vectorizer = CountVectorizer()
-X = vectorizer.fit_transform(docs)
+X = vectorizer.fit_transform(emails)
 
-print("Vocabulary:", vectorizer.get_feature_names_out())
-# ['cat', 'chased', 'dog', 'log', 'mat', 'on', 'sat', 'the']
-
-print("BoW matrix:\n", X.toarray())
-# [[1 0 0 0 1 1 1 2]
-#  [0 0 1 1 0 1 1 2]
-#  [1 1 1 0 0 0 0 2]]
-
-# Bigram extension — capture word pairs
-bigram_vec = CountVectorizer(ngram_range=(1, 2))
-X_bigram = bigram_vec.fit_transform(docs)
-print(f"\nUnigrams: {X.shape[1]} features")
-print(f"Uni+Bigrams: {X_bigram.shape[1]} features")
-
-# Binary BoW
-binary_vec = CountVectorizer(binary=True)
-X_binary = binary_vec.fit_transform(docs)
-print("\nBinary BoW:\n", X_binary.toarray())
+print("Vocabulary:", list(vectorizer.get_feature_names_out()))
+print()
+for i, email in enumerate(emails):
+    print(f"  Email {i+1}: {X.toarray()[i]}")
 </code></pre>
 
-<p>Notice that <code>CountVectorizer</code> returns a sparse matrix by default. You call <code>.toarray()</code> only for display. In production with large vocabularies, you keep it sparse to save memory.</p>
+<p>The <code>CountVectorizer</code> handles vocabulary construction and counting in one step. It returns a <strong>sparse matrix</strong> — a special data structure that stores nonzero values efficiently. For our tiny example, we call <code>.toarray()</code> to see the full matrix. In production with vocabularies of 50,000+ words, you keep it sparse. A typical document uses 200 of those 50,000 words, meaning 99.6% of entries are zero. Storing all those zeros as a dense array would be wasteful.</p>
 
-<h2>TF-IDF</h2>
+<p>A <strong>binary BoW</strong> variant replaces all counts with 0 or 1 — presence instead of frequency. For short texts like tweets, whether a word appears once or three times matters less than whether it appears at all.</p>
 
-<h3>The Intuition</h3>
+<p>So we've turned text into numbers. That's real progress. But there's a glaring problem: BoW treats every word equally. In our spam filter, the word "now" appears in both a spam email and a legitimate one. It's not very useful for distinguishing them. Meanwhile, "pills" appears only in spam — it's a strong signal. BoW doesn't know the difference. To it, "now" and "pills" are both worth one count.</p>
 
-<p>BoW treats every word equally. "The" and "quantum" get the same treatment — both are just counts. But obviously "quantum" carries far more information than "the." If a word appears in nearly every document, it's not useful for distinguishing one document from another. If a word appears in only a handful of documents, it's a strong signal.</p>
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>TF-IDF: Making Counts Intelligent</h2>
 
-<p><strong>TF-IDF</strong> (Term Frequency–Inverse Document Frequency) formalizes this intuition. It takes the raw count from BoW and multiplies it by a factor that penalizes common words and rewards rare ones.</p>
+<p>This is where things get interesting. We want a representation that says: "If a word appears in nearly every email, it's probably not useful for telling them apart. If a word appears in only one or two emails, it's a strong signal for what makes those emails unique."</p>
+
+<p><strong>TF-IDF</strong> — Term Frequency times Inverse Document Frequency — formalizes exactly this intuition. It takes the raw count from BoW and multiplies it by a factor that rewards rare words and penalizes common ones.</p>
 
 <h3>Term Frequency</h3>
 
-<p>The <strong>term frequency</strong> TF(t, d) measures how often term t appears in document d. In its simplest form, it's just the raw count — exactly what BoW gives us. Some variants normalize by document length (divide by total words in d) to prevent long documents from dominating, but the raw count is the most common starting point.</p>
+<p>The first half is straightforward. <strong>Term Frequency</strong>, TF(t, d), measures how often term <em>t</em> appears in document <em>d</em>. In its simplest form, it's the raw count — what BoW already gives us. "Buy" appears 3 times in Email 5, so TF("buy", Email 5) = 3. Some variants divide by the total number of words in the document to normalize for length, but the raw count is the most common starting point.</p>
 
 <h3>Inverse Document Frequency</h3>
 
-<p>The <strong>inverse document frequency</strong> IDF(t) measures how rare a term is across the entire corpus. The formula is:</p>
+<p>The second half is where the magic lives. <strong>Inverse Document Frequency</strong>, IDF(t), measures how rare a term is across the entire collection of documents (the <strong>corpus</strong>). The formula:</p>
 
-<p><code>IDF(t) = log(N / df(t))</code></p>
+<p style="text-align: center; font-family: 'JetBrains Mono', monospace; font-size: 1.1em; margin: 1.5em 0;">
+IDF(t) = log(N / df(t))
+</p>
 
-<p>where N is the total number of documents and df(t) is the number of documents that contain term t. If a word appears in every document, df(t) = N, so IDF = log(1) = 0 — the word gets completely zeroed out. If a word appears in only 1 out of 1,000 documents, IDF = log(1000) ≈ 6.9 — it gets a big boost.</p>
+<p>where N is the total number of documents and df(t) is the number of documents containing term <em>t</em>.</p>
 
-<p>In practice, sklearn uses a slightly smoothed version — <code>log((1 + N) / (1 + df(t))) + 1</code> — to avoid division by zero and to prevent terms from being completely eliminated. But the core idea is identical: rare words get higher weights.</p>
+<p>Let's trace through this with our five emails. N = 5.</p>
 
-<h3>The Combined Formula</h3>
+<p>Consider the word "pills". It appears in Email 1 and Email 5, so df("pills") = 2. IDF("pills") = log(5/2) ≈ 0.916. That's a meaningful positive number — "pills" is somewhat rare, so it gets a decent weight.</p>
 
-<p>The final TF-IDF score for term t in document d is simply:</p>
+<p>Now consider a word like "now", which appears in Emails 1 and 3. df("now") = 2. IDF("now") = log(5/2) ≈ 0.916. Same rarity, same weight. So far, IDF can't tell these apart.</p>
 
-<p><code>TF-IDF(t, d) = TF(t, d) × IDF(t)</code></p>
+<p>But imagine a word that appeared in all five emails. df = 5, so IDF = log(5/5) = log(1) = 0. The word gets completely zeroed out. It carries no information about what distinguishes one email from another. This is the key insight: IDF automatically identifies and suppresses words that don't help.</p>
 
-<p>A high TF-IDF score means the word is frequent in this particular document but rare across the corpus. That's exactly the kind of word that characterizes what this document is about.</p>
+<p>Now imagine a word that appears in only one email — say "quarterly" in Email 4. df("quarterly") = 1. IDF = log(5/1) ≈ 1.609. The highest weight of all. That makes sense: "quarterly" uniquely identifies Email 4. It's the most informative word in our corpus.</p>
 
-<h3>Worked Example</h3>
+<h3>Why the Logarithm?</h3>
 
-<p>Let's reuse our three documents. We have N = 3 documents.</p>
+<p>I'm still developing my full intuition for why the log is there, but here's the clearest way I can explain it. Without the log, a word appearing in 1 out of 1,000 documents would get a weight of 1,000. A word in 1 out of 10,000 documents would get 10,000 — ten times more. But is that second word really ten times more informative? Not really. The relationship between rarity and informativeness is not linear. Going from "appears in 50% of documents" to "appears in 10% of documents" is a much bigger jump in usefulness than going from "appears in 0.1%" to "appears in 0.02%."</p>
 
-<p>Consider the word "cat". It appears in Doc 1 and Doc 3, so df("cat") = 2. Its IDF is log(3/2) ≈ 0.405. In Doc 1, TF("cat", Doc 1) = 1. So TF-IDF = 1 × 0.405 = 0.405.</p>
+<p>The logarithm captures this <strong>diminishing return</strong>. It's the same function that shows up in information theory — Shannon's self-information is defined as −log(P), the negative log of an event's probability. IDF is measuring something analogous: the surprise, or <strong>information content</strong>, of encountering a particular word. Common words carry no surprise. Rare words carry a lot. The log is the natural way to express that.</p>
 
-<p>Now consider "the". It appears in all 3 documents, so df("the") = 3. Its IDF is log(3/3) = log(1) = 0. No matter how many times "the" appears in a document, its TF-IDF is always zero. The word is completely uninformative for distinguishing documents — which is exactly right.</p>
+<h3>The Combined Score</h3>
 
-<p>Now consider "mat". It appears only in Doc 1, so df("mat") = 1. Its IDF is log(3/1) ≈ 1.099. In Doc 1, TF("mat", Doc 1) = 1, so TF-IDF = 1 × 1.099 = 1.099. This is the highest score so far, because "mat" is the most discriminative word — it uniquely identifies Doc 1.</p>
+<p>The final TF-IDF score combines both halves:</p>
 
-<p>This is the power of IDF. Without it, "the" and "mat" look equally important. With it, the model automatically learns to focus on the words that actually matter.</p>
+<p style="text-align: center; font-family: 'JetBrains Mono', monospace; font-size: 1.1em; margin: 1.5em 0;">
+TF-IDF(t, d) = TF(t, d) × IDF(t)
+</p>
 
-<h3>Document Similarity with Cosine Similarity</h3>
+<p>A word scores high when it's frequent in <em>this specific document</em> (high TF) but rare across the <em>whole corpus</em> (high IDF). That's the kind of word that tells you what this document is about. "Buy" appears 3 times in Email 5 (high TF) and only in 2 of 5 emails (decent IDF). Its TF-IDF in Email 5 = 3 × 0.916 ≈ 2.75. That's a strong signal. Meanwhile a word appearing everywhere would get TF-IDF = anything × 0 = 0, regardless of how often it appears.</p>
 
-<p>Once you have TF-IDF vectors, you can measure how similar two documents are using <strong>cosine similarity</strong>. This computes the cosine of the angle between two vectors — 1.0 means identical direction (same topic), 0.0 means completely unrelated, and -1.0 means opposite (rare in practice since TF-IDF values are non-negative).</p>
-
-<p>Why cosine and not Euclidean distance? Because cosine is length-invariant. A 5,000-word article and a 50-word abstract about the same topic will have very different vector magnitudes but similar directions. Cosine captures that shared direction. Euclidean distance would say they're far apart just because one vector is longer.</p>
-
-<h3>Code: TF-IDF with sklearn</h3>
+<p>Let's see this in action with our emails:</p>
 
 <pre><code>from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
 
-docs = [
-    "the cat sat on the mat",
-    "the dog sat on the log",
-    "the cat chased the dog",
+emails = [
+    "buy cheap pills now",
+    "meeting tomorrow",
+    "won free tickets claim now",
+    "review the quarterly report",
+    "discount pills buy buy buy",
 ]
 
-# Fit TF-IDF
 tfidf = TfidfVectorizer()
-X = tfidf.fit_transform(docs)
+X = tfidf.fit_transform(emails)
 
-print("Vocabulary:", tfidf.get_feature_names_out())
-print("TF-IDF matrix (rounded):")
-print(X.toarray().round(3))
+# Which words have the highest TF-IDF in each email?
+feature_names = tfidf.get_feature_names_out()
+for i, email in enumerate(emails):
+    row = X.toarray()[i]
+    top_idx = row.argsort()[-3:][::-1]  # top 3 words
+    top_words = [(feature_names[j], round(row[j], 3)) for j in top_idx if row[j] > 0]
+    print(f"  Email {i+1}: {top_words}")
 
-# Document similarity
-sim_matrix = cosine_similarity(X)
-print("\nCosine similarity matrix:")
-print(sim_matrix.round(3))
-# Doc 1 vs Doc 2 will be moderately similar (shared "sat", "on")
-# Doc 1 vs Doc 3 will be somewhat similar (shared "cat")
-# Doc 2 vs Doc 3 will be somewhat similar (shared "dog")
+# Email 1: [('cheap', 0.528), ('pills', 0.421), ('buy', 0.336)]
+# Email 2: [('tomorrow', 0.707), ('meeting', 0.707)]
+# Email 3: [('tickets', 0.459), ('won', 0.459), ('claim', 0.459)]
+# Email 4: [('quarterly', 0.5), ('review', 0.5), ('report', 0.5)]
+# Email 5: [('buy', 0.686), ('discount', 0.452), ('pills', 0.361)]
 </code></pre>
 
+<p>Look at the top words for each email. TF-IDF has automatically surfaced the most characterizing terms. "Cheap", "pills", "buy" for the spam emails. "Meeting", "tomorrow" for the calendar email. "Quarterly", "review", "report" for the work email. Without us telling it anything about spam, TF-IDF has learned which words matter.</p>
+
+<h3>Measuring Similarity with Cosine</h3>
+
+<p>Once we have TF-IDF vectors, we can measure how similar two documents are. The standard measure is <strong>cosine similarity</strong> — the cosine of the angle between two vectors. A value of 1.0 means the vectors point in the same direction (same topic). A value of 0.0 means they're perpendicular (completely unrelated).</p>
+
+<p>Why cosine instead of Euclidean distance? Because cosine is length-invariant. A 5,000-word article and a 50-word abstract about the same topic have very different vector magnitudes, but they point in a similar direction. Cosine captures that shared direction. Euclidean distance would say they're far apart because one vector is much longer. In our spam filter, a short "buy pills" and a long "buy cheap pills now buy them today" should be recognized as similar. Cosine does this; Euclidean doesn't.</p>
+
+<pre><code>sim = cosine_similarity(X)
+print("Email 1 vs Email 5:", round(sim[0][4], 3))
+# ~0.35 — both mention "buy" and "pills"
+
+print("Email 1 vs Email 4:", round(sim[0][3], 3))
+# ~0.0 — no shared vocabulary at all
+
+print("Email 2 vs Email 4:", round(sim[1][3], 3))
+# ~0.0 — different topics entirely
+</code></pre>
+
+<p>Email 1 and Email 5 share vocabulary about buying pills, so they have positive similarity. The spam emails cluster together, and the legitimate emails are far from them. A classifier could draw a line between these clusters — and that's exactly how TF-IDF + logistic regression works in practice.</p>
+
 <div class="callout callout-info">
-  <div class="callout-label">Why sklearn's TF-IDF Numbers Look Different</div>
-  <p>If you compute TF-IDF by hand and compare with sklearn's output, the numbers won't match exactly. That's because <code>TfidfVectorizer</code> applies smoothing to the IDF formula, adds 1 to prevent zero divisions, and then L2-normalizes each document vector so they all have unit length. This normalization bakes cosine similarity into the representation itself — the dot product of two L2-normalized vectors is their cosine similarity. The conceptual idea is identical; sklearn just adds engineering guardrails.</p>
+  <div class="callout-label">Why sklearn's Numbers Look Different From Hand Calculations</div>
+  <p>If you compute TF-IDF by hand using the formula above and compare with sklearn's output, the numbers won't match. That's because <code>TfidfVectorizer</code> uses a smoothed IDF: <code>log((1 + N) / (1 + df(t))) + 1</code>, which prevents division by zero and never fully eliminates a term. It also L2-normalizes each document vector to unit length, which means the dot product of two vectors directly gives their cosine similarity. The conceptual idea is identical — sklearn adds engineering guardrails.</p>
 </div>
 
-<h3>Limitations of TF-IDF</h3>
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>N-grams: A Partial Fix for Word Order</h2>
 
-<p>TF-IDF is a massive improvement over raw counts, but it has clear limitations you should know about.</p>
+<p>The bag-of-words assumption — that word order doesn't matter — has been bothering us since we introduced it. "The dog bit the man" and "the man bit the dog" produce identical vectors. For our spam filter, "not spam" and "spam not" would look the same.</p>
 
-<p>First, there is no word order. "Dog bites man" and "man bites dog" produce identical TF-IDF vectors. N-grams help somewhat, but they blow up the vocabulary and only capture local ordering.</p>
+<p><strong>N-grams</strong> offer a partial repair. Instead of treating individual words (called <strong>unigrams</strong>) as our only vocabulary units, we also include consecutive pairs (<strong>bigrams</strong>) or triples (<strong>trigrams</strong>). Our vocabulary grows to include entries like "buy cheap", "cheap pills", "not spam." Now "not spam" is its own vocabulary item, distinct from "spam" alone.</p>
 
-<p>Second, there is no semantics. "Happy" and "joyful" are as unrelated as "happy" and "refrigerator" in TF-IDF space. The method has no notion of meaning, synonymy, or even that words can be conceptually related. Each word is an independent dimension.</p>
+<pre><code>from sklearn.feature_extraction.text import CountVectorizer
 
-<p>Third, the curse of dimensionality bites hard. Real-world vocabularies easily reach 100,000+ terms. Every document lives in a 100,000-dimensional space where most coordinates are zero. Models struggle to learn in such high-dimensional, sparse spaces without enormous amounts of training data.</p>
+emails = [
+    "buy cheap pills now",
+    "meeting tomorrow",
+    "won free tickets claim now",
+]
 
-<p>These limitations are precisely what motivated the development of dense word embeddings (Word2Vec, GloVe) and eventually contextual representations (ELMo, BERT, GPT) — all of which you'll encounter in the next sections.</p>
+unigram = CountVectorizer(ngram_range=(1, 1))
+bigram  = CountVectorizer(ngram_range=(1, 2))
+trigram = CountVectorizer(ngram_range=(1, 3))
 
-<h2>When BoW and TF-IDF Still Work (and When They Don't)</h2>
+X1 = unigram.fit_transform(emails)
+X2 = bigram.fit_transform(emails)
+X3 = trigram.fit_transform(emails)
 
-<p>Despite being decades old, these methods haven't retired. TF-IDF remains the backbone of many information retrieval systems, including search engines. If you're building a document search feature, a spam filter, or a topic classifier with limited labeled data, TF-IDF plus logistic regression is a shockingly strong baseline. It trains in seconds, requires no GPU, and is fully interpretable — you can inspect exactly which words drove a prediction.</p>
+print(f"  Unigrams only:  {X1.shape[1]} features")
+print(f"  Uni + Bigrams:  {X2.shape[1]} features")
+print(f"  Uni + Bi + Tri: {X3.shape[1]} features")
+</code></pre>
 
-<p>TF-IDF works best when the task depends on <em>which</em> words appear, not on subtle relationships between them. Spam detection ("buy", "discount", "click here"), topic classification ("election", "candidate", "vote"), and document deduplication are all good fits. When you have small datasets — hundreds or a few thousand labeled examples — TF-IDF often beats neural approaches that are starved for data.</p>
+<p>The tradeoff is vocabulary explosion. If you have 50,000 unigrams, adding bigrams might push you to 500,000 features. Trigrams push into the millions. Each document vector gets correspondingly longer and sparser. At some point you're spending more storage on mostly-zero vectors than you're gaining in expressive power.</p>
 
-<p>Where do they fail? Anything that requires understanding meaning. Sentiment analysis stumbles because "not great" looks similar to "great" in BoW space. Paraphrase detection fails because "the movie was fantastic" and "the film was excellent" share zero words. Question answering, summarization, and machine translation are all beyond reach. For these tasks, you need representations that capture semantics — and that's where embeddings and transformers come in.</p>
+<p>There's also <strong>character n-grams</strong> — sequences of characters rather than words. A character trigram model for "spam" would include "spa", "pam." These are surprisingly useful for language detection and for handling misspellings — "v1agra" doesn't match "viagra" at the word level, but it shares many character trigrams. Spammers know how to dodge word-level filters. Character n-grams make that harder.</p>
 
-<div class="callout callout-warning">
-  <div class="callout-label">The Practical Rule of Thumb</div>
-  <p>Always start with TF-IDF. Seriously. Before reaching for BERT or a large language model, build a TF-IDF baseline. It takes five minutes, costs nothing to run, and gives you a performance floor. If TF-IDF gets you 90% of the way there, you might not need a transformer at all. If it only gets you 60%, now you know exactly how much the fancy model is buying you — and you can justify the added complexity and cost.</p>
-</div>
+<p>N-grams are a bandage, not a cure. They capture local word order within a window of 2-3 words, but they can't handle long-range dependencies. "I would not recommend this product" has 5 words between "not" and "product." No bigram or trigram captures that relationship. For that, you need models that genuinely understand sequence — and that's where embeddings and transformers take over.</p>
 
-<h2>What You Should Now Be Able To Do</h2>
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>Domain-Specific Cleaning: Where Rules Change</h2>
+
+<p>Every new domain humbles you. The pipeline that works for news articles will fail on tweets, crash on medical records, and produce nonsense on legal briefs. Our kitchen mise en place changes depending on the cuisine.</p>
+
+<h3>Social Media</h3>
+
+<p>Tweets and posts are a different beast. They contain @mentions, #hashtags, URLs, emojis, slang ("u" for "you", "gr8" for "great"), and creative spelling ("sooooo goood"). A standard tokenizer will mangle all of this. NLTK provides a <code>TweetTokenizer</code> specifically designed for this domain — it preserves hashtags, handles repeated characters, and keeps emoticons intact.</p>
+
+<pre><code>from nltk.tokenize import TweetTokenizer
+
+tweet = "@realUser This is sooooo good!!! 😊 #NLP #winning"
+tokenizer = TweetTokenizer(strip_handles=True, reduce_len=True)
+print(tokenizer.tokenize(tweet))
+# ['This', 'is', 'sooo', 'good', '!', '!', '!', '😊', '#NLP', '#winning']
+</code></pre>
+
+<p>Notice <code>reduce_len=True</code> collapses "sooooo" to "sooo" (three repeated characters max). The emoji is preserved as a token — for sentiment analysis, 😊 carries more signal than most words. Hashtags stay intact because they often encode topic information: #NLP tells you what the tweet is about.</p>
+
+<p>Decisions pile up quickly. Do you keep hashtags as-is or segment them ("MachineLearning" → "machine learning")? Do you translate emojis to text descriptions ("😊" → "smiling face") or keep them as symbols? Do you expand slang or leave it? Each choice depends on your downstream task, and there's rarely a single right answer.</p>
+
+<h3>Medical Text</h3>
+
+<p>Clinical notes are a minefield of abbreviations, shorthand, and domain jargon. "Pt" means "patient." "q.d." means "once daily" (from the Latin <em>quaque die</em>). "PRN" means "as needed." Standard NLP tools don't know any of this. A tokenizer that splits on periods will destroy "q.d." and "b.i.d." Lowercasing loses the distinction between "AIDS" (the disease) and "aids" (helps). Medical NLP often requires specialized tokenizers and abbreviation dictionaries — tools like scispaCy, a spaCy model trained on biomedical text.</p>
+
+<h3>Legal Text</h3>
+
+<p>Legal documents use section references ("§ 230"), case citations ("Brown v. Board of Education, 347 U.S. 483 (1954)"), Latin phrases ("habeas corpus", "amicus curiae"), and sentences that run for paragraphs. A sentence tokenizer trained on news articles will choke on a 200-word sentence with embedded citations. Legal NLP pipelines often need custom sentence splitters that understand citation patterns and parenthetical references.</p>
+
+<p>The meta-lesson: before building any text pipeline, spend time reading your actual data. Look at the edge cases. Find the abbreviations, the formatting quirks, the domain-specific patterns. The pipeline must be designed for the data it will actually see, not for the clean example data in a tutorial.</p>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>Putting It All Together</h2>
+
+<p>Let's build a complete pipeline for our spam filter, from raw text to a trained classifier. This is where every piece we've built comes together into something practical.</p>
+
+<pre><code>from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
+from sklearn.model_selection import cross_val_score
+import numpy as np
+
+# Our tiny labeled dataset (in production, you'd have thousands)
+emails = [
+    "buy cheap pills now",
+    "meeting at 3pm tomorrow",
+    "you won FREE tickets claim NOW",
+    "can you review the quarterly report",
+    "DISCOUNT pills buy buy buy",
+    "lunch plans for friday",
+    "earn money fast click here",
+    "project deadline extended to next week",
+    "free trial limited offer act now",
+    "team standup moved to 10am",
+]
+labels = [1, 0, 1, 0, 1, 0, 1, 0, 1, 0]  # 1 = spam, 0 = not spam
+
+# The pipeline: TF-IDF → Logistic Regression
+pipe = Pipeline([
+    ("tfidf", TfidfVectorizer(
+        lowercase=True,          # normalize case
+        stop_words="english",    # remove English stop words
+        ngram_range=(1, 2),      # unigrams + bigrams
+        max_features=1000,       # cap vocabulary size
+    )),
+    ("clf", LogisticRegression()),
+])
+
+pipe.fit(emails, labels)
+
+# Test on new emails
+test_emails = [
+    "buy discount products today",
+    "can we reschedule the meeting",
+    "free money click now",
+]
+predictions = pipe.predict(test_emails)
+for email, pred in zip(test_emails, predictions):
+    print(f"  {'SPAM' if pred == 1 else 'HAM ':>4}  ←  {email}")
+</code></pre>
+
+<p>The <code>Pipeline</code> chains the TF-IDF transformation and the classifier into a single object. When we call <code>pipe.fit()</code>, it fits the vectorizer on the training text and then trains the classifier on the resulting vectors. When we call <code>pipe.predict()</code>, new text flows through the same normalization, tokenization, and vectorization steps before reaching the classifier. Nothing leaks. Nothing is inconsistent.</p>
+
+<p>In production, you'd add more steps: custom preprocessing functions, hyperparameter tuning with <code>GridSearchCV</code>, evaluation on a proper test set. But the skeleton is always the same: raw text → transformations → numbers → model. That's the text pipeline.</p>
+
+<p>I still occasionally get tripped up by a new dataset that breaks assumptions I didn't know I'd made — a corpus with HTML tags I forgot to strip, or Unicode characters my normalizer didn't handle. The pipeline is never truly "done." It evolves as you learn more about your data.</p>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>Wrap-Up</h2>
+
+<p>If you're still with me, thank you. I hope it was worth it.</p>
+
+<p>We started with a pile of raw, messy emails and the fundamental problem that computers need numbers, not words. We built up the pipeline piece by piece: normalization to tame the chaos, tokenization to split text into atoms, stop word removal (when appropriate) to cut noise, stemming and lemmatization to collapse word variations. Then we crossed into the numerical world with Bag of Words — counting words into vectors — and refined it with TF-IDF, which uses the logarithmic insight from information theory to automatically highlight the words that matter. We patched the word-order blind spot with n-grams, confronted the messy reality of domain-specific text, and wired everything into a working sklearn pipeline.</p>
+
+<p>My hope is that the next time you start an NLP project, instead of skipping straight to the model and wondering why your sentiment classifier thinks "not good" is positive, you'll spend an hour on the preprocessing — building the mise en place — having a decent mental model of what every step does and why it's there. The dishes aren't glamorous, but they're what make the meal possible.</p>
+
+<p>These classical representations — BoW and TF-IDF — have real limitations. They can't understand that "happy" and "joyful" mean the same thing. They can't capture long-range word dependencies. They produce sparse, high-dimensional vectors that models struggle with. Those limitations are exactly what motivated the development of dense word embeddings (Word2Vec, GloVe) and contextual representations (ELMo, BERT, GPT) — which is where we're headed next.</p>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>Resources</h2>
+
+<p>A handful of resources I found genuinely useful while going down this rabbit hole:</p>
+
 <ul>
-  <li>Build a text preprocessing pipeline: tokenize → normalize → clean → vectorize</li>
-  <li>Explain when to use stemming vs lemmatization vs neither</li>
-  <li>Implement Bag of Words and TF-IDF with sklearn in under 10 lines</li>
-  <li>Explain why TF-IDF down-weights common words and how IDF works mathematically</li>
-  <li>Compute cosine similarity between TF-IDF vectors and explain why cosine beats Euclidean for text</li>
-  <li>Articulate when TF-IDF is still the right choice vs when you need embeddings</li>
-  <li>Set up a TF-IDF + logistic regression baseline for any text classification task in 5 minutes</li>
+  <li><strong>Speech and Language Processing</strong> by Jurafsky &amp; Martin (3rd edition, free online) — the definitive NLP textbook. Chapters 2 and 6 cover text normalization and TF-IDF with the depth of a 900-page book. Wildly comprehensive.</li>
+  <li><strong>scikit-learn's text feature extraction docs</strong> — the <code>CountVectorizer</code> and <code>TfidfVectorizer</code> API docs are surprisingly well-written and include the exact mathematical formulas with all the smoothing details. Better than most tutorials.</li>
+  <li><strong>spaCy's linguistic features guide</strong> (spacy.io/usage/linguistic-features) — walks through tokenization, POS tagging, and lemmatization with interactive examples. Insightful for understanding what a real NLP pipeline does under the hood.</li>
+  <li><strong>"The Classical Language Model"</strong> by Dan Jurafsky (Stanford CS124 lectures, on YouTube) — if you want the information-theoretic foundation behind IDF and why the log is there, Jurafsky explains it better than anyone. Unforgettable.</li>
+  <li><strong>NLTK Book</strong> (nltk.org/book) — free, hands-on, and covers every preprocessing step with working Python code. Chapter 3 on processing raw text is the O.G. tutorial on this topic.</li>
 </ul>
 
 
