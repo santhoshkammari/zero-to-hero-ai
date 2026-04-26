@@ -296,263 +296,295 @@
   <span class="tag">k-NN · Naive Bayes</span>
 </div>
 
+<p>I put off really understanding k-Nearest Neighbors and Naive Bayes for an embarrassingly long time. Both sounded simple enough that I kept skipping past them to reach the "real" algorithms. k-NN felt like cheating — you look at your neighbors and copy their answers? Naive Bayes felt like a dusty stats exercise. It took me longer than I should admit to realize that these two algorithms teach you more about <em>why</em> machine learning works than most of the fancier ones do. So let me sit down with you and share what I found when I finally went down the rabbit hole.</p>
+
+<p>Here's what they are. k-Nearest Neighbors (KNN) is a classifier that makes predictions by finding the training examples most similar to a new data point and letting them vote on the answer. Naive Bayes is a classifier that uses probability theory to combine evidence from multiple features independently. Both are old, both are fast, both have crisp failure modes, and both will save you hours of work as baseline models on real problems. They also illuminate ideas — distance, probability, independence, dimensionality — that come up everywhere else in machine learning.</p>
+
+<p>A few things to know before we dive in. We're going to build both algorithms from scratch using a single running example: sorting fruit at a farmers' market. Three types of fruit — apples, oranges, lemons — each described by two measurements: weight in grams and a color-redness score from 0 to 10. We'll use those exact numbers all the way through the page. The math is real, and we'll work through every calculation. By the time we reach the code, nothing should feel mysterious.</p>
+
+<p>Ready? Let's go.</p>
+
 <div class="tldr">
-  <div class="tldr-label">Section Overview</div>
-  <p>This section combines k-Nearest Neighbors and Naive Bayes into one comprehensive reference.</p>
+  <div class="tldr-label">What we'll cover</div>
+  <ul>
+    <li>Ask your neighbors — the KNN algorithm built from scratch
+      <ul>
+        <li>What "close" means — Euclidean and Manhattan distances on real fruit data</li>
+        <li>The Voronoi map — k=1 decision boundaries as territorial ownership</li>
+        <li>Turning the k dial — bias-variance made visible</li>
+        <li>Feature scaling — why unscaled features silently break everything</li>
+        <li>The curse of empty rooms — dimensionality and its consequences</li>
+        <li>Making it fast — KD-trees, ball trees, FAISS, HNSW</li>
+      </ul>
+    </li>
+    <li>⚑ Rest stop — you can stop here if KNN is all you need</li>
+    <li>Counting evidence instead — the shift to Naive Bayes
+      <ul>
+        <li>Bayes' theorem from scratch — built on the fruit example</li>
+        <li>The naive trick — why independence works for ranking</li>
+        <li>Three flavors — Gaussian, Multinomial, Bernoulli, Complement</li>
+        <li>The zero-probability catastrophe — and Laplace smoothing</li>
+        <li>Surviving the numbers — the log-space trick</li>
+        <li>Text classification: the killer app — NB + TF-IDF</li>
+      </ul>
+    </li>
+    <li>When simple wins</li>
+    <li>Wrap-up</li>
+  </ul>
 </div>
 
+<h2>Ask Your Neighbors</h2>
 
-<!-- ═══════════ k-Nearest Neighbors ═══════════ -->
-<h2>k-Nearest Neighbors</h2>
+<p>Imagine you're running a booth at a farmers' market. You've been sorting fruit by hand for hours — apples into one bin, oranges into another, lemons into a third — and you've gotten good at it. Now your friend hands you something unfamiliar and asks what it is. What do you do? You hold it next to the fruit you've already sorted. You look for the ones that seem most similar. You check what those are. If the three most similar pieces of fruit in your sorted pile are all oranges, you say "orange." That is k-Nearest Neighbors.</p>
 
-<!-- ════════════════════════════════════════════ -->
+<p>The whole algorithm is that neighborhood poll. To classify a new point, find the <em>k</em> training examples most similar to it, tally up their labels, and return the majority class. For regression — predicting a continuous number instead of a category — you average the <em>k</em> neighbors' values instead of voting. There is no training phase in the traditional sense. No weights to learn, no optimization to run. The model memorizes the entire training set and does all its work at prediction time. Computer scientists call this a <strong>lazy learner</strong>, which is one of my favorite terms in all of machine learning. It earns the name.</p>
 
-<h3>The Whole Algorithm in One Sentence</h3>
-
-<p>To classify a new point, find the <em>k</em> training points closest to it and let them vote. Majority class wins. For regression, take the average of those <em>k</em> neighbors' values. That's it — there's no training phase, no learned weights, no optimization. The model <em>is</em> the data.</p>
-
-<p>This makes KNN what's called a <strong>lazy learner</strong>: it memorizes the entire training set and does all the work at prediction time. Compare that to logistic regression, which grinds through the data once to learn coefficients and then makes predictions in microseconds. KNN has zero training cost and pays for it later on every single prediction.</p>
-
-<!-- ════════════════════════════════════════════ -->
-
-<h3>Distance Matters More Than You Think</h3>
-
-<p>"Nearest" implies distance, and the choice of distance metric shapes everything. The three you'll encounter:</p>
-
-<ul>
-  <li><strong>Euclidean</strong> (L2): straight-line distance. The default, and usually fine. <code>sqrt(Σ(xᵢ − yᵢ)²)</code></li>
-  <li><strong>Manhattan</strong> (L1): sum of absolute differences along each axis. More robust to outliers in individual features. <code>Σ|xᵢ − yᵢ|</code></li>
-  <li><strong>Minkowski</strong> (Lp): generalizes both — Euclidean is p=2, Manhattan is p=1. Higher p weighs large single-feature differences more heavily.</li>
-</ul>
-
-<p>Here's the critical point: <strong>feature scaling is mandatory.</strong> If one feature is "annual income" (range 20,000–200,000) and another is "age" (range 18–80), income will utterly dominate every distance calculation. Age becomes invisible. You must standardize or min-max scale all features <em>before</em> computing distances. No exceptions. Forget this and your KNN model is really a "nearest income" model.</p>
-
-<!-- ════════════════════════════════════════════ -->
-
-<h3>Choosing k</h3>
-
-<p>The value of <em>k</em> is your bias-variance dial:</p>
-
-<ul>
-  <li><strong>k = 1</strong>: the decision boundary follows every training point exactly. Extreme variance, zero bias on training data, overfits badly to noise. One mislabeled point poisons all predictions near it.</li>
-  <li><strong>k = n</strong> (all training data): every point gets the same prediction — the majority class in the entire dataset. Maximum bias, zero variance. Completely useless.</li>
-  <li><strong>Sweet spot</strong>: somewhere in between. Typically k = 5 to 15 for most problems, but always choose via cross-validation.</li>
-</ul>
-
-<p>Practical tip: for binary classification, use <strong>odd k</strong> to avoid ties. With k = 4 and a 2-vs-2 split, the algorithm has to break the tie arbitrarily. Odd k guarantees a clear majority.</p>
-
-<!-- ════════════════════════════════════════════ -->
-
-<h3>The Curse of Dimensionality</h3>
-
-<p>KNN works by assuming nearby points are similar. That assumption breaks in high dimensions.</p>
-
-<p>Here's the intuition: in 2D, the nearest neighbor to a point is actually nearby. In 1,000 dimensions, <em>all</em> points are roughly the same distance apart. The "nearest" neighbor is barely closer than the farthest point. When distances become meaningless, voting on neighbors becomes meaningless too.</p>
-
-<p>The math is stark: in d dimensions, the volume of a hypersphere grows so slowly relative to the enclosing hypercube that to capture just 1% of the data within a neighborhood, you need to extend that neighborhood to cover most of each feature's range. By ~20 features, KNN is struggling. Past 50, it's usually hopeless without dimensionality reduction (PCA, feature selection) first.</p>
-
-<!-- ════════════════════════════════════════════ -->
-
-<h3>Computational Cost</h3>
-
-<p>Every prediction requires comparing the new point against <em>every</em> training point. That's <strong>O(n · d)</strong> per prediction — n points, d features each. Train on a million samples? Every single prediction scans a million distances.</p>
+<p>Let's get some actual numbers on the table. Here are three fruits already sorted:</p>
 
 <table>
   <thead>
-    <tr><th>Method</th><th>Complexity</th><th>When to use</th></tr>
+    <tr>
+      <th>Fruit</th>
+      <th>Weight (g)</th>
+      <th>Redness (0–10)</th>
+      <th>Label</th>
+    </tr>
   </thead>
   <tbody>
-    <tr><td><strong>Brute force</strong></td><td>O(n · d) per query</td><td>Small datasets, high d</td></tr>
-    <tr><td><strong>KD-tree</strong></td><td>O(d · log n) average</td><td>Low dimensions (d &lt; ~20)</td></tr>
-    <tr><td><strong>Ball tree</strong></td><td>O(d · log n) average</td><td>Moderate dimensions, non-Euclidean metrics</td></tr>
+    <tr><td>Fruit A</td><td>182</td><td>8</td><td>apple</td></tr>
+    <tr><td>Fruit B</td><td>130</td><td>6</td><td>orange</td></tr>
+    <tr><td>Fruit C</td><td>115</td><td>2</td><td>lemon</td></tr>
   </tbody>
 </table>
 
-<p>KD-trees partition space with axis-aligned splits, so they degrade to brute force in high dimensions. Ball trees use hyperspheres, handling moderate d better. sklearn picks the algorithm automatically (<code>algorithm='auto'</code>), but knowing this helps you understand why KNN prediction slows down as your dataset grows.</p>
+<p>A mystery fruit arrives: weight 150 g, redness score 7. We want to know what it is. With k=1, the answer is whichever of the three training fruits is closest. To find that, we need a way to measure "close."</p>
 
-<!-- ════════════════════════════════════════════ -->
+<h3>What "Close" Means</h3>
 
-<h3>When to Use KNN (and When Not To)</h3>
+<p>The most natural measure of closeness is the straight-line distance you remember from geometry — <strong>Euclidean distance</strong>. Between two points (a₁, a₂) and (b₁, b₂) in two dimensions, it's the length of the hypotenuse: <code>sqrt((a₁ − b₁)² + (a₂ − b₂)²)</code>. Let's compute the distance from the mystery fruit to each of the three known fruits.</p>
 
-<p><strong>Good fits:</strong> small datasets (&lt; 10k samples), quick baselines, prototyping, low-dimensional data, problems where you want locally interpretable decisions ("this patient is similar to these five other patients who all recovered").</p>
+<p>Distance to Fruit A (apple): <code>sqrt((182 − 150)² + (8 − 7)²) = sqrt(32² + 1²) = sqrt(1025) ≈ 32.0</code></p>
+<p>Distance to Fruit B (orange): <code>sqrt((130 − 150)² + (6 − 7)²) = sqrt(20² + 1²) = sqrt(401) ≈ 20.0</code></p>
+<p>Distance to Fruit C (lemon): <code>sqrt((115 − 150)² + (2 − 7)²) = sqrt(35² + 5²) = sqrt(1250) ≈ 35.4</code></p>
 
-<p><strong>Bad fits:</strong> large datasets (prediction is painfully slow), high-dimensional feature spaces (curse of dimensionality), when you need a compact deployable model (KNN has to carry the entire training set), or when features have very different types/scales that are hard to combine into a single distance metric.</p>
+<p>Fruit B is closest. With k=1, we predict <strong>orange</strong>. The mystery fruit is most geometrically similar to the orange in weight-redness space.</p>
 
-<!-- ════════════════════════════════════════════ -->
+<p>There's another common option worth knowing: <strong>Manhattan distance</strong> (also called L1 distance), named for navigating a city grid where you can't cut through buildings. You add up the absolute difference along each axis rather than taking the hypotenuse: <code>|a₁ − b₁| + |a₂ − b₂|</code>. For our mystery fruit, the Manhattan distances work out to 33 (apple), 21 (orange), and 40 (lemon) — same ranking as Euclidean. Both are special cases of the <strong>Minkowski distance</strong> family: Euclidean uses exponent p=2, Manhattan uses p=1. Sklearn exposes this as the <code>p</code> parameter. For most problems Euclidean is the right default; Manhattan can be more robust when individual features have occasional extreme outliers, because squaring amplifies those outliers while Manhattan treats them linearly.</p>
 
-<h3>Code: KNN Pipeline with Scaling</h3>
+<h3>The Voronoi Map</h3>
+
+<p>With k=1 — one nearest neighbor — something geometrically beautiful happens. Every training point gets to "own" a region of the feature space: every point in that region is closer to this training example than to any other. Drawn on a two-dimensional plot, these territories form a tessellation called a <strong>Voronoi diagram</strong>. The decision boundary between two class regions is the set of all points equidistant from their training examples.</p>
+
+<p>The first time I saw a Voronoi diagram of a trained k-NN model, something clicked that years of staring at equations hadn't achieved. You can see exactly what the model will predict for every possible input by looking at the picture. Drop a new mystery fruit into the map — it lands in exactly one territory, and that territory's label is the prediction. The whole classifier is visible at once.</p>
+
+<p>The catch is that with k=1, those boundaries are jagged. They snake around every single training point individually. If one apple was accidentally mislabeled "orange" during data collection, its Voronoi territory carves a small orange island inside the apple region. Every future point that falls in that island gets misclassified. The model has memorized the noise — a sign it has too much <em>variance</em>, too much sensitivity to the specific quirks of the training set it happened to see.</p>
+
+<h3>Turning the k Dial</h3>
+
+<p>Increasing k is the remedy. As you include more neighbors in the poll, decision boundaries smooth out. Each prediction is averaged over a larger neighborhood, so a single mislabeled point carries less influence. The boundaries stop snaking around individual training examples and start tracing broader, more reasonable territories.</p>
+
+<p>But you can take this too far. When k equals the total number of training examples, every single point is polled for every single prediction — and the prediction is always the majority class in the entire dataset. That model has no memory of local structure whatsoever. Maximum bias, zero variance, completely useless for anything but predicting the most common class.</p>
+
+<p>The neighborhood poll analogy earns its keep here. With k=1, you knock on one door and take their word for it. With k=100, you survey a large neighborhood. The single-person poll is highly variable — your one chosen neighbor might be an outlier. The hundred-person survey is stable but might miss the fact that you're standing right on the boundary between two very different neighborhoods. Both extremes fail. You want enough neighbors to smooth out noise without smoothing away signal.</p>
+
+<p>A useful refinement on the basic majority vote is <strong>weighted KNN</strong>: give closer neighbors more influence, weighted by the inverse of their distance. A neighbor at distance 2 gets weight 0.5. A neighbor at distance 0.1 gets weight 10. The class with the highest total weight wins rather than the class with the most votes. This softens the arbitrary cutoff of majority voting and often improves accuracy on real data. In sklearn, set <code>weights='distance'</code>. For choosing k itself: try 3, 5, 7, 11, and 15, choose via cross-validation, and use odd values for binary classification to avoid ties.</p>
+
+<h3>Feature Scaling</h3>
+
+<p>Here's a silent bug that would completely ruin our fruit classifier if we hadn't built it from scratch and watched what was happening. Weight ranges from about 100 to 250 grams. Redness ranges from 0 to 10. In the Euclidean distance formula, a one-unit difference in weight and a one-unit difference in redness score are treated identically — but they represent wildly different things. One gram is almost nothing; one point on a ten-point scale is a tenth of the entire range.</p>
+
+<p>Look at the actual numbers above. The weight term contributed (32)² = 1024 to the squared distance between the mystery fruit and Fruit A. The redness term contributed (1)² = 1. Weight dominated by a factor of a thousand. The redness feature was functionally invisible. We didn't build a "nearest fruit" classifier — we built a "nearest weight" classifier that happens to accept redness as input and then ignore it.</p>
+
+<p>The fix is <strong>standardization</strong>: transform each feature to have mean 0 and standard deviation 1 across the training set. After scaling, a one-unit shift in any feature represents one standard deviation. All features contribute fairly to the distance calculation. The formula is <code>(value − mean) / std</code>, applied per feature. This is not optional for any distance-based method. KNN, SVMs, PCA — they all require scaled features. One critical implementation detail: fit the scaler on the training data only, then apply it to test data. If you compute statistics across both sets, test information leaks into your preprocessing. Sklearn's <code>Pipeline</code> handles this correctly when you use cross-validation — it fits the scaler inside each fold.</p>
+
+<h3>The Curse of Empty Rooms</h3>
+
+<p>The neighborhood poll works because nearby neighbors are similar. That assumption starts to break down as the number of features grows, and the breakdown is dramatic enough to have a name: the <strong>curse of dimensionality</strong>.</p>
+
+<p>Picture searching for your nearest neighbor in a studio apartment. Everyone is close. Now move to a ten-room mansion and scatter the same number of people randomly throughout. Still manageable. Now imagine a mansion with a thousand rooms, all the same size, and people are scattered randomly. The rooms are mostly empty. To find your nearest neighbor, you'd have to search most of the house. Here's the part that haunts me: your "nearest" neighbor might be almost as far as the most distant one. The very concept of "near" has become nearly meaningless.</p>
+
+<p>The math makes this concrete. Suppose you want a neighborhood large enough to contain 10% of the training data. In one dimension, you cover 10% of the range. In two dimensions, you need each axis to cover <code>0.10^(1/2) ≈ 32%</code> of its range. In ten dimensions, each axis must cover <code>0.10^(1/10) ≈ 79%</code> of its range. By ten features, your "local" neighborhood already spans most of the feature space. The locality assumption that makes KNN meaningful has largely dissolved. In practice, KNN starts struggling around 20 features and is usually hopeless past 50 unless you apply dimensionality reduction — PCA, UMAP, feature selection — beforehand.</p>
+
+<h3>Making It Fast</h3>
+
+<p>Every KNN prediction scans every training point to find the <em>k</em> nearest ones. That's O(n × d) per prediction — <em>n</em> training examples, each with <em>d</em> features. For a hundred training examples, fine. For a million, every single query requires a million distance calculations.</p>
+
+<p>Three approaches exist for speeding this up. <strong>Brute force</strong> is the baseline: compute all distances, sort, return the top k. Works fine for small datasets or when d is large enough that spatial indexing doesn't help. <strong>KD-trees</strong> partition feature space recursively with axis-aligned splits — think binary search for neighbors. They reduce average query time to O(d log n), but degrade toward brute force in high dimensions because the bounding boxes stop pruning enough branches above roughly 20 features. <strong>Ball trees</strong> use hyperspheres instead of hyperrectangles, handling moderate dimensionality somewhat better and supporting non-Euclidean distance metrics. For very large-scale production systems, <strong>approximate nearest neighbor</strong> libraries like FAISS (from Meta) and HNSW trade a small, tunable fraction of accuracy for enormous speedups — these are what powers billion-scale similarity search in recommendation engines. Sklearn handles the brute/KD/ball choice automatically via <code>algorithm='auto'</code>; for most learning-phase datasets, the default is fine.</p>
+
+<div class="tldr">
+  <div class="tldr-label">⚑ Rest Stop — You Can Stop Here</div>
+  <p>Pause for a moment. You now understand k-Nearest Neighbors completely. You know the core algorithm — poll the k nearest neighbors, take the majority vote. You know the distance metrics — Euclidean and Manhattan, both computed by hand on real fruit data. You understand the decision boundaries — Voronoi territories, jagged at k=1, smoothed as k grows. You've seen the bias-variance tradeoff made visible. You know that feature scaling is mandatory and exactly why. You've met the curse of dimensionality and understood why KNN fails above ~20 features. You know the speed tricks — KD-trees for moderate d, ball trees for non-Euclidean metrics, FAISS and HNSW for billion-scale production.</p>
+  <p>The code below shows the sklearn implementation. If you came for KNN, that's all you need.</p>
+  <p>If you keep reading, the second half covers Naive Bayes — a completely different algorithm that solves a problem KNN can't touch: tens of thousands of text features, sparse data, and the need to train in a single pass. It's worth the trip.</p>
+</div>
+
+<h3>Code: KNN with Scaling</h3>
 
 <pre><code class="language-python">from sklearn.neighbors import KNeighborsClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
-from sklearn.datasets import load_iris
-from sklearn.model_selection import cross_val_score
+import numpy as np
 
-X, y = load_iris(return_X_y=True)
+# Three fruits: [weight_g, redness_0_to_10]
+X_train = np.array([[182, 8], [130, 6], [115, 2]])
+y_train = ['apple', 'orange', 'lemon']
 
 pipe = Pipeline([
-    ('scaler', StandardScaler()),            # mandatory for KNN
-    ('knn', KNeighborsClassifier(n_neighbors=5))
+    ('scaler', StandardScaler()),               # mandatory for KNN
+    ('knn', KNeighborsClassifier(
+        n_neighbors=1,
+        weights='distance'))                    # closer neighbors count more
 ])
 
-scores = cross_val_score(pipe, X, y, cv=5)
-print(f"Accuracy: {scores.mean():.3f} ± {scores.std():.3f}")
-# Accuracy: 0.967 ± 0.022</code></pre>
+pipe.fit(X_train, y_train)
 
-<p>The pipeline ensures scaling happens inside each CV fold — no data leakage. Swap <code>n_neighbors</code> and re-run to see the bias-variance tradeoff in action.</p>
+mystery = np.array([[150, 7]])
+print(pipe.predict(mystery))                    # ['orange']</code></pre>
 
-<!-- ════════════════════════════════════════════ -->
+<p>The <code>Pipeline</code> ensures the scaler is fitted on training data only — it cannot peek at whatever you later pass to <code>predict</code>. On a larger dataset, swap <code>n_neighbors</code> and re-run to watch the bias-variance tradeoff play out in the accuracy numbers. Try <code>weights='distance'</code> against <code>weights='uniform'</code> on noisy data to see when distance-weighting helps.</p>
 
-<h3>What You Should Now Be Able To Do</h3>
+<h2>Counting Evidence Instead</h2>
 
-<ul>
-  <li>☑ Explain KNN classification (majority vote) and regression (average of neighbors) without any jargon</li>
-  <li>☑ Name Euclidean, Manhattan, and Minkowski distances and when each is preferable</li>
-  <li>☑ Explain why feature scaling is mandatory for any distance-based method</li>
-  <li>☑ Describe the effect of k on the bias-variance tradeoff and why odd k avoids ties</li>
-  <li>☑ Explain the curse of dimensionality and why KNN fails above ~20 features</li>
-  <li>☑ Compare brute-force, KD-tree, and ball-tree search complexities</li>
-  <li>☑ Build a proper KNN pipeline with scaling inside cross-validation</li>
-</ul>
-<!-- ═══════════ Naive Bayes ═══════════ -->
-<h2>Naive Bayes</h2>
+<p>Let's be direct about why KNN fails on text. A single email might be described by 50,000 features — one per word in the vocabulary, with the feature value representing how many times that word appears. Now try to find the "nearest neighbor" in 50,000-dimensional space. The curse of dimensionality devours it. Every document is roughly equally distant from every other document. The neighborhood poll returns noise.</p>
 
-<!-- ════════════════════════════════════════════ -->
+<p>We need a completely different idea. Instead of asking "which training examples look most like this one?", we ask "given what we observe in this example, which class is most probable?" That shift — from similarity-based to probability-based reasoning — leads us to Naive Bayes.</p>
 
-<h3>Bayes' Theorem as a Classifier</h3>
+<h3>Bayes' Theorem from Scratch</h3>
 
-<p>You've seen Bayes' theorem in a probability class. Here's the version that matters for classification:</p>
+<p>Bayes' theorem describes how to update a belief given evidence. The version that matters for classification is:</p>
 
 <pre><code>P(class | features) ∝ P(features | class) × P(class)</code></pre>
 
-<p>Read it as: the probability that a sample belongs to a class, given its features, is proportional to how likely those features are <em>within</em> that class, times how common the class is overall. We don't need the denominator P(features) because it's the same for every class — it's just a normalizing constant. We compare the numerators and pick the class with the biggest one.</p>
+<p>Read it aloud: the probability that an example belongs to a class, given its observed features, is proportional to how likely those features would be if the example really were that class, multiplied by how common that class is in the first place. The symbol ∝ means "proportional to." We drop the denominator P(features) because it's identical for every class — it can't change which class wins, so we don't need it.</p>
 
-<p>Here's the problem. Computing P(features | class) for a realistic feature vector is impossible without making assumptions. If you have 1,000 binary features, there are 2¹⁰⁰⁰ possible feature combinations. You'll never see enough data to estimate those probabilities directly.</p>
+<p>Let's walk through this with our fruit example. Say we've collected many fruits at the market. In the training data, 40% are apples, 35% are oranges, 25% are lemons. Those are our <strong>priors</strong>: P(apple) = 0.40, P(orange) = 0.35, P(lemon) = 0.25. Before seeing any measurements, we'd lean toward apple.</p>
 
-<p>The "naive" fix: <strong>assume all features are conditionally independent given the class.</strong> That lets you factorize the joint probability into a product of individual feature probabilities:</p>
+<p>Now our mystery fruit arrives: weight 150 g, redness 7. We need P(features | class) — how likely are these measurements for each class? For continuous features, we model this with a Gaussian (bell curve). For each class, we track the mean and standard deviation of weight and redness across all training examples of that class. Suppose among training apples, weight averages 180 g with standard deviation 15 g, and redness averages 8.0 with standard deviation 1.0. A weight of 150 g sits two standard deviations below the apple mean — the Gaussian probability density there is low. A redness of 7 sits one standard deviation below — moderate probability. We multiply those two per-feature likelihoods together to get P(features | apple), then multiply by the prior 0.40. We repeat for orange and lemon. The class with the largest product wins. That's Gaussian Naive Bayes.</p>
 
-<pre><code>P(x₁, x₂, ..., x_d | class) = P(x₁ | class) × P(x₂ | class) × ... × P(x_d | class)</code></pre>
+<p>I'll be direct: the per-feature probability calculations are tedious to show in full for continuous features. The concept is the point — we're multiplying per-feature likelihoods by a class prior, then picking the winner. The code handles the arithmetic.</p>
 
-<p>Now you only need to estimate d individual probabilities per class instead of one enormous joint distribution. That's tractable even with small data.</p>
+<h3>The Naive Trick</h3>
 
-<!-- ════════════════════════════════════════════ -->
+<p>That step where we multiplied the per-feature likelihoods — P(weight | apple) × P(redness | apple) — is the independence assumption. We treated weight and redness as if knowing the weight tells us nothing about the redness, given that we know it's an apple. This is the "naive" part. It's almost certainly wrong. Heavier apples might tend to be redder. The features are correlated. And yet the classifier often works remarkably well.</p>
 
-<h3>Why "Naive" Works Anyway</h3>
+<p>The reason is subtle: for classification, we don't need probability values to be correct. We need the <em>ranking</em> to be correct. As long as the true class ends up with a higher score than the other classes, we win — even if that score is a wildly overconfident estimate. And when each feature independently points in the right direction, multiplying those independent leans together still points in the right direction, even if the magnitude is off.</p>
 
-<p>The independence assumption is almost always wrong. In a spam filter, "free" and "money" aren't independent — they co-occur in the same scammy emails far more often than chance would predict. In medical data, symptoms cluster. In image data, adjacent pixels are correlated. So why does Naive Bayes still work?</p>
+<p>I'm still developing my intuition for exactly why multiplying a bunch of slightly wrong probabilities together so often preserves the correct ranking. The best mental model I have: think of each feature as an independent witness in a courtroom. Witness A says "the weight suggests apple." Witness B says "the color suggests apple." We multiply their testimonies. The witnesses aren't truly independent — they've talked in the hallway, their stories share a common source. But if both witnesses lean toward apple, the combined testimony still points toward apple. The verdict is right even if the confidence stated in the verdict is inflated.</p>
 
-<p>Because classification only requires getting the <strong>ranking</strong> right, not the exact probabilities. As long as the true class ends up with a higher score than the false classes, you win — even if that score is wildly miscalibrated. And it turns out that when you multiply a bunch of slightly wrong individual probabilities together, the errors often partially cancel or at least preserve the correct ordering.</p>
+<p>This is also why Naive Bayes gives famously miscalibrated probability outputs. It often returns 0.9999 for the winning class because it has multiplied many moderate likelihoods together, each slightly favoring that class. Don't treat these numbers as genuine confidence estimates. Use them for ranking and for picking the top class. My favorite thing about this algorithm is that beyond high-level explanations like this one, no one is completely certain why it works as well as it does on real-world data. That mystery genuinely delights me.</p>
 
-<p>Think of it this way: if every feature independently "leans" toward the right class, multiplying those leans together still points in the right direction — even if the magnitude is off. The decision boundary is what matters, not whether you predict 0.92 or 0.73 for the true class.</p>
+<h3>Three Flavors</h3>
 
-<p>That said, the probability <em>values</em> themselves are usually garbage. Don't trust a Naive Bayes probability of 0.99 as genuinely meaning 99% confidence. If you need calibrated probabilities, use logistic regression or apply post-hoc calibration (Platt scaling, isotonic regression).</p>
-
-<!-- ════════════════════════════════════════════ -->
-
-<h3>Three Variants: Match the Distribution to Your Data</h3>
+<p>GaussianNB, MultinomialNB, and BernoulliNB differ in one thing: the probability model used for each feature. Match the model to your data type and results are good. Mismatch them and you get something that runs but gives confused answers.</p>
 
 <table>
   <thead>
-    <tr><th>Variant</th><th>Assumes features are…</th><th>Best for</th></tr>
+    <tr>
+      <th>Variant</th>
+      <th>Assumes features are…</th>
+      <th>Best for</th>
+    </tr>
   </thead>
   <tbody>
-    <tr><td><strong>GaussianNB</strong></td><td>Continuous, normally distributed</td><td>General tabular data with real-valued features</td></tr>
-    <tr><td><strong>MultinomialNB</strong></td><td>Non-negative counts</td><td>Text classification (word counts, TF-IDF scores)</td></tr>
-    <tr><td><strong>BernoulliNB</strong></td><td>Binary (0/1)</td><td>Binary feature vectors, short text (word presence/absence)</td></tr>
+    <tr>
+      <td><strong>GaussianNB</strong></td>
+      <td>Continuous, approximately normal</td>
+      <td>Real-valued tabular data — temperatures, heights, scores</td>
+    </tr>
+    <tr>
+      <td><strong>MultinomialNB</strong></td>
+      <td>Non-negative integer counts</td>
+      <td>Text (word counts), document classification</td>
+    </tr>
+    <tr>
+      <td><strong>BernoulliNB</strong></td>
+      <td>Binary presence/absence</td>
+      <td>Short text, binary feature vectors</td>
+    </tr>
+    <tr>
+      <td><strong>ComplementNB</strong></td>
+      <td>Non-negative counts (same as Multinomial)</td>
+      <td>Imbalanced text datasets</td>
+    </tr>
   </tbody>
 </table>
 
-<p><strong>GaussianNB</strong> estimates a mean and variance per feature per class, then plugs new values into the Gaussian PDF. Simple, but if your features aren't remotely normal (heavy tails, multimodal), performance degrades. No hyperparameters to tune — which is either a strength or a limitation depending on your perspective.</p>
+<p><strong>GaussianNB</strong> estimates a mean and variance per feature per class, then evaluates the Gaussian probability density at the observed value. No hyperparameters to tune, and often good enough even when features aren't perfectly Gaussian. Our fruit example above used this variant.</p>
 
-<p><strong>MultinomialNB</strong> models each class as a multinomial distribution over feature counts. This is the workhorse for text: each feature is a word, each value is how many times that word appears. The model learns which words are common in which classes. It's fast, simple, and remarkably effective.</p>
+<p><strong>MultinomialNB</strong> models each class as a distribution over feature counts. This is the classic text classifier: each feature is a word, each value is how often it appears. The model learns which words appear frequently in which classes — "free," "offer," and "congratulations" cluster in spam; "meeting," "attached," and "quarterly" cluster in work email. Multiply enough of those word-frequency likelihoods together and the correct class wins. <strong>ComplementNB</strong> is a variant that learns what's <em>un</em>characteristic of each class rather than what's characteristic, which often outperforms standard MultinomialNB on imbalanced datasets where one class dominates the training data.</p>
 
-<p><strong>BernoulliNB</strong> cares only about whether a feature is present or absent, ignoring how many times it appears. For text, this means "does the word occur at all?" rather than "how often?" It penalizes the <em>absence</em> of features explicitly — unlike MultinomialNB, which simply ignores zero-count features. This makes BernoulliNB better for short documents where word presence is more informative than frequency.</p>
+<p><strong>BernoulliNB</strong> cares only about whether a feature is present or absent, discarding frequency information entirely. For text, this means "did this word appear at all?" rather than "how many times?" There's a key difference from MultinomialNB: Bernoulli explicitly penalizes the absence of features that are common in a class. If "money" appears in 80% of spam emails, a non-spam email that lacks "money" gets a likelihood boost under BernoulliNB. MultinomialNB ignores absent words entirely. For short documents where word presence is more meaningful than word frequency, BernoulliNB often wins.</p>
 
-<!-- ════════════════════════════════════════════ -->
+<h3>The Zero-Probability Catastrophe</h3>
+
+<p>Here's a failure mode that silently destroys a Naive Bayes model if you don't know about it. Suppose your spam filter's training data contains no legitimate (ham) emails with the word "blockchain." So P("blockchain" | ham) = 0. Now a completely legitimate email about cryptocurrency investment arrives and contains the word "blockchain." The product for the ham class becomes zero — zero times anything is zero — regardless of every other word in the email. A single word the model never saw in training poisons the entire classification.</p>
+
+<p>The fix is <strong>Laplace smoothing</strong> (also called add-one smoothing), controlled by the parameter <code>alpha</code>. Instead of using raw counts, you add <code>alpha</code> to every word's count before computing probabilities:</p>
+
+<pre><code>P(word | class) = (count(word, class) + α) / (total_words_in_class + α × |vocabulary|)</code></pre>
+
+<p>With α = 1, every word in the vocabulary gets a count of at least 1 in every class, even words that never appeared in training. The denominator adjusts to keep everything normalized. Larger α values smooth more aggressively, pushing all word probabilities toward uniform and trusting the training data less. Smaller α values stay closer to the raw counts. The default α = 1 works well in almost every case; occasionally tuning it slightly via cross-validation helps on unusual datasets.</p>
+
+<h3>Surviving the Numbers</h3>
+
+<p>There's one more practical pitfall. When you multiply 50,000 probabilities together — one per word in the vocabulary — each might be something like 0.0002. Multiplying fifty thousand such numbers produces a result so close to zero that standard floating-point arithmetic rounds it to exactly 0.0. This is called <strong>numerical underflow</strong>, and it makes the classifier completely nonfunctional.</p>
+
+<p>I'll be honest — the first time someone showed me the fix, I felt like I'd been doing math wrong my whole life. The solution is to work in <strong>log space</strong>. Instead of multiplying probabilities, take the logarithm of each and sum them:</p>
+
+<pre><code>log P(class | features) ∝ log P(class) + Σᵢ log P(xᵢ | class)</code></pre>
+
+<p>Since the logarithm is monotonically increasing, the class with the highest sum of log-probabilities is exactly the same class that would have had the highest product of probabilities. The ranking is preserved. But the numbers stay representable — <code>log(0.0002) ≈ −8.5</code>. Summing fifty thousand numbers around −8.5 gives you something around −425,000, a perfectly ordinary floating-point number. Sklearn handles this internally, so you don't need to write it yourself. But understanding it explains why <code>predict_proba()</code> returns sensible numbers even when the raw products would have underflowed to zero.</p>
 
 <h3>Text Classification: The Killer App</h3>
 
-<p>Naive Bayes + TF-IDF is one of those combinations that has no right to work as well as it does. It's the classic spam filter. It's a strong baseline for sentiment analysis, topic classification, language detection, and document categorization. On small text datasets (hundreds to low thousands of documents), it often <em>beats</em> neural networks and gradient-boosted trees.</p>
+<p>Combine MultinomialNB with TF-IDF vectorization and you have one of the most cost-effective classifiers ever built. <strong>TF-IDF</strong> — term frequency–inverse document frequency — transforms a document into a vector where each dimension is a word, weighted by how often it appears in this document relative to how often it appears across all documents. Common words like "the" and "is" get low weights. Distinctive, domain-specific words get high weights.</p>
 
-<p>Why? Text data is naturally high-dimensional (thousands of unique words) and sparse (each document uses a tiny fraction of the vocabulary). Most models choke on this combination. Naive Bayes thrives — it only needs per-word statistics, so sparse data is fine. The independence assumption hurts less than you'd think because TF-IDF already down-weights common words, reducing the most obvious correlations.</p>
+<p>The courtroom analogy from the previous section comes back around here in a satisfying way. Each word is a witness. TF-IDF is the process of deciding how much credibility each witness deserves: a witness who shows up at every trial (common word) gets less weight than one who's distinctive to this specific case (rare word that strongly signals a class). Multiply the adjusted testimonies. Pick a verdict.</p>
 
-<p>The practical rule: <strong>always start a text classification project with MultinomialNB + TF-IDF.</strong> If it gives you 88% accuracy in five minutes, you now have a baseline that tells you exactly how much improvement your fancy BERT model needs to justify its training cost.</p>
-
-<!-- ════════════════════════════════════════════ -->
-
-<h3>Laplace Smoothing</h3>
-
-<p>Here's a catastrophic failure mode. During training, the word "cryptocurrency" never appeared in any legitimate (ham) email. So P("cryptocurrency" | ham) = 0. Now a ham email with the word "cryptocurrency" arrives. The entire product goes to zero — P(ham | features) = 0 — regardless of every other feature. One unseen word kills the prediction.</p>
-
-<p><strong>Laplace smoothing</strong> (controlled by the <code>alpha</code> parameter) fixes this by adding a small count to every feature:</p>
-
-<pre><code>P(word | class) = (count(word, class) + α) / (total_words_in_class + α × vocabulary_size)</code></pre>
-
-<p>With α = 1 (the standard "add-one" smoothing), no probability is ever zero. A word never seen in a class gets a tiny but non-zero probability instead of zero. Larger α values smooth more aggressively, shrinking all probabilities toward uniform. Smaller α values trust the data more. In practice, α = 1 is the default and works well; occasionally tuning it via cross-validation helps.</p>
-
-<!-- ════════════════════════════════════════════ -->
-
-<h3>Strengths</h3>
-
-<ul>
-  <li><strong>Fast — both training and prediction.</strong> Training is a single pass through the data computing counts and means. Prediction is a dot product plus a log. Scales to millions of samples and features effortlessly.</li>
-  <li><strong>Works with tiny datasets.</strong> Because it estimates so few parameters per class, it generalizes reasonably even with dozens of training examples per class.</li>
-  <li><strong>Handles high-dimensional data.</strong> While KNN breaks above ~20 features, Naive Bayes handles 50,000 text features without blinking.</li>
-  <li><strong>Naturally multiclass.</strong> No OVR or OVO wrappers needed — the Bayesian formulation handles any number of classes natively.</li>
-  <li><strong>Great baseline.</strong> If Naive Bayes gets 85% on your problem, you know there's real signal. If it gets 51%, your features might be the problem, not your model.</li>
-</ul>
-
-<!-- ════════════════════════════════════════════ -->
-
-<h3>Weaknesses</h3>
-
-<ul>
-  <li><strong>Poor probability calibration.</strong> The probabilities are often pushed toward 0 and 1 due to the independence assumption multiplying many small numbers together. Use the predictions for ranking, not for interpreting confidence.</li>
-  <li><strong>Correlated features get double-counted.</strong> If two features carry the same information (like "height in cm" and "height in inches"), Naive Bayes counts that evidence twice. This doesn't break the ranking for mildly correlated features, but heavy redundancy degrades performance.</li>
-  <li><strong>Can't learn feature interactions.</strong> "Feature A is only predictive when Feature B is high" — Naive Bayes can never capture this. Each feature contributes independently. Tree-based models and neural networks handle interactions naturally.</li>
-  <li><strong>Gaussian assumption can mislead.</strong> GaussianNB assumes features are normally distributed within each class. Real data often isn't. MultinomialNB and BernoulliNB are more robust because their distributional assumptions better match their target domains (text counts, binary indicators).</li>
-</ul>
-
-<!-- ════════════════════════════════════════════ -->
-
-<h3>Code: Text Classification with MultinomialNB</h3>
+<p>This combination is the classic spam filter. It's a strong baseline for sentiment analysis, topic labeling, language detection, and document routing. On small text datasets — hundreds to a few thousand documents — it frequently matches or outperforms neural networks and gradient-boosted trees. That's not because it's smarter; it's because with limited data, the simpler model generalizes better. The practical rule: always start a text classification project with TF-IDF plus MultinomialNB. If it gives you 88% accuracy in five minutes, you now have a baseline that tells you exactly how much improvement a more complex model needs to justify its training cost and deployment overhead.</p>
 
 <pre><code class="language-python">from sklearn.naive_bayes import MultinomialNB
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.pipeline import Pipeline
 from sklearn.datasets import fetch_20newsgroups
-from sklearn.metrics import classification_report
+from sklearn.metrics import accuracy_score
 
-train = fetch_20newsgroups(subset='train')
-test  = fetch_20newsgroups(subset='test')
+# Two categories to keep the example focused
+cats = ['rec.sport.hockey', 'sci.space']
+train = fetch_20newsgroups(subset='train', categories=cats)
+test  = fetch_20newsgroups(subset='test',  categories=cats)
 
 pipe = Pipeline([
     ('tfidf', TfidfVectorizer(stop_words='english', max_df=0.5)),
-    ('nb',    MultinomialNB(alpha=1.0))
+    ('nb',    MultinomialNB(alpha=1.0))     # alpha=1.0 is Laplace smoothing
 ])
 
 pipe.fit(train.data, train.target)
 preds = pipe.predict(test.data)
-print(classification_report(test.target, preds,
-                            target_names=train.target_names,
-                            zero_division=0))</code></pre>
+print(f"Accuracy: {accuracy_score(test.target, preds):.3f}")
+# Accuracy: ~0.970 — two categories, under one second of training</code></pre>
 
-<p>That's 20 newsgroups — 20 classes, ~18,000 documents, tens of thousands of features — classified in under a second. Try beating that speed with a transformer. The accuracy won't be state-of-the-art, but as a baseline you can build in five minutes, it's hard to argue with.</p>
+<p>Roughly 1,200 training documents, tens of thousands of features, classified in under a second. The model itself is a few kilobytes. Try matching that training time with a fine-tuned transformer.</p>
 
-<!-- ════════════════════════════════════════════ -->
+<h2>When Simple Wins</h2>
 
-<h3>What You Should Now Be Able To Do</h3>
+<p>Both KNN and Naive Bayes beat more complex models in specific, predictable conditions. Knowing when is part of being a good practitioner.</p>
 
-<ul>
-  <li>☑ Write out Bayes' theorem for classification and explain what "naive" means (conditional independence assumption)</li>
-  <li>☑ Explain why Naive Bayes often gets the right class even when the probabilities are miscalibrated</li>
-  <li>☑ Choose between GaussianNB, MultinomialNB, and BernoulliNB based on feature types</li>
-  <li>☑ Explain why Naive Bayes + TF-IDF is a strong baseline for text and how to set it up</li>
-  <li>☑ Describe Laplace smoothing, why it's needed, and what alpha controls</li>
-  <li>☑ List the key strengths (speed, small data, high-d) and weaknesses (calibration, correlations, no interactions)</li>
-  <li>☑ Build a text classification pipeline with TfidfVectorizer + MultinomialNB</li>
-  <li>☑ Explain why correlated features degrade Naive Bayes performance more than other models</li>
-</ul>
+<p>KNN wins when your dataset is small and your feature space is low-dimensional — say, under a few thousand examples and under twenty features. It wins when you need locally interpretable predictions: "this loan application is similar to these five applications that all defaulted" is a compelling story that a gradient-boosted tree can't easily tell. It wins as a quick baseline that requires almost no distributional assumptions, and it wins when decision boundaries are genuinely irregular in ways that no parametric model would assume.</p>
+
+<p>Naive Bayes wins on text — reliably, repeatedly, cheaply. It wins on any high-dimensional sparse data. It wins on tiny datasets where a complex model would overfit badly, because estimating a mean and variance per feature per class requires very few data points per class. It wins when training time is constrained — a single pass through the data is all it needs. It wins on streaming data where you need to update the model one example at a time; Naive Bayes updates are trivially incremental. And it wins when you need a production model that's a few kilobytes rather than a few gigabytes.</p>
+
+<p>Both algorithms win as <em>baselines</em>. Before you train any complex model on a new problem, train KNN and Naive Bayes first. They set the floor — any model that doesn't substantially beat them is not worth the added complexity, training time, or deployment cost. I've seen teams skip this step and spend weeks tuning a neural network to achieve accuracy that a properly set-up Naive Bayes matched in twenty seconds. Don't be those teams.</p>
+
+<h2>Wrap-Up</h2>
+
+<p>Thank you for making the trip with me.</p>
+
+<p>We started at a farmers' market with three fruits and two measurements, and we used those numbers all the way through. KNN grew from a simple neighborhood poll into a full picture: distance metrics computed by hand, Voronoi territories drawn in the mind's eye, the k dial mapped onto the bias-variance tradeoff, the silent importance of feature scaling revealed by actual calculation, the haunting geometry of high-dimensional empty rooms, and the engineering tricks that make it fast enough for production. Then we pivoted entirely — from "find similar examples" to "accumulate probabilistic evidence" — and built Naive Bayes from Bayes' theorem up: made it tractable with the independence assumption, matched it to three data types, patched the zero-probability catastrophe with Laplace smoothing, solved the underflow problem with a move to log space, and ended at the TF-IDF plus MultinomialNB combination that remains one of the most elegant and cost-effective tools in the whole field.</p>
+
+<p>What I hope you're taking away isn't a list of API calls. I hope it's the sense that these algorithms make sense — that there was a problem, someone had a reasonable idea, the idea had a flaw, someone patched the flaw, and the whole thing cohered into something useful. That chain of reasoning is what lets you know when to reach for these tools, when to set them down, and when to look for something else entirely.</p>
+
+<p>The next section covers Decision Trees — a different approach altogether, one that builds explicit if-then rules for classification rather than polling neighbors or multiplying probabilities. The intuition you've built here about bias, variance, and what it means to smooth a decision boundary will transfer directly. See you there.</p>
 
       <div class="page-nav">
         <a class="prev" href="s01.html">
