@@ -293,240 +293,347 @@
 <h1>Decision Trees</h1>
 <div class="chapter-meta">
   <span class="tag">Chapter 5: Supervised Learning</span>
-  <span class="tag">Splits · Pruning · Feature importance · The variance problem</span>
+  <span class="tag">CART · Gini &amp; Entropy · Pruning · Feature importance · The variance problem</span>
 </div>
 
 <!-- ════════════════════════════════════════════ -->
 
-<h2>It's Just a Flowchart</h2>
+<h2>The Game of Twenty Questions</h2>
 
-<p>A decision tree asks a series of yes/no questions about your features, splitting the data into increasingly pure groups. That's it. There's no gradient, no loss surface, no matrix algebra. It's literally a flowchart.</p>
+<p>I avoided taking decision trees seriously for longer than I'd like to admit. They looked too simple. A flowchart? That's a machine learning model? Every time someone mentioned them in the same breath as neural networks or SVMs, I'd nod politely and move on. Finally the discomfort of not understanding why trees form the backbone of every Kaggle-winning tabular model — Random Forests, XGBoost, LightGBM — grew too strong for me. Here is that dive.</p>
 
-<pre><code>Is income > $50k?
-├── Yes → Is age > 30?
-│         ├── Yes → Approve loan
-│         └── No  → Review manually
-└── No  → Is credit score > 700?
-          ├── Yes → Approve loan
-          └── No  → Deny loan</code></pre>
+<p>Decision trees were formalized as a learning algorithm by Leo Breiman and colleagues in 1984 with their CART book (Classification and Regression Trees), though the idea of building flowcharts from data traces back further — Ross Quinlan published ID3 in 1986 and later C4.5 in 1993. Today, trees are everywhere: credit scoring, medical diagnosis, fraud detection, recommendation systems. Not because they're the most accurate model on their own, but because they're the atom that ensemble methods are built from.</p>
 
-<p>Every internal node is a question about one feature. Every branch is a yes/no answer. Every leaf is a prediction. You can print a decision tree on a whiteboard and a non-technical stakeholder can follow the logic — <em>try doing that with a neural network.</em></p>
+<p>Before we start, a heads-up. We're going to work through how trees choose splits, walk through the math of Gini impurity and entropy, and get into pruning and feature importance. But you don't need to know any of it beforehand. We'll add what we need, one piece at a time.</p>
 
-<p>This makes decision trees THE most interpretable model in the standard ML toolkit. That's not just aesthetically nice — it's legally required in domains like credit scoring and healthcare where you need to explain <em>why</em> a prediction was made.</p>
+<p>This isn't a short journey, but I hope you'll be glad you came.</p>
 
-<p>But interpretability isn't why you're learning trees in depth. You're learning them because they're the <strong>building block for ensemble methods</strong> — Random Forests, Gradient Boosted Trees, XGBoost, LightGBM. Those are the models that dominate tabular data in practice. You can't understand ensembles without understanding the single tree they're built from.</p>
+<!-- Table of Contents -->
+<div class="toc" style="margin: 2em 0; padding: 1.2em 1.5em; border-left: 3px solid var(--accent, #6c63ff); background: var(--bg-alt, #f8f9fa); border-radius: 4px;">
+  <p style="margin-top:0; font-weight:600;">Contents</p>
+  <p style="margin:0.3em 0; padding-left:1em;">The Game of Twenty Questions</p>
+  <p style="margin:0.3em 0; padding-left:1em;">A Tiny Fruit Stand</p>
+  <p style="margin:0.3em 0; padding-left:1em;">Measuring Mess: Gini Impurity</p>
+  <p style="margin:0.3em 0; padding-left:1em;">The Other Yardstick: Entropy and Information Gain</p>
+  <p style="margin:0.3em 0; padding-left:1em;">The CART Algorithm — Greedy and Proud of It</p>
+  <p style="margin:0.3em 0; padding-left:1em;">Rest Stop</p>
+  <p style="margin:0.3em 0; padding-left:1em;">Pruning: The Art of Knowing When to Stop</p>
+  <p style="margin:0.3em 0; padding-left:1em;">Feature Importance — and Its Trap</p>
+  <p style="margin:0.3em 0; padding-left:1em;">The Variance Problem: Why One Tree Is Never Enough</p>
+  <p style="margin:0.3em 0; padding-left:1em;">What Trees Can't Do</p>
+  <p style="margin:0.3em 0; padding-left:1em;">Regression Trees: Same Idea, Different Score</p>
+  <p style="margin:0.3em 0; padding-left:1em;">The History We Inherited</p>
+  <p style="margin:0.3em 0; padding-left:1em;">Wrap-Up</p>
+  <p style="margin:0.3em 0; padding-left:1em;">Resources</p>
+</div>
 
 <!-- ════════════════════════════════════════════ -->
 
-<h2>How Splits Are Chosen: Gini vs Entropy</h2>
+<h2>A Tiny Fruit Stand</h2>
 
-<p>At every node, the tree needs to pick a feature and a threshold to split on. It wants splits that produce <em>purer</em> child nodes — groups where most samples belong to the same class. But how do you measure "purity"?</p>
+<p>Imagine you run a fruit stand. Customers dump fruit into a bin and you need to sort it: apple, orange, or lemon. You have three measurements for each piece of fruit — its color (on a redness scale from 0 to 10), its diameter in centimeters, and its surface texture (smooth = 0, bumpy = 1). Here are six fruits:</p>
 
-<h3>Gini Impurity</h3>
+<pre><code>Fruit   | Color | Diameter | Texture | Label
+--------|-------|----------|---------|-------
+  1     |   8   |   7.0    |    0    | Apple
+  2     |   3   |   6.5    |    1    | Orange
+  3     |   7   |   7.2    |    0    | Apple
+  4     |   2   |   5.0    |    0    | Lemon
+  5     |   4   |   6.8    |    1    | Orange
+  6     |   1   |   4.5    |    0    | Lemon</code></pre>
 
-<p>Gini measures the probability of <em>misclassifying</em> a randomly chosen sample if you labeled it according to the class distribution at that node:</p>
+<p>A decision tree approaches this the way a child plays Twenty Questions. It asks a single yes-or-no question about one feature, splits the fruit into two piles based on the answer, and then asks another question about each pile. Each question narrows the possibilities. Each answer guides you down a different branch.</p>
+
+<p>For our fruit, the tree might first ask: "Is color &gt; 5?" The fruits with high redness (fruits 1 and 3, both apples) go left. Everything else goes right. Then for the right pile, it might ask: "Is texture == 1?" Bumpy fruits (2 and 5, both oranges) go one way. Smooth, low-color fruits (4 and 6, both lemons) go the other.</p>
+
+<pre><code>Is color > 5?
+├── Yes → Apple  (fruits 1, 3)
+└── No  → Is texture == 1?
+          ├── Yes → Orange  (fruits 2, 5)
+          └── No  → Lemon   (fruits 4, 6)</code></pre>
+
+<p>That's a decision tree. Three questions, perfectly sorted fruit. Each internal node asks a question about one feature. Each branch is a yes-or-no answer. Each leaf is a prediction. You could draw this on a napkin and anyone — engineer or not — could follow the logic. Try doing that with a neural network.</p>
+
+<p>But here's the question that makes trees interesting: how did the tree know to ask about color first, and not diameter? How did it pick the threshold of 5 instead of 4 or 6? The tree didn't guess. It tried every possible question and picked the one that produced the cleanest split. To understand what "cleanest" means, we need a way to measure mess.</p>
+
+<!-- ════════════════════════════════════════════ -->
+
+<h2>Measuring Mess: Gini Impurity</h2>
+
+<p>Before the tree asks any questions, all six fruits sit in one pile: 2 apples, 2 oranges, 2 lemons. That pile is maximally mixed. If you randomly grabbed a fruit and randomly guessed its label based on the proportions in the pile, you'd be wrong a lot. We need a number that captures that messiness.</p>
+
+<p><strong>Gini impurity</strong> does exactly this. It measures the probability that a randomly chosen sample would be misclassified if you labeled it randomly according to the class proportions at that node. The formula is:</p>
 
 <pre><code>Gini = 1 - Σ(pᵢ²)</code></pre>
 
-<p>Where pᵢ is the proportion of class i at the node. A pure node (all one class) has Gini = 0. Maximum impurity for a binary problem is Gini = 0.5 (50/50 split). The tree picks the split that produces the largest <em>weighted decrease</em> in Gini across the two child nodes.</p>
+<p>where pᵢ is the proportion of class i. Let's work through it for our starting pile. We have three classes, each with proportion 2/6 = 1/3.</p>
 
-<h3>Entropy &amp; Information Gain</h3>
+<pre><code>Gini = 1 - ((1/3)² + (1/3)² + (1/3)²)
+     = 1 - (1/9 + 1/9 + 1/9)
+     = 1 - 3/9
+     = 1 - 0.333
+     = 0.667</code></pre>
 
-<p>Entropy comes from information theory — it measures uncertainty:</p>
+<p>That's close to the maximum mess. Now suppose we split on "color &gt; 5." The left child gets fruits 1 and 3 — both apples. Its Gini is:</p>
 
-<pre><code>Entropy = -Σ(pᵢ log₂ pᵢ)</code></pre>
+<pre><code>Gini_left = 1 - (1.0²) = 0.0</code></pre>
 
-<p>A pure node has entropy 0. Maximum entropy for binary classification is 1.0. <strong>Information gain</strong> is the parent's entropy minus the weighted average of children's entropy. The split that maximizes information gain wins.</p>
+<p>Zero. A pure node. All one class. The right child gets fruits 2, 4, 5, 6 — two oranges and two lemons.</p>
 
-<h3>Which One Should You Use?</h3>
+<pre><code>Gini_right = 1 - ((2/4)² + (2/4)²)
+           = 1 - (0.25 + 0.25)
+           = 0.5</code></pre>
 
-<p>Honestly? Don't overthink it. In practice, Gini and entropy produce <strong>nearly identical trees</strong>. Research has shown they disagree on the chosen split in less than 2% of cases. Gini is marginally faster because it avoids computing logarithms. Sklearn defaults to Gini, and that default is fine.</p>
+<p>To evaluate this split overall, we take the weighted average of the children's impurity, weighted by how many samples went each way. Left got 2 out of 6 samples, right got 4 out of 6.</p>
 
-<h3>Regression Trees: Variance Reduction</h3>
+<pre><code>Gini_split = (2/6) × 0.0 + (4/6) × 0.5
+           = 0 + 0.333
+           = 0.333</code></pre>
 
-<p>For regression, there's no "class purity." Instead, the tree minimizes MSE (mean squared error) at each split. It picks the split that maximizes the <em>reduction in variance</em> — the child nodes should have less variance in the target than the parent. Each leaf predicts the mean of the training samples that ended up there.</p>
+<p>We started at 0.667 and dropped to 0.333. That's a Gini reduction of 0.334. The tree tries every possible split on every feature, computes this reduction for each one, and picks the split with the biggest drop. That's the split that creates the "cleanest" child nodes — where the fruit piles are closest to being all one type.</p>
 
-<!-- ════════════════════════════════════════════ -->
-
-<h2>The Greedy Algorithm: CART</h2>
-
-<p>The algorithm behind most decision tree implementations is <strong>CART</strong> (Classification and Regression Trees). Here's what it does at every node:</p>
-
-<ol>
-  <li>For <strong>every feature</strong>, sort the values and consider every midpoint between adjacent values as a candidate threshold.</li>
-  <li>For <strong>every candidate threshold</strong>, compute the impurity reduction if you split there.</li>
-  <li>Pick the (feature, threshold) pair with the <strong>highest impurity reduction</strong>.</li>
-  <li>Split the data and recurse on each child.</li>
-  <li>Stop when a stopping criterion is met (max depth, min samples, pure node, etc.).</li>
-</ol>
-
-<p>This is <strong>greedy</strong>: it picks the locally best split at each step without considering what splits come later. A split that looks mediocre now might enable amazing splits downstream — but CART will never find it. Finding the globally optimal tree is NP-hard, so greedy is what we've got.</p>
-
-<p>The greedy nature has a practical consequence: <strong>the order of early splits matters enormously.</strong> A slightly different first split can cascade into a completely different tree structure. This instability is a feature, not a bug — it's exactly what ensemble methods will exploit.</p>
+<p>A Gini of 0 means a perfectly pure node. A Gini of 0.5 (for binary) or higher (for multi-class) means maximum confusion. The tree is chasing zeros.</p>
 
 <!-- ════════════════════════════════════════════ -->
 
-<h2>Pruning: Because Unchecked Trees Memorize Everything</h2>
+<h2>The Other Yardstick: Entropy and Information Gain</h2>
 
-<p>An unpruned decision tree will keep splitting until every leaf contains exactly one class (or even one sample). This gives you 100% training accuracy and terrible test accuracy. The tree has memorized the training data, noise and all.</p>
+<p>I'll be honest — I spent way too long early on trying to figure out when to use Gini versus entropy, convinced there was some deep secret about when each was better. There isn't. But entropy is worth understanding because it comes from information theory and gives a different angle on the same idea.</p>
 
-<p>Pruning is how you control this. There are two strategies:</p>
+<p><strong>Entropy</strong> measures uncertainty. If you're about to pick a fruit from a pile and you have no idea what it'll be, that's high entropy. If the pile is all apples, you know exactly what you'll get — zero entropy. The formula:</p>
 
-<h3>Pre-pruning (Restriction)</h3>
+<pre><code>Entropy = -Σ(pᵢ × log₂(pᵢ))</code></pre>
 
-<p>Stop growing the tree early by constraining its structure. These are your <strong>real hyperparameters</strong>:</p>
+<p>For our starting pile of 2 apples, 2 oranges, 2 lemons:</p>
 
-<table>
-  <thead>
-    <tr><th>Parameter</th><th>What it does</th><th>Typical range</th></tr>
-  </thead>
-  <tbody>
-    <tr><td><code>max_depth</code></td><td>Maximum tree depth</td><td>3–20 (start with 5)</td></tr>
-    <tr><td><code>min_samples_split</code></td><td>Minimum samples to split a node</td><td>2–50</td></tr>
-    <tr><td><code>min_samples_leaf</code></td><td>Minimum samples in a leaf</td><td>1–20</td></tr>
-    <tr><td><code>max_features</code></td><td>Max features considered per split</td><td>"sqrt", "log2", or int</td></tr>
-  </tbody>
-</table>
+<pre><code>Entropy = -(1/3 × log₂(1/3)) × 3
+        = -(1/3 × (-1.585)) × 3
+        = 1.585</code></pre>
 
-<p><code>max_depth</code> is the single most important hyperparameter. A depth-5 tree has at most 2⁵ = 32 leaves. A depth-20 tree has over a million. Start shallow and increase until validation accuracy plateaus.</p>
+<p>For a pure node (all one class), entropy is 0. For binary classification with a 50/50 split, entropy is 1.0. The key difference from Gini is the scale — entropy can go above 1.0 for multi-class problems — but the shape is similar. Both are concave curves that peak when classes are evenly distributed and hit zero when a node is pure.</p>
 
-<h3>Post-pruning (Cost-Complexity Pruning)</h3>
+<p><strong>Information gain</strong> is the parent's entropy minus the weighted average of the children's entropy. It measures how much uncertainty the split eliminates. The split that eliminates the most uncertainty wins.</p>
 
-<p>Grow the full tree first, then prune it back. Sklearn implements this with the <code>ccp_alpha</code> parameter (cost-complexity pruning). Larger alpha values prune more aggressively. Think of it like regularization strength for trees.</p>
+<p>Here's the thing that took me too long to internalize: in practice, Gini and entropy produce nearly identical trees. Research has shown they disagree on the chosen split in less than 2% of cases. Gini is marginally faster because it skips the logarithm. Scikit-learn defaults to Gini. That default is fine. If someone in an interview asks you when to prefer one over the other, the honest answer is that it almost never matters — and that honesty will land better than a made-up rule of thumb.</p>
 
-<p>The idea: for each subtree, is the improvement in accuracy worth the added complexity? If not, collapse it back to a leaf. This often produces better trees than pre-pruning alone because it can evaluate the full tree structure before deciding what to cut.</p>
+<p>There's a historical wrinkle worth knowing. Quinlan's ID3 algorithm (1986) used information gain, but it had a flaw: information gain is biased toward features with many distinct values. A feature like "customer_id" with thousands of unique values could produce incredible information gain by trivially splitting into pure nodes that each contain one sample. Quinlan fixed this in C4.5 (1993) with <strong>gain ratio</strong> — information gain divided by the feature's own entropy (called split information), which penalizes features that scatter data into many small groups. Breiman's CART, meanwhile, used Gini impurity and sidestepped the problem entirely by always making binary splits.</p>
 
 <!-- ════════════════════════════════════════════ -->
 
-<h2>Feature Importance: Built-In Feature Selection</h2>
+<h2>The CART Algorithm — Greedy and Proud of It</h2>
 
-<p>Every time a tree makes a split, it records how much that split reduced impurity. Sum these reductions across all splits for each feature, normalize, and you get <strong>feature importance scores</strong>. It's automatic — no extra computation needed.</p>
+<p>With a way to measure mess in hand, we can describe the algorithm that actually builds the tree. CART — Classification and Regression Trees — was published by Breiman, Friedman, Olshen, and Stone in 1984, and it remains the foundation of scikit-learn's <code>DecisionTreeClassifier</code> today.</p>
 
-<pre><code class="language-python">tree = DecisionTreeClassifier(max_depth=5).fit(X_train, y_train)
-for name, imp in sorted(zip(feature_names, tree.feature_importances_),
-                         key=lambda x: -x[1]):
-    print(f"{name:25s} {imp:.4f}")</code></pre>
+<p>Here's what CART does at every node. It looks at each feature in turn. For a continuous feature, it sorts the values and considers every midpoint between adjacent values as a candidate threshold. For our fruit's color feature with values [1, 2, 3, 4, 7, 8], the candidate thresholds would be 1.5, 2.5, 3.5, 5.5, and 7.5. For each candidate, it splits the data left and right, computes the weighted Gini impurity of the two children, and records the reduction from the parent. After trying every threshold on every feature, it picks the (feature, threshold) pair that produced the biggest impurity reduction. Then it splits the data and repeats the whole process on each child node, stopping when a node is pure, or when some limit is hit.</p>
 
-<p>This is genuinely useful for understanding your data. But there's a trap:</p>
+<p>Let's trace through one step with our fruit stand. At the root, we have all six fruits. CART considers every possible split:</p>
 
-<p><strong>High-cardinality features get inflated importance.</strong> A feature with 1,000 unique values has many more candidate split points than a binary feature. More opportunities to split → more chances to reduce impurity → artificially higher importance. A random ID column can appear "important" simply because it has a unique value for every sample.</p>
+<pre><code>Feature: Color
+  threshold 1.5 → left: {Lemon}  right: {Apple,Orange,Apple,Lemon,Orange}
+  threshold 2.5 → left: {Lemon,Lemon}  right: {Apple,Orange,Apple,Orange}
+  threshold 3.5 → left: {Orange,Lemon,Lemon}  right: {Apple,Apple,Orange}
+  threshold 5.5 → left: {Orange,Lemon,Orange,Lemon}  right: {Apple,Apple}
+  ...
+Feature: Diameter
+  (similarly, tries every midpoint)
+Feature: Texture
+  threshold 0.5 → left: {Apple,Apple,Lemon,Lemon}  right: {Orange,Orange}</code></pre>
 
-<p>The fix: <strong>use permutation importance instead.</strong> Shuffle a feature's values, measure how much accuracy drops. This measures actual predictive power regardless of cardinality. Sklearn provides <code>permutation_importance()</code> for exactly this.</p>
+<p>For each of these, CART computes the Gini reduction. The split "color &gt; 5.5" creates a left child with two pure apples (Gini = 0) and a right child with two oranges and two lemons (Gini = 0.5). The weighted reduction is 0.334, which turns out to be the best among all candidates. So CART picks it.</p>
 
-<!-- ════════════════════════════════════════════ -->
+<p>This process is <strong>greedy</strong>. At each node, CART picks the locally best split without any consideration of what splits might come later. A split that looks mediocre right now might enable a brilliant split two levels down — but CART will never find it. Finding the globally optimal tree is NP-hard (proven by Hyafil and Rivest in 1976), so greedy is what we have.</p>
 
-<h2>Handling Different Data Types</h2>
+<p>The fact that finding the optimal tree is NP-hard still bothers me, if I'm being honest. It means every decision tree you've ever trained is an approximation. A good approximation — good enough that trees and their ensembles dominate tabular machine learning. But an approximation nonetheless.</p>
 
-<h3>Categorical Features</h3>
-
-<p>Base sklearn trees can't handle categorical features natively — you need to encode them first (one-hot or ordinal). This is annoying and can introduce problems: one-hot encoding a 50-category feature creates 50 binary columns, which fragments the split decisions. Ordinal encoding imposes an arbitrary ordering.</p>
-
-<p><strong>LightGBM and CatBoost handle categoricals natively</strong> — they find optimal category groupings without encoding. This is one of their real advantages over raw sklearn trees.</p>
-
-<h3>Missing Values</h3>
-
-<p>Sklearn's <code>DecisionTreeClassifier</code> can't handle NaN values — you must impute first. But <strong>XGBoost and LightGBM learn which direction to send missing values</strong> at each split. During training, they try both directions and pick the one that reduces loss more. This is elegant and often better than any imputation strategy.</p>
-
-<h3>Feature Scaling: Not Needed</h3>
-
-<p>This is a <strong>big practical advantage</strong>. Trees only care about the <em>ordering</em> of feature values, not their magnitude. Whether income is measured in dollars or millions of dollars, the same threshold gets found. No StandardScaler, no MinMaxScaler, no worrying about different units across features. Just feed raw features in.</p>
+<p>The greedy nature has a practical consequence that matters a lot: the first split casts a long shadow. If one extra data point changes the root split from "color &gt; 5.5" to "diameter &gt; 6.0," every subsequent split in the tree changes too. The entire structure cascades from that one decision. We'll come back to this instability later — it's going to turn from a weakness into the most important property of trees.</p>
 
 <!-- ════════════════════════════════════════════ -->
 
-<h2>Strengths and Weaknesses</h2>
+<h2>Rest Stop</h2>
 
-<table>
-  <thead>
-    <tr><th>Strengths</th><th>Weaknesses</th></tr>
-  </thead>
-  <tbody>
-    <tr><td>Highly interpretable — print and explain</td><td>High variance — small data changes → completely different tree</td></tr>
-    <tr><td>No feature scaling required</td><td>Prone to overfitting without pruning</td></tr>
-    <tr><td>Handles non-linear relationships naturally</td><td>Greedy splits aren't globally optimal</td></tr>
-    <tr><td>Built-in feature importance</td><td>Can't extrapolate beyond training data range</td></tr>
-    <tr><td>Fast training and prediction</td><td>Unstable — high sensitivity to training data</td></tr>
-    <tr><td>Works with both classification and regression</td><td>Axis-aligned splits only (staircase decision boundaries)</td></tr>
-  </tbody>
-</table>
+<p>Congratulations on making it this far. You can stop here if you want.</p>
 
-<p>The axis-aligned split limitation deserves a note. Trees can only split perpendicular to feature axes — they can't draw diagonal boundaries. If the true decision boundary is a 45° line in feature space, a tree approximates it with a staircase of horizontal and vertical cuts. More depth → finer staircase → but also more overfitting.</p>
+<p>At this point you have a working mental model of what a decision tree is and how it's built: a series of yes-or-no questions about features, chosen greedily to maximize purity at each step, using Gini impurity (or entropy) to measure how "mixed" a node is. CART tries every feature and every threshold, picks the best split, and recurses. That mental model is genuinely useful — it'll let you explain trees in an interview, understand what sklearn is doing under the hood, and reason about why trees behave the way they do.</p>
+
+<p>But it doesn't tell the complete story. An unchecked tree will memorize your training data. Feature importance scores can lie to you. And the most important property of decision trees — their instability — is something we haven't confronted yet. That instability is what makes ensemble methods work, and you can't really understand Random Forests or XGBoost without understanding why a single tree is so fragile.</p>
+
+<p>If the discomfort of not knowing what's underneath is nagging at you, read on.</p>
 
 <!-- ════════════════════════════════════════════ -->
 
-<h2>The Variance Problem: Why Single Trees Aren't Enough</h2>
+<h2>Pruning: The Art of Knowing When to Stop</h2>
 
-<p>This is the most important thing to understand about decision trees, because it's the entire motivation for ensemble methods.</p>
+<p>Left unchecked, our tree algorithm will keep splitting until every leaf contains exactly one class — or even exactly one sample. On our tiny fruit stand this gives perfect accuracy. On a real dataset with ten thousand samples and a hundred features, it gives a nightmarish tree with thousands of leaves that has memorized every quirk and bit of noise in the training data. Training accuracy: 100%. Test accuracy: garbage.</p>
 
-<p>A single decision tree is a <strong>high-variance, low-bias</strong> model. It can fit arbitrarily complex patterns (low bias) but is extremely sensitive to the specific training data it sees (high variance). Remove a handful of samples, add a few new ones, and you can get a <em>completely different tree</em> with different features, different thresholds, different structure.</p>
+<p>Think of it like a gardener who never prunes a rose bush. The bush grows wild, with branches reaching in every direction, wasting energy on growth that produces no flowers. Pruning cuts back the excess to focus energy where it counts. Decision tree pruning works the same way — it cuts back branches that capture noise instead of signal.</p>
 
-<p>Why? Because the greedy algorithm compounds small changes. If a slightly different sample causes the first split to use a different feature, every subsequent split changes too. The instability cascades.</p>
+<p>There are two strategies, and they correspond to two different philosophies.</p>
 
-<p>Think of it as the tree <em>overfitting to the particular training set</em> — not just the noise in the data, but the specific random sample of the population it happened to see. Two trees trained on different random subsets of the same population might agree on the overall trend but disagree wildly on specifics.</p>
+<p><strong>Pre-pruning</strong> says: don't let the tree grow wild in the first place. Set limits before training begins. The main controls are <code>max_depth</code> (how many layers deep the tree can go), <code>min_samples_split</code> (the minimum number of samples a node must have to be split further), and <code>min_samples_leaf</code> (the minimum number of samples that must end up in each leaf). Of these, <code>max_depth</code> is the single most important. A depth-5 tree has at most 2⁵ = 32 leaves. A depth-20 tree has over a million. The difference between those two trees isn't a matter of degree — it's the difference between an interpretable model and a lookup table.</p>
 
-<p>Here's the key insight: <strong>if individual trees have low bias but high variance, what if we averaged many of them?</strong> Averaging reduces variance without increasing bias. That's Random Forests. And what if instead of averaging independent trees, we built each new tree to specifically correct the errors of the previous ones? That's Gradient Boosting.</p>
+<p>The risk with pre-pruning is stopping too early. A split that looks useless at depth 3 might enable a powerful split at depth 4. By refusing to grow past depth 3, you'll never discover it. It's like telling a gardener to stop pruning at exactly 3 feet, regardless of where the best buds are.</p>
 
-<p>The instability of a single tree isn't a bug — it's the <em>raw material</em> that ensemble methods need. Without variance, there would be nothing to average out.</p>
+<p><strong>Post-pruning</strong> takes the opposite approach: let the tree grow to its full wild glory, then prune it back. The most common variant is <strong>cost-complexity pruning</strong>, implemented in scikit-learn through the <code>ccp_alpha</code> parameter. The idea is captured in a single formula:</p>
 
-<!-- ════════════════════════════════════════════ -->
+<pre><code>R_α(T) = R(T) + α × |T|</code></pre>
 
-<h2>Production Gotchas</h2>
+<p>where R(T) is the tree's misclassification rate, |T| is the number of leaves, and α (alpha) is a complexity penalty. Larger α means you penalize complexity more — more pruning, simpler tree. When α = 0, there's no penalty and you get the full unpruned tree. As α increases, subtrees get collapsed back into leaves whenever the accuracy gained by keeping them isn't worth the complexity.</p>
 
-<p><strong>Trees can't extrapolate.</strong> If your training data has house prices ranging from $100k to $500k, the tree will <em>never</em> predict $600k. Every leaf prediction is the mean (regression) or majority class (classification) of training samples in that leaf. This is a fundamental limitation for time series or any domain where the target can exceed the training range.</p>
+<p>The elegant part is how you find the right α: you don't guess. Scikit-learn's <code>cost_complexity_pruning_path</code> computes a sequence of α values where the tree changes structure — each value corresponds to a different tree size. You cross-validate across these candidates and pick the α that gives the best validation performance. It's like the tree presenting a menu of its own possible sizes and asking the data to choose.</p>
 
-<p><strong>Imbalanced classes need explicit handling.</strong> Trees optimize purity, and a node that's 95% majority class already looks pretty "pure." Use <code>class_weight='balanced'</code> to make the tree pay more attention to minority classes, or resample your data before training.</p>
-
-<p><strong>Large trees are slow in production.</strong> A depth-30 tree requires up to 30 sequential comparisons per prediction. For latency-sensitive serving, keep trees shallow or use model distillation.</p>
-
-<p><strong>Don't trust single-tree feature importance.</strong> As discussed, it's biased toward high-cardinality features and unstable across runs. Use <code>permutation_importance()</code> or, better yet, get feature importance from an ensemble (where instability averages out).</p>
-
-<!-- ════════════════════════════════════════════ -->
-
-<h2>Code: Decision Tree with Cross-Validated Pruning</h2>
-
-<pre><code class="language-python">from sklearn.datasets import load_breast_cancer
-from sklearn.tree import DecisionTreeClassifier
+<pre><code class="language-python">from sklearn.tree import DecisionTreeClassifier
 from sklearn.model_selection import cross_val_score
+from sklearn.datasets import load_breast_cancer
 import numpy as np
 
 X, y = load_breast_cancer(return_X_y=True)
 
-# Step 1: find optimal ccp_alpha via built-in cost-complexity path
-base_tree = DecisionTreeClassifier(random_state=42)
-path = base_tree.cost_complexity_pruning_path(X, y)
-alphas = path.ccp_alphas[:-1]  # last is trivial (single-node tree)
+# Grow full tree to compute the pruning path
+full_tree = DecisionTreeClassifier(random_state=42)
+path = full_tree.cost_complexity_pruning_path(X, y)
+alphas = path.ccp_alphas[:-1]  # last alpha gives a single-node tree
 
-# Step 2: cross-validate each alpha
-scores = [cross_val_score(
-    DecisionTreeClassifier(ccp_alpha=a, random_state=42),
-    X, y, cv=5, scoring='accuracy'
-).mean() for a in alphas]
+# Cross-validate each candidate alpha
+cv_scores = [
+    cross_val_score(
+        DecisionTreeClassifier(ccp_alpha=a, random_state=42),
+        X, y, cv=5, scoring='accuracy'
+    ).mean()
+    for a in alphas
+]
 
-best_alpha = alphas[np.argmax(scores)]
-print(f"Best alpha: {best_alpha:.4f}  CV accuracy: {max(scores):.4f}")
+best_alpha = alphas[np.argmax(cv_scores)]
+print(f"Best alpha: {best_alpha:.4f}, CV accuracy: {max(cv_scores):.4f}")
 
-# Step 3: train final pruned tree
+# Train the final pruned tree
 tree = DecisionTreeClassifier(ccp_alpha=best_alpha, random_state=42)
 tree.fit(X, y)
-print(f"Tree depth: {tree.get_depth()}, leaves: {tree.get_n_leaves()}")</code></pre>
+print(f"Depth: {tree.get_depth()}, Leaves: {tree.get_n_leaves()}")</code></pre>
 
-<p>This is the right way to prune: let the data tell you how much complexity is justified. The cost-complexity path gives you a menu of tree sizes, and cross-validation picks the best one. You'll typically end up with a tree that's 5–10 nodes deep instead of 20+.</p>
+<p>This produces a tree that's typically 4–8 levels deep instead of 20+. The pruning path hands you a menu. Cross-validation picks the right item. The gardener analogy comes back: post-pruning is like letting the bush grow freely, then stepping back, looking at the whole thing, and cutting the branches that aren't producing flowers. It can see the full structure before deciding what to cut, which is why it often produces better results than pre-pruning alone.</p>
+
+<p>In practice, many experienced practitioners combine both: set a reasonable <code>max_depth</code> (say, 10–15) to keep training fast, then apply <code>ccp_alpha</code> to fine-tune the result.</p>
 
 <!-- ════════════════════════════════════════════ -->
 
-<h2>What You Should Now Be Able To Do</h2>
+<h2>Feature Importance — and Its Trap</h2>
 
-<ul>
-  <li>☑ Explain how a decision tree makes predictions (recursive yes/no splits on features leading to leaf predictions)</li>
-  <li>☑ Compute Gini impurity and entropy by hand for a simple split, and explain why they give nearly identical results</li>
-  <li>☑ Describe the CART algorithm: greedy search over all features and thresholds, maximizing impurity reduction</li>
-  <li>☑ Explain why unpruned trees overfit and name the key pre-pruning hyperparameters (<code>max_depth</code>, <code>min_samples_split</code>, <code>min_samples_leaf</code>)</li>
-  <li>☑ Use <code>ccp_alpha</code> with cross-validation to find the optimal pruning level</li>
-  <li>☑ Extract feature importances from a tree and explain why high-cardinality features get inflated scores</li>
-  <li>☑ Explain why trees don't need feature scaling, and the trade-offs with categorical features and missing values</li>
-  <li>☑ Describe the variance problem: why small data changes produce wildly different trees</li>
-  <li>☑ Explain why single-tree instability is the motivation for ensemble methods (averaging reduces variance)</li>
-  <li>☑ Identify when trees will fail in production: extrapolation, class imbalance, and unreliable feature importance</li>
-</ul>
+<p>Every time the tree makes a split, it records how much that split reduced impurity. After training, you can sum up the total impurity reduction contributed by each feature, normalize so they add up to 1.0, and get a ranked list of which features mattered most. This is called <strong>impurity-based feature importance</strong>, and it comes free with every trained tree.</p>
+
+<pre><code class="language-python">tree = DecisionTreeClassifier(max_depth=5, random_state=42)
+tree.fit(X_train, y_train)
+
+for name, importance in sorted(
+    zip(feature_names, tree.feature_importances_),
+    key=lambda x: -x[1]
+)[:5]:
+    print(f"{name:30s} {importance:.4f}")</code></pre>
+
+<p>This is genuinely useful for getting a quick sense of what's driving your model. But there's a trap, and it's one that catches experienced practitioners too.</p>
+
+<p><strong>Impurity-based importance is biased toward features with many unique values.</strong> Think about why. A feature with 1,000 unique values gives the tree 999 candidate split points. A binary feature gives it one. More candidates means more chances for at least one of them to produce a large impurity reduction, even by luck. A completely random column with unique values for every row — something like a customer ID — can appear "important" because it trivially splits the data into pure single-sample nodes.</p>
+
+<p>The fix is <strong>permutation importance</strong>. The idea is simple and elegant: after training the tree, take one feature at a time and shuffle its values across samples, breaking the relationship between that feature and the target. Then measure how much accuracy drops. If shuffling a feature tanks performance, it was genuinely important. If accuracy barely budges, it wasn't — regardless of how many split points it had.</p>
+
+<pre><code class="language-python">from sklearn.inspection import permutation_importance
+
+result = permutation_importance(tree, X_test, y_test,
+                                n_repeats=10, random_state=42)
+for name, importance in sorted(
+    zip(feature_names, result.importances_mean),
+    key=lambda x: -x[1]
+)[:5]:
+    print(f"{name:30s} {importance:.4f}")</code></pre>
+
+<p>Permutation importance measures actual predictive power, not the statistical accident of having many split candidates. It's what you should report when someone asks "which features matter?" — especially in a production context where decisions are being made based on those rankings.</p>
+
+<p>There's a deeper approach too: <strong>SHAP values</strong> (SHapley Additive exPlanations) come from game theory and give per-sample, per-feature attribution. For tree models specifically, TreeSHAP computes these in polynomial time, making it practical even on large datasets. But permutation importance is a solid default when you need quick, reliable rankings.</p>
+
+<!-- ════════════════════════════════════════════ -->
+
+<h2>The Variance Problem: Why One Tree Is Never Enough</h2>
+
+<p>This is the most important thing to understand about decision trees. Everything else — the ensembles, the boosting, the billion-dollar Kaggle-winning pipelines — traces back to this single property.</p>
+
+<p>A decision tree is a <strong>high-variance, low-bias</strong> learner. It can carve out arbitrarily complex decision boundaries (low bias), but it's exquisitely sensitive to the particular training data it sees (high variance). Remove five samples, add five new ones, and you might get a <em>completely different tree</em> — different root feature, different thresholds, different structure, different predictions.</p>
+
+<p>I still get surprised by this sometimes. I'll retrain a tree on a dataset that differs by a handful of rows and the resulting tree looks nothing like the original. Not "a little different." Unrecognizably different.</p>
+
+<p>The reason traces back to the greedy algorithm. Remember: the root split casts a long shadow. Imagine two features are nearly tied at the root — feature A gives a Gini reduction of 0.334 and feature B gives 0.331. A few data points changing hands can flip which one wins. Once the root is different, the two child nodes contain different subsets. The splits at the next level are chosen from different pools of data. The cascade continues downward. By the time you reach the leaves, the two trees share almost nothing.</p>
+
+<p>Think of our Twenty Questions analogy again. If the first question changes from "Is it a mammal?" to "Does it live in water?," every follow-up question has to change too. The whole game takes a different path from a single altered starting point.</p>
+
+<p>Why does this matter? Because a model that changes dramatically with small data perturbations can't be trusted on its own. Two trees trained on different random samples of the same population will agree on broad trends but disagree wildly on specific predictions. That disagreement <em>is</em> variance, and variance means unreliable predictions.</p>
+
+<p>Here's the insight that changed tree-based machine learning forever: <strong>if individual trees have low bias but high variance, what if you averaged many of them?</strong> Averaging independent estimates reduces variance without increasing bias — that's a statistical fact that predates machine learning by centuries. That idea became Random Forests (Breiman, 2001): train hundreds of trees on different bootstrap samples of the data, with random subsets of features at each split, and average their predictions. The individual trees are wild and unstable. The average is stable and powerful.</p>
+
+<p>And what if, instead of averaging independent trees, you built each new tree to specifically fix the mistakes of the previous ones? That's Gradient Boosting (Friedman, 1999), and it's what powers XGBoost, LightGBM, and CatBoost — the models that dominate structured data in industry and competitions alike.</p>
+
+<p>The instability of a single decision tree isn't a defect. It's the raw material that ensemble methods need. Without variance, there would be nothing to average out. Without diversity, there would be nothing to boost. The weakness of the single tree is what makes the forest strong.</p>
+
+<!-- ════════════════════════════════════════════ -->
+
+<h2>What Trees Can't Do</h2>
+
+<p>Decision trees have real limitations, and understanding them matters more than memorizing strengths.</p>
+
+<p><strong>Trees cannot extrapolate.</strong> This is fundamental and often overlooked. If your training data has house prices ranging from $100k to $500k, a regression tree will <em>never</em> predict $600k. Every leaf prediction is the mean of the training samples that ended up in that leaf, and no mean of numbers between 100k and 500k will ever exceed 500k. A linear model, by contrast, can extend its line beyond the training range. For time series data or any domain where future values can exceed historical ranges, a standalone tree will fail. This limitation carries over to Random Forests too — averaging a bunch of trees that can't extrapolate produces an ensemble that can't extrapolate.</p>
+
+<p><strong>Trees draw staircase boundaries.</strong> Every split is perpendicular to a single feature axis — "Is color &gt; 5?" draws a vertical line in feature space. A tree can never draw a diagonal boundary directly. If the true separation between apples and oranges runs at 45 degrees through the space of color and diameter, the tree approximates it with a staircase: a series of horizontal and vertical cuts that zigzag along the true boundary. More depth gives a finer staircase, but also more overfitting. This is the axis-aligned split limitation. Oblique decision trees, which split on linear combinations of features (like "0.3 × color + 0.7 × diameter &gt; 4"), can draw diagonal boundaries with fewer nodes, but they're harder to train, harder to interpret, and rarely used in practice — ensembles of axis-aligned trees tend to work better.</p>
+
+<p><strong>Categorical features require encoding in scikit-learn.</strong> The <code>DecisionTreeClassifier</code> in sklearn can't handle string categories natively. You have to one-hot encode or ordinal encode them first. One-hot encoding a feature with 50 categories creates 50 binary columns, which fragments the tree's splitting decisions and dilutes importance. Ordinal encoding imposes an arbitrary ordering that the tree will treat as meaningful. LightGBM and CatBoost handle categorical features natively by finding optimal category groupings at each split. This is one of their genuine advantages.</p>
+
+<p><strong>Missing values need workarounds.</strong> Sklearn trees can't handle NaN values — you have to impute before training. Breiman's original CART algorithm had a clever solution called <strong>surrogate splits</strong>: during training, for each split, CART identifies other features whose splits mimic the primary split most closely. When a sample has a missing value for the primary split feature, the tree uses the best available surrogate to route it. XGBoost and LightGBM take a different approach — they learn a <strong>default direction</strong> for missing values at each split, trying both left and right during training and keeping whichever reduces loss more. This is elegant and often better than any manual imputation.</p>
+
+<p><strong>No feature scaling needed.</strong> This is a genuine practical advantage. Trees care about the ordering of feature values, not their magnitude. Whether income is measured in dollars or millions of dollars, the same optimal threshold gets found. No StandardScaler, no MinMaxScaler, no worrying about different units. Feed raw features in.</p>
+
+<!-- ════════════════════════════════════════════ -->
+
+<h2>Regression Trees: Same Idea, Different Score</h2>
+
+<p>Everything we've discussed has used classification as the running example, but CART handles regression too. The logic is identical — recursive greedy splitting — but the scoring function changes. Instead of Gini impurity or entropy, a regression tree minimizes <strong>mean squared error</strong> (MSE) at each split. It picks the split that maximizes the <em>reduction in variance</em> of the target variable: the child nodes should have less spread in their target values than the parent.</p>
+
+<p>Each leaf predicts the mean of the training samples that ended up there. This is why regression trees can't extrapolate — the prediction is always a mean of training values, and no mean will ever exceed the maximum or fall below the minimum of the values being averaged.</p>
+
+<p>Regression trees are the building blocks for gradient boosted regression, which is arguably the most powerful technique for tabular regression problems. The individual regression trees in a gradient boosting ensemble are typically very shallow — depth 3 to 6 — and each one fits the residual errors of the ensemble so far. But we'll save that story for the ensemble methods section.</p>
+
+<!-- ════════════════════════════════════════════ -->
+
+<h2>The History We Inherited</h2>
+
+<p>It's worth knowing where the algorithms you use came from, because the design choices echo into every tree you train today.</p>
+
+<p>In 1984, Leo Breiman and three co-authors published the CART book. CART introduced binary splits, Gini impurity, cost-complexity pruning, and surrogate splits for missing values. It handled both classification and regression. It was the first comprehensive, principled tree-building algorithm.</p>
+
+<p>Two years later, Ross Quinlan published ID3 — a simpler algorithm that used information gain (entropy) and could handle multi-way splits for categorical features. ID3 was easier to implement but had weaknesses: it couldn't handle continuous features, couldn't handle missing values, and its splitting criterion was biased toward features with many categories.</p>
+
+<p>Quinlan fixed all of these in C4.5 (1993), which introduced gain ratio to debias the splitting criterion, added support for continuous features by finding thresholds, handled missing values through probability-based routing, and included post-pruning. C4.5 became one of the most cited algorithms in machine learning history.</p>
+
+<p>Today, scikit-learn's implementation follows the CART approach (binary splits, Gini or entropy, cost-complexity pruning). The gradient boosting libraries — XGBoost, LightGBM, CatBoost — all build on CART's foundation with their own innovations. The tree you train in 2024 is a direct descendant of Breiman's 1984 book.</p>
+
+<!-- ════════════════════════════════════════════ -->
+
+<h2>Wrap-Up</h2>
+
+<p>If you're still with me, thank you. I hope it was worth it.</p>
+
+<p>We started with a bin of six fruits and the game of Twenty Questions. We learned how Gini impurity and entropy measure the messiness of a node, how CART greedily searches through every feature and every threshold to find the split that cleans things up the most, and why that greedy search — despite producing only an approximation — works remarkably well. We pruned trees like a gardener to prevent memorization. We saw how feature importance can lie to you if you're not careful, and how permutation importance tells the truth. And we confronted the variance problem — the instability that makes a single tree unreliable but makes a forest of them powerful.</p>
+
+<p>My hope is that the next time you see a <code>DecisionTreeClassifier</code> in a codebase, or get asked "explain how XGBoost works" in an interview, instead of that old vague sense of "it's a flowchart, I think," you'll be able to trace the logic all the way down — from Gini impurity to greedy splits to pruning to the variance that makes ensembles possible — having a solid mental model of what's happening under the hood.</p>
+
+<!-- ════════════════════════════════════════════ -->
+
+<h2>Resources</h2>
+
+<p>Breiman, Friedman, Olshen, Stone — <em>Classification and Regression Trees</em> (1984). The O.G. book. Dense but foundational. If you want to understand CART's original intent, including surrogate splits and cost-complexity pruning as Breiman envisioned them, this is the source.</p>
+
+<p>Quinlan — <em>C4.5: Programs for Machine Learning</em> (1993). The book that made decision trees accessible to a generation of researchers. Introduces gain ratio and explains why information gain alone falls short.</p>
+
+<p>Scikit-learn's <a href="https://scikit-learn.org/stable/modules/tree.html">Decision Trees User Guide</a>. Surprisingly deep for library documentation. The section on cost-complexity pruning is particularly well-written.</p>
+
+<p>Hastie, Tibshirani, Friedman — <em>The Elements of Statistical Learning</em>, Chapter 9. Covers trees, bagging, random forests, and boosting in a unified framework. Free PDF available from the authors. Wildly useful as a reference once you have the intuition.</p>
+
+<p>Christoph Molnar — <em><a href="https://christophm.github.io/interpretable-ml-book/">Interpretable Machine Learning</a></em>. The chapters on feature importance, SHAP, and permutation importance are insightful and practical. Pairs well with tree-based models.</p>
 
       <div class="page-nav">
         <a class="prev" href="s03.html">
