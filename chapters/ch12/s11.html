@@ -295,865 +295,500 @@
 
     <div class="content">
 
-<h1>Emerging Patterns &mdash; MoE, SLMs, Multimodal &amp; Beyond</h1>
+<h1>Emerging Patterns &mdash; The Frontier Is Shifting Under Our Feet</h1>
 <div class="chapter-meta">
   <span class="tag">Chapter 12: Large Language Models</span>
-  <span class="tag">8 subtopics</span>
+  <span class="tag">10 subtopics</span>
 </div>
 
-<div class="tldr">
-  <div class="tldr-label">TL;DR</div>
-  <p>The LLM landscape is shifting fast. Mixture of Experts (MoE) gives you dense-model quality at a fraction of the inference cost by routing each token to only 2 of 8 expert networks. Small Language Models like Phi and Gemma prove that data quality beats raw parameter count. Multimodal models process images, audio, and text natively. Context windows have exploded from 2K to 1M+ tokens. Compound AI systems combine models, tools, and retrieval into pipelines that outperform any single model call. Synthetic data is training the next generation of models. Open-source is closing the gap on closed APIs. And edge AI is putting capable models on phones and laptops. This section surveys all of it &mdash; not as hype, but as patterns you&rsquo;ll encounter in real production systems.</p>
-</div>
+<p>I avoided writing about "emerging patterns" for a long time. The field moves so fast that anything I write today risks being obsolete next Tuesday. Every week a new model drops, a new technique goes viral on Twitter, and the benchmarks reshuffle. I kept telling myself I&rsquo;d wait until things settled. They didn&rsquo;t settle. So here I am, writing about a moving target. Here is that dive.</p>
 
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  1. MIXTURE OF EXPERTS                                             -->
-<!-- ═══════════════════════════════════════════════════════════════════ -->
+<p>The patterns covered here are the tectonic shifts reshaping how we build, train, and deploy language models. These aren&rsquo;t speculative research directions&mdash;they&rsquo;re showing up in production systems right now. Multimodal models that see and hear. Tiny models that punch above their weight. Techniques for stitching separate models together like Frankenstein, except the result is better than any individual piece. The open-source ecosystem accelerating at a pace that makes closed-model providers nervous.</p>
 
-<h2>Mixture of Experts (MoE) &mdash; How Mixtral Works</h2>
+<p>Before we start, a heads-up. We&rsquo;ll touch on model architectures, training techniques, and some light math, but you don&rsquo;t need specialized knowledge of any of it. We&rsquo;ll add what we need, one piece at a time.</p>
 
-<p>Here&rsquo;s a question that should bother you: if a 70B dense model uses all 70 billion parameters for every single token &mdash; including the word &ldquo;the&rdquo; &mdash; isn&rsquo;t that absurdly wasteful? Does predicting a comma really need the same compute as reasoning about quantum mechanics?</p>
+<p>This isn&rsquo;t a short journey, but I hope you&rsquo;ll be glad you came.</p>
 
-<p>Mixture of Experts says: <strong>no, it doesn&rsquo;t.</strong> Not all parameters need to be active for every token. Instead, you split the feed-forward network (FFN) into multiple &ldquo;expert&rdquo; sub-networks and route each token to only the top-k experts. The rest stay dormant.</p>
-
-<h3>The Architecture</h3>
-
-<p>In a standard transformer, each layer has an attention block followed by a feed-forward block. In an MoE transformer, <em>the attention block stays the same</em>, but the single FFN is replaced by N expert FFNs plus a gating (router) network:</p>
-
-<pre><code># Standard Transformer Layer:
-#   x → Attention → FFN → output
-#
-# MoE Transformer Layer:
-#   x → Attention → Router → [Expert₁, Expert₂, ..., Expert₈] → weighted sum → output
-#
-# The router decides which experts process each token
-
-def moe_layer(x, experts, router, top_k=2):
-    """
-    x: (batch, seq_len, d_model) — hidden states
-    experts: list of N FFN modules
-    router: linear layer (d_model → N)
-    """
-    # Router produces logits over experts
-    router_logits = router(x)                  # (batch, seq_len, num_experts)
-    router_probs = softmax(router_logits, dim=-1)
-
-    # Select top-k experts per token
-    top_k_probs, top_k_indices = topk(router_probs, k=top_k)
-
-    # Normalize the selected probabilities
-    top_k_probs = top_k_probs / top_k_probs.sum(dim=-1, keepdim=True)
-
-    # Run selected experts and combine
-    output = zeros_like(x)
-    for i in range(top_k):
-        expert_idx = top_k_indices[:, :, i]     # which expert
-        weight = top_k_probs[:, :, i:i+1]       # how much to weight it
-        expert_out = experts[expert_idx](x)      # run that expert
-        output += weight * expert_out
-
-    return output</code></pre>
-
-<p>The key insight: the router is a <em>learned</em> linear layer. During training, it learns to specialize experts &mdash; one might handle code, another might handle reasoning, another might handle multilingual text. Nobody programs this. It emerges from gradient descent.</p>
-
-<h3>Mixtral 8x7B &mdash; The Numbers</h3>
-
-<p>Mixtral 8x7B became the poster child for MoE done right. Let&rsquo;s look at what the name actually means:</p>
-
-<table>
-  <thead>
-    <tr>
-      <th>Property</th>
-      <th>Value</th>
-      <th>Why It Matters</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>Total parameters</td>
-      <td>46.7B</td>
-      <td>Full model size on disk/memory</td>
-    </tr>
-    <tr>
-      <td>Active parameters per token</td>
-      <td>~12.9B</td>
-      <td>Actual compute cost per forward pass</td>
-    </tr>
-    <tr>
-      <td>Number of experts per layer</td>
-      <td>8</td>
-      <td>Each a ~7B-sized FFN</td>
-    </tr>
-    <tr>
-      <td>Top-k routing</td>
-      <td>2</td>
-      <td>Each token uses 2 of 8 experts</td>
-    </tr>
-    <tr>
-      <td>Shared parameters</td>
-      <td>Attention layers</td>
-      <td>All tokens share the same attention weights</td>
-    </tr>
-    <tr>
-      <td>Quality comparison</td>
-      <td>&asymp; LLaMA 2 70B</td>
-      <td>Dense 70B quality at ~13B inference cost</td>
-    </tr>
-  </tbody>
-</table>
-
-<p>Read that last row again. You get 70B-class quality while only running 13B parameters per token. That&rsquo;s the MoE value proposition: <strong>dense quality at sparse cost.</strong></p>
-
-<h3>The Load Balancing Problem</h3>
-
-<p>There&rsquo;s a nasty failure mode with MoE: <strong>expert collapse</strong>. If the router starts sending most tokens to one or two experts, those experts get better (more training signal), which causes the router to send <em>even more</em> tokens to them, which starves the other experts. Positive feedback loop. You end up with 2 overloaded experts and 6 dead ones &mdash; effectively a much smaller model.</p>
-
-<p>The fix is an <strong>auxiliary load-balancing loss</strong> added to the training objective:</p>
-
-<pre><code># Auxiliary load balancing loss
-# Goal: ensure each expert gets roughly equal traffic
-
-def load_balance_loss(router_probs, top_k_indices, num_experts):
-    """
-    Encourages uniform expert utilization.
-    Added to main loss: total_loss = LM_loss + α * balance_loss
-    α is typically 0.01 - 0.1
-    """
-    # Fraction of tokens routed to each expert
-    # (how much traffic each expert gets)
-    tokens_per_expert = one_hot(top_k_indices, num_experts).mean(dim=[0, 1])
-
-    # Average router probability assigned to each expert
-    mean_prob_per_expert = router_probs.mean(dim=[0, 1])
-
-    # Loss = N * Σ(fraction_i * mean_prob_i)
-    # Minimized when both are uniform (1/N each)
-    return num_experts * (tokens_per_expert * mean_prob_per_expert).sum()</code></pre>
-
-<div class="info-box">
-  <strong>Switch Transformer (Google, 2022)</strong> simplified MoE even further: top-1 routing instead of top-2. Each token goes to exactly one expert. Simpler routing, less communication overhead, and surprisingly competitive quality. The lesson: you don&rsquo;t always need complexity. Sometimes top-1 is enough.
-</div>
-
-<h3>MoE Training and Inference Challenges</h3>
-
-<p>MoE isn&rsquo;t free. The tradeoffs are real:</p>
-
-<ul>
-  <li><strong>Memory:</strong> You still need all 47B parameters in memory (or on disk) even though only 13B are active. Memory savings only come if you can offload inactive experts.</li>
-  <li><strong>Routing instability:</strong> Early in training, the router hasn&rsquo;t learned anything useful, so expert assignment is nearly random. This can lead to training instability until the routing stabilizes.</li>
-  <li><strong>Communication overhead:</strong> In distributed training, tokens routed to different experts may live on different GPUs. All-to-all communication to shuffle tokens to their assigned experts is expensive.</li>
-  <li><strong>Inference advantage:</strong> At inference time, you only need to load the 2 active experts into fast GPU memory. With expert offloading, you can serve a 47B MoE model on hardware that couldn&rsquo;t handle a dense 47B model.</li>
-</ul>
-
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  2. SMALL LANGUAGE MODELS                                          -->
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-
-<h2>Small Language Models &mdash; The SLM Revolution</h2>
-
-<p>For years the mantra was &ldquo;bigger is better.&rdquo; Then Microsoft released Phi-2 at 2.7 billion parameters and it matched models 10&ndash;25x its size on reasoning benchmarks. That wasn&rsquo;t a fluke. It was a thesis: <strong>data quality matters more than model size.</strong></p>
-
-<p>The SLM revolution didn&rsquo;t come from architecture breakthroughs. It came from being brutally selective about training data. Instead of crawling the entire internet and hoping the model figures it out, teams like Microsoft Research curated &ldquo;textbook-quality&rdquo; synthetic data &mdash; carefully generated examples designed to teach reasoning, not just pattern-match web text.</p>
-
-<h3>The Landscape</h3>
-
-<table>
-  <thead>
-    <tr>
-      <th>Model</th>
-      <th>Params</th>
-      <th>Comparable To</th>
-      <th>Key Advantage</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>Phi-2 (Microsoft)</td>
-      <td>2.7B</td>
-      <td>Mistral 7B, LLaMA 2 13B</td>
-      <td>Textbook-quality synthetic data</td>
-    </tr>
-    <tr>
-      <td>Phi-3 Mini (Microsoft)</td>
-      <td>3.8B</td>
-      <td>Mixtral 8x7B, GPT-3.5</td>
-      <td>Runs on-device, strong reasoning</td>
-    </tr>
-    <tr>
-      <td>Phi-3 Medium (Microsoft)</td>
-      <td>14B</td>
-      <td>GPT-4 (on some benchmarks)</td>
-      <td>Competitive with frontier at fraction of cost</td>
-    </tr>
-    <tr>
-      <td>Gemma 2B (Google)</td>
-      <td>2B</td>
-      <td>LLaMA 2 7B (on several tasks)</td>
-      <td>Lightweight, open weights, strong base</td>
-    </tr>
-    <tr>
-      <td>Gemma 7B (Google)</td>
-      <td>7B</td>
-      <td>LLaMA 2 13B</td>
-      <td>Great fine-tuning foundation</td>
-    </tr>
-    <tr>
-      <td>Qwen2 1.5B (Alibaba)</td>
-      <td>1.5B</td>
-      <td>LLaMA 2 7B (multilingual)</td>
-      <td>Strong multilingual, code</td>
-    </tr>
-    <tr>
-      <td>SmolLM (HuggingFace)</td>
-      <td>135M&ndash;1.7B</td>
-      <td>Varies by size</td>
-      <td>Purpose-built for on-device</td>
-    </tr>
-  </tbody>
-</table>
-
-<h3>When SLMs Win</h3>
-
-<p>You don&rsquo;t always need GPT-4. In fact, for many production use cases, a well-tuned small model is strictly better:</p>
-
-<ul>
-  <li><strong>Edge deployment:</strong> A 3B model quantized to 4-bit fits in ~1.5GB of RAM. That runs on a phone.</li>
-  <li><strong>Cost-sensitive applications:</strong> If you&rsquo;re processing millions of documents, the difference between $0.01/1K tokens (API) and $0.0001/1K tokens (self-hosted SLM) is the difference between viable and bankrupt.</li>
-  <li><strong>Privacy:</strong> Data never leaves the device. No API calls, no third-party data processing agreements, no compliance headaches.</li>
-  <li><strong>Latency:</strong> Local inference eliminates network round-trips. Sub-10ms TTFT is achievable.</li>
-  <li><strong>Specialized tasks:</strong> A 3B model fine-tuned on your domain can outperform a 70B general model on <em>your specific task</em>.</li>
-</ul>
-
-<div class="warning-box">
-  <strong>SLMs aren&rsquo;t magic.</strong> They excel at focused tasks &mdash; classification, extraction, short-form generation, simple Q&amp;A. For complex multi-step reasoning, long-form creative writing, or tasks requiring broad world knowledge, larger models still dominate. Don&rsquo;t try to replace GPT-4 with a 2B model for agentic workflows. Match model size to task complexity.
+<div style="margin: 1.5em 0; padding-left: 1.5em; border-left: 3px solid var(--border-color, #ddd);">
+  Multimodal Models &mdash; Teaching Machines to See, Hear, and Read<br>
+  World Models &mdash; Imagining Before Acting<br>
+  Synthetic Data &mdash; When Models Train Models<br>
+  Distillation at Scale &mdash; Compressing Giants into Pocket-Sized Models<br>
+  Small Language Models &mdash; The Data Quality Revolution<br>
+  On-Device AI &mdash; Intelligence Without the Cloud<br>
+  Rest Stop<br>
+  Federated Learning for LLMs &mdash; Training Without Sharing Secrets<br>
+  Continual Learning &mdash; The Catastrophic Forgetting Problem<br>
+  Model Merging &mdash; Frankenstein, but It Works<br>
+  The Open-Source Ecosystem &mdash; An Acceleration Nobody Predicted<br>
+  Wrap-Up
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  3. MULTIMODAL FOUNDATION MODELS                                   -->
+<!--  RUNNING EXAMPLE SETUP                                             -->
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 
-<h2>Multimodal Foundation Models</h2>
+<p>To make all of this concrete, imagine we&rsquo;re building a personal health assistant called <strong>MediPal</strong>. It needs to read text (patient notes), look at images (photos of skin conditions), listen to audio (spoken symptom descriptions), run on a phone without an internet connection when needed, and learn new medical guidelines without forgetting old ones. Over the course of this section, MediPal will force us to confront every single emerging pattern listed above.</p>
 
-<p>Text-only LLMs were always an intermediate step. The real world is multimodal &mdash; we see images, hear audio, read text, watch video &mdash; and the most capable AI systems are now multimodal too. The shift happened fast: in early 2023, GPT-4 was text-only. By late 2023, GPT-4V processed images natively. By mid-2024, GPT-4o handled text, images, and audio in a single model.</p>
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  1. MULTIMODAL MODELS                                              -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
 
-<h3>The Architecture Patterns</h3>
+<h2>Multimodal Models &mdash; Teaching Machines to See, Hear, and Read</h2>
 
-<p>There are two main approaches to building multimodal models:</p>
+<p>Our MediPal can&rsquo;t survive on text alone. A patient says &ldquo;this rash appeared yesterday&rdquo; and holds up their arm. MediPal needs to process both the words and the image together, in context, as one unified thought. That&rsquo;s the multimodal problem.</p>
 
-<p><strong>Approach 1: Encoder + Projection + LLM (modular)</strong></p>
+<p>For years, the approach was what I think of as the <strong>duct-tape method</strong>: train a vision model over here, train a language model over there, then glue them together with a small projection layer. A vision encoder (say, a Vision Transformer) converts the image into a sequence of embedding vectors. A projection layer maps those vectors into the same dimensional space as the language model&rsquo;s token embeddings. Then you feed them all&mdash;image embeddings and text tokens&mdash;into the language model as one long sequence. The language model doesn&rsquo;t know the difference. It processes image tokens and word tokens with the same attention mechanism.</p>
 
-<pre><code># The "bolted-on" multimodal architecture
-# Used by: LLaVA, early GPT-4V, many open-source models
+<p>This is how models like LLaVA (Large Language and Vision Assistant) work. It&rsquo;s modular, it&rsquo;s practical, and you can swap out either piece. But there&rsquo;s a ceiling. The vision encoder was trained separately with its own objectives. The language model was trained separately with its own objectives. The projection layer has to bridge two worlds that were built independently. It&rsquo;s like hiring a translator between two people who each think in fundamentally different ways. Communication happens, but nuance gets lost.</p>
 
-Image → Visual Encoder (ViT) → Image Embeddings (N patches × d_vision)
-                                        ↓
-                               Projection Layer (linear or MLP)
-                                        ↓
-                               Aligned Embeddings (N × d_model)
-                                        ↓
-            Text Tokens → Token Embeddings ──┐
-                                              ├──→ LLM → Output Tokens
-            Image Embeddings ────────────────┘
+<p>The alternative is what Google did with Gemini: train a single model on text, images, and audio from the ground up. Every modality gets tokenized into a shared embedding space. There&rsquo;s no projection layer because there&rsquo;s no gap to project across. The model learns, from the very beginning, that the visual pattern of a rash and the word &ldquo;rash&rdquo; and the spoken sound /ræʃ/ are all facets of the same concept.</p>
 
-# The visual encoder (typically a ViT like CLIP ViT-L/14) is pretrained separately.
-# The projection layer maps vision embeddings into the LLM's token space.
-# The LLM "sees" image patches as if they were extra tokens in the sequence.</code></pre>
+<p>I&rsquo;ll be honest&mdash;when I first heard "natively multimodal," I assumed it was marketing language for the same duct-tape method with a bigger training budget. It isn&rsquo;t. The architectural difference is real. In a natively multimodal model, attention flows between modalities at every layer, not only at the input boundary. A patch of an image can attend directly to a word in a question, and vice versa, throughout the full depth of the network.</p>
 
-<p><strong>Approach 2: Natively multimodal (unified)</strong></p>
+<p>Here&rsquo;s a toy example to make this concrete. Say MediPal receives three inputs: a text prompt (&ldquo;Is this melanoma?&rdquo;), a photo of a mole, and an audio clip of a patient describing when it appeared.</p>
 
-<pre><code># The "born multimodal" architecture
-# Used by: Gemini, GPT-4o
+<pre><code># Modular approach (duct-tape)
+image_tokens = vision_encoder(photo)           # 256 embedding vectors
+text_tokens  = tokenizer("Is this melanoma?")  # 5 token embeddings
+audio_tokens = whisper_encoder(audio_clip)      # 80 embedding vectors
 
-# All modalities are tokenized into a shared vocabulary from scratch.
-# Images → visual tokens, audio → audio tokens, text → text tokens
-# Single transformer processes all modality tokens together.
+# Project image and audio into LLM's space
+image_projected = projection_layer_img(image_tokens)  # 256 vectors, now in LLM-dim
+audio_projected = projection_layer_aud(audio_tokens)   # 80 vectors, now in LLM-dim
+
+# Concatenate everything into one sequence
+combined = concat(image_projected, audio_projected, text_tokens)
+# Shape: (341 tokens, d_model)
+
+answer = language_model(combined)
+
+# Unified approach (Gemini-style)
+# All inputs go through one shared tokenizer/encoder
+all_tokens = unified_tokenizer(photo, audio_clip, "Is this melanoma?")
+# Shape: (341 tokens, d_model) — but ALL learned jointly from scratch
+
+answer = unified_model(all_tokens)</code></pre>
+
+<p>The code looks deceptively similar. The profound difference is in what was learned together versus apart. In the modular version, the vision encoder has never &ldquo;heard&rdquo; language. In the unified version, every parameter has been shaped by all three modalities simultaneously.</p>
+
+<p>For MediPal, the practical choice depends on our budget. Training a natively multimodal model requires enormous compute&mdash;we&rsquo;re talking thousands of GPUs for months. The modular approach lets us take an existing strong LLM, attach a pre-trained vision encoder, and fine-tune the projection layer. That&rsquo;s something a team of five engineers can do in a week. Most production systems today use the modular approach. The unified approach is, for now, the province of frontier labs with frontier budgets.</p>
+
+<p>But here&rsquo;s the limitation that sets up everything that follows: multimodal models are big. GPT-4V is estimated at over a trillion parameters. Even a modest modular setup is tens of billions. Our MediPal can&rsquo;t run something that large on a phone. We need to make things smaller. A lot smaller.</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  2. WORLD MODELS                                                   -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+
+<h2>World Models &mdash; Imagining Before Acting</h2>
+
+<p>Before we shrink anything, there&rsquo;s an ambitious idea that&rsquo;s been simmering in the background, one that might change what &ldquo;understanding&rdquo; even means for an AI system.</p>
+
+<p>Think about what happens when a doctor examines a rash. They don&rsquo;t pattern-match the visual input against a lookup table of rashes they&rsquo;ve memorized. They have an internal model of how skin works&mdash;how infections spread, how allergic reactions progress over time, what happens if treatment is delayed. They can simulate the future in their head. &ldquo;If this is contact dermatitis and the patient keeps exposing themselves to the allergen, it&rsquo;ll spread to adjacent areas over the next few days.&rdquo; That internal simulation is what AI researchers call a <strong>world model</strong>.</p>
+
+<p>Current LLMs don&rsquo;t have this. They predict the next token. They&rsquo;re spectacularly good at it, but they have no internal representation of how the world actually works. They can write convincingly about gravity without having any concept of objects falling.</p>
+
+<p>Yann LeCun at Meta has been the loudest advocate for fixing this. His proposed architecture, called <strong>JEPA</strong> (Joint Embedding Predictive Architecture), works differently from standard language models. Instead of predicting raw pixels or raw tokens, JEPA predicts future states in an abstract representation space. Think of it as learning to predict the gist of what happens next, rather than the exact pixels.</p>
+
+<p>Here&rsquo;s the intuition with a tiny example. Imagine MediPal watches a 3-second video of a wound being cleaned.</p>
+
+<pre><code># Standard next-frame prediction (what most video models do):
+# Input: frame_1, frame_2, frame_3
+# Predict: every pixel of frame_4
+# Problem: there are millions of pixels, most are irrelevant background
+
+# JEPA-style prediction:
+# Input: encode frame_1, frame_2, frame_3 into compact representations
+# z1 = encoder(frame_1)  → 512-dimensional vector
+# z2 = encoder(frame_2)  → 512-dimensional vector
+# z3 = encoder(frame_3)  → 512-dimensional vector
 #
-# ┌──────────────────────────────────────────────────┐
-# │  [img_1] [img_2] ... [img_N] [text_1] [text_2]  │
-# │         Single unified transformer               │
-# │  All tokens attend to all other tokens            │
-# └──────────────────────────────────────────────────┘
+# Predict: z4_predicted = predictor(z1, z2, z3)
+# This is a 512-dimensional vector capturing the "essence"
+# of what happens next — not the exact pixels.
 #
-# Advantage: cross-modal attention from the start
-# Disadvantage: extremely expensive to train from scratch</code></pre>
+# Train by: making z4_predicted close to encoder(frame_4)
+# in representation space, NOT in pixel space.</code></pre>
 
-<h3>The Multimodal Landscape</h3>
+<p>The key difference is the level of abstraction. Predicting exact pixels forces the model to waste capacity on irrelevant details&mdash;the exact texture of the background wall, the shadow of the nurse&rsquo;s hand. Predicting in representation space lets the model focus on what matters: the wound is being cleaned, the gauze is absorbing fluid, the bleeding is slowing.</p>
 
-<table>
-  <thead>
-    <tr>
-      <th>Model</th>
-      <th>Modalities</th>
-      <th>Architecture</th>
-      <th>Notable Capability</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>GPT-4V / GPT-4o</td>
-      <td>Text, image, audio</td>
-      <td>Natively multimodal (4o)</td>
-      <td>Real-time voice conversation</td>
-    </tr>
-    <tr>
-      <td>Gemini 1.5 Pro</td>
-      <td>Text, image, audio, video</td>
-      <td>Natively multimodal</td>
-      <td>1M+ token context, video understanding</td>
-    </tr>
-    <tr>
-      <td>Claude 3 / 3.5</td>
-      <td>Text, image</td>
-      <td>Encoder + LLM</td>
-      <td>Strong document/chart understanding</td>
-    </tr>
-    <tr>
-      <td>LLaVA 1.6</td>
-      <td>Text, image</td>
-      <td>CLIP ViT + projection + LLM</td>
-      <td>Open-source, good for research</td>
-    </tr>
-    <tr>
-      <td>Whisper (OpenAI)</td>
-      <td>Audio &rarr; text</td>
-      <td>Encoder-decoder</td>
-      <td>Multilingual speech recognition</td>
-    </tr>
-  </tbody>
-</table>
+<p>I&rsquo;m still developing my intuition for why this approach leads to better planning capabilities. The theoretical argument is compelling: if your model has learned to predict abstract future states, it can &ldquo;mentally rehearse&rdquo; different actions and pick the one with the best predicted outcome. That&rsquo;s closer to how humans actually think than next-token prediction is.</p>
 
-<div class="info-box">
-  <strong>Why multimodal matters for practitioners:</strong> Real-world tasks are rarely text-only. Invoice processing needs to read scanned documents. Customer support needs to understand screenshots. Accessibility tools need to describe images. Medical AI needs to interpret scans alongside clinical notes. If your production system only handles text, you&rsquo;re leaving value on the table.
-</div>
+<p>OpenAI&rsquo;s Sora, the video generation model, hints at what world models might look like in practice. Sora generates physically consistent videos&mdash;objects fall, reflections behave correctly, physics mostly works. Whether Sora truly &ldquo;understands&rdquo; physics or has memorized spectacular patterns is genuinely debated. My favorite thing about this line of research is that nobody is entirely certain where memorization ends and understanding begins.</p>
+
+<p>World models are still early. For MediPal, we can&rsquo;t use them in production yet. But the reason I bring them up here is that they represent where the frontier is heading&mdash;away from &ldquo;predict the next token&rdquo; and toward &ldquo;build an internal simulation of reality.&rdquo; And that shift, if it works, would change everything about how we build AI systems.</p>
+
+<p>For now, though, we have a more pressing problem: we need training data. Lots of it. And the real-world medical data we need for MediPal is expensive, scarce, and privacy-restricted. What if we could generate our own?</p>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  4. LONG-CONTEXT WINDOWS                                           -->
+<!--  3. SYNTHETIC DATA                                                 -->
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 
-<h2>Long-Context Windows</h2>
+<h2>Synthetic Data &mdash; When Models Train Models</h2>
 
-<p>The maximum context length of LLMs has grown by three orders of magnitude in just a few years:</p>
+<p>Here&rsquo;s the uncomfortable truth about training data: the internet is running out of high-quality text. Seriously. Researchers at Epoch AI estimated that we might exhaust publicly available, high-quality English text data by 2026. Meanwhile, model appetite for data keeps growing. Something has to give.</p>
 
-<pre><code>Context Window Evolution:
-═══════════════════════════════════════════════════════════════
-BERT (2018)         ████ 512 tokens
-GPT-2 (2019)        ████████ 1,024 tokens
-GPT-3 (2020)        ████████████████ 2,048 → 4,096 tokens
-Claude 2 (2023)     ████████████████████████████████████████ 100K tokens
-GPT-4 Turbo (2023)  █████████████████████████████████████████████ 128K tokens
-Gemini 1.5 (2024)   ████████████████████████████████████████████████████████████ 1M+ tokens
-                    └────┴────┴────┴────┴────┴────┴────┴────┘
-                    0    128K  256K  384K  512K  640K  768K  1M</code></pre>
+<p>The answer that the industry has converged on is synthetic data&mdash;training data generated by AI models themselves. And it works far better than it has any right to.</p>
 
-<p>This isn&rsquo;t just a numbers game. Going from 4K to 128K tokens means you can fit an entire codebase, a full legal contract, or a book-length document into a single prompt. That changes what&rsquo;s architecturally possible.</p>
+<p>Let me walk through how this would work for MediPal. We need tens of thousands of doctor-patient dialogues, but we can&rsquo;t use real patient conversations due to privacy regulations. Instead, we can use a powerful teacher model (say GPT-4) to generate synthetic dialogues.</p>
 
-<h3>How They Did It</h3>
-
-<p>Standard positional encodings (like the original sinusoidal or learned embeddings) were trained on fixed lengths. If you trained on 2K tokens, the model has never seen position 2,001 and has no idea what to do with it. RoPE (Rotary Position Embeddings) offered a path forward because its structure can be mathematically extended:</p>
-
-<ul>
-  <li><strong>NTK-aware scaling:</strong> Instead of naively linearly interpolating positions (which degrades high-frequency features), NTK-aware scaling adjusts the base frequency of RoPE. This preserves local position information while extending the range. Think of it as changing the &ldquo;resolution&rdquo; of positional encoding rather than stretching it.</li>
-  <li><strong>YaRN (Yet another RoPE extensioN):</strong> Combines NTK-aware scaling with attention scaling and a temperature factor. Currently the most effective RoPE extension method.</li>
-  <li><strong>Ring Attention:</strong> For truly massive contexts, distribute the sequence across multiple GPUs. Each GPU holds a chunk of the KV cache and passes attention computations in a ring topology. This scales to millions of tokens by distributing the memory burden.</li>
-</ul>
-
-<h3>Long Context vs RAG &mdash; When Each Wins</h3>
-
-<p>This is one of the most common architectural decisions you&rsquo;ll face. Both long context and RAG solve the same fundamental problem &mdash; giving the model access to more information than fits in a single prompt &mdash; but they have very different characteristics:</p>
-
-<table>
-  <thead>
-    <tr>
-      <th>Dimension</th>
-      <th>Long Context</th>
-      <th>RAG</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>Corpus size</td>
-      <td>Up to ~1M tokens (~750K words)</td>
-      <td>Unlimited (millions of documents)</td>
-    </tr>
-    <tr>
-      <td>Latency</td>
-      <td>Higher (process everything upfront)</td>
-      <td>Lower (retrieve only what&rsquo;s needed)</td>
-    </tr>
-    <tr>
-      <td>Cost per query</td>
-      <td>Expensive (pay for all input tokens)</td>
-      <td>Cheaper (only retrieved chunks)</td>
-    </tr>
-    <tr>
-      <td>Cross-document reasoning</td>
-      <td>Excellent (sees everything at once)</td>
-      <td>Poor (only sees retrieved chunks)</td>
-    </tr>
-    <tr>
-      <td>Setup complexity</td>
-      <td>Simple (just stuff it in the prompt)</td>
-      <td>Complex (embeddings, vector DB, chunking)</td>
-    </tr>
-    <tr>
-      <td>Data freshness</td>
-      <td>Whatever&rsquo;s in the prompt</td>
-      <td>Update index anytime</td>
-    </tr>
-    <tr>
-      <td>Best for</td>
-      <td>Single-document analysis, codebases</td>
-      <td>Large knowledge bases, FAQ, enterprise search</td>
-    </tr>
-  </tbody>
-</table>
-
-<h3>The &ldquo;Lost in the Middle&rdquo; Problem</h3>
-
-<p>Here&rsquo;s something that should worry you if you&rsquo;re building long-context applications: models don&rsquo;t attend equally to all positions. Research from Stanford and others showed that LLMs reliably find information placed at the <em>beginning</em> or <em>end</em> of the context window, but performance degrades significantly for information buried in the <em>middle</em>.</p>
-
-<pre><code># "Lost in the Middle" effect (Liu et al., 2023)
-#
-# Task: find a specific fact placed at different positions in a long context
-#
-# Accuracy by position:
-#
-# 90% ██████████████████░░░░░░░░░░░░░░░░░░░░░░░██████████████████
-# 70% ░░░░░░░░░░░░░░░░██████████████████████████░░░░░░░░░░░░░░░░░
-# 50% ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
-#      ▲               ▲                          ▲
-#      Beginning       Middle (worst)              End
-#
-# Practical implication: put important information at the
-# beginning or end of your context, not buried in the middle.</code></pre>
-
-<div class="warning-box">
-  <strong>Don&rsquo;t assume &ldquo;longer context = better.&rdquo;</strong> More context means more noise, higher cost, and the lost-in-the-middle problem. If your task only needs 3 relevant paragraphs, retrieving just those 3 paragraphs (RAG) will often outperform stuffing 100K tokens of context. Long context is a capability, not always the right strategy.
-</div>
-
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  5. COMPOUND AI SYSTEMS                                            -->
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-
-<h2>Compound AI Systems &mdash; Beyond Single Model Calls</h2>
-
-<p>Here&rsquo;s an uncomfortable truth about modern AI engineering: the era of &ldquo;call one model, return the result&rdquo; is over. The best-performing production AI systems are not a single model &mdash; they&rsquo;re <em>systems</em> that orchestrate multiple models, tools, retrieval pipelines, and verification steps.</p>
-
-<p>The Berkeley AI Research (BAIR) blog coined the term <strong>Compound AI Systems</strong> to describe this shift: moving from individual model improvements to system-level design.</p>
-
-<h3>Common Compound Patterns</h3>
-
-<pre><code># Pattern 1: RAG (Retrieval-Augmented Generation)
-User Query → Retriever → Top-K Documents → LLM → Answer
-# The retriever and LLM are separate components with different optimization targets
-
-# Pattern 2: Agent Loops
-User Task → LLM (plan) → Tool Call → Observation → LLM (reason) → Tool Call → ... → Answer
-# The LLM calls tools iteratively until the task is complete
-
-# Pattern 3: Model Cascade
-User Query → Small/Cheap Model → [confident?] → Return Answer
-                                → [uncertain?] → Large/Expensive Model → Return Answer
-# Route easy queries to cheap models, hard ones to expensive models
-
-# Pattern 4: Judge-Generator
-User Query → Generator LLM → Candidate Answer → Judge LLM → [good?] → Return
-                                                            → [bad?]  → Regenerate
-# One model generates, another verifies — catches hallucinations
-
-# Pattern 5: Multi-Agent Collaboration
-Task → Planner Agent → [subtask₁] → Coder Agent → Code
-                     → [subtask₂] → Researcher Agent → Facts
-                     → [subtask₃] → Reviewer Agent → Feedback
-       → Planner Agent (synthesize) → Final Output</code></pre>
-
-<h3>DSPy &mdash; Programmatic Prompt Optimization</h3>
-
-<p>DSPy (Stanford) is one of the most interesting frameworks in this space. Instead of hand-writing prompts, you define your pipeline as a <em>program</em> with typed signatures, and DSPy <strong>compiles</strong> the prompts for you by optimizing them against a metric on your data:</p>
-
-<pre><code># DSPy: prompts as compiled programs, not hand-written strings
-
-import dspy
-
-# Define signatures (what the module does, not how)
-class GenerateAnswer(dspy.Signature):
-    """Answer questions using provided context."""
-    context = dspy.InputField(desc="relevant passages")
-    question = dspy.InputField()
-    answer = dspy.OutputField(desc="concise factual answer")
-
-# Build a RAG pipeline
-class RAG(dspy.Module):
-    def __init__(self, num_passages=3):
-        self.retrieve = dspy.Retrieve(k=num_passages)
-        self.generate = dspy.ChainOfThought(GenerateAnswer)
-
-    def forward(self, question):
-        context = self.retrieve(question).passages
-        answer = self.generate(context=context, question=question)
-        return answer
-
-# Compile — DSPy optimizes the prompts automatically
-from dspy.teleprompt import BootstrapFewShot
-optimizer = BootstrapFewShot(metric=my_accuracy_metric)
-compiled_rag = optimizer.compile(RAG(), trainset=my_examples)
-
-# The compiled program has optimized few-shot examples
-# baked into the prompts — no manual prompt engineering</code></pre>
-
-<h3>The Reliability&ndash;Autonomy Tradeoff</h3>
-
-<p>Every compound system sits somewhere on a spectrum:</p>
-
-<pre><code>More Reliable                                        More Autonomous
-◄──────────────────────────────────────────────────────────────────►
-│                    │                    │                         │
-Hardcoded           RAG with            Agent with              Fully autonomous
-pipeline            fixed retrieval     tool access             multi-agent system
-│                    │                    │                         │
-99.9% predictable   95% reliable         80-90% reliable          60-80% reliable
-No flexibility      Some flexibility     High flexibility          Maximum flexibility</code></pre>
-
-<div class="info-box">
-  <strong>The practical rule:</strong> Start with the simplest compound system that works (often just RAG). Add autonomy only when you have clear metrics showing it helps. Every additional model call, tool, or agent loop is another failure point. The goal is the <em>minimum viable compound system</em>, not the most impressive architecture diagram.
-</div>
-
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  6. SYNTHETIC DATA                                                 -->
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-
-<h2>Synthetic Data &mdash; Training AI with AI-Generated Data</h2>
-
-<p>We&rsquo;re running out of internet. Not literally, but practically: high-quality text data for training LLMs is a finite resource, and multiple estimates suggest we&rsquo;ll exhaust the supply of unique, high-quality web text by 2026&ndash;2028. The solution the industry has converged on? <strong>Use AI to generate training data for AI.</strong></p>
-
-<p>That sounds like it should be circular and broken. Sometimes it is. But done carefully, synthetic data is becoming one of the most important techniques in modern ML.</p>
-
-<h3>Approaches</h3>
-
-<p><strong>1. Distillation:</strong> Use a large, expensive model (GPT-4, Claude) to generate training examples for a smaller model. This is the most common approach and it works remarkably well &mdash; you&rsquo;re essentially compressing the large model&rsquo;s capability into a smaller one through its outputs.</p>
-
-<p><strong>2. Self-play / self-improvement:</strong> The model generates candidate solutions, verifies them (via tests, proofs, or another model), and trains on the verified correct ones. This is how models like AlphaCode and DeepSeek improve at code and math.</p>
-
-<p><strong>3. Persona-driven generation:</strong> Generate diverse training data by prompting the teacher model with different personas, writing styles, difficulty levels, and domains. This prevents the synthetic data from being monotonously similar.</p>
-
-<pre><code># Synthetic data pipeline for instruction tuning
-# (simplified version of what Phi, Orca, etc. use)
-
+<pre><code># Step 1: Create diverse patient personas
 personas = [
-    "You are a patient math tutor explaining to a high school student",
-    "You are a concise technical writer for an API reference",
-    "You are a curious scientist thinking through a problem step-by-step",
-    "You are a senior engineer doing a code review",
+    "45-year-old construction worker, lower back pain, skeptical of doctors",
+    "22-year-old college student, recurring headaches, anxious",
+    "68-year-old retired teacher, joint stiffness, hard of hearing",
 ]
 
-topics = load_topic_taxonomy()  # thousands of topics
-
+# Step 2: Generate synthetic dialogues with a teacher model
 for persona in personas:
-    for topic in topics:
-        for difficulty in ["beginner", "intermediate", "advanced"]:
-            prompt = f"""
-            {persona}.
-            Generate a {difficulty}-level question about {topic},
-            then provide a detailed, correct answer.
-            Show your reasoning step by step.
-            """
-            response = teacher_model.generate(prompt)  # GPT-4, Claude, etc.
+    prompt = f"""You are a patient: {persona}
+    Generate a realistic dialogue between this patient and a primary
+    care physician during a 10-minute appointment.
+    Include medical terminology where a doctor naturally would.
+    Include realistic moments of confusion or miscommunication."""
 
-            # Quality filtering — critical step
-            if passes_quality_check(response):
-                training_data.append({
-                    "instruction": extract_question(response),
-                    "response": extract_answer(response)
-                })</code></pre>
+    dialogue = teacher_model.generate(prompt)
 
-<h3>When Synthetic Data Works (and Doesn&rsquo;t)</h3>
+# Step 3: Quality filtering — this is where the magic lives
+# Not every generated dialogue is good.
+# Filter by: medical accuracy, dialogue realism, diversity
+for dialogue in generated_dialogues:
+    accuracy_score = medical_verifier(dialogue)
+    diversity_score = compare_to_existing(dialogue, all_dialogues)
+    if accuracy_score > 0.85 and diversity_score > 0.3:
+        training_data.append(dialogue)</code></pre>
 
-<table>
-  <thead>
-    <tr>
-      <th>Works Well</th>
-      <th>Why</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>Math problems</td>
-      <td>Answers are verifiable &mdash; you can check if 2+2 actually equals 4</td>
-    </tr>
-    <tr>
-      <td>Code generation</td>
-      <td>Code can be executed and tested &mdash; verifiable correctness</td>
-    </tr>
-    <tr>
-      <td>Instruction following</td>
-      <td>Format compliance is checkable, and diversity is the main need</td>
-    </tr>
-    <tr>
-      <td>Data augmentation</td>
-      <td>Paraphrasing, translation, reformatting existing data</td>
-    </tr>
-  </tbody>
-</table>
+<p>That filtering step in Step 3 deserves emphasis. The difference between synthetic data that works and synthetic data that produces garbage models is almost entirely about filtering. Unfiltered synthetic data contains repetitive patterns, factual errors, and a kind of bland uniformity that erodes model capabilities over time.</p>
 
-<table>
-  <thead>
-    <tr>
-      <th>Risky / Doesn&rsquo;t Work</th>
-      <th>Why</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>Training on own outputs (recursive)</td>
-      <td><strong>Model collapse</strong> &mdash; errors compound, diversity shrinks, quality degrades over generations</td>
-    </tr>
-    <tr>
-      <td>Factual knowledge</td>
-      <td>LLMs hallucinate, so synthetic &ldquo;facts&rdquo; may be wrong. No easy verification.</td>
-    </tr>
-    <tr>
-      <td>Replacing real distribution</td>
-      <td>Synthetic data has distributional biases from the generator. Real data captures edge cases synthetic data misses.</td>
-    </tr>
-  </tbody>
-</table>
+<p>That erosion has a name: <strong>model collapse</strong>. When models are trained recursively on their own outputs&mdash;model A generates data, model B trains on it, model B generates data, model C trains on that&mdash;the distribution of the training data narrows with each generation. Rare but important patterns disappear. The analogy I keep coming back to is photocopying a photocopy. Each generation loses some fidelity. Do it enough times, and you can&rsquo;t read the text anymore.</p>
 
-<div class="warning-box">
-  <strong>Model collapse is real.</strong> Shumailov et al. (2023) showed that recursively training models on their own outputs leads to progressive quality degradation. The tails of the distribution get cut off &mdash; rare but important patterns disappear. After a few generations, the model converges to a narrow, repetitive output distribution. Always mix synthetic data with real data, and always filter for quality.
-</div>
+<p>Researchers at Oxford and Cambridge demonstrated this rigorously in 2023: after several generations of recursive training, models lose the tails of their distributions. The unusual, the rare, the nuanced&mdash;all of it fades. What remains is a bland, confident, homogeneous output. The model doesn&rsquo;t crash. It keeps generating fluent text. It&rsquo;s worse than crashing, because you might not notice the degradation until it matters.</p>
+
+<p>The mitigation strategies are pragmatic. Mix synthetic data with real data&mdash;even a small fraction of genuine human-written text anchors the distribution. Enforce diversity during generation&mdash;vary prompts, personas, temperature settings. And filter aggressively against the existing dataset to reject generations that are too similar to what you already have.</p>
+
+<p>For MediPal, synthetic data solves our privacy problem. We can generate hundreds of thousands of realistic medical conversations without touching a single real patient record. But the model generating that data is enormous. We&rsquo;re paying API costs for every synthetic example. What if we could compress all that knowledge into a smaller model?</p>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  7. OPEN VS CLOSED MODELS                                         -->
+<!--  4. DISTILLATION AT SCALE                                          -->
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 
-<h2>Open vs Closed Models &mdash; The Ecosystem Divide</h2>
+<h2>Distillation at Scale &mdash; Compressing Giants into Pocket-Sized Models</h2>
 
-<p>This isn&rsquo;t a technical distinction &mdash; it&rsquo;s a strategic one that affects everything from cost structure to data privacy to long-term vendor risk. And the landscape is shifting fast.</p>
+<p>Knowledge distillation is one of those ideas that sounds too good to be true: take a large, expensive teacher model, and train a small, cheap student model to mimic it. The student doesn&rsquo;t learn from the raw data directly. It learns from the teacher&rsquo;s behavior&mdash;the teacher&rsquo;s output probabilities, its intermediate representations, its &ldquo;thought process.&rdquo;</p>
 
-<h3>The Current State</h3>
+<p>The core idea is elegant. When a teacher model predicts the next token, it doesn&rsquo;t output a single answer. It outputs a probability distribution over the entire vocabulary. The word &ldquo;fever&rdquo; might get 0.62, &ldquo;temperature&rdquo; might get 0.20, &ldquo;heat&rdquo; might get 0.05, and so on. Those probabilities contain far richer information than a hard label (&ldquo;the answer is fever&rdquo;). The student model learns not only what the right answer is, but how confident the teacher was and which alternatives were plausible. This is sometimes called <strong>dark knowledge</strong>&mdash;the knowledge hidden in the shape of the probability distribution, not visible in the top-1 prediction.</p>
 
-<table>
-  <thead>
-    <tr>
-      <th>Dimension</th>
-      <th>Open Models</th>
-      <th>Closed Models</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>Examples</td>
-      <td>LLaMA 3, Mistral, Qwen 2, Gemma, Command-R</td>
-      <td>GPT-4, Claude 3.5, Gemini Ultra</td>
-    </tr>
-    <tr>
-      <td>Quality (frontier)</td>
-      <td>Close but behind on hardest tasks</td>
-      <td>Best available quality</td>
-    </tr>
-    <tr>
-      <td>Fine-tuning</td>
-      <td>Full control: LoRA, full FT, RLHF</td>
-      <td>Limited (API fine-tuning only, if available)</td>
-    </tr>
-    <tr>
-      <td>Self-hosting</td>
-      <td>Complete control over infrastructure</td>
-      <td>API only &mdash; vendor controls everything</td>
-    </tr>
-    <tr>
-      <td>Data privacy</td>
-      <td>Data never leaves your servers</td>
-      <td>Data sent to third-party API</td>
-    </tr>
-    <tr>
-      <td>Cost at scale</td>
-      <td>Lower (after infra investment)</td>
-      <td>Higher (per-token pricing adds up)</td>
-    </tr>
-    <tr>
-      <td>Time to production</td>
-      <td>Weeks (need serving infra)</td>
-      <td>Hours (API key and go)</td>
-    </tr>
-    <tr>
-      <td>Vendor lock-in</td>
-      <td>None</td>
-      <td>Significant &mdash; prompt engineering is provider-specific</td>
-    </tr>
-  </tbody>
-</table>
+<p>Here&rsquo;s how distillation at scale works in practice for MediPal:</p>
 
-<h3>Decision Framework</h3>
+<pre><code># Teacher: a large 70B parameter model
+# Student: our target 3B parameter model for on-device deployment
 
-<pre><code># When to use closed (API) models:
-# ─────────────────────────────────────────────
-# ✓ Prototyping and MVP — fastest path to working product
-# ✓ Best-quality-at-any-cost tasks — complex reasoning, creative
-# ✓ Small-to-medium scale — under ~1M tokens/day
-# ✓ No ML infrastructure team
-# ✓ Multimodal (vision, audio) — open models lag here
+# Phase 1: Generate teacher outputs with full probability distributions
+for prompt in medical_prompts:
+    teacher_logits = teacher_model(prompt)  # raw scores over vocabulary
+    # Shape: (seq_len, vocab_size) — e.g., (128, 32000)
 
-# When to use open models:
-# ─────────────────────────────────────────────
-# ✓ High volume — >10M tokens/day (cost crossover point)
-# ✓ Data privacy requirements — healthcare, finance, legal
-# ✓ Custom fine-tuning needed — domain-specific behavior
-# ✓ Low latency / offline — edge deployment, air-gapped
-# ✓ Long-term stability — can't afford API deprecation risk
-# ✓ Regulatory compliance — need to explain and audit the model
+    # We keep the FULL distribution, not only the top answer
+    teacher_probs = softmax(teacher_logits / temperature)
+    # temperature > 1 "softens" the distribution
+    # making the dark knowledge more visible
 
-# The hybrid approach (increasingly common):
-# ─────────────────────────────────────────────
-# Use closed models for complex tasks (planning, hard reasoning)
-# Use open models for high-volume simple tasks (classification, extraction)
-# Route between them based on query complexity</code></pre>
+# Phase 2: Train student to match teacher's distributions
+for prompt, teacher_probs in distillation_dataset:
+    student_logits = student_model(prompt)
+    student_probs = softmax(student_logits / temperature)
 
-<div class="info-box">
-  <strong>The gap is closing fast.</strong> LLaMA 3 70B and Qwen 2 72B are competitive with GPT-3.5 Turbo and approaching early GPT-4 on many benchmarks. Mistral Large competes with Claude 3 Sonnet. The open-source community moves at an incredible pace &mdash; what was frontier-only 6 months ago often has an open alternative today. Plan your architecture to swap between open and closed models without rewriting your entire pipeline.
-</div>
+    # KL divergence: how different are student and teacher distributions?
+    distill_loss = kl_divergence(teacher_probs, student_probs)
+
+    # Also train on hard labels for grounding
+    hard_loss = cross_entropy(student_logits, correct_token)
+
+    # Combined objective
+    total_loss = 0.7 * distill_loss + 0.3 * hard_loss
+    total_loss.backward()</code></pre>
+
+<p>The <strong>temperature</strong> parameter is worth pausing on. When temperature equals 1, you get the model&rsquo;s normal output distribution. Crank it up to 2 or 3, and the distribution flattens out&mdash;low-probability alternatives get boosted, making the dark knowledge more visible. The student sees more of the teacher&rsquo;s uncertainty. It&rsquo;s like asking the teacher to think out loud instead of confidently stating the answer.</p>
+
+<p>This is how models like Phi-3 and Gemma were trained. Microsoft didn&rsquo;t train Phi-3 on raw web text. They used larger models to generate &ldquo;textbook-quality&rdquo; training data and distilled capabilities from more powerful systems. The result: a 3.8 billion parameter model that competes with models ten times its size.</p>
+
+<p>But distillation has limits. You cannot compress infinite knowledge into a finite small model. The student will always sacrifice something. In MediPal&rsquo;s case, a distilled 3B model might nail common conditions but struggle with rare diseases. The question becomes: how small can we go while remaining useful?</p>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  8. EDGE AI & ON-DEVICE MODELS                                     -->
+<!--  5. SMALL LANGUAGE MODELS                                          -->
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 
-<h2>Edge AI &amp; On-Device Models</h2>
+<h2>Small Language Models &mdash; The Data Quality Revolution</h2>
 
-<p>Running a language model on a phone sounded absurd in 2022. By 2024, Apple had on-device models powering Siri features, Google had Gemini Nano on Pixel phones, and hobbyists were running Mistral 7B on M1 MacBooks at 30+ tokens per second. The stack that made this possible is the convergence of three trends: smaller models, better quantization, and dedicated hardware.</p>
+<p>For years, the LLM narrative was a straight line: more parameters equals better performance. GPT-2 had 1.5 billion. GPT-3 jumped to 175 billion. The scaling laws said this was the way. Then Microsoft released Phi-2 at 2.7 billion parameters, and it matched models that were 10 to 25 times larger on reasoning benchmarks. That result broke something in the collective assumption about what size means.</p>
 
-<h3>The On-Device Stack</h3>
+<p>I&rsquo;ll be honest&mdash;when I first saw those benchmarks, I was skeptical. Models that &ldquo;match GPT-3.5&rdquo; often turn out to match it on cherry-picked tasks and fall apart on others. But as more SLMs appeared&mdash;Phi-3, Gemma, Qwen-2, SmolLM&mdash;the pattern held across increasingly diverse evaluations. Something real was happening.</p>
 
-<pre><code># What makes on-device LLMs possible:
+<p>What was happening was a shift from &ldquo;scale the model&rdquo; to &ldquo;scale the data quality.&rdquo; The Phi team at Microsoft described their approach as training on &ldquo;textbook-quality&rdquo; data. Instead of feeding the model billions of tokens of raw internet text (Reddit comments, abandoned forums, SEO spam), they curated and generated training data that teaches reasoning step by step, like a well-written textbook. This is sometimes called <strong>curriculum learning</strong>&mdash;presenting training examples in a deliberate order, from foundational concepts to advanced applications.</p>
+
+<p>Here&rsquo;s a toy example to illustrate why data quality matters more than quantity. Imagine training MediPal to diagnose common colds versus flu.</p>
+
+<pre><code># Low-quality web-scraped training example:
+# "ugh flu season is the worst lol my throat hurts 🤧
+#  anyone else feel like death?? taking dayquil rn"
 #
-# ┌──────────────────────────────────────────────────────┐
-# │  1. Small Models (1B–7B parameters)                  │
-# │     Phi-3 Mini, Gemma 2B, Gemini Nano               │
-# │     Quality that was 70B-only in 2023                │
-# ├──────────────────────────────────────────────────────┤
-# │  2. Aggressive Quantization (4-bit, GGUF)            │
-# │     7B model: 14GB (FP16) → 3.5GB (4-bit)           │
-# │     Fits in phone RAM or laptop memory               │
-# ├──────────────────────────────────────────────────────┤
-# │  3. Hardware Accelerators                            │
-# │     Apple Neural Engine (ANE): 15.8 TOPS             │
-# │     Qualcomm Hexagon NPU: 45 TOPS                   │
-# │     Google Tensor TPU (in Pixel): dedicated ML       │
-# │     Intel/AMD NPUs in laptops                        │
-# ├──────────────────────────────────────────────────────┤
-# │  4. Optimized Runtimes                               │
-# │     llama.cpp / GGUF: CPU + GPU inference            │
-# │     Core ML (Apple): ANE-optimized                   │
-# │     MediaPipe (Google): cross-platform               │
-# │     ONNX Runtime: broad hardware support             │
-# └──────────────────────────────────────────────────────┘</code></pre>
+# What does the model learn from this?
+# Maybe that "flu" correlates with informal language.
+# Maybe that emoji appear near illness words. Not useful.
 
-<h3>Why Edge AI Matters</h3>
-
-<ul>
-  <li><strong>Privacy:</strong> Data never leaves the device. No API calls, no data processing agreements, no risk of data breaches through third parties. For healthcare, finance, and personal AI assistants, this is often a hard requirement.</li>
-  <li><strong>Latency:</strong> Zero network round-trip. On-device inference can achieve sub-10ms time-to-first-token for small models &mdash; faster than the speed of light to the nearest data center.</li>
-  <li><strong>Offline operation:</strong> Works on airplanes, in tunnels, in areas with poor connectivity. Critical for industrial IoT, military, and field applications.</li>
-  <li><strong>Cost:</strong> After the hardware is purchased, inference is free. No per-token API charges. For high-volume personal-device use cases, the economics are unbeatable.</li>
-</ul>
-
-<h3>The Practical Reality</h3>
-
-<p>On-device models are real, but let&rsquo;s be honest about the constraints:</p>
-
-<table>
-  <thead>
-    <tr>
-      <th>Device</th>
-      <th>RAM Available for ML</th>
-      <th>Max Model Size (4-bit)</th>
-      <th>Practical Speed</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>iPhone 15 Pro</td>
-      <td>~4&ndash;6 GB usable</td>
-      <td>~3B parameters</td>
-      <td>15&ndash;30 tok/s</td>
-    </tr>
-    <tr>
-      <td>Pixel 8 Pro</td>
-      <td>~4&ndash;5 GB usable</td>
-      <td>~3B parameters</td>
-      <td>10&ndash;20 tok/s</td>
-    </tr>
-    <tr>
-      <td>M1/M2 MacBook (16GB)</td>
-      <td>~10&ndash;12 GB usable</td>
-      <td>7B&ndash;13B parameters</td>
-      <td>20&ndash;50 tok/s</td>
-    </tr>
-    <tr>
-      <td>M3 Max MacBook (96GB)</td>
-      <td>~80 GB usable</td>
-      <td>70B parameters</td>
-      <td>15&ndash;30 tok/s</td>
-    </tr>
-    <tr>
-      <td>Desktop + RTX 4090 (24GB)</td>
-      <td>24 GB VRAM</td>
-      <td>13B&ndash;30B parameters</td>
-      <td>40&ndash;80 tok/s</td>
-    </tr>
-  </tbody>
-</table>
-
-<div class="warning-box">
-  <strong>On-device ≠ on-par.</strong> A 3B model running on your phone is impressive engineering, but it&rsquo;s not replacing GPT-4 for complex reasoning. On-device models excel at specific, well-scoped tasks: autocomplete, summarization of short texts, simple Q&amp;A, voice commands. Design your system to use on-device for what it&rsquo;s good at and route harder tasks to the cloud. The hybrid approach &mdash; on-device for speed and privacy, cloud for capability &mdash; is where the industry is heading.
-</div>
-
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  PUTTING IT ALL TOGETHER                                           -->
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-
-<h2>The Big Picture &mdash; Where It&rsquo;s All Heading</h2>
-
-<p>Step back and look at these eight trends together. They&rsquo;re not independent &mdash; they&rsquo;re converging:</p>
-
-<pre><code># The convergence
+# High-quality textbook-style training example:
+# "Patient presents with sudden onset of high fever (>101°F),
+#  body aches, and fatigue. Key differentiator from common cold:
+#  cold symptoms develop gradually over 1-3 days with predominant
+#  nasal congestion, while influenza onset is abrupt with systemic
+#  symptoms preceding respiratory ones."
 #
-# MoE + SLMs            → Efficient models that punch above their weight
-# SLMs + Edge AI        → Capable models on every device
-# Multimodal + Agents   → Systems that see, hear, and act
-# Long Context + RAG    → Complementary retrieval strategies
-# Synthetic Data + Open → Open models trained on synthetic data close gap with closed
-# Compound Systems      → The architecture pattern that ties it all together
+# What does the model learn from this?
+# Diagnostic reasoning. Differential features. Clinical logic.
+# One example like this is worth thousands of Reddit posts.</code></pre>
+
+<p>The implication is startling. A 3B parameter model trained on 3 trillion tokens of carefully curated data outperforms a 30B model trained on 3 trillion tokens of unfiltered web crawl. The parameters are the same hardware. The data is the software that determines what the hardware can do.</p>
+
+<p>For MediPal, this is directly relevant. We can&rsquo;t afford to run a 70B model on a phone. But a 3B model trained with medical-domain textbook-quality data, distilled from a frontier model? That&rsquo;s not only feasible&mdash;it might outperform a general-purpose 13B model on our specific task. The key insight of the SLM revolution: when you know your domain, data curation is worth more than parameter count.</p>
+
+<p>But a 3B model is still over 6 GB in full precision. A phone has maybe 6-8 GB of RAM total, shared with the operating system and other apps. We need to go further.</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  6. ON-DEVICE AI                                                   -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+
+<h2>On-Device AI &mdash; Intelligence Without the Cloud</h2>
+
+<p>Getting MediPal onto a phone means solving three simultaneous constraints: the model has to fit in memory, it has to run fast enough for real-time conversation, and the quality has to remain high enough to be medically useful. These three constraints fight each other constantly.</p>
+
+<p>The weapon of choice is <strong>quantization</strong>: representing model weights with fewer bits. In full precision (FP32), each weight uses 32 bits&mdash;4 bytes. In half precision (FP16), each weight uses 2 bytes. In 4-bit quantization, each weight uses half a byte. A 3B parameter model goes from 12 GB (FP32) to 6 GB (FP16) to about 1.5 GB (4-bit). That last number fits comfortably on a modern phone.</p>
+
+<pre><code># Memory math for MediPal's on-device model
 #
-# The trajectory:
-# 2022: "One big model behind an API"
-# 2023: "Fine-tuned models + RAG"
-# 2024: "Compound systems with specialized models"
-# 2025+: "Autonomous AI systems with on-device + cloud hybrid"</code></pre>
+# Model: 3 billion parameters
+#
+# FP32: 3B × 4 bytes = 12 GB   ← won't fit on any phone
+# FP16: 3B × 2 bytes = 6 GB    ← tight, leaves no room for OS
+# INT4: 3B × 0.5 bytes = 1.5 GB ← fits with room to spare
+#
+# Quality comparison (roughly):
+# FP32 → FP16: negligible quality loss (~0.1% on benchmarks)
+# FP16 → INT4: noticeable but manageable (~1-3% quality drop)
+#
+# At INT4, our 3B MediPal takes ~1.5 GB RAM
+# A typical modern phone has 8 GB
+# Leaving ~5 GB for the OS, apps, and KV-cache during inference</code></pre>
 
-<p>The most important takeaway: <strong>the winning strategy is not picking one model &mdash; it&rsquo;s building systems.</strong> A compound AI system that routes between a tiny on-device model, a self-hosted 7B, and a frontier API &mdash; with RAG, caching, and verification &mdash; will outperform any single model call at any scale. The best engineers in this space aren&rsquo;t prompt whisperers. They&rsquo;re system designers.</p>
+<p>Modern phones also ship with dedicated AI accelerators&mdash;Apple calls theirs the Neural Engine, Qualcomm has the Hexagon NPU, Google has the Tensor Processing Unit. These chips are optimized for the matrix multiplications that transformers depend on, running them an order of magnitude faster than the general-purpose CPU would.</p>
+
+<p>But&mdash;and this is important&mdash;on-device does not mean on-par. A 3B quantized model on a phone is impressive engineering, but it is not replacing a 70B model in the cloud for complex medical reasoning. The honest architecture for MediPal is a hybrid: the on-device model handles quick, common tasks (symptom triage, medication reminders, basic Q&amp;A) with zero latency and full privacy. When it encounters something beyond its capabilities&mdash;rare conditions, complex drug interactions, ambiguous imaging&mdash;it routes the query to a more powerful cloud model. The on-device model acts as a first-pass filter, and the cloud model is the specialist called in for hard cases.</p>
+
+<p>This hybrid pattern is where the industry is converging: on-device for speed and privacy, cloud for capability. That split requires knowing what the small model is good at and what it isn&rsquo;t&mdash;which, in practice, means building confidence calibration into the small model so it knows when to say &ldquo;I should escalate this.&rdquo;</p>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  CHECKLIST                                                         -->
+<!--  REST STOP                                                         -->
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 
-<h2>What You Should Now Be Able To Do</h2>
+<h2>Rest Stop</h2>
 
-<div class="checklist">
-  <ul>
-    <li><strong>Explain how Mixture of Experts routing works</strong> &mdash; gating network, top-k selection, softmax probabilities &mdash; and why Mixtral 8x7B achieves 70B quality at 13B inference cost</li>
-    <li><strong>Identify expert collapse</strong> in MoE models and describe the auxiliary load-balancing loss that prevents it</li>
-    <li><strong>Argue when a Small Language Model beats a large one</strong> &mdash; edge deployment, cost-sensitive high-volume tasks, privacy, latency &mdash; and pick the right SLM for a given use case</li>
-    <li><strong>Describe both multimodal architecture patterns</strong> &mdash; encoder + projection + LLM (modular) vs. natively multimodal (unified) &mdash; and name models that use each</li>
-    <li><strong>Make a long-context vs. RAG decision</strong> for a given application, considering corpus size, cost, latency, and the lost-in-the-middle problem</li>
-    <li><strong>Design a compound AI system</strong> using RAG, model cascades, judge-generator pairs, or agent loops &mdash; and know when simpler beats more autonomous</li>
-    <li><strong>Build a synthetic data pipeline</strong> with distillation, persona-driven generation, and quality filtering &mdash; and explain why recursive self-training causes model collapse</li>
-    <li><strong>Choose between open and closed models</strong> for a production deployment based on volume, privacy, fine-tuning needs, and cost structure</li>
-    <li><strong>Assess whether an on-device deployment is feasible</strong> given device RAM constraints, model size after quantization, and required inference speed</li>
-    <li><strong>Connect the trends</strong> &mdash; explain how MoE, SLMs, multimodal, long context, compound systems, synthetic data, open models, and edge AI reinforce each other</li>
-  </ul>
-</div>
+<p>If you&rsquo;ve made it this far, congratulations. You can stop here if you like.</p>
 
+<p>You now have a mental model of the first wave of emerging patterns: multimodal models that combine vision and language through modular or unified architectures. World models that try to build internal simulations of reality. Synthetic data that lets us generate training sets from teacher models. Distillation that compresses large models into small ones. Small language models that prove data quality trumps parameter count. And on-device deployment that brings capable AI to phones through quantization and hybrid cloud architectures.</p>
 
+<p>That&rsquo;s a useful picture. It doesn&rsquo;t tell the whole story, though.</p>
+
+<p>We haven&rsquo;t talked about what happens when MediPal needs to learn from patients across hospitals without sharing their data. We haven&rsquo;t addressed what happens when MediPal gets updated with new medical guidelines and forgets everything it knew about the old ones. We haven&rsquo;t explored the strange but effective practice of merging separately-trained models by averaging their weights. And we haven&rsquo;t discussed the open-source ecosystem that makes all of this accessible to teams that aren&rsquo;t Google or OpenAI.</p>
+
+<p>The short version: federated learning lets you train across distributed data. Continual learning fights catastrophic forgetting. Model merging lets you combine specialists. And open source is accelerating everything. There. You&rsquo;re about 60% of the way to the full picture.</p>
+
+<p>But if the discomfort of not knowing what&rsquo;s underneath is nagging at you, read on.</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  7. FEDERATED LEARNING                                             -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+
+<h2>Federated Learning for LLMs &mdash; Training Without Sharing Secrets</h2>
+
+<p>MediPal is deployed across 50 hospitals. Each hospital has thousands of patient interactions that could improve the model. But patient data is regulated&mdash;HIPAA in the US, GDPR in Europe. We cannot collect all that data into one central server. The data has to stay where it is.</p>
+
+<p><strong>Federated learning</strong> solves this by flipping the script: instead of bringing data to the model, you bring the model to the data. Each hospital gets a copy of MediPal. Each hospital fine-tunes its copy on its local data. Then, instead of sharing data, they share only the model updates&mdash;the changes to the weights. A central server aggregates those updates and produces an improved global model. The actual patient conversations never leave the hospital.</p>
+
+<pre><code># Federated learning: one round
+#
+# Start: global model with weights W_global
+#
+# Hospital A: fine-tunes on local data → gets W_A
+# Hospital B: fine-tunes on local data → gets W_B
+# Hospital C: fine-tunes on local data → gets W_C
+#
+# Central server receives only the DELTAS (changes):
+# ΔW_A = W_A - W_global
+# ΔW_B = W_B - W_global
+# ΔW_C = W_C - W_global
+#
+# Aggregate (simplest version — FedAvg):
+# W_new_global = W_global + (1/3)(ΔW_A + ΔW_B + ΔW_C)
+#
+# Send W_new_global back to all hospitals
+# Repeat for many rounds</code></pre>
+
+<p>The most common aggregation algorithm is <strong>Federated Averaging</strong> (FedAvg): each client trains for a few local epochs, then the server averages the resulting weights. It&rsquo;s surprisingly effective for its simplicity, but it hides some real challenges.</p>
+
+<p>The big one is <strong>data heterogeneity</strong>. Hospital A might be a children&rsquo;s hospital. Hospital B might be a geriatric center. Hospital C might be a trauma center. Their data distributions are radically different. When you average model updates from these three hospitals, you get a model that&rsquo;s mediocre at everything instead of good at anything. This is called the &ldquo;non-IID problem&rdquo; (non-independent and identically distributed), and it remains one of the hardest challenges in federated learning.</p>
+
+<p>For LLMs specifically, full fine-tuning in a federated setting is impractical&mdash;sending billions of weight updates back and forth is expensive and slow. The practical solution is federated fine-tuning with parameter-efficient methods like LoRA. Each hospital trains only a small set of adapter weights (maybe 0.1% of the full model), and only those tiny updates get shared. This slashes communication costs by orders of magnitude while still allowing meaningful personalization.</p>
+
+<p>I still get tripped up by the privacy guarantees of federated learning. The data never leaves the device, which sounds ironclad. But research has shown that model updates themselves can leak information about the training data&mdash;an adversary can sometimes reconstruct training examples from gradient updates alone. The defense is <strong>differential privacy</strong>: adding carefully calibrated noise to the updates before sharing them. This provably bounds how much any individual data point can influence the shared model. The tradeoff is that noise degrades model quality. Tuning that tradeoff&mdash;privacy versus utility&mdash;is more art than science.</p>
+
+<p>Federated learning keeps data private. But it introduces a new problem: MediPal keeps getting updated. And every update risks overwriting what it learned before.</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  8. CONTINUAL LEARNING                                             -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+
+<h2>Continual Learning &mdash; The Catastrophic Forgetting Problem</h2>
+
+<p>Say we fine-tune MediPal on dermatology data. It becomes excellent at skin conditions. Then we fine-tune it on cardiology data. It becomes excellent at heart conditions. But now we test it on dermatology again, and it&rsquo;s forgotten half of what it knew. The cardiology training overwrote the dermatology knowledge. This is <strong>catastrophic forgetting</strong>, and it is one of the most stubborn problems in deep learning.</p>
+
+<p>It happens because neural networks store knowledge distributed across shared parameters. When you train on a new task, you change those shared parameters to fit the new data, and in doing so, you distort the representations that encoded the old data. It&rsquo;s as if you had a single notebook where you wrote all your medical notes, and learning cardiology required erasing some of the dermatology pages to make room.</p>
+
+<p>Here&rsquo;s a concrete example of what catastrophic forgetting looks like in practice:</p>
+
+<pre><code># Before cardiology fine-tuning
+medipal("Describe treatment for contact dermatitis")
+→ "Contact dermatitis is treated by identifying and avoiding the
+   allergen. Topical corticosteroids reduce inflammation. For severe
+   cases, oral prednisone tapers over 2-3 weeks..."
+# Accurate, detailed, clinically sound.
+
+# After 3 epochs of cardiology fine-tuning
+medipal("Describe treatment for contact dermatitis")
+→ "Contact dermatitis treatment involves... monitoring cardiac
+   rhythms and... applying appropriate interventions for the
+   presenting condition..."
+# The model is leaking cardiology language into dermatology answers.
+# The dermatology knowledge has been partially overwritten.</code></pre>
+
+<p>Three families of solutions have emerged, each with real tradeoffs.</p>
+
+<p>The first is <strong>regularization-based</strong>. The idea: identify which weights are important for old tasks and penalize changes to them. <strong>Elastic Weight Consolidation</strong> (EWC) does this by computing a Fisher information matrix that estimates how important each weight is to previously learned tasks. During new training, a penalty term discourages large changes to important weights. The problem: computing and storing the Fisher matrix for billions of parameters is expensive, and it gets increasingly rigid as you add more tasks.</p>
+
+<p>The second family is <strong>replay-based</strong>. Keep a small buffer of examples from old tasks and mix them into new training. This sounds crude, and it is. It&rsquo;s also remarkably effective. Even replaying 1-5% of old data during new training dramatically reduces forgetting. For MediPal, we&rsquo;d keep a curated set of dermatology examples and mix them into every future training run. The downside: storage grows with every task, and for privacy-sensitive domains, you might not be allowed to keep old examples at all.</p>
+
+<p>The third family is <strong>architecture-based</strong>. Instead of trying to reuse the same parameters for everything, allocate separate parameters for each task. LoRA adapters are naturally suited for this: train a separate small adapter for dermatology, a separate one for cardiology, a separate one for neurology. The base model stays frozen&mdash;untouched and unforgotten. At inference time, you load the appropriate adapter based on the task. This is elegant but requires knowing which task you&rsquo;re doing at inference time, which isn&rsquo;t always obvious.</p>
+
+<p>I&rsquo;ll confess something: I expected one of these approaches to be the definitive winner. None is. The field is genuinely unsettled. In practice, most production systems use a combination&mdash;replay plus adapter isolation&mdash;and accept that some forgetting will happen. Continual learning in LLMs is an active and humbling area of research.</p>
+
+<p>That said, there&rsquo;s a completely different approach to combining knowledge from multiple models, one that sidesteps the training process entirely. What if you could merge separately-trained models after the fact?</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  9. MODEL MERGING                                                  -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+
+<h2>Model Merging &mdash; Frankenstein, but It Works</h2>
+
+<p>This is the part that made me do a double-take when I first encountered it. Take two separately fine-tuned models&mdash;one good at dermatology, one good at cardiology&mdash;and average their weights. That&rsquo;s it. Average them. And the result is a single model that&rsquo;s good at both. No additional training. No replay buffer. No adapter switching.</p>
+
+<p>I didn&rsquo;t believe it. It sounds like averaging a French chef and a Japanese chef and expecting the result to cook both cuisines. But it works, and the reason it works has to do with the structure of the loss landscape in neural networks.</p>
+
+<p>The simplest version of model merging is called <strong>model soups</strong>, introduced by Wortsman et al. in 2022. The recipe is straightforward:</p>
+
+<pre><code># Model Soups: simplest model merging
+#
+# Start with: base_model (pre-trained, same for all)
+#
+# Fine-tune separately:
+# model_derm = fine_tune(base_model, dermatology_data)
+# model_card = fine_tune(base_model, cardiology_data)
+# model_neuro = fine_tune(base_model, neurology_data)
+#
+# Merge by averaging weights:
+# merged_weights = (model_derm.weights + model_card.weights
+#                   + model_neuro.weights) / 3
+#
+# That's it. merged_model now has capabilities from all three.</code></pre>
+
+<p>Why does this work? Because all three models started from the same base model. Fine-tuning moves each model a relatively short distance in weight space from that common starting point. If you picture the loss landscape as a terrain, all three fine-tuned models are in neighboring valleys. Averaging puts you somewhere in the middle of all three&mdash;and if the landscape is smooth (which it tends to be for well-trained large models), that middle point is also a good location.</p>
+
+<p>The analogy I keep returning to is paint mixing. If you have three tubes of paint&mdash;red, blue, and green&mdash;all made by the same manufacturer with the same base, mixing them produces a predictable result. If they were made by different manufacturers with different bases, the result is unpredictable mud. This is why model merging requires a shared base model. Models trained from scratch on different data with different initializations cannot be meaningfully averaged.</p>
+
+<p>Uniform averaging is the baseline. More sophisticated techniques improve on it.</p>
+
+<p><strong>TIES-Merging</strong> (Trim, Elect Sign, and Merge) addresses a specific problem: when two fine-tuned models push the same weight in opposite directions, averaging them cancels out, and you lose both signals. TIES resolves this by computing &ldquo;task vectors&rdquo; (the difference between each fine-tuned model and the base model), trimming small deltas that are noise, resolving sign conflicts by majority vote, and then merging only the surviving, sign-consistent deltas.</p>
+
+<pre><code># TIES-Merging walkthrough
+#
+# Base model weight for one parameter: 0.50
+# Dermatology model pushed it to: 0.65  → task vector: +0.15
+# Cardiology model pushed it to: 0.38   → task vector: -0.12
+#
+# Naive average: (0.65 + 0.38) / 2 = 0.515
+# The two changes nearly cancel out — knowledge destroyed.
+#
+# TIES approach:
+# 1. TRIM: drop task vectors smaller than a threshold
+#    If threshold = 0.10, both survive (|+0.15| > 0.10, |-0.12| > 0.10)
+#
+# 2. ELECT SIGN: majority vote on direction
+#    Two vectors: +0.15 and -0.12. One positive, one negative.
+#    If more task vectors across all models vote positive: keep positive.
+#    Say positive wins → discard the -0.12 vector.
+#
+# 3. MERGE: average the surviving vectors
+#    Result: 0.50 + 0.15 = 0.65
+#    The dermatology knowledge is preserved instead of being cancelled.</code></pre>
+
+<p><strong>DARE</strong> (Drop And REscale) takes a different approach: randomly set a fraction of task vector elements to zero, then rescale the survivors to compensate. This sounds like it would destroy information, but it acts as a form of regularization that reduces interference between merged models. It&rsquo;s similar in spirit to dropout during training&mdash;the randomness forces each surviving parameter to carry more independent information.</p>
+
+<p>What makes model merging so exciting for MediPal is the workflow it enables. Train a dermatology specialist. Train a cardiology specialist. Train a pediatrics specialist. Merge them. Ship one model instead of three, with no adapter switching, no routing logic, no extra infrastructure. The merged model is used the same way as any single model. And if the merge doesn&rsquo;t work well on some combination, you try a different merging technique or different weights. The iteration cost is minutes, not days of retraining.</p>
+
+<p>I haven&rsquo;t figured out a great way to explain why some merges work beautifully and others produce garbage. The honest answer is that our theoretical understanding of loss landscape geometry in large models is incomplete. We know that models fine-tuned from the same base tend to merge well. We know that merging models from very different domains is riskier than merging within similar domains. Beyond that, a lot of it is empirical. Try it, evaluate, iterate. Model merging is the most &ldquo;let&rsquo;s see what happens&rdquo; technique in the modern LLM toolkit, and somehow that works.</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  10. OPEN SOURCE ECOSYSTEM                                         -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+
+<h2>The Open-Source Ecosystem &mdash; An Acceleration Nobody Predicted</h2>
+
+<p>Everything we&rsquo;ve discussed in this section&mdash;multimodal models, SLMs, distillation, model merging&mdash;would be academic curiosities for most practitioners if it weren&rsquo;t for the open-source ecosystem that makes them accessible.</p>
+
+<p>When Meta released LLaMA in February 2023, something changed. Within weeks, the community had fine-tuned it into instruction-following models (Alpaca, Vicuna), quantized it to run on consumer GPUs (GPTQ, GGML), and started merging variants on Hugging Face. It was an explosion of experimentation that no single company could have orchestrated.</p>
+
+<p>By 2024, the open-source landscape had matured into a genuine ecosystem. Llama 3 from Meta. Mistral and Mixtral from Mistral AI. Qwen from Alibaba. DeepSeek from a Chinese startup that stunned the community with reasoning capabilities rivaling much larger closed models. Each release pushed the others forward. Each raised the floor of what was freely available.</p>
+
+<p>The infrastructure around these models is equally important. Hugging Face became the GitHub of model weights&mdash;over 500,000 models hosted, searchable, downloadable. vLLM made high-throughput inference accessible. llama.cpp brought LLM inference to CPUs and consumer hardware through aggressive quantization. GGUF became a standard format for sharing quantized models. LoRA and QLoRA made fine-tuning possible on a single GPU. The LMSYS Chatbot Arena provided a crowdsourced evaluation platform that many trust more than any corporate benchmark.</p>
+
+<p>For MediPal, the open-source ecosystem is what makes our project feasible. We can take Llama 3 8B as a base, fine-tune it with LoRA on our medical data, quantize it to 4-bit with GGUF, merge it with a separately trained specialist using TIES, and deploy it on-device with llama.cpp. Every single link in that chain is open source. Two years ago, any one of those steps would have required a team at a well-funded company. Now a solo developer can do it on a weekend with a rented A100.</p>
+
+<p>I want to be direct about something, though: open-weight is not the same as open-source. Most of these models release weights under licenses that permit commercial use but don&rsquo;t release training data or training code. You can use the model but can&rsquo;t reproduce how it was made. There are also genuine safety concerns&mdash;releasing a capable model openly means anyone can fine-tune away its safety guardrails. The community is still working out where the lines should be drawn. This is an ongoing, imperfect, and deeply important negotiation between capability and responsibility.</p>
+
+<p>The trajectory is clear, though. The gap between closed frontier models and the best open models has been shrinking every quarter. DeepSeek V2 and Llama 3 70B trade blows with GPT-4 on many benchmarks. For specific domains with fine-tuning, open models frequently win. The era when closed APIs were the only serious option for production systems is ending. It hasn&rsquo;t ended yet&mdash;frontier closed models still lead on the hardest tasks&mdash;but the trend line is unmistakable.</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  WRAP-UP                                                           -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+
+<h2>Wrap-Up</h2>
+
+<p>If you&rsquo;re still with me, thank you. I hope it was worth the time.</p>
+
+<p>We started with MediPal needing to see images and hear speech, which pulled us into multimodal architectures&mdash;the duct-tape modular approach versus natively unified models. World models showed us where the field might be heading: from next-token prediction toward internal simulation. The need for training data led us to synthetic data generation, with its promise of infinite data and its trap of model collapse. Distillation compressed teacher knowledge into student models. Small language models proved that data quality beats parameter count. On-device deployment forced us through quantization math to get models onto phones. Federated learning let multiple hospitals improve a shared model without sharing patient data. Catastrophic forgetting showed us the cost of sequential learning and the incomplete solutions we have. Model merging offered a surprising shortcut&mdash;averaging separately-trained weights to combine capabilities without retraining. And the open-source ecosystem made all of this accessible to teams and individuals who aren&rsquo;t OpenAI or Google.</p>
+
+<p>My hope is that the next time you hear about a new technique&mdash;some novel merging method, a smaller model claiming to beat a larger one, a natively multimodal architecture&mdash;instead of it feeling like another item in an overwhelming stream of announcements, you&rsquo;ll have the mental scaffolding to place it in context, evaluate it critically, and decide whether it matters for what you&rsquo;re building.</p>
+
+<h2>Resources</h2>
+
+<p>The original Mixture of Experts concept for transformers is covered in Shazeer et al.&rsquo;s <em>&ldquo;Outrageously Large Neural Networks: The Sparsely-Gated Mixture-of-Experts Layer&rdquo;</em> (2017)&mdash;the paper that planted the seed for Mixtral and Switch Transformer years later.</p>
+
+<p>For model merging, the wildly helpful starting point is Wortsman et al.&rsquo;s <em>&ldquo;Model Soups&rdquo;</em> (2022), followed by Yadav et al.&rsquo;s <em>&ldquo;TIES-Merging&rdquo;</em> (2023) and Yu et al.&rsquo;s <em>&ldquo;Language Models are Super Mario: Absorbing Abilities from Homologous Models as a Free Lunch&rdquo;</em> (2023) which introduces DARE&mdash;the title alone is worth the read.</p>
+
+<p>The Phi-3 Technical Report from Microsoft Research is the best case study on training small models with curated data. It&rsquo;s surprisingly readable for a technical report.</p>
+
+<p>Yann LeCun&rsquo;s <em>&ldquo;A Path Towards Autonomous Machine Intelligence&rdquo;</em> (2022) lays out the JEPA vision for world models. Dense but visionary, and the clearest articulation of why next-token prediction might not be enough.</p>
+
+<p>For a sobering look at synthetic data risks, Shumailov et al.&rsquo;s <em>&ldquo;The Curse of Recursion: Training on Generated Data Makes Models Forget&rdquo;</em> (2023) demonstrates model collapse with rigorous experiments. Essential reading before you build a synthetic data pipeline.</p>
+
+<p>The Hugging Face Open LLM Leaderboard and LMSYS Chatbot Arena are the two most trusted evaluation sources for tracking which open models are actually competitive and which are overhyped. Bookmark both.</p>
 
       <div class="page-nav">
         <a class="prev" href="s10.html">

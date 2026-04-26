@@ -292,3 +292,616 @@
     </div>
 
     <div class="content">
+
+<h1>MLOps</h1>
+<div class="chapter-meta">
+  <span class="tag">Chapter 13: ML Systems &amp; Production</span>
+  <span class="tag">Section 5 of 9</span>
+</div>
+
+<p>I avoided MLOps for longer than I'd like to admit. Every time the term showed up in a job posting or a conference talk, I'd nod politely and change the subject. It sounded like DevOps wearing a lab coat — all buzzwords and YAML files, no real substance. I could train a model. I could deploy it. What else was there? Then one morning, a fraud detection model I'd deployed three months earlier was quietly approving fraudulent transactions at twice the expected rate. Nobody noticed. No alert fired. The API still returned valid JSON. The latency was fine. The model had rotted from the inside, and the infrastructure I'd built had no way to tell me. That was the morning I stopped treating MLOps as a buzzword. Here is that dive.</p>
+
+<p><b>MLOps</b> — short for Machine Learning Operations — is the set of practices, tools, and organizational patterns that keep ML systems healthy in production. The term gained traction around 2018–2019, when organizations realized that training a good model was maybe 10% of the work, and the other 90% was everything around it: versioning data, automating retraining, tracking experiments, governing model releases, and keeping costs from spiraling. Google formalized a maturity framework (Levels 0 through 2) that became the industry standard for measuring where a team stands.</p>
+
+<p>Before we start, a heads-up. We're going to be building a complete MLOps system from nothing, touching CI/CD pipelines, orchestrators, feature stores, infrastructure as code, and team structures. You don't need to know any of these tools beforehand. We'll add what we need, one piece at a time.</p>
+
+<p>This isn't a short journey, but I hope you'll be glad you came.</p>
+
+<div style="margin:1.5em 0; padding-left:1.5em; border-left:3px solid #ccc;">
+  The Notebook on a Laptop<br>
+  Why Models Rot — The Three Moving Parts<br>
+  From Notebook to Pipeline<br>
+  CI/CD for ML — Three Pipelines, Not One<br>
+  Continuous Training<br>
+  Feature Stores in Production<br>
+  Rest Stop<br>
+  ML Pipeline Orchestration<br>
+  Infrastructure as Code for ML<br>
+  Model Governance and Compliance<br>
+  Cost Management — FinOps for ML<br>
+  MLOps Maturity Levels<br>
+  Team Structures — Who Builds What<br>
+  Platform Engineering for ML<br>
+  Resources and Credits
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2 id="the-notebook">The Notebook on a Laptop</h2>
+
+<p>Let's make this concrete. Imagine you're the first ML engineer at a tiny fintech startup called FraudShield. Your job: build a fraud detection model. You have a CSV of 50,000 transactions, a laptop, and a Jupyter notebook.</p>
+
+<p>You load the data. You engineer some features — transaction amount, time since last purchase, merchant category. You train an XGBoost model. It gets 0.91 F1 on your hold-out set. You export it as a pickle file, wrap it in a Flask API, and push the container to production. Champagne. Ship it.</p>
+
+<pre><code># FraudShield v1 — the entire "pipeline"
+import pandas as pd
+import xgboost as xgb
+import pickle
+
+df = pd.read_csv("transactions.csv")
+X = df[["amount", "hours_since_last", "merchant_category"]]
+y = df["is_fraud"]
+
+model = xgb.XGBClassifier(max_depth=6, n_estimators=200)
+model.fit(X, y)
+
+with open("model.pkl", "wb") as f:
+    pickle.dump(model, f)
+
+# Done. Copy to server. Go home.</code></pre>
+
+<p>This is the starting point for nearly every ML team on the planet. And it works. For a while.</p>
+
+<p>Three months pass. Transaction patterns shift — holiday shopping arrives, a new payment partner comes online, fraudsters adapt their strategies. Your model doesn't know about any of this. It's still making decisions based on data from three months ago. And here's the insidious part: nothing breaks. The API responds. The latency is fine. The health check passes. But the fraud approval rate creeps up from 3% to 7%, silently, like a pipe leaking behind a wall.</p>
+
+<p>This is where our story begins. Not with tools and platforms, but with the pain of a model that quietly stops doing its job.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2 id="three-parts">Why Models Rot — The Three Moving Parts</h2>
+
+<p>In traditional software, you version one artifact: code. A specific Git commit produces a specific binary. If the binary misbehaves, you look at the code diff. The universe has one axis.</p>
+
+<p>In ML, you version three entangled artifacts: <b>code</b>, <b>data</b>, and <b>models</b>. Each changes independently. Each affects the output. And they interact in ways that create a combinatorial nightmare for debugging.</p>
+
+<p>Back at FraudShield, here's what that looks like in practice. Your colleague pushes a code change that normalizes transaction amounts differently. At the same time, your data pipeline starts ingesting a new payment partner's data, which has a different merchant category encoding. And the model in production was trained before either change. Three axes, all shifting at once.</p>
+
+<pre><code># What you need to reconstruct ANY model in production
+experiment:
+  code_version: "git:a3f8c21"          # training script commit
+  data_version: "dvc:v2.3.1"          # exact dataset snapshot
+  model_version: "registry:fraud-v7"   # trained artifact
+  config:
+    learning_rate: 0.01
+    max_depth: 6
+    n_estimators: 200
+    feature_set: "v3_with_velocity"
+  environment:
+    python: "3.11.4"
+    xgboost: "2.0.3"
+    random_seed: 42
+
+# Miss ANY of these → irreproducible results
+# Change ANY of these → potentially different model behavior</code></pre>
+
+<p>I'll be honest — the first time someone explained this to me, I thought they were overcomplicating things. Code changes are tracked by Git. Models are saved as files. What's the big deal? The big deal is the <em>data</em>. Nobody commits a 50GB dataset to Git. Nobody even thinks of it as something that should be versioned. But a shift in your training data can change your model's behavior more dramatically than any code change. And unlike a code diff, you can't eyeball a data diff to spot what went wrong.</p>
+
+<p>Here's why this three-axis problem creates a fundamentally different engineering challenge than traditional software:</p>
+
+<table>
+<thead><tr><th>Dimension</th><th>Traditional Software</th><th>ML System</th></tr></thead>
+<tbody>
+<tr><td><b>What changes</b></td><td>Code</td><td>Code + Data + Model</td></tr>
+<tr><td><b>Testing</b></td><td>Deterministic — pass or fail</td><td>Statistical — thresholds and distributions</td></tr>
+<tr><td><b>Build output</b></td><td>A binary, a container</td><td>A model artifact + serving config + feature schema</td></tr>
+<tr><td><b>How it degrades</b></td><td>Crashes or returns wrong output</td><td>Silently gets worse over time</td></tr>
+<tr><td><b>Rollback</b></td><td>Deploy previous version</td><td>Which version? Code? Data? Model? All three?</td></tr>
+<tr><td><b>Root cause</b></td><td>Usually in the code diff</td><td>Often in data nobody committed anywhere</td></tr>
+</tbody>
+</table>
+
+<p>That "silently gets worse" row is the one that keeps ML engineers up at night. A web app either works or it doesn't. A model can go from 92% precision to 74% precision while returning perfectly valid HTTP 200 responses. Nothing crashes. Nothing alerts. The requests that used to be classified correctly are now being classified wrong, but the system looks healthy from every angle that traditional monitoring knows how to check.</p>
+
+<p>I think of it like this: traditional software is like a light switch — it's either on or it's off, and you can tell by looking. ML in production is like a dimmer switch with no markings. It's always producing <em>some</em> light. The question is whether it's producing <em>enough</em> light, and that question requires entirely different instruments to answer.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2 id="notebook-to-pipeline">From Notebook to Pipeline</h2>
+
+<p>Back at FraudShield, you've felt the pain. Your model rotted. Your boss wants to know what happened. You can't reproduce the original training run because you didn't record the data version, the random seed, or even which features you used (the notebook has six cells of commented-out experiments). The next version of this system needs to be reproducible, automated, and self-aware.</p>
+
+<p>The journey from notebook to production pipeline happens in stages, and it mirrors a pattern that's older than software itself. Think about restaurants. A home cook can make an excellent meal — maybe better than any restaurant. But they can't make that meal consistently for 200 people per night. They can't train someone else to make it the same way. And if something tastes off one evening, they can't trace it back to a specific ingredient from a specific supplier. A restaurant kitchen solves all of these problems through standardization: written recipes, consistent suppliers, mise en place, quality checks before plating.</p>
+
+<p>MLOps is the restaurant kitchen for ML. Your notebook is the home cooking. Both produce meals. One scales.</p>
+
+<p>The first thing we do at FraudShield is break the notebook into reproducible stages:</p>
+
+<pre><code># Instead of one giant notebook, four scripts that form a pipeline
+#
+# 1. data_prep.py    — fetch data, validate schema, version snapshot
+# 2. feature_eng.py  — compute features, log feature statistics
+# 3. train.py        — train model, log params + metrics + artifacts
+# 4. evaluate.py     — compare to production model, run quality gates
+#
+# Each script reads from the previous stage's output.
+# Each script logs what it did.
+# Together, they form a pipeline that can be triggered
+# by a human, a cron job, or a monitoring alert.</code></pre>
+
+<p>This decomposition isn't glamorous. It's the hardest kind of engineering — taking something that works in one context (your laptop, your notebook, your head) and making it work in a different context (a server, a schedule, someone else's head). But it's the foundation everything else builds on. Without it, CI/CD, continuous training, and orchestration are all theater.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2 id="cicd">CI/CD for ML — Three Pipelines, Not One</h2>
+
+<p>Traditional CI/CD is beautifully straightforward: test the code, build the binary, deploy the container. One pipeline, one artifact, one axis. ML needs three pipelines, because it has three axes.</p>
+
+<p><b>Code CI</b> is the familiar one. Every commit triggers linting, unit tests, integration tests. It runs in minutes. It's deterministic — either the tests pass or they don't. At FraudShield, this validates that our feature engineering functions handle edge cases (null values, negative amounts, transactions at midnight on timezone boundaries) and that our training script doesn't crash on valid input.</p>
+
+<p><b>Data CI</b> is the one most teams skip, and the one that causes the most pain. When new data arrives — from a new payment partner, a schema migration, a backfill — data CI validates it against expected schemas, statistical distributions, and freshness constraints before it touches the training pipeline. I have personally witnessed a schema change in an upstream Postgres table silently break a production fraud model for eleven days. The column wasn't missing — it was renamed. The data pipeline filled in NULLs. The model happily trained on NULLs and learned that one feature didn't matter. Data CI catches this on day one.</p>
+
+<p><b>Model CI</b> is the one unique to ML. It trains a candidate model, evaluates it against quality gates, and compares it to whatever is currently running in production. This pipeline can take hours (because training on GPUs takes time) and its tests are <em>statistical</em>, not deterministic. A model doesn't pass or fail — it's better or worse by some margin of some metric on some slice of the population.</p>
+
+<p>Here's how these three coordinate in a single GitHub Actions workflow for FraudShield:</p>
+
+<pre><code># .github/workflows/ml_cicd.yml
+name: FraudShield ML CI/CD
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * 1'  # weekly retrain trigger
+
+jobs:
+  code-ci:                    # Pipeline 1: minutes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: iterative/setup-cml@v2
+      - run: |
+          pip install -r requirements.txt
+          ruff check src/
+          pytest tests/unit/ -x
+          pytest tests/integration/ -x
+
+  data-ci:                    # Pipeline 2: minutes
+    runs-on: ubuntu-latest
+    needs: code-ci
+    steps:
+      - run: |
+          python -m data_checks.validate \
+            --source s3://fraudshield/features/latest/ \
+            --schema schemas/features_v3.json \
+            --check-nulls --check-distributions \
+            --reference s3://fraudshield/features/baseline/
+
+  model-ci:                   # Pipeline 3: hours
+    runs-on: [self-hosted, gpu]
+    needs: data-ci
+    steps:
+      - run: python train.py --config configs/prod.yaml
+      - run: |
+          python evaluate.py \
+            --candidate outputs/model_latest/ \
+            --champion models:/fraud-detector/Production \
+            --min-f1 0.82 \
+            --max-latency-p99-ms 100 \
+            --check-slices region,device_type
+      - run: |
+          # CML: post metrics as a PR comment
+          cml comment create report.md</code></pre>
+
+<p>The <b>CML</b> (Continuous Machine Learning) tool, built by the team behind DVC, deserves a mention here. It bridges the gap between ML experiments and pull request workflows by posting training metrics, plots, and model comparisons directly as PR comments. Instead of asking "did the model get better?" and having someone check a dashboard, the answer appears right in the code review. This sounds like a small thing. It changes the team's behavior dramatically, because now model quality becomes part of the code review ritual, not a separate afterthought.</p>
+
+<p>The part that surprised me: the data CI pipeline catches more real issues than the code CI pipeline. Code bugs are loud — they crash, they throw exceptions, they fail tests. Data bugs are quiet. A feature that was always between 0 and 1 starts showing values up to 100 because an upstream system changed its units. The model doesn't crash. It trains on garbage and produces garbage, politely.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2 id="continuous-training">Continuous Training</h2>
+
+<p>Here's the part that has no analog in traditional software: <b>Continuous Training</b>, or CT. In regular DevOps, once your code is deployed, it stays deployed until you push new code. In ML, your model's <em>environment</em> changes even when your code doesn't. Customer behavior shifts. Fraud patterns evolve. Seasonality hits. The world moves, and your model stands still.</p>
+
+<p>CT is the practice of automatically retraining models when the world moves far enough to matter. The key word is "automatically" — not "on a schedule because someone put it in a cron job," but triggered by evidence that the current model is becoming stale.</p>
+
+<p>At FraudShield, here are the triggers we set up, roughly in order of sophistication:</p>
+
+<p><b>Calendar trigger</b> — retrain every Monday at 6am. This is crude but effective as a starting point. It guarantees your model is never more than a week old. The downside: it wastes GPU hours when data hasn't changed, and it provides no protection if data shifts dramatically on a Wednesday.</p>
+
+<p><b>Data volume trigger</b> — retrain when 100,000 new labeled transactions have accumulated. This is better because it ties retraining to actual new information. But it assumes all new data is equally informative, which it often isn't.</p>
+
+<p><b>Drift trigger</b> — retrain when monitoring detects that feature distributions or prediction distributions have shifted beyond a threshold. This is the gold standard. It retrains when the model <em>needs</em> it, not when the calendar says so. The challenge is defining "shifted enough" — too sensitive and you retrain daily on noise, too loose and you miss real drift.</p>
+
+<p><b>Performance trigger</b> — retrain when live metrics (precision, recall, or a business metric like fraud dollar loss) degrade below a threshold. This is the most direct signal but also the slowest, because you need enough production traffic to measure the drop with statistical confidence.</p>
+
+<p>I'll be honest: most teams start with the calendar trigger and graduate to drift triggers only when the calendar approach visibly fails. That's fine. The important thing is having <em>any</em> automated retraining, because the alternative — someone remembering to retrain the model — is the most common single point of failure in ML systems.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2 id="feature-stores">Feature Stores in Production</h2>
+
+<p>FraudShield has grown. We now have five features: transaction amount, hours since last purchase, merchant category, user account age, and a velocity feature — number of transactions in the last hour. The first four are straightforward lookups. The fifth one, velocity, is where things get treacherous.</p>
+
+<p>During training, we compute velocity by counting rows in a Pandas DataFrame grouped by user. Fast, correct, retrospective. But during serving, when a transaction arrives in real-time, we need to compute velocity <em>right now</em>, from a stream of live events. So we write a second implementation — a Redis counter that increments on each transaction and expires after an hour.</p>
+
+<p>Two implementations of the same feature. Two chances to get it subtly wrong.</p>
+
+<p>And they <em>will</em> get subtly wrong. Maybe the Pandas version counts the transaction itself in the window, but the Redis version doesn't. Maybe one uses UTC and the other uses the server's local timezone. Maybe one rounds to the nearest hour and the other uses a rolling 60-minute window. These aren't bugs in the traditional sense — each implementation is "correct" in its own context. But the model was trained on one definition and is serving with another. That gap has a name: <b>training-serving skew</b>.</p>
+
+<p>I didn't understand why feature stores existed until I personally shipped a model where training velocity averaged 4.2 and serving velocity averaged 3.8, because the training code used a closed interval (≤) and the serving code used an open interval (<). The model's performance dropped by 6% and it took us two weeks to find the cause. That two weeks is what feature stores are designed to eliminate.</p>
+
+<p>A <b>feature store</b> is a system that provides a single definition of each feature, computes it once using that definition, and serves the result to both training and inference. You write the feature logic once. The feature store materializes it into two stores: an <b>offline store</b> (a data warehouse or file system) for training, where you need historical values with point-in-time correctness, and an <b>online store</b> (Redis, DynamoDB, or similar) for serving, where you need low-latency lookups.</p>
+
+<pre><code># Feast feature definition — written once, used everywhere
+# feast_repo/features.py
+
+from feast import Entity, Feature, FeatureView, FileSource
+from feast.types import Float64, Int64
+from datetime import timedelta
+
+user = Entity(name="user_id", join_keys=["user_id"])
+
+transaction_features = FeatureView(
+    name="user_transaction_features",
+    entities=[user],
+    ttl=timedelta(hours=2),
+    schema=[
+        Feature(name="tx_amount_avg_1h", dtype=Float64),
+        Feature(name="tx_count_1h", dtype=Int64),
+        Feature(name="hours_since_last_tx", dtype=Float64),
+    ],
+    source=FileSource(
+        path="s3://fraudshield/features/user_tx_features.parquet",
+        timestamp_field="event_timestamp",
+    ),
+)
+
+# Training: feast.get_historical_features(entity_df, features)
+#   → returns point-in-time correct feature values
+#
+# Serving:  feast.get_online_features(entity_rows, features)
+#   → returns latest feature values, low latency
+#
+# Same definition. Same logic. No skew.</code></pre>
+
+<p><b>Feast</b> is the most widely adopted open-source feature store. It's Python-native, works with any cloud storage backend, and provides the critical guarantee of point-in-time joins — when you ask "what were this user's features at 2pm on Tuesday?", it returns the feature values as they would have existed at that exact moment, without accidentally leaking future information into the training data. That leakage, by the way, is how you get models that look amazing in offline evaluation and fail in production. The model learned to cheat by peeking at the future.</p>
+
+<p><b>Tecton</b>, the commercial alternative, adds real-time feature computation (streaming transforms), built-in monitoring for feature drift, and tighter integration with production serving infrastructure. The trade-off is cost and lock-in, but for teams running dozens of models in production, the operational overhead of self-managing Feast starts to outweigh Tecton's price tag.</p>
+
+<p>When do you need a feature store? Not on day one. If you have three features and one model, a feature store is over-engineering. But the moment you find yourself maintaining two copies of the same feature logic — one for training and one for serving — you have the problem that feature stores solve. At FraudShield, we hit that point around model number three.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2 id="rest-stop">Rest Stop</h2>
+
+<p>Congratulations on making it this far. You can stop if you want.</p>
+
+<p>Here's what you have: a mental model of why ML systems need different operational practices than traditional software (three moving axes instead of one), how CI/CD extends to handle data and models alongside code, why continuous training matters and what triggers it, and how feature stores eliminate an entire class of subtle bugs. That's a solid foundation — more than enough to have an intelligent conversation about MLOps with anyone, including senior interviewers.</p>
+
+<p>The short version of what comes next: ML pipelines need orchestrators to chain their stages together (Kubeflow, Vertex AI, SageMaker Pipelines), the infrastructure underneath needs to be reproducible and version-controlled (Terraform, Pulumi), models in regulated industries need governance and audit trails, GPU bills need active management, and teams need to be organized in a way that doesn't create bottlenecks. There. You're 70% of the way.</p>
+
+<p>But if the thought of someone asking you "how would you design the MLOps infrastructure for a team scaling from 3 to 30 models?" makes you uncomfortable, read on. The rest of this journey is about building systems that scale.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2 id="orchestration">ML Pipeline Orchestration</h2>
+
+<p>FraudShield's four scripts work. But running them in order means someone has to type four commands, wait for each to finish, check the output, and decide whether to proceed. That person becomes the bottleneck. And when that person goes on vacation, nobody retrains the model.</p>
+
+<p>An <b>orchestrator</b> is the system that runs pipeline stages in the right order, handles retries on failure, manages dependencies between stages, and provides visibility into what's running, what succeeded, and what failed. Think of it as the stage manager for a theater production — it doesn't act, but without it, nobody knows when to enter or exit.</p>
+
+<p>The orchestrator landscape is crowded, and I'll be honest, I still find it confusing. There are at least a dozen viable options. Rather than cataloging them all, here are the three categories that matter and when to pick each:</p>
+
+<p><b>General-purpose orchestrators</b> — tools like <b>Apache Airflow</b>, <b>Prefect</b>, and <b>Dagster</b>. These were built for data engineering pipelines and adapted for ML. Airflow is the most widely deployed orchestrator in production today, period. Its model is a DAG (directed acyclic graph) of tasks written in Python. Prefect and Dagster are the modern alternatives — better developer experience, better error handling, more Pythonic APIs — but smaller ecosystems. If your team already uses Airflow for data pipelines, use Airflow for ML pipelines too. One orchestrator is hard enough to operate. Two is torture.</p>
+
+<p><b>ML-native orchestrators</b> — tools like <b>Kubeflow Pipelines</b> and <b>ZenML</b>. These understand ML-specific concepts natively: experiment tracking, model registries, data versioning, GPU scheduling. Kubeflow runs on Kubernetes, which gives you maximum control over compute resources but requires a team that can operate Kubernetes. The learning curve is steep. I've watched teams spend three months setting up Kubeflow before running their first ML pipeline on it. But for organizations that need on-premise or hybrid-cloud deployment, or that run on Kubernetes already, it's the most flexible option.</p>
+
+<p><b>Managed cloud orchestrators</b> — <b>Vertex AI Pipelines</b> (GCP), <b>SageMaker Pipelines</b> (AWS), and <b>Azure ML Pipelines</b>. These trade flexibility for convenience. You don't manage the infrastructure — the cloud provider does. Vertex AI Pipelines is built on Kubeflow under the hood but hides the Kubernetes layer. SageMaker Pipelines is deeply integrated with the AWS ecosystem. The downside: cloud lock-in. Once your ML pipelines depend on SageMaker, migrating to GCP is a rewrite, not a migration.</p>
+
+<pre><code># Kubeflow Pipeline for FraudShield — the ML-native approach
+# Each step is a container. Kubeflow handles orchestration.
+
+from kfp import dsl
+
+@dsl.pipeline(name="fraudshield-training")
+def training_pipeline(data_version: str, config_path: str):
+
+    data_prep = data_prep_op(data_version=data_version)
+
+    feature_eng = feature_eng_op(
+        input_data=data_prep.outputs["prepared_data"]
+    )
+
+    train = train_op(
+        features=feature_eng.outputs["features"],
+        config=config_path,
+    ).set_gpu_limit(1)    # request one GPU for training
+
+    evaluate = evaluate_op(
+        candidate=train.outputs["model"],
+        champion="models:/fraud-detector/Production",
+        min_f1=0.82,
+    )
+
+    # Only register if evaluation passes
+    with dsl.Condition(evaluate.outputs["passed"] == "true"):
+        register_op(model=train.outputs["model"], stage="staging")</code></pre>
+
+<p>For FraudShield, here's the pragmatic choice: start with GitHub Actions for the CI/CD pipelines we built earlier. When the number of models grows past five, graduate to Prefect or Dagster. Consider Kubeflow or a managed platform when you're running 20+ models and need GPU scheduling, multi-team isolation, or on-premise deployment. Don't buy the fanciest orchestrator before you've outgrown the simplest one.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2 id="iac">Infrastructure as Code for ML</h2>
+
+<p>FraudShield is growing. We need GPU instances for training, a Redis cluster for the online feature store, an S3 bucket for data versioning, a Kubernetes cluster for model serving. If one of our engineers set all this up by clicking through the AWS console, we'd have a problem: that infrastructure exists only in their memory and in the cloud provider's account. If it breaks at 3am, nobody else can reconstruct it. If we need to spin up a staging environment, nobody knows exactly what to replicate.</p>
+
+<p><b>Infrastructure as Code</b> (IaC) treats infrastructure the same way we treat application code: defined in files, stored in version control, reviewed in pull requests, and applied by machines. <b>Terraform</b> by HashiCorp is the dominant tool here — it uses a declarative language called HCL (HashiCorp Configuration Language) where you describe what you want and Terraform figures out how to create it. <b>Pulumi</b> is the main alternative, letting you write infrastructure definitions in actual programming languages like Python or TypeScript instead of a custom DSL.</p>
+
+<pre><code># Terraform for FraudShield's ML training infrastructure
+# terraform/ml_training.tf
+
+resource "aws_instance" "training_gpu" {
+  ami           = "ami-0123456789"   # Deep Learning AMI
+  instance_type = "p3.2xlarge"       # V100 GPU
+  key_name      = "fraudshield-ml"
+
+  root_block_device {
+    volume_size = 200   # GB — training data + checkpoints
+  }
+
+  tags = {
+    Name        = "fraudshield-training"
+    Environment = "production"
+    Team        = "ml"
+    CostCenter  = "ml-training"      # for cost tracking
+  }
+}
+
+resource "aws_s3_bucket" "model_artifacts" {
+  bucket = "fraudshield-model-artifacts"
+  versioning { enabled = true }      # every model version preserved
+}
+
+resource "aws_elasticache_cluster" "feature_store" {
+  cluster_id      = "fraudshield-features"
+  engine          = "redis"
+  node_type       = "cache.r6g.large"
+  num_cache_nodes = 2
+}
+
+# terraform apply — infrastructure appears
+# terraform destroy — infrastructure disappears
+# git log terraform/ — complete history of every infra change</code></pre>
+
+<p>I still get Terraform state management wrong sometimes — the state file tracks what Terraform thinks exists in the cloud, and when it drifts from reality (because someone clicked something in the console), the results are entertaining in the way that house fires are entertaining. The discipline required is: <em>never</em> touch infrastructure manually once it's managed by Terraform. Every change goes through code, review, and <code>terraform apply</code>.</p>
+
+<p>The ML-specific wrinkle is that ML infrastructure is more heterogeneous than typical application infrastructure. You need beefy GPU machines for training (used intermittently, expensive), lightweight CPU machines for serving (used constantly, cheap), a data warehouse for offline feature storage, a key-value store for online features, and an object store for model artifacts. IaC lets you define all of this in one place, spin it up for training, and tear down the expensive parts when training is done. That tear-down step alone can cut GPU bills by 60-80%.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2 id="governance">Model Governance and Compliance</h2>
+
+<p>FraudShield is now processing transactions for a bank. The bank's compliance team wants answers: Which model approved this disputed transaction? What data was it trained on? Who approved the model for production? When was it last retrained? Can we reproduce its decision?</p>
+
+<p>These aren't abstract questions. In regulated industries — finance, healthcare, insurance, hiring — they're legal requirements. And with the EU AI Act (which went into force in 2024), high-risk AI systems now need documented risk assessments, audit trails, human oversight mechanisms, and conformity assessments <em>before</em> deployment. Article 12 of the Act requires that AI systems be designed to automatically record events — a legal mandate for the kind of logging that good MLOps practice already demands.</p>
+
+<p><b>Model governance</b> is the set of practices that make these questions answerable. It sits on top of everything we've built so far — experiment tracking provides the "what data and config produced this model" answer, the model registry provides the "who approved it and when" answer, and CI/CD pipelines provide the "what tests did it pass" answer.</p>
+
+<p>The concrete artifact that ties it all together is a <b>model card</b> — a structured document (introduced by Google researchers in 2019) that accompanies every model and answers the questions a regulator, auditor, or downstream consumer would ask:</p>
+
+<pre><code># model_card.yaml — travels with every model artifact
+model_details:
+  name: "FraudShield Transaction Classifier"
+  version: "v7"
+  owner: "ml-team@fraudshield.com"
+  created: "2024-11-15T06:30:00Z"
+
+training_details:
+  data_version: "dvc:v2.3.1"
+  data_size: 1_200_000 transactions
+  date_range: "2024-01-01 to 2024-10-31"
+  code_commit: "git:a3f8c21"
+  training_duration: "2h 14m"
+  hardware: "1x NVIDIA V100"
+
+performance:
+  overall:
+    f1: 0.847
+    precision: 0.812
+    recall: 0.884
+  slices:
+    domestic:       { f1: 0.871, n: 1_000_000 }
+    international:  { f1: 0.764, n: 200_000 }
+    high_value:     { f1: 0.832, n: 50_000 }
+
+limitations:
+  - "Lower performance on international transactions"
+  - "Not evaluated on transactions below $1"
+  - "Training data does not include crypto transactions"
+
+ethical_considerations:
+  - "Model was evaluated for demographic parity across age groups"
+  - "No significant disparate impact detected (ratio > 0.8)"
+
+approval:
+  approved_by: "jane.doe@fraudshield.com"
+  approval_date: "2024-11-15"
+  review_ticket: "MLOPS-1234"</code></pre>
+
+<p>The model card isn't a formality. It's the document that lets you sleep at night when a regulator calls. And it's the document that lets a new team member understand what a model does, where it came from, and what its known weaknesses are, without reverse-engineering the training code.</p>
+
+<p>My favorite thing about model governance is that, done well, it's not extra work — it's a natural byproduct of good MLOps practices. If you're already tracking experiments, versioning data, and running quality gates, generating a model card is a script that pulls from existing metadata. If you're <em>not</em> doing those things, the model card becomes a painful manual exercise, which is exactly the signal that your MLOps foundations need work.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2 id="cost">Cost Management — FinOps for ML</h2>
+
+<p>I have a confession. Early in my career, I left four p3.8xlarge instances running over a long weekend. That's four machines with four V100 GPUs each. At roughly $24 per hour per machine, that three-day weekend cost the company about $6,900. My manager was understanding. The finance team was less so.</p>
+
+<p>ML workloads are unusually expensive because they combine the worst properties of cloud billing: they need expensive specialized hardware (GPUs, high-memory machines), they run for long durations (hours of training), and they're spiky (intense during training, idle between experiments). Traditional FinOps — the practice of bringing financial accountability to cloud spending — needs ML-specific extensions.</p>
+
+<p>The biggest lever is <b>spot instances</b> (AWS terminology; GCP calls them "preemptible VMs," Azure calls them "low-priority VMs"). These are excess cloud capacity sold at 60-90% discounts. The catch: the cloud provider can reclaim them with 2 minutes of notice. For ML training, this is actually workable, because training can be checkpointed. If the instance gets reclaimed, you restart from the last checkpoint on a new spot instance.</p>
+
+<pre><code># SageMaker managed spot training — saves 60-70%
+import sagemaker
+from sagemaker.estimator import Estimator
+
+estimator = Estimator(
+    image_uri="fraudshield-training:latest",
+    instance_type="ml.p3.2xlarge",
+    instance_count=1,
+    role="SageMakerExecutionRole",
+    use_spot_instances=True,          # the money-saving flag
+    max_run=3600,                     # max training time: 1 hour
+    max_wait=7200,                    # max wait for spot capacity: 2 hours
+    checkpoint_s3_uri="s3://fraudshield/checkpoints/",
+)
+# If spot gets reclaimed, SageMaker restarts from last checkpoint.
+# Your training code needs to support loading from checkpoints —
+# that's the only requirement.</code></pre>
+
+<p>Beyond spot instances, here are the levers that matter most:</p>
+
+<p><b>Auto-shutdown</b> — tear down GPU instances the moment training finishes. This sounds trivial, but the number of teams running idle GPU clusters because "we might need them later" is staggering. IaC helps here: your CI/CD pipeline provisions the training instance, runs training, and destroys the instance in the same workflow.</p>
+
+<p><b>Right-sizing</b> — not every training job needs an A100. For FraudShield's XGBoost model, a CPU instance with enough memory is faster and cheaper than a GPU, because XGBoost's GPU implementation isn't always faster for tabular data. Profile first, provision second.</p>
+
+<p><b>Cost tagging</b> — tag every resource with team, project, and purpose. Without tags, your monthly cloud bill is a single number that nobody can decompose. With tags, you can see that Team A spent $4,000 on training experiments, Team B spent $2,000 on serving, and $3,000 went to an orphaned cluster nobody owns. Tagging is boring. It's also the prerequisite for every other cost optimization.</p>
+
+<p><b>Kubecost</b> or <b>Run:ai</b> — if you're running on Kubernetes, these tools provide GPU-level cost attribution and scheduling optimization. Run:ai in particular can pool GPUs across teams and fractionate them (assigning half a GPU to a small job), which dramatically improves utilization. Most Kubernetes clusters run GPUs at 15-30% utilization. Run:ai claims to push that above 80%.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2 id="maturity">MLOps Maturity Levels</h2>
+
+<p>Google published a framework for MLOps maturity that's become the industry standard for assessing where a team stands. It defines three levels, numbered 0 through 2. I'm still developing my intuition for exactly where the boundaries should be drawn — every real team I've worked with sits somewhere between levels rather than neatly on one — but the framework is useful because it gives teams a shared vocabulary for talking about where they are and where they're going.</p>
+
+<p><b>Level 0 — Manual process.</b> This is where FraudShield started. A data scientist trains a model in a notebook, exports a pickle file, and hands it to an engineer for deployment. There's no automation, no versioning, no monitoring. The model gets retrained "when someone remembers." Experiments live in notebook cells with names like <code>model_v2_final_FINAL_v3.pkl</code>. Reproducibility depends on whether the data scientist still has the right notebook open.</p>
+
+<p>The telling sign of Level 0: the model in production was deployed by one person, and if that person leaves, nobody knows how to retrain it.</p>
+
+<p><b>Level 1 — ML pipeline automation.</b> Training is automated through a pipeline (the four-stage pipeline we built for FraudShield). Retraining happens on a schedule or a trigger. Experiments are tracked in MLflow or Weights &amp; Biases. The model registry provides a staging-to-production promotion workflow. But the <em>pipeline itself</em> is still manually managed — when you need to change the pipeline code, it's a manual process of editing scripts, testing locally, and deploying by hand.</p>
+
+<p>The telling sign of Level 1: models get deployed automatically, but pipeline changes require a human to SSH into a server and update a cron job.</p>
+
+<p><b>Level 2 — CI/CD pipeline automation.</b> The pipeline itself is treated as a software artifact. Changes to pipeline code, model code, or configurations go through CI/CD — automated testing, review, and deployment. You have CI for your pipelines, not only for your models. Monitoring feeds back into the system automatically: drift detection triggers retraining, performance degradation triggers alerts and potential rollbacks. The entire loop — data ingestion, training, evaluation, deployment, monitoring, retraining — runs with minimal human intervention.</p>
+
+<p>The telling sign of Level 2: a data distribution shift on Tuesday night triggers retraining at midnight, the new model passes quality gates at 3am, gets deployed at 4am, and the team learns about it in their morning Slack standup.</p>
+
+<table>
+<thead><tr><th>Capability</th><th>Level 0</th><th>Level 1</th><th>Level 2</th></tr></thead>
+<tbody>
+<tr><td>Training</td><td>Manual (notebook)</td><td>Automated pipeline</td><td>Automated pipeline with CI/CD</td></tr>
+<tr><td>Deployment</td><td>Manual handoff</td><td>Automated (model)</td><td>Automated (model + pipeline)</td></tr>
+<tr><td>Monitoring</td><td>None</td><td>Basic metrics</td><td>Full observability, auto-alerts</td></tr>
+<tr><td>Retraining</td><td>"When someone remembers"</td><td>Schedule or data event</td><td>Drift-triggered, automatic</td></tr>
+<tr><td>Experiment tracking</td><td>Notebook cells</td><td>MLflow or W&amp;B</td><td>MLflow/W&amp;B + registry + governance</td></tr>
+<tr><td>Reproducibility</td><td>Hope</td><td>Mostly (pinned envs)</td><td>Full (code + data + config versioned)</td></tr>
+<tr><td>Models in production</td><td>1–2</td><td>3–10</td><td>10+</td></tr>
+</tbody>
+</table>
+
+<p>Here's the honest assessment: most teams are at Level 0. Of the teams I've worked with, I'd estimate 70% are at Level 0, 25% are at Level 1, and maybe 5% are genuinely at Level 2. That's not a failure — it's a reflection of the fact that Level 0 is appropriate when you have one or two models and a small team. Over-investing in MLOps infrastructure when you have two models is waste. Under-investing when you have twenty is chaos. The maturity level should match the operational complexity, not some aspirational target set by a conference talk.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2 id="teams">Team Structures — Who Builds What</h2>
+
+<p>FraudShield has grown from one ML engineer (you) to a team of twelve. The question is no longer "can we build a model?" but "how do we organize ourselves so that twelve people don't trip over each other?" This is where the distinction between <b>ML platform teams</b> and <b>product ML teams</b> becomes critical.</p>
+
+<p>A <b>product ML team</b> (sometimes called an "applied ML team") builds models that solve specific business problems. At FraudShield, that's the team building the fraud detection model, the chargeback prediction model, the merchant risk scoring model. They care about feature engineering, model architecture, and business metrics. They want to iterate fast on model quality.</p>
+
+<p>An <b>ML platform team</b> (sometimes called an "MLOps team" or "ML infrastructure team") builds the tools and infrastructure that product ML teams use. They build the feature store, the model registry, the CI/CD pipelines, the training infrastructure, the monitoring dashboards. They care about developer experience, reliability, and scalability. They want product ML teams to ship models without worrying about infrastructure.</p>
+
+<p>The relationship is like the difference between a chef and the person who designs the kitchen. The chef creates dishes. The kitchen designer builds the workspace that lets chefs create dishes efficiently. Both are essential. Neither can do the other's job well.</p>
+
+<p>Here's the typical evolution, and it mirrors what I've seen at every ML organization that grew past five ML engineers:</p>
+
+<p><b>Phase 1 (1-5 ML engineers)</b> — everyone does everything. You train models, you build pipelines, you manage infrastructure. There is no platform team because there isn't enough infrastructure to justify one. This is fine. Premature specialization creates overhead without benefit.</p>
+
+<p><b>Phase 2 (5-15 ML engineers)</b> — pain accumulates. Every ML engineer is reinventing the same deployment script, debugging the same Kubernetes issues, building their own experiment tracking setup. One or two engineers start gravitating toward infrastructure work because they're good at it and tired of watching colleagues waste time on solved problems. This is the organic emergence of a platform team.</p>
+
+<p><b>Phase 3 (15+ ML engineers)</b> — the platform team is formalized. They own the shared infrastructure: feature store, model registry, CI/CD templates, training clusters, monitoring. Product ML teams become their customers. The platform team's success is measured not by models shipped, but by how fast product ML teams can ship models.</p>
+
+<p>The anti-pattern I see most often: a company with 20 ML engineers and no platform team. Every product team builds their own deployment pipeline, their own monitoring, their own feature engineering. The result is twelve different ways to deploy a model, none of them well-documented, and a collective tax of 40-60% of engineering time spent on infrastructure that could be shared.</p>
+
+<p>The second most common anti-pattern: a platform team that builds a beautiful internal ML platform that nobody uses because they never talked to the product teams about what they actually need. The best platform teams I've worked with spend the first month doing nothing but pairing with product ML engineers, feeling their pain firsthand, and building the thing that eliminates the most time-consuming manual step. Usually that's model deployment. Sometimes it's feature serving. Rarely is it the thing the platform team expected.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2 id="platform-engineering">Platform Engineering for ML</h2>
+
+<p>The ML platform is the internal product that the platform team builds for product ML teams. It's the set of self-service tools, templates, and abstractions that let an ML engineer go from "I have a trained model" to "it's serving production traffic with monitoring and rollback" without filing a ticket or waiting for a platform engineer.</p>
+
+<p>At maturity, the FraudShield ML platform might offer something like this:</p>
+
+<pre><code># What an ML engineer interacts with — the platform abstraction
+# fraudshield_ml_platform.yaml
+
+model:
+  name: "chargeback-predictor"
+  version: "auto"                    # platform assigns version
+
+training:
+  script: "src/train.py"
+  config: "configs/chargeback.yaml"
+  resources:
+    gpu: 1
+    memory: "32Gi"
+  data_source: "feast://user_transaction_features"
+
+evaluation:
+  min_f1: 0.78
+  check_slices: ["region", "merchant_type"]
+  compare_to: "production"           # must beat current prod model
+
+deployment:
+  strategy: "canary"                 # 5% → 25% → 100%
+  canary_duration: "2h"
+  rollback_on: "f1 < 0.75"
+  serving:
+    max_latency_p99_ms: 80
+    min_replicas: 2
+    max_replicas: 10
+
+monitoring:
+  drift_check: "daily"
+  retrain_trigger: "drift_score > 0.15"
+
+# `ml deploy chargeback-predictor` — one command.
+# The platform handles: containerization, registry,
+# Kubernetes deployment, canary rollout, monitoring setup,
+# model card generation, and governance audit trail.</code></pre>
+
+<p>The power of this abstraction is that the ML engineer specifies <em>what</em> they want, not <em>how</em> to get it. They don't need to know Kubernetes, Terraform, or Prometheus. The platform translates their intent into infrastructure. This is the same pattern that made Heroku revolutionary for web developers in 2010 and that's making Vercel popular for frontend developers today. The best ML platforms feel like that — you describe your model, its requirements, and its quality bar, and the platform does the rest.</p>
+
+<p>Building this kind of platform is a multi-year investment. Nobody starts here. You earn your way to it by first doing everything manually (Level 0), then automating the individual steps (Level 1), then automating the automation (Level 2), and finally abstracting the automation behind a developer-friendly interface. Each step is motivated by real pain, not aspirational architecture diagrams.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2 id="wrapup">Wrapping Up</h2>
+
+<p>If you're still with me, thank you. I hope it was worth it.</p>
+
+<p>We started with a notebook on a laptop — a single fraud model, a pickle file, and a prayer. We watched it rot silently in production, which forced us to confront the three-axis problem that makes ML systems fundamentally different from traditional software. We built CI/CD pipelines that test code, data, and models separately. We set up continuous training so the model retrains when the world changes, not when someone remembers. We tamed training-serving skew with feature stores. We orchestrated pipeline stages with tools ranging from GitHub Actions to Kubeflow. We codified infrastructure with Terraform so it could be reproduced and destroyed on command. We built governance practices that keep regulators satisfied and teammates informed. We learned to manage GPU costs before they managed us. And we organized a growing team into platform engineers who build the kitchen and product engineers who cook the meals.</p>
+
+<p>My hope is that the next time someone asks you to "set up MLOps for this project," instead of reaching for the latest $200K platform or dismissing it as buzzword soup, you'll know where to start: with the pain. Find the manual step that breaks most often. Automate that. Then find the next one. The tools change every year. The principles — reproducibility, automation, monitoring, governance — don't.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<h2 id="resources">Resources and Credits</h2>
+
+<p>Google's <a href="https://cloud.google.com/architecture/mlops-continuous-delivery-and-automation-pipelines-in-machine-learning">MLOps: Continuous delivery and automation pipelines in machine learning</a> — the original maturity levels paper. Still the clearest articulation of what MLOps should look like at each stage. Required reading.</p>
+
+<p>Sculley et al., <em>Hidden Technical Debt in Machine Learning Systems</em> (2015) — the paper that started the conversation about ML in production. The "only a small fraction of real-world ML systems is composed of the ML code" diagram is iconic for a reason.</p>
+
+<p><a href="https://feast.dev/">Feast documentation</a> — hands down the best place to understand feature stores from first principles. The architecture docs explain offline vs. online stores with a clarity I haven't found anywhere else.</p>
+
+<p>Chip Huyen's <em>Designing Machine Learning Systems</em> (O'Reilly, 2022) — the most practical book on ML systems I've read. Covers everything from data engineering to monitoring, with real production examples. Wildly helpful.</p>
+
+<p><a href="https://cml.dev/">CML (Continuous Machine Learning)</a> — Iterative.ai's open-source tool for bringing ML into CI/CD workflows. The tutorials are excellent and the GitHub Actions integration works out of the box.</p>
+
+<p><a href="https://ml-ops.org/">ml-ops.org</a> — community-maintained reference for MLOps concepts, tools, and best practices. Good for keeping up with the rapidly evolving landscape without drowning in vendor marketing.</p>
+
+
+      <div class="page-nav">
+        <a href="s04.html">
+          <span class="label">← Previous</span>
+          <span class="link-title">Deployment &amp; Serving</span>
+        </a>
+        <a class="next" href="s06.html">
+          <span class="label">Next →</span>
+          <span class="link-title">Monitoring &amp; Observability</span>
+        </a>
+      </div>
+
+    </div>
+  </div>
+
+  <script src="../../js/app.js"></script>
+</body>
+</html>
