@@ -299,446 +299,456 @@
   <span class="tag">Section 3 of 9</span>
 </div>
 
-<div class="tldr">
-  <div class="tldr-label">TL;DR</div>
-  <p>Model development is a loop: experiment, debug, measure, repeat — dozens to hundreds of times before you ship anything. The hard part isn't training. It's knowing <em>what went wrong</em>, <em>whether your fix actually helped</em>, and <em>when to stop</em>. This section covers experiment tracking (MLflow, W&amp;B), systematic debugging (data bugs vs model bugs vs infra bugs), reproducibility, benchmarking that actually means something, error analysis at scale, and the discipline of knowing when good enough is good enough.</p>
+<!-- ═══════════════════════════════════════════ -->
+<!-- Opening: Personal Confession                -->
+<!-- ═══════════════════════════════════════════ -->
+
+<p>I avoided thinking seriously about model development process for longer than I'd like to admit. I could train models. I could get decent accuracy. But every few weeks I'd find myself staring at a folder full of checkpoints named <code>model_final.pt</code>, <code>model_final_v2.pt</code>, <code>model_ACTUALLY_final.pt</code>, and I couldn't tell you which one was best, what hyperparameters produced it, or whether the data it trained on was even the same data I had now. I'd re-run experiments I'd already run, because I had no record of the results. I'd ship a model, and when someone asked "why did you pick this one over the alternatives?" I'd mumble something unconvincing. Finally the discomfort of building on quicksand grew too great for me. Here is that dive.</p>
+
+<p>Model development — the actual practice of going from "I have data and a problem" to "I have a model I'm confident enough to ship" — is the messy middle of machine learning. It's the part between the clean diagrams in textbooks and the polished metrics in blog posts. It involves experiment tracking, reproducibility, hyperparameter optimization, model registries, versioning, A/B testing, offline evaluation, baseline models, and documentation. Each of these sounds like a separate topic. In practice, they're all woven into a single loop that you run dozens or hundreds of times before you ship anything.</p>
+
+<p>Before we start, a heads-up. We're going to be working through a concrete example — building a churn prediction model for a subscription service — and we'll use it as a vehicle to touch every part of this lifecycle. You don't need prior experience with any specific tool. We'll add what we need, one piece at a time.</p>
+
+<p>This isn't a short journey, but I hope you'll be glad you came.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- Table of Contents                           -->
+<!-- ═══════════════════════════════════════════ -->
+
+<div style="margin: 2em 0; padding: 1em 1.5em; border-left: 3px solid var(--accent, #6c63ff); background: var(--bg-alt, #f8f9fa); border-radius: 4px;">
+  <p style="margin: 0 0 0.5em; font-weight: 600;">The map for this journey:</p>
+  <p style="margin: 0.3em 0; padding-left: 1em;">The Baseline Nobody Wants to Build</p>
+  <p style="margin: 0.3em 0; padding-left: 1em;">Experiment Tracking: The Lab Notebook You Wish You'd Started Earlier</p>
+  <p style="margin: 0.3em 0; padding-left: 1em;">Reproducibility: Same Code, Same Data, Different Results</p>
+  <p style="margin: 0.3em 0; padding-left: 1em;">Hyperparameter Optimization: Searching Smarter</p>
+  <p style="margin: 0.3em 0; padding-left: 1em;">Rest Stop</p>
+  <p style="margin: 0.3em 0; padding-left: 1em;">The Model Registry: Where Models Go to Grow Up</p>
+  <p style="margin: 0.3em 0; padding-left: 1em;">Offline Evaluation: Measuring What Matters Before Anyone Sees It</p>
+  <p style="margin: 0.3em 0; padding-left: 1em;">A/B Testing: Letting Users Vote</p>
+  <p style="margin: 0.3em 0; padding-left: 1em;">Model Cards and Documentation: The README for Your Model</p>
+  <p style="margin: 0.3em 0; padding-left: 1em;">The Full Lifecycle</p>
+  <p style="margin: 0.3em 0; padding-left: 1em;">Resources and Credits</p>
 </div>
 
 <!-- ═══════════════════════════════════════════ -->
-<!-- 1. The Development Loop                     -->
+<!-- Baseline Models                             -->
 <!-- ═══════════════════════════════════════════ -->
-<h2 id="dev-loop">The Development Loop</h2>
+<h2 id="baseline">The Baseline Nobody Wants to Build</h2>
 
-<p>Every model ships through the same cycle:</p>
+<p>Here is our scenario. We work at a subscription-based music streaming service — let's call it TuneKeep — and we need to predict which users will cancel their subscription next month. We have 50,000 users, 18 months of behavioral data, and a mandate from the business team: "Build something that catches churners so we can send them offers."</p>
 
-<pre><code>Experiment → Validate → Debug → Repeat → Ship
-     ↑                              |
-     └──────────────────────────────┘</code></pre>
+<p>The temptation — and I fell for this more times than I care to count — is to go straight for the interesting model. Gradient-boosted trees. A neural network. Something with "attention" in the name. But here's the thing: without a baseline, you have no idea whether your sophisticated model is genuinely good or whether a coin flip would do the same job.</p>
 
-<p>The loop looks simple. It isn't. Most teams spend 80% of their time in "Debug → Repeat" and 20% actually training models. The bottleneck is never GPU hours — it's figuring out <em>why</em> the model is wrong and whether your hypothesis about fixing it is correct.</p>
+<p>A <b>baseline model</b> is the dumbest thing that could work. For TuneKeep, that might be a rule: "if a user hasn't listened to any music in the last 14 days, predict churn." No machine learning. No features beyond one. That rule, applied to our historical data, catches 41% of churners with a 67% precision. That's our floor. Everything else gets measured against it.</p>
 
-<p>Here's the real workflow on a production team:</p>
+<p>The next baseline is the simplest statistical model that learns from data. Logistic regression with three features: days since last listen, total listening hours last month, and number of playlist additions.</p>
 
-<ol>
-  <li><b>Baseline first.</b> Train the dumbest thing that could work. Logistic regression. A single decision tree. A pre-trained model with a linear head. This is your anchor — everything else gets measured against it.</li>
-  <li><b>One change at a time.</b> Change the features OR the model OR the hyperparameters. Never all three. You need to know what helped.</li>
-  <li><b>Evaluate on what matters.</b> Offline metrics first, then online if it passes the bar. More on this below.</li>
-  <li><b>Ship or kill.</b> If it beats the baseline by a meaningful margin, ship it. If not, document what you learned and move on.</li>
-</ol>
+<pre><code>from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import f1_score
 
-<p>The "document what you learned" step is where most teams fail. Without experiment tracking, you're just running on vibes.</p>
+baseline = LogisticRegression()
+baseline.fit(X_train[["days_since_listen", "hours_last_month", "playlist_adds"]], y_train)
+y_pred = baseline.predict(X_val[["days_since_listen", "hours_last_month", "playlist_adds"]])
+
+print(f"Baseline F1: {f1_score(y_val, y_pred):.3f}")
+# Output: Baseline F1: 0.583</code></pre>
+
+<p>0.583 F1. Not spectacular. But now we have a number. Every future model earns its right to exist by beating 0.583, and any improvement that doesn't clear that bar is noise pretending to be signal.</p>
+
+<p>I'll be honest — early in my career, I skipped baselines because they felt like a waste of time. They're not. They're the anchor that keeps you from drifting into self-deception. I've watched teams spend months tuning a complex model only to discover that a three-line rule matched its performance. The baseline would have caught that in an afternoon.</p>
+
+<p>The limitation of our baseline is obvious: we picked three features by gut feel, and logistic regression assumes a linear decision boundary. We need a way to explore more features and more complex models without losing track of what we tried. That's where experiment tracking comes in.</p>
 
 <!-- ═══════════════════════════════════════════ -->
-<!-- 2. Experiment Tracking                      -->
+<!-- Experiment Tracking                         -->
 <!-- ═══════════════════════════════════════════ -->
-<h2 id="experiment-tracking">Experiment Tracking</h2>
+<h2 id="experiment-tracking">Experiment Tracking: The Lab Notebook You Wish You'd Started Earlier</h2>
 
-<p>Monday: you train a model. Friday: you've run 47 experiments with different hyperparameters, feature sets, and preprocessing. One of them had great results. Which one? What learning rate? What data version?</p>
+<p>It's Monday. We train our baseline. By Friday, we've run 47 experiments — different feature sets, different models, different hyperparameters. One of them hit 0.72 F1. But which one? What learning rate? What features? What version of the data?</p>
 
-<p>If you can't answer that, you can't reproduce your best result. And if you can't reproduce it, you can't ship it.</p>
+<p>If we can't answer those questions, we can't reproduce our best result. And if we can't reproduce it, we can't ship it. We can't even prove it happened.</p>
 
-<h3 id="what-to-log">What to Log (and What People Forget)</h3>
+<p>An <b>experiment tracker</b> is a system that records everything about each training run — the inputs, the configuration, the outputs — so you can look back and reconstruct any result. Think of it like a lab notebook for a chemist. Except the chemist's notebook doesn't also need to track which version of the periodic table she was using, what temperature the room was, and whether she shuffled the reagents before starting. Ours does.</p>
 
-<p>The obvious stuff: hyperparameters, metrics, model artifacts. Everyone logs those. Here's what separates production-grade tracking from notebook experiments:</p>
+<p>The things most people log: hyperparameters, final metrics, model checkpoints. The things that separate production-grade tracking from notebook experiments: the data version (a hash or DVC pointer to the exact slice of data), the code version (a git commit SHA, not "I think I used the feature_v3 branch"), the environment (library versions, GPU model, CUDA version — because results genuinely differ across GPU architectures), and training wall time (because a 2% accuracy gain that costs 10x more compute may not be worth it).</p>
 
-<ul>
-  <li><b>Data version</b> — which exact slice of data trained this model (hash or DVC version)</li>
-  <li><b>Code version</b> — git commit SHA, not "I think I used the feature_v3 branch"</li>
-  <li><b>Environment</b> — library versions, GPU model, CUDA version (results differ across GPU architectures)</li>
-  <li><b>Training wall time</b> — because a 2% accuracy gain that costs 10x more GPU hours may not be worth it</li>
-  <li><b>Sample predictions</b> — a few inputs + outputs at checkpoints, so you can spot-check qualitatively</li>
-</ul>
+<h3 id="mlflow">MLflow</h3>
 
-<h3 id="mlflow">MLflow — The Open-Source Default</h3>
+<p>The most widely adopted open-source experiment tracker. You self-host it, you own your data, and it integrates with a broader ecosystem that includes model registry and serving. The right choice for teams that care about data sovereignty or work in air-gapped environments.</p>
 
-<p>Self-hosted, you own your data, integrates with the broader MLflow ecosystem (model registry, serving). The right choice for teams that care about data sovereignty or run in air-gapped environments.</p>
+<p>Here's what tracking our TuneKeep experiments looks like with MLflow. Each <code>with mlflow.start_run()</code> block is one experiment — one row in our lab notebook.</p>
 
 <pre><code>import mlflow
 import mlflow.sklearn
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import f1_score, precision_score, recall_score
 
-mlflow.set_experiment("churn-prediction")
+mlflow.set_experiment("tunekeeper-churn")
 
-with mlflow.start_run(run_name="rf_baseline_v2"):
-    params = {
+with mlflow.start_run(run_name="rf_v1_engagement_features"):
+    mlflow.log_params({
         "n_estimators": 200,
         "max_depth": 10,
         "min_samples_leaf": 5,
-        "class_weight": "balanced",
-        "data_version": "2024-01-15",
-        "feature_set": "v3_with_engagement",
-    }
-    mlflow.log_params(params)
+        "feature_set": "v2_with_engagement",
+        "data_version": "d4a8e3f",       # hash of training CSV
+        "code_version": "abc1234",        # git SHA
+    })
 
-    model = RandomForestClassifier(**{k: v for k, v in params.items()
-                                      if k in RandomForestClassifier().get_params()})
+    model = RandomForestClassifier(n_estimators=200, max_depth=10,
+                                   min_samples_leaf=5, class_weight="balanced")
     model.fit(X_train, y_train)
     y_pred = model.predict(X_val)
 
-    metrics = {
+    mlflow.log_metrics({
         "f1": f1_score(y_val, y_pred),
         "precision": precision_score(y_val, y_pred),
         "recall": recall_score(y_val, y_pred),
-    }
-    mlflow.log_metrics(metrics)
-    mlflow.sklearn.log_model(model, "model")
-    mlflow.log_artifact("feature_importance.png")</code></pre>
+        "train_time_seconds": elapsed,
+    })
+    mlflow.sklearn.log_model(model, "model")</code></pre>
 
-<h3 id="wandb">W&amp;B — The Rich Dashboard</h3>
+<p>That call to <code>mlflow.set_experiment</code> groups all our TuneKeep churn runs together. Within the run, <code>log_params</code> captures the full configuration — not only the model hyperparameters, but the data version and code version too. <code>log_metrics</code> records the results. And <code>log_model</code> saves the trained artifact itself, so we can load and serve it later without hunting for a pickle file in some forgotten directory.</p>
 
-<p>Hosted service (self-hosted option exists). Real-time dashboards, automatic sweep viz, dataset versioning. Particularly good for deep learning where you want to log images, audio, or custom plots alongside loss curves.</p>
+<p>The power isn't in any single logged value. It's in the combination. Three weeks from now, when someone asks "why did we choose the Random Forest with engagement features over the gradient-boosted one with behavioral features?" we can pull up both runs, compare them side by side, and point at the numbers. No guessing. No "I think."</p>
+
+<h3 id="wandb">Weights &amp; Biases</h3>
+
+<p>Where MLflow is the reliable workhorse, <b>Weights &amp; Biases</b> (W&amp;B) is the one with the beautiful dashboards. It's a hosted service — SaaS by default, self-hosted option for enterprise — with real-time visualization, automatic sweep plots, and the ability to log rich media (images, audio, custom plots) alongside your loss curves. For deep learning work where you want to see sample predictions evolve across training, it's hard to beat.</p>
 
 <pre><code>import wandb
 
-wandb.init(
-    project="churn-prediction",
-    name="transformer_v1",
-    config={
-        "model": "transformer",
-        "learning_rate": 1e-4,
-        "batch_size": 64,
-        "epochs": 50,
-        "dropout": 0.1,
-        "data_version": "2024-01-15",
-    },
-)
+wandb.init(project="tunekeeper-churn", name="lstm_v1",
+           config={"model": "lstm", "lr": 1e-3, "batch_size": 64,
+                   "hidden_dim": 128, "data_version": "d4a8e3f"})
 
 for epoch in range(50):
     train_loss = train_one_epoch(model, train_loader)
     val_loss, val_f1 = evaluate(model, val_loader)
 
-    wandb.log({
-        "train_loss": train_loss,
-        "val_loss": val_loss,
-        "val_f1": val_f1,
-        "epoch": epoch,
-        "learning_rate": scheduler.get_last_lr()[0],
-    })
-
-    # Log sample predictions every 10 epochs for qualitative checks
-    if epoch % 10 == 0:
-        table = wandb.Table(columns=["input", "predicted", "actual"])
-        for x, y_true, y_pred in sample_predictions:
-            table.add_data(x, y_pred, y_true)
-        wandb.log({"predictions": table})
+    wandb.log({"train_loss": train_loss, "val_loss": val_loss,
+               "val_f1": val_f1, "epoch": epoch})
 
 wandb.finish()</code></pre>
 
-<h3 id="mlflow-vs-wandb">Picking Between Them</h3>
+<p>The interface difference is real. With MLflow, you query your experiment store and build comparisons yourself. With W&amp;B, you open a browser and the comparison dashboards are already there — interactive, filterable, shareable with teammates who can leave comments on individual runs.</p>
 
-<table>
-  <thead><tr><th></th><th>MLflow</th><th>W&amp;B</th></tr></thead>
-  <tbody>
-    <tr><td><b>Hosting</b></td><td>Self-hosted (you own data)</td><td>SaaS default, self-hosted option</td></tr>
-    <tr><td><b>Best for</b></td><td>Model registry + production pipeline</td><td>Interactive exploration + rich viz</td></tr>
-    <tr><td><b>Air-gapped?</b></td><td>Yes</td><td>Only with enterprise plan</td></tr>
-    <tr><td><b>Collaboration</b></td><td>Basic</td><td>Excellent (shared dashboards, reports)</td></tr>
-    <tr><td><b>Deep learning viz</b></td><td>Adequate</td><td>Best-in-class</td></tr>
-  </tbody>
-</table>
+<p>Many production teams use both. W&amp;B for interactive exploration during development, MLflow's model registry for the formal handoff to deployment. They solve different problems at different stages of the lifecycle, and the overhead of running both is lower than the cost of choosing wrong.</p>
 
-<p>Many production teams use both — W&amp;B for interactive exploration during development, MLflow's model registry for the handoff to deployment.</p>
+<p>But all the experiment tracking in the world is worthless if we can't actually reproduce a result we logged. And that turns out to be harder than it sounds.</p>
 
 <!-- ═══════════════════════════════════════════ -->
-<!-- 3. Debugging ML Models                      -->
+<!-- Reproducibility                             -->
 <!-- ═══════════════════════════════════════════ -->
-<h2 id="debugging">Debugging ML Models: The Systematic Approach</h2>
+<h2 id="reproducibility">Reproducibility: Same Code, Same Data, Different Results</h2>
 
-<p>Debugging ML is different from debugging software. Software bugs crash or produce wrong output for a specific input. Model bugs produce <em>slightly worse</em> output — the loss goes down but not fast enough, accuracy is 85% when it should be 92%, or the model works on average but systematically fails on one subgroup. You can stare at code for hours and find nothing because the code is <em>correct</em> — the problem is in the data, the objective, or the gap between what you're measuring and what you actually care about.</p>
+<p>I'll be honest — the first time I ran the exact same training script twice and got different F1 scores, I assumed I'd made a mistake. I hadn't. The script was correct. The data was identical. The hyperparameters were frozen. But the model initialized its weights randomly, the data loader shuffled batches in a different order, dropout chose different neurons to mask, and the GPU used a non-deterministic algorithm for a particular matrix operation. Four invisible coin flips, each changing the final result by a fraction of a percent.</p>
 
-<p>First step: classify the bug.</p>
+<p>For TuneKeep, this matters. If our best model scored 0.72 on Monday but scores 0.70 on Wednesday with the same code and data, we can't tell whether our "improvement" from last week's experiment was genuine or whether we got lucky with the random seed.</p>
 
-<h3 id="bug-taxonomy">The Three Bug Families</h3>
+<p><b>Reproducibility</b> means controlling every source of randomness so that the same inputs always produce the same outputs. There are three layers to this, and each one is harder than the last.</p>
 
-<table>
-  <thead><tr><th>Category</th><th>Symptoms</th><th>Where to Look</th></tr></thead>
-  <tbody>
-    <tr><td><b>Data bugs</b></td><td>Suspiciously high or low performance, model fixates on one feature, performance varies wildly across subgroups</td><td>Label noise, leakage, distribution shift, missing values encoded as 0</td></tr>
-    <tr><td><b>Model bugs</b></td><td>Loss plateaus early, training loss doesn't decrease, val performance far below training</td><td>Wrong loss function, capacity mismatch, learning rate, architecture choice</td></tr>
-    <tr><td><b>Infrastructure bugs</b></td><td>Non-reproducible results, NaN loss, OOM, different results on different machines</td><td>Seed management, GPU non-determinism, data loader ordering, mixed precision issues</td></tr>
-  </tbody>
-</table>
+<p><b>Layer 1: Seeds.</b> Every library that uses randomness has a seed — a starting value for its pseudorandom number generator. Pin all of them.</p>
 
-<p><b>Data bugs are the most common and the hardest to find.</b> If your model achieves 99.5% accuracy on a problem where state-of-the-art is 92% — your first hypothesis should be leakage, not genius.</p>
+<pre><code>import torch, numpy as np, random
 
-<h3 id="data-leakage">Data Leakage: The Silent Killer</h3>
-
-<p>Leakage means information from the test set (or from the future) bleeds into training. The model's evaluation looks fantastic, then production performance collapses. Classic patterns:</p>
-
-<ul>
-  <li>Target variable accidentally included as a feature (yes, this happens more than you'd think)</li>
-  <li>Future information leaking backward (using next month's revenue to predict this month's churn)</li>
-  <li>Same data point in both train and test sets (duplicate rows, same user appearing in both)</li>
-</ul>
-
-<p>The detection heuristic: check feature importance. If a single feature dominates and it shouldn't — follow that thread.</p>
-
-<h3 id="overfit-underfit">Overfitting vs Underfitting — The Quick Read</h3>
-
-<p><b>Overfitting:</b> training loss drops, val loss rises. The gap widens over time. Fix with regularization (dropout, weight decay, data augmentation), more data, smaller model, or early stopping.</p>
-
-<p><b>Underfitting:</b> both training and val performance are poor. Fix with more capacity, longer training, less regularization, better features, or a more expressive architecture.</p>
-
-<p>Sometimes underfitting is the data's fault — there's not enough signal in your features. No architecture change fixes that.</p>
-
-<h3 id="training-curves">Reading Training Curves Like an EKG</h3>
-
-<p>Plot training and val loss over time. They tell you everything:</p>
-
-<ul>
-  <li><b>Both plateau early</b> → underfitting</li>
-  <li><b>Train drops, val doesn't follow</b> → overfitting</li>
-  <li><b>Loss is noisy (jumping up and down)</b> → learning rate too high or batch size too small</li>
-  <li><b>Loss drops to zero suspiciously fast</b> → data leakage</li>
-  <li><b>NaN loss</b> → numerical instability (check learning rate, gradient clipping, mixed precision)</li>
-</ul>
-
-<h3 id="behavioral-testing">Behavioral Testing</h3>
-
-<p>Standard evaluation measures <em>average</em> performance. Behavioral testing (from the CheckList framework) probes <em>specific capabilities</em>. This catches bugs that aggregate metrics hide.</p>
-
-<pre><code># Behavioral tests for a sentiment classifier
-invariance_tests = [
-    # Changing names should NOT change sentiment
-    ("I love this restaurant, John recommended it.", "positive"),
-    ("I love this restaurant, Maria recommended it.", "positive"),
-]
-
-directional_tests = [
-    # Adding "not" SHOULD flip sentiment
-    ("The food was great.", "positive"),
-    ("The food was not great.", "negative"),
-]
-
-for text, expected in invariance_tests + directional_tests:
-    pred = model.predict(text)
-    status = "PASS" if pred == expected else "FAIL"
-    print(f"[{status}] '{text}' -> predicted={pred}, expected={expected}")</code></pre>
-
-<p>Write these tests <em>before</em> you think you have a good model. They become your regression suite.</p>
-
-<!-- ═══════════════════════════════════════════ -->
-<!-- 4. Reproducibility                          -->
-<!-- ═══════════════════════════════════════════ -->
-<h2 id="reproducibility">Reproducibility</h2>
-
-<p>Same script, same data, same hyperparameters. Different results. This happens constantly in deep learning — random initialization, random shuffling, random dropout masks, non-deterministic GPU ops, different library versions. Full reproducibility requires controlling <em>all</em> of them.</p>
-
-<pre><code>import torch
-import numpy as np
-import random
-
-def set_seed(seed=42):
-    """Pin every source of randomness."""
+def set_all_seeds(seed=42):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.benchmark = False</code></pre>
 
-set_seed(42)
-# For full determinism (slower, some ops will error if no deterministic impl exists):
-# torch.use_deterministic_algorithms(True)</code></pre>
+<p>That <code>cudnn.deterministic = True</code> line forces the GPU to use deterministic algorithms for operations like convolutions, at the cost of speed. Without it, cuDNN picks the fastest algorithm available, which sometimes uses non-deterministic reductions. The <code>benchmark = False</code> line disables cuDNN's auto-tuner, which would otherwise pick different algorithms for different input sizes across runs.</p>
 
-<p>Even with seeds pinned, some CUDA operations (like <code>atomicAdd</code>) are inherently non-deterministic because floating-point addition order depends on thread scheduling. <code>torch.use_deterministic_algorithms(True)</code> forces deterministic paths but some operations throw errors because no deterministic implementation exists. Trade-off: slower training for exact reproducibility.</p>
+<p>Even with all of this, some CUDA operations — like <code>atomicAdd</code>, which many scatter and gather operations use internally — are inherently non-deterministic because the order of floating-point additions depends on thread scheduling. The call <code>torch.use_deterministic_algorithms(True)</code> forces PyTorch to error out instead of silently giving non-deterministic results. Some operations have no deterministic implementation at all. You discover this at runtime, which is its own kind of fun.</p>
 
-<h3 id="repro-checklist">The Reproducibility Checklist</h3>
+<p><b>Layer 2: Environment pinning.</b> Even with seeds locked, running the same code with NumPy 1.24 versus 1.26 can produce different results because internal implementations change. The fix is to freeze the entire software environment.</p>
 
-<p>For every experiment, record:</p>
+<pre><code># Pin exact versions — not >=, not ~=, exact ==
+# requirements.txt
+torch==2.1.0
+numpy==1.24.3
+scikit-learn==1.3.2
+pandas==2.1.4</code></pre>
 
-<ol>
-  <li>Exact code version (git commit SHA)</li>
-  <li>Exact data version (hash or DVC version)</li>
-  <li>All hyperparameters</li>
-  <li>Random seed</li>
-  <li>Library versions (pinned in <code>requirements.txt</code>)</li>
-  <li>Hardware (GPU model matters — results differ between architectures)</li>
-</ol>
+<p>This works for libraries, but it doesn't capture the operating system, the GPU driver, or the CUDA toolkit version. For that, we need the third layer.</p>
 
-<p>Experiment tracking tools automate most of this. DVC handles data versioning — it tracks data files alongside code, storing actual data in cloud storage while keeping lightweight metadata in Git. Check out a code version, DVC fetches the matching data version. Time travel for experiments.</p>
+<p><b>Layer 3: Docker.</b> A Docker container bundles everything — the OS, the drivers, the Python version, every library — into a single reproducible image. Think of it as a photograph of your entire computing environment, frozen in time.</p>
+
+<pre><code>FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
+
+RUN apt-get update &amp;&amp; apt-get install -y python3.10 python3-pip
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+
+COPY . /app
+WORKDIR /app
+ENTRYPOINT ["python3", "train.py"]</code></pre>
+
+<p>That <code>FROM nvidia/cuda:12.1.0</code> line pins the exact CUDA version. The base image is tagged, not <code>:latest</code>. The requirements file uses exact versions. If we build this image, push it to a registry, and tag it with our experiment ID, we can recreate the exact training environment months or years later.</p>
+
+<p>I'm still developing my intuition for where the cost-benefit line falls between "pin everything in Docker" and "pin seeds and requirements and accept small variations." For model comparison during development, seeds plus pinned libraries is usually enough — the variations are smaller than the real differences between models. For regulatory environments where you need to prove you can reproduce an exact result, Docker is the floor, not the ceiling.</p>
+
+<p>With reproducibility handled, we face a new problem. Our TuneKeep Random Forest has hyperparameters — <code>n_estimators</code>, <code>max_depth</code>, <code>min_samples_leaf</code> — and we picked them by gut feel. There might be a much better combination we haven't tried. But with five hyperparameters, each having ten possible values, that's 100,000 combinations. We need a smarter way to search.</p>
 
 <!-- ═══════════════════════════════════════════ -->
-<!-- 5. Benchmarking Properly                    -->
+<!-- Hyperparameter Optimization                 -->
 <!-- ═══════════════════════════════════════════ -->
-<h2 id="benchmarking">Benchmarking Properly</h2>
+<h2 id="hpo">Hyperparameter Optimization: Searching Smarter</h2>
 
-<p>A benchmark is only as useful as the question it answers. And most people are asking the wrong question.</p>
+<p>A <b>hyperparameter</b> is a setting we choose before training begins — learning rate, tree depth, regularization strength — as opposed to a <b>parameter</b>, which the model learns from data (like weights in a neural network). <b>Hyperparameter optimization</b> (HPO) is the process of finding the combination of hyperparameters that gives the best performance.</p>
 
-<h3 id="offline-vs-online">Offline Metrics vs Online Metrics</h3>
+<p>The naive approach is <b>grid search</b>: define a grid of values for each hyperparameter and try every combination. For our TuneKeep model, we might try <code>max_depth</code> in [5, 10, 15] and <code>n_estimators</code> in [100, 200, 500]. That's 9 combinations. Manageable. But add <code>min_samples_leaf</code> in [1, 5, 10], <code>learning_rate</code> in [0.01, 0.1, 0.3], and <code>subsample</code> in [0.7, 0.8, 1.0] — now we have 243 combinations. The curse of dimensionality hits hyperparameter search the same way it hits everything else.</p>
 
-<p>Offline metrics (accuracy, F1, AUC on a held-out set) tell you whether the model <em>learned something</em>. Online metrics (click-through rate, revenue, user engagement in a live system) tell you whether it <em>matters</em>. These are different things.</p>
+<p><b>Random search</b> improves on this by sampling randomly from the ranges. The surprising insight, shown by Bergstra and Bengio in 2012, is that random search often finds better configurations than grid search with the same computational budget. The reason: in most problems, one or two hyperparameters matter far more than the rest. Grid search wastes most of its budget testing different values of unimportant hyperparameters. Random search, by sampling randomly, is more likely to explore different values of the important ones.</p>
 
-<p>A model that improves F1 by 3% might move revenue by 0.01%. Or it might move revenue by 5% because the improvement is concentrated on high-value predictions. You don't know until you measure online.</p>
+<p>But both approaches are blind. They don't learn from previous trials. If the last 20 experiments showed that learning rates below 0.001 always perform poorly, grid and random search will keep trying them anyway.</p>
 
-<table>
-  <thead><tr><th>Metric Type</th><th>Measures</th><th>When to Use</th><th>Pitfall</th></tr></thead>
-  <tbody>
-    <tr><td><b>Offline</b></td><td>Model quality on held-out data</td><td>Development iteration, quick feedback</td><td>Doesn't capture user behavior or system effects</td></tr>
-    <tr><td><b>Online</b></td><td>Business impact in production</td><td>Final validation before full rollout</td><td>Expensive, slow, needs traffic</td></tr>
-  </tbody>
-</table>
+<h3 id="optuna">Optuna and the TPE Algorithm</h3>
 
-<p>Workflow: iterate fast on offline metrics. When offline metrics pass the bar, run an A/B test to measure online impact. Never skip the online step before a major launch.</p>
+<p><b>Optuna</b> is a Python library for hyperparameter optimization that learns from its own history. Its default algorithm, <b>TPE</b> (Tree-structured Parzen Estimator), works like this.</p>
 
-<h3 id="statistical-significance">Statistical Significance: Don't Lie to Yourself</h3>
+<p>Imagine we've run 30 trials so far. TPE takes the results and splits them into two groups: the "good" trials (say, the top 20% by validation score) and the "bad" trials (the rest). It then asks: what do the hyperparameters of good trials look like? What do the hyperparameters of bad trials look like? For each hyperparameter, it fits a probability distribution to each group — one distribution describing "values that led to good results," another describing "values that led to bad results." The next trial samples from the good distribution, then checks that the sample is much more likely under the good distribution than the bad one. This ratio — good likelihood divided by bad likelihood — is the acquisition function that guides the search.</p>
 
-<p>Model A scores 0.847 F1. Model B scores 0.852 F1. Is B better?</p>
+<p>The beauty of this approach is that it builds a model of what works without building a model of the entire objective surface. It doesn't try to predict what score a given configuration will achieve. It only tries to distinguish configurations that are likely to be good from those that are likely to be bad. That distinction is easier to learn, which is why TPE works well even with a small number of trials.</p>
 
-<p>Maybe. Maybe not. With a small test set, that difference could be noise. You need statistical testing.</p>
+<p>Here's what it looks like for TuneKeep:</p>
+
+<pre><code>import optuna
+
+def objective(trial):
+    params = {
+        "n_estimators": trial.suggest_int("n_estimators", 50, 500),
+        "max_depth": trial.suggest_int("max_depth", 3, 20),
+        "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 20),
+        "learning_rate": trial.suggest_float("learning_rate", 1e-3, 0.3, log=True),
+        "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+    }
+    model = GradientBoostingClassifier(**params)
+    model.fit(X_train, y_train)
+    return f1_score(y_val, model.predict(X_val))
+
+study = optuna.create_study(direction="maximize")
+study.optimize(objective, n_trials=100)
+
+print(f"Best F1: {study.best_value:.3f}")
+print(f"Best params: {study.best_params}")</code></pre>
+
+<p>That <code>log=True</code> on the learning rate tells Optuna to sample on a logarithmic scale — so it explores 0.001 to 0.01 as thoroughly as 0.01 to 0.1. Without it, the search would spend most of its budget in the 0.1–0.3 range, which is a tiny fraction of the useful space on a linear scale but dominates it.</p>
+
+<p>After 100 trials, Optuna finds an F1 of 0.74 — beating our hand-tuned 0.72 without us making a single decision about what to try next.</p>
+
+<h3 id="ray-tune">Ray Tune and Early Stopping</h3>
+
+<p>When each trial takes hours — training a deep learning model, for instance — running 100 of them sequentially is painful. <b>Ray Tune</b> solves this with two ideas: parallelism and early stopping.</p>
+
+<p>Parallelism is straightforward: Ray distributes trials across multiple GPUs or machines. The interesting part is the scheduler. Ray Tune's <b>ASHA</b> (Asynchronous Successive Halving Algorithm) starts many trials with a small resource budget — say, 5 epochs each. After 5 epochs, it looks at the results and kills the bottom half. The survivors get 10 more epochs. Kill the bottom half again. Continue until only a few trials remain, having received the full training budget.</p>
+
+<p>The insight is that a model that performs terribly after 5 epochs rarely becomes the best model after 50 epochs. By cutting losers early, ASHA explores more configurations with the same total compute. In practice, it can evaluate 10x more configurations than a naive approach with the same GPU budget.</p>
+
+<p>The "asynchronous" part means trials don't have to wait for each other. If trial 17 finishes its first 5 epochs while trial 3 is still on epoch 2, ASHA can immediately decide trial 17's fate. This keeps GPU utilization high and avoids the idle time that plagues synchronous approaches.</p>
+
+<p>One subtlety that tripped me up: ASHA assumes that relative ranking between trials is stable across training. If model A is worse than model B after 5 epochs, ASHA assumes A will still be worse after 50 epochs. This is usually true for the same architecture with different hyperparameters, but it can break when comparing architectures with very different learning dynamics. A large model might start slow and overtake a small model later. I haven't found a universal rule for when to trust early stopping and when to let everything run to completion — it depends on how much the learning curves cross over in your specific domain.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- REST STOP                                   -->
+<!-- ═══════════════════════════════════════════ -->
+<div style="margin: 2.5em 0; padding: 1.5em; border: 2px solid var(--accent, #6c63ff); border-radius: 8px; background: var(--bg-alt, #f8f9fa);">
+<h2 id="rest-stop" style="margin-top: 0;">Rest Stop</h2>
+
+<p>Congratulations on making it this far. You can stop here if you want.</p>
+
+<p>You now have a mental model for the core development loop: start with a baseline, track every experiment with MLflow or W&amp;B, pin your seeds and environment for reproducibility, and use Optuna or Ray Tune to search hyperparameters instead of guessing. For our TuneKeep churn model, we went from a 0.583 baseline to 0.74 through tracked, reproducible experiments with automated hyperparameter search.</p>
+
+<p>That's a solid workflow for building models on your own machine. It doesn't tell the full story, though. Once a model is good enough to show other people — teammates, stakeholders, production systems — we need infrastructure for versioning it, evaluating it against real users, and documenting what it does and doesn't do well. That's the bridge between "I trained a good model" and "we deployed a reliable system."</p>
+
+<p>The short version of what comes next: model registries give you version control for trained models (like Git for weights), offline evaluation strategies tell you whether improvements are real before you expose users to them, A/B testing lets users vote on which model is better, and model cards document the model for everyone who will touch it after you.</p>
+
+<p>But if the discomfort of not knowing what's underneath is nagging at you, read on.</p>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- Model Registry                              -->
+<!-- ═══════════════════════════════════════════ -->
+<h2 id="model-registry">The Model Registry: Where Models Go to Grow Up</h2>
+
+<p>Our Optuna sweep found a good configuration. We've trained the final model. Now what? We need somewhere to put it — not a file on our laptop, but a central place where the model is versioned, has metadata attached, and can be promoted through stages on its way to production.</p>
+
+<p>A <b>model registry</b> is to trained models what Git is to source code. Every registered model gets a name, a version number, and a lifecycle stage. The standard stages flow like this:</p>
+
+<p><code>None → Staging → Production → Archived</code></p>
+
+<p>When we first register our TuneKeep churn model, it enters as version 1, stage "None" — it exists, but no one trusts it yet. After offline evaluation passes, we promote it to "Staging," which means it's a candidate for production but still being tested. After it survives an A/B test, we promote it to "Production." When a newer version replaces it, we move it to "Archived."</p>
+
+<pre><code>import mlflow
+
+# Register the model from our best experiment run
+model_uri = f"runs:/{best_run_id}/model"
+registered = mlflow.register_model(model_uri, "tunekeeper-churn-predictor")
+
+# Promote to staging after offline eval passes
+client = mlflow.tracking.MlflowClient()
+client.transition_model_version_stage(
+    name="tunekeeper-churn-predictor",
+    version=registered.version,
+    stage="Staging"
+)</code></pre>
+
+<p>Each version carries metadata: which experiment run produced it, what data it trained on, what its evaluation metrics were, who promoted it, and when. This is the audit trail. Six months from now, when the model starts behaving oddly and someone asks "what changed?", the registry tells you that version 3 was promoted to production on March 15 after passing an A/B test with 2.1% lift in retention, and it was trained on data from January through February.</p>
+
+<p><b>Model versioning</b> is more nuanced than code versioning. With code, version 2 is a strict replacement for version 1 — you wouldn't run both simultaneously. With models, you often run multiple versions in parallel during A/B tests, or serve different versions to different user segments. The registry needs to support this: querying which versions are in production, rolling back to a previous version if the new one underperforms, and keeping old versions around (not deleted) in case you need to compare or restore them.</p>
+
+<p>A principle I learned the hard way: <b>never overwrite a model artifact.</b> Every version is immutable once registered. If you need to retrain, register a new version. This sounds wasteful until the day you need to roll back, and the model you want to restore has been overwritten by the one that's failing. Immutable artifacts are insurance you're grateful for when you need them.</p>
+
+<p>The registry gives us a reliable place to store and promote models. But promoting a model to "Staging" requires evidence that it's good enough. That evidence comes from offline evaluation — and not all offline evaluation strategies are created equal.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- Offline Evaluation                          -->
+<!-- ═══════════════════════════════════════════ -->
+<h2 id="offline-eval">Offline Evaluation: Measuring What Matters Before Anyone Sees It</h2>
+
+<p><b>Offline evaluation</b> means measuring a model's quality on held-out data, before exposing it to real users. It's cheap, fast, and the primary feedback loop during development. It's also deceptive, because the gap between "good offline" and "good in production" can be enormous.</p>
+
+<p>The classic approach is a random train/test split. Shuffle the data, hold out 20%, train on the rest, measure on the held-out portion. For many problems, this is fine. For TuneKeep, it's dangerously misleading.</p>
+
+<p>The reason: our data is temporal. Users who churned in January behave differently from users who churned in June, because the product changed, a competitor launched, and macroeconomic conditions shifted. A random split mixes January churners into the training set and June churners into the test set. The model gets to train on the future before predicting the past. This is <b>temporal leakage</b> — a form of data leakage specific to time-ordered data — and it inflates offline metrics to levels that production performance will never reach.</p>
+
+<p>The fix is a <b>temporal split</b>: train on everything before a cutoff date, test on everything after it.</p>
+
+<pre><code># Temporal split: train on Jan-Oct, test on Nov-Dec
+cutoff = "2024-10-31"
+train_df = df[df["snapshot_date"] &lt;= cutoff]
+test_df  = df[df["snapshot_date"] &gt; cutoff]</code></pre>
+
+<p>A single temporal split gives us one estimate. To get a more robust picture, we use <b>backtesting</b> — also called rolling-window or expanding-window validation. We simulate what would have happened if we'd deployed the model in March, then April, then May, retraining each time on all data available up to that point.</p>
+
+<pre><code># Expanding window backtest
+months = ["2024-03", "2024-04", "2024-05", "2024-06", "2024-07"]
+for test_month in months:
+    train = df[df["month"] &lt; test_month]
+    test  = df[df["month"] == test_month]
+    model.fit(train[features], train["churned"])
+    score = f1_score(test["churned"], model.predict(test[features]))
+    print(f"Test month {test_month}: F1 = {score:.3f}")</code></pre>
+
+<p>If performance is stable across all five windows, we can be more confident that the model generalizes. If it swings wildly — 0.74 in March, 0.61 in May, 0.73 in July — the model might be sensitive to seasonal patterns or distribution shifts, and we need to understand why before we ship it.</p>
+
+<p>There's another trap I fell into early on. Model A scores 0.72 F1. Model B scores 0.74 F1. Is B better? Maybe. With a test set of 2,000 examples, that 0.02 difference might be noise. A <b>paired bootstrap test</b> helps: resample the test set thousands of times, compute the metric difference each time, and check whether the difference consistently favors B.</p>
 
 <pre><code>import numpy as np
-from scipy import stats
 
-def paired_bootstrap_test(y_true, scores_a, scores_b, n_bootstrap=10000):
-    """Bootstrap test: is the difference between two models significant?"""
+def paired_bootstrap(y_true, preds_a, preds_b, metric_fn, n_boot=10000):
     n = len(y_true)
-    diff_observed = np.mean(scores_b) - np.mean(scores_a)
-
-    count_greater = 0
-    for _ in range(n_bootstrap):
+    diffs = []
+    for _ in range(n_boot):
         idx = np.random.choice(n, size=n, replace=True)
-        diff_boot = np.mean(scores_b[idx]) - np.mean(scores_a[idx])
-        if diff_boot <= 0:
-            count_greater += 1
+        diff = metric_fn(y_true[idx], preds_b[idx]) - metric_fn(y_true[idx], preds_a[idx])
+        diffs.append(diff)
+    p_value = np.mean(np.array(diffs) &lt;= 0)
+    return {"mean_diff": np.mean(diffs), "p_value": p_value}</code></pre>
 
-    p_value = count_greater / n_bootstrap
-    return {"diff": diff_observed, "p_value": p_value,
-            "significant": p_value < 0.05}</code></pre>
+<p>If the p-value is above 0.05, the difference isn't statistically significant. I've learned to resist the temptation to claim victory on a 0.02 improvement without this check. "The new model is better" sounds convincing in a slide deck. "The new model is 0.02 better and the confidence interval includes zero" does not. Both statements describe the same result — only one is honest.</p>
 
-<p>Rule of thumb: if you can't show p &lt; 0.05, you can't claim the new model is better. This is especially important when reporting results to stakeholders — "the new model is 0.5% better" sounds great until you realize the confidence interval includes zero.</p>
-
-<h3 id="ab-testing">A/B Testing Basics</h3>
-
-<p>A/B testing is the gold standard for online evaluation. Split live traffic: some users get model A (control), others get model B (treatment). Measure the business metric you actually care about. Run long enough to reach statistical significance.</p>
-
-<p>Common mistakes:</p>
-
-<ul>
-  <li><b>Peeking</b> — checking results daily and stopping when p &lt; 0.05. This inflates false positive rates massively. Decide your sample size upfront and stick to it.</li>
-  <li><b>Wrong randomization unit</b> — randomizing by request instead of by user. The same user sees both models on different visits, contaminating the comparison.</li>
-  <li><b>Too short</b> — some effects take days or weeks to manifest (e.g., recommendation quality affects retention, not just clicks).</li>
-</ul>
-
-<h3 id="system-benchmarks">System Benchmarks: Latency Matters Too</h3>
-
-<p>Model quality isn't the only thing to benchmark. A model that's 1% more accurate but 10x slower is usually the wrong trade-off.</p>
-
-<pre><code>import time
-import numpy as np
-import requests
-
-def benchmark_latency(url, payload, num_requests=1000):
-    """Measure serving latency distribution."""
-    latencies = []
-    for _ in range(num_requests):
-        start = time.perf_counter()
-        response = requests.post(url, json=payload)
-        elapsed = (time.perf_counter() - start) * 1000  # ms
-        latencies.append(elapsed)
-
-    latencies = np.array(latencies)
-    print(f"p50: {np.percentile(latencies, 50):.1f}ms")
-    print(f"p95: {np.percentile(latencies, 95):.1f}ms")
-    print(f"p99: {np.percentile(latencies, 99):.1f}ms")
-    print(f"throughput: {num_requests / (sum(latencies) / 1000):.0f} req/s")</code></pre>
-
-<p>Always report p95 and p99, not just p50. The tail is where user experience goes to die.</p>
+<p>Offline metrics tell us whether a model learned something useful. They don't tell us whether users will notice or whether it will move the business metric we care about. For that, we need to put the model in front of real people.</p>
 
 <!-- ═══════════════════════════════════════════ -->
-<!-- 6. Error Analysis at Scale                  -->
+<!-- A/B Testing                                 -->
 <!-- ═══════════════════════════════════════════ -->
-<h2 id="error-analysis">Error Analysis at Scale</h2>
+<h2 id="ab-testing">A/B Testing: Letting Users Vote</h2>
 
-<p>The single most valuable debugging technique. Most practitioners underinvest in it by an order of magnitude.</p>
+<p>An <b>A/B test</b> splits live traffic between two models — the current production model (control, "A") and the new candidate (treatment, "B") — and measures which one performs better on a business metric. For TuneKeep, the metric might be 30-day retention among users who received a "stay" offer, because the point of our churn model is to target those offers at the right people.</p>
 
-<h3 id="confusion-at-scale">Confusion Matrices at Scale</h3>
+<p>The mechanics are deceptively straightforward: randomly assign 90% of users to the old model and 10% to the new one. Serve predictions accordingly. Wait. Measure.</p>
 
-<p>For a 3-class problem, a confusion matrix is straightforward. For 1,000 classes — or an open-ended generation task — you need to think differently. Group errors into <em>failure modes</em> rather than individual class pairs.</p>
+<p>The pitfalls, however, have eaten entire teams alive. Three mistakes come up over and over again.</p>
 
-<pre><code>import pandas as pd
+<p><b>Peeking.</b> You check the dashboard daily. On day 3, the new model shows a 4% lift with p &lt; 0.05. You celebrate and ship it. The problem: checking repeatedly and stopping as soon as you see significance massively inflates false positive rates. If you check every day for 14 days, your effective false positive rate is closer to 25% than 5%. The fix is to decide your sample size upfront — based on the minimum effect size you care about — and not look until you've collected enough data. This requires discipline that feels unnatural, and I still find it hard.</p>
 
-errors = val_df[val_df["predicted"] != val_df["actual"]].copy()
-print(f"Error rate: {len(errors)/len(val_df)*100:.1f}%")
+<p><b>Wrong randomization unit.</b> If you randomize by request instead of by user, the same user might see model A on Monday and model B on Tuesday. Their experience is contaminated by both models, and you can't attribute outcomes to either one. Always randomize by the entity whose behavior you're measuring — users, in our case.</p>
 
-# Which classes are hardest?
-print("\nErrors by actual class (top 10):")
-print(errors["actual"].value_counts().head(10))
+<p><b>Running too short.</b> Some effects take time to manifest. A recommendation model might show no short-term difference in click-through rate, but over three weeks, the better model increases session length because users develop trust in the recommendations. If we stopped the test after four days, we'd miss this entirely.</p>
 
-# Slice-based evaluation: performance across subgroups
-correct = val_df[val_df["predicted"] == val_df["actual"]]
-for subgroup in ["mobile", "desktop", "tablet"]:
-    subset = val_df[val_df["device"] == subgroup]
-    acc = (subset["predicted"] == subset["actual"]).mean()
-    print(f"  {subgroup}: {acc:.3f} ({len(subset)} examples)")</code></pre>
+<p>Before a full A/B test, many teams run a <b>shadow deployment</b>: the new model receives live traffic and produces predictions, but those predictions are never shown to users. The production model still serves all real responses. This lets you compare the new model's predictions against the old model's on real data, catch crashes and latency issues, and validate that nothing breaks — all without risking user experience. Think of it as a dress rehearsal before opening night.</p>
 
-<h3 id="slice-evaluation">Slice-Based Evaluation</h3>
+<p>After shadow deployment looks clean, a <b>canary release</b> exposes the new model to a tiny fraction of traffic — say, 1%. Monitor closely. If metrics hold, ramp to 5%, then 10%, then 50%, then 100%. This graduated rollout limits the blast radius if something goes wrong. It's the bridge between "offline metrics look good" and "we're confident enough to serve everyone."</p>
 
-<p>Aggregate metrics lie. A model with 95% overall accuracy can be 99% accurate on the majority class and 60% on a critical minority. Slice-based evaluation breaks performance down by meaningful subgroups — device type, user geography, input length, content category, time of day.</p>
-
-<p>The slices that matter depend on your domain. For a content moderation model, slice by language. For a recommendation system, slice by user activity level. For a medical model, slice by demographic group. If you don't choose your slices, your failures choose them for you — usually in the form of an angry customer escalation.</p>
-
-<h3 id="failure-taxonomy">Failure Mode Taxonomy</h3>
-
-<p>Instead of a flat list of errors, categorize failures into <em>why</em> the model got it wrong:</p>
-
-<ul>
-  <li><b>Ambiguous label</b> — reasonable people would disagree on the ground truth</li>
-  <li><b>Insufficient context</b> — the input simply doesn't contain enough information</li>
-  <li><b>Distribution gap</b> — the input looks nothing like training data</li>
-  <li><b>Systematic bias</b> — the model consistently fails on a pattern (e.g., negation, rare entities)</li>
-  <li><b>Noisy label</b> — the ground truth is wrong</li>
-</ul>
-
-<p>Each category has a different fix. Ambiguous labels need better annotation guidelines. Distribution gaps need more diverse training data. Systematic biases need targeted augmentation or architectural changes. Noisy labels need data cleaning. If you don't classify your errors, you apply the wrong fix — more data won't help a labeling problem.</p>
+<p>The progression — shadow → canary → full A/B test → rollout — is the standard path from "this model exists" to "this model serves all users." Each stage adds confidence while limiting risk.</p>
 
 <!-- ═══════════════════════════════════════════ -->
-<!-- 7. When to Stop Iterating                   -->
+<!-- Model Cards                                 -->
 <!-- ═══════════════════════════════════════════ -->
-<h2 id="when-to-stop">When to Stop Iterating</h2>
+<h2 id="model-cards">Model Cards and Documentation: The README for Your Model</h2>
 
-<p>This is the hardest skill in model development. Not the math, not the engineering — knowing when to stop.</p>
+<p>Here is something that caught me off guard. The model works. It passed offline evaluation. It survived an A/B test. It's in production. Six months later, a new team member asks: "What does this model do? What data was it trained on? Where does it fail?" And nobody can answer confidently, because the person who trained it left the company, and the experiment logs show metrics but not context.</p>
 
-<h3 id="diminishing-returns">Recognizing Diminishing Returns</h3>
+<p>A <b>model card</b>, proposed by Margaret Mitchell and collaborators at Google in 2019, is a structured document that accompanies a trained model — a README, but for a model instead of a codebase. The idea emerged from a real problem: as ML models get deployed in sensitive contexts (hiring, lending, content moderation), the people making deployment decisions need to understand what the model does and where it fails, even if they weren't involved in building it.</p>
 
-<p>Plot your improvement over time. The first week, you go from 70% to 88%. The second week, from 88% to 91%. The third week, you spend 60 GPU-hours to get from 91% to 91.3%. That's the signal.</p>
+<p>A model card for our TuneKeep churn predictor would include:</p>
 
-<p>Ask yourself: <b>would my users notice this improvement?</b> If the answer is "probably not," ship what you have and invest your time elsewhere — better features, faster inference, or an entirely different approach.</p>
+<p><b>Model details:</b> GradientBoostingClassifier, trained January 2024, version 3, trained by the retention team. Input: 23 user behavioral features from the last 30 days. Output: probability of churn in the next 30 days.</p>
 
-<h3 id="good-enough">Good Enough for Production</h3>
+<p><b>Intended use:</b> Prioritize retention offers for users likely to churn. Not intended for automated account termination or pricing decisions.</p>
 
-<p>"Good enough" isn't lazy — it's strategic. A model in production generating real feedback loops is worth more than a model on your laptop that's 2% better on a held-out set. Production models learn from user behavior, get retrained on fresh data, and compound improvements over time. The model sitting on your laptop does none of that.</p>
+<p><b>Training data:</b> 50,000 TuneKeep users, Jan 2023 – Oct 2023. Class balance: 12% churners, 88% retained. Oversampled minority class during training using class_weight="balanced".</p>
 
-<p>Practical heuristics:</p>
+<p><b>Evaluation results:</b> F1 = 0.74, precision = 0.71, recall = 0.77 on Nov–Dec 2023 temporal holdout. Performance broken down by user segment: power users (F1 = 0.81), casual listeners (F1 = 0.68), free-tier users (F1 = 0.59).</p>
 
-<ul>
-  <li><b>Beats the current system</b> (even if the current system is just rules or heuristics)</li>
-  <li><b>Meets the latency/cost budget</b></li>
-  <li><b>No catastrophic failure modes</b> on critical slices</li>
-  <li><b>Error analysis shows no easy wins left</b> — remaining errors are genuinely hard cases</li>
-</ul>
+<p><b>Limitations and failure modes:</b> Performs poorly on users with fewer than 7 days of activity history (cold-start problem). Does not account for external factors like competitor launches or credit card expiration. Performance degrades by ~3% F1 per month without retraining.</p>
 
-<p>If all four are true: ship it. You can always iterate in production with A/B tests and retraining cycles. Perfect is the enemy of deployed.</p>
+<p><b>Ethical considerations:</b> Model uses listening behavior and engagement metrics, not demographic data. However, engagement patterns correlate with age and income; disparate impact across demographic groups has not been formally tested.</p>
 
+<p>That last section is the one most teams skip. It's also the most important one. I'll be honest — writing "we haven't tested for disparate impact" feels uncomfortable. It's supposed to feel uncomfortable. The model card isn't meant to make you look good. It's meant to tell the truth about what the model does and doesn't do, so the next person who touches it can make informed decisions.</p>
+
+<p>Beyond model cards, the everyday documentation that makes a difference is unglamorous: a decision log ("We tried LSTM but Random Forest was 0.03 better F1 and 20x faster to train, so we went with RF"), a data dictionary ("days_since_listen: integer, capped at 90, 0 means listened today"), and a runbook ("To retrain, run scripts/train.py with the latest monthly snapshot. Expected training time: 12 minutes on a single GPU. If F1 drops below 0.70, escalate to the retention ML team").</p>
+
+<p>None of this is exciting. All of it saves dozens of hours when something breaks at 2 AM and the person on call wasn't the one who built the model.</p>
 
 <!-- ═══════════════════════════════════════════ -->
-<!-- What You Should Now Be Able To Do           -->
+<!-- Full Lifecycle                               -->
 <!-- ═══════════════════════════════════════════ -->
-<h2>What You Should Now Be Able To Do</h2>
+<h2 id="lifecycle">The Full Lifecycle</h2>
 
-<ul>
-  <li>Set up MLflow or W&amp;B experiment tracking with proper logging of params, metrics, data versions, and code versions</li>
-  <li>Classify model bugs into data / model / infrastructure categories and know where to look for each</li>
-  <li>Detect data leakage by examining feature importance and suspiciously high performance</li>
-  <li>Read training curves and diagnose overfitting, underfitting, learning rate issues, and leakage from the shape of the loss</li>
-  <li>Write behavioral tests (invariance, directional) that catch bugs aggregate metrics miss</li>
-  <li>Pin all sources of randomness for reproducibility and explain why GPU non-determinism still leaks through</li>
-  <li>Distinguish offline metrics from online metrics and explain when each matters</li>
-  <li>Run a paired bootstrap test to determine if a model improvement is statistically significant</li>
-  <li>Perform slice-based error analysis and categorize failures into a taxonomy that maps to actionable fixes</li>
-  <li>Recognize diminishing returns and make the call to ship a "good enough" model to production</li>
-</ul>
+<p>Let's zoom out and trace the complete path our TuneKeep model traveled. This is the model development lifecycle — not as a textbook diagram, but as the sequence of things that actually happened.</p>
+
+<p>We started with a business problem: predict churn to target retention offers. We built a baseline — a heuristic rule, then logistic regression — and established an F1 floor of 0.583. We set up experiment tracking with MLflow, so every attempt was logged with its configuration, data version, and results. We pinned our seeds and environment for reproducibility, ensuring that improvements were real and not random noise.</p>
+
+<p>We ran an Optuna hyperparameter search, exploring 100 configurations of a GradientBoostingClassifier, and found a configuration that scored 0.74 F1. We registered the trained model in the MLflow model registry as version 1, stage "None."</p>
+
+<p>We ran offline evaluation using temporal splits and backtesting, confirming that the 0.74 held across multiple months. We used a paired bootstrap test to verify the improvement over the baseline was statistically significant. We promoted the model to "Staging."</p>
+
+<p>We deployed a shadow version alongside the existing rule-based system, confirmed there were no crashes or latency issues, then ran a canary deployment to 5% of users. After a week with stable metrics, we launched a full A/B test: 50/50 split between the old rule-based system and the new model. After three weeks, the new model showed a 2.1% lift in 30-day retention among targeted users, with p &lt; 0.01. We promoted the model to "Production."</p>
+
+<p>We wrote a model card documenting the model's details, training data, performance across user segments, known limitations, and ethical considerations. We set up monthly retraining on fresh data, with automatic offline evaluation that flags any significant performance degradation before the new version gets promoted.</p>
+
+<p>That loop — baseline → track → reproduce → optimize → register → evaluate offline → test online → document → retrain — is the lifecycle. It's not linear. We went back to the experiment tracking phase three times when results didn't make sense. We rebuilt the feature set once when we discovered temporal leakage. The diagram in a textbook shows this as a clean circle. In practice, it's more like a spiral with detours.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- Wrap-up                                     -->
+<!-- ═══════════════════════════════════════════ -->
+<h2 id="wrap-up">Wrap-Up</h2>
+
+<p>If you're still with me, thank you. I hope it was worth it.</p>
+
+<p>We started with a folder of unlabeled checkpoints and no way to tell which model was best. We built baselines to anchor our expectations, set up experiment tracking so no result was ever lost, pinned every source of randomness for reproducibility, used TPE and ASHA to search hyperparameters without wasting compute, registered models in a versioned registry with promotion stages, evaluated them with temporal splits and bootstrap tests, tested them against real users with shadow deployments and A/B tests, and documented everything in model cards so the next person wouldn't have to start from scratch.</p>
+
+<p>My hope is that the next time you train a model and it comes out well, instead of renaming it <code>model_ACTUALLY_final_v3.pt</code> and praying you remember what produced it, you'll log it, version it, test it, and document it — having a pretty good mental model of the infrastructure that turns a trained model into a reliable system.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- Resources                                   -->
+<!-- ═══════════════════════════════════════════ -->
+<h2 id="resources">Resources and Credits</h2>
+
+<p><a href="https://mlflow.org/docs/latest/index.html">MLflow Documentation</a> — The definitive reference for experiment tracking, model registry, and serving. Thorough and well-organized.</p>
+
+<p><a href="https://docs.wandb.ai/">Weights &amp; Biases Docs</a> — Excellent tutorials, especially for deep learning visualization workflows. The "Reports" feature alone is worth exploring.</p>
+
+<p><a href="https://optuna.readthedocs.io/en/stable/">Optuna Documentation</a> — Clear explanation of TPE internals and practical recipes. The visualization tools for understanding search behavior are wildly helpful.</p>
+
+<p><a href="https://arxiv.org/abs/1810.03993">Model Cards for Model Reporting (Mitchell et al., 2019)</a> — The O.G. paper on model documentation. Short, readable, and quietly influential on the entire industry.</p>
+
+<p><a href="https://arxiv.org/abs/1810.05934">Massively Parallel Hyperparameter Optimization (Li et al., 2020)</a> — The ASHA paper. Insightful if you want to understand the theory behind early stopping schedulers.</p>
+
+<p><a href="https://www.cs.mcgill.ca/~jpineau/ReproducibilityChecklist.pdf">ML Reproducibility Checklist (Pineau et al.)</a> — A one-page checklist that I print and tape above my desk. If you take one thing from this section, make it this.</p>
 
       <div class="page-nav">
         <a href="s02.html">
