@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Pre-training Objectives — Zero to Hero AI</title>
+  <title>Efficient LLMs — Quantization &amp; PEFT — Zero to Hero AI</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="../../css/style.css">
@@ -298,669 +298,379 @@
 <h1>Efficient LLMs &mdash; Quantization &amp; PEFT</h1>
 <div class="chapter-meta">
   <span class="tag">Chapter 12: Large Language Models</span>
-  <span class="tag">9 subtopics</span>
-</div>
-
-<div class="tldr">
-  <div class="tldr-label">TL;DR</div>
-  <p>A 70B parameter model in FP16 needs 140GB of VRAM &mdash; more than any single consumer GPU. Quantization shrinks models by reducing numerical precision (FP16 &rarr; INT4), cutting memory 4&times; with surprisingly little quality loss. PEFT methods like LoRA let you fine-tune by updating &lt;1% of parameters, and QLoRA combines both: fine-tune a 65B model on a single 48GB GPU. This section covers the full stack &mdash; GPTQ, AWQ, GGUF, SmoothQuant for quantization; LoRA, QLoRA, adapters, prefix tuning for PEFT; plus pruning and knowledge distillation. These aren&rsquo;t optional tricks. They&rsquo;re how LLMs actually get deployed in the real world.</p>
+  <span class="tag">Section 7</span>
 </div>
 
 <!-- ═══════════════════════════════════════════ -->
-<h2>Why Efficiency Matters</h2>
+<!-- OPENING -->
+<!-- ═══════════════════════════════════════════ -->
 
-<p>Let&rsquo;s do some arithmetic that should make you uncomfortable. A 70B parameter model stored in FP16 (2 bytes per parameter) requires 70 &times; 10<sup>9</sup> &times; 2 bytes = 140GB just for the weights. An A100 has 80GB. An H100 has 80GB. A 4090 has 24GB. You literally cannot fit the model onto a single GPU without doing something clever.</p>
+<p>I treated my first large language model like a museum exhibit. Look, don&rsquo;t touch. When someone on my team suggested &ldquo;quantizing it to 4-bit,&rdquo; I physically winced. You want to <em>round</em> seven billion carefully trained floating-point numbers down to four bits each? That felt like compressing a symphony into a ringtone. So I avoided it. I kept renting larger and larger GPU instances, watching the bills climb, telling myself that precision was non-negotiable.</p>
 
-<p>And that&rsquo;s just inference. For training, you need the weights, the gradients, and the optimizer states. Adam stores two extra copies (first and second moment), so full fine-tuning a 70B model in FP16 requires roughly: 140GB (weights) + 140GB (gradients) + 280GB (optimizer states) = <strong>560GB of VRAM</strong>. That&rsquo;s seven A100-80GB GPUs just for optimizer math &mdash; before you even account for activations.</p>
+<p>Then one morning I woke up to a $2,400 cloud bill for a single week of inference. And I also needed to fine-tune the model for three different clients, each wanting their own domain-specific behavior. The full fine-tuning run for a 7B model was going to need 84 GB of VRAM &mdash; more than my A100 could offer. That was the morning the discomfort of not understanding quantization and parameter-efficient fine-tuning grew too painful to keep ignoring. Here is that dive.</p>
 
-<pre><code># The brutal memory math for LLMs
+<p><strong>Quantization</strong> is the practice of representing model weights (and sometimes activations) in fewer bits &mdash; going from 16-bit or 32-bit floating point down to 8-bit integers, 4-bit integers, or even lower. The first practical 4-bit methods for LLMs appeared in 2022&ndash;2023 (GPTQ, AWQ), and they&rsquo;ve become the standard way large models actually get deployed. <strong>Parameter-Efficient Fine-Tuning (PEFT)</strong> is a family of techniques that customize a model&rsquo;s behavior by training only a small fraction of its parameters &mdash; often less than 1%. LoRA (2021) is the dominant method, and QLoRA (2023) married quantization with LoRA to let you fine-tune a 65B model on a single GPU.</p>
 
-def model_memory(params_billions, bytes_per_param):
-    """Just the weight storage"""
-    return params_billions * bytes_per_param  # in GB
+<p>Before we start, a heads-up. We&rsquo;re going to be working through some arithmetic about memory, touching on matrix decompositions, and writing actual training code. You don&rsquo;t need to know any of it beforehand. We&rsquo;ll add what we need, one piece at a time.</p>
 
-def training_memory(params_billions):
-    """Full fine-tuning with AdamW in FP16 (mixed precision)"""
-    weights = params_billions * 2        # FP16 weights
-    gradients = params_billions * 2      # FP16 gradients
-    optimizer = params_billions * 8      # FP32 master weights + 2 × FP32 moments
-    return weights + gradients + optimizer
+<p>This isn&rsquo;t a short journey, but I hope you&rsquo;ll be glad you came.</p>
 
-# Inference memory (weights only)
-print(f"7B  FP16: {model_memory(7, 2):.0f} GB")     # 14 GB
-print(f"7B  INT4: {model_memory(7, 0.5):.0f} GB")   # 3.5 GB  ← fits on a laptop!
-print(f"70B FP16: {model_memory(70, 2):.0f} GB")     # 140 GB
-print(f"70B INT4: {model_memory(70, 0.5):.0f} GB")   # 35 GB  ← fits on one GPU!
-
-# Training memory (full fine-tuning)
-print(f"\n7B  full FT:  {training_memory(7):.0f} GB")   # 84 GB
-print(f"70B full FT:  {training_memory(70):.0f} GB")    # 840 GB
-</code></pre>
-
-<p>This is why quantization and PEFT aren&rsquo;t niche research topics &mdash; they&rsquo;re the two pillars of making LLMs practical. Quantization reduces inference memory and speeds up serving. PEFT reduces training memory so you can fine-tune models that would otherwise require a cluster. Together, they democratize access to frontier-scale models.</p>
-
-<div class="info-box">
-  <strong>The core tradeoff:</strong> Every efficiency technique trades something for memory/compute savings. Quantization trades numerical precision. LoRA trades fine-tuning expressiveness. Pruning trades model capacity. Distillation trades training compute. The art is knowing which tradeoff hurts least for your use case.
+<!-- TABLE OF CONTENTS -->
+<div class="toc">
+  <h3>Contents</h3>
+  <ul>
+    <li>The suitcase problem</li>
+    <li>What quantization actually does to a number</li>
+    <li>Symmetric vs asymmetric quantization</li>
+    <li>Granularity: how many numbers share a ruler</li>
+    <li>Post-training quantization: GPTQ, AWQ, and GGUF</li>
+    <li>SmoothQuant: taming the outliers</li>
+    <li>Quantization-aware training</li>
+    <li>Rest stop</li>
+    <li>The fine-tuning memory wall</li>
+    <li>LoRA: the low-rank insight</li>
+    <li>LoRA in practice: initialization, scaling, and rank</li>
+    <li>QLoRA: quantized base, full-precision adapters</li>
+    <li>The rest of the PEFT family</li>
+    <li>Choosing your method</li>
+    <li>Wrap-up</li>
+    <li>Resources</li>
+  </ul>
 </div>
 
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  QUANTIZATION FUNDAMENTALS                                        -->
-<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- ═══════════════════════════════════════════ -->
+<!-- THE SUITCASE PROBLEM -->
+<!-- ═══════════════════════════════════════════ -->
 
-<h2>Quantization Fundamentals</h2>
+<h2>The Suitcase Problem</h2>
 
-<p>Quantization is conceptually simple: take numbers stored in high precision (FP16, 16 bits per value) and represent them in lower precision (INT8, INT4 &mdash; 8 or 4 bits per value). Fewer bits per parameter means less memory, less bandwidth, and faster matrix multiplications on hardware that supports low-precision arithmetic.</p>
+<p>Imagine you&rsquo;re packing for a two-week trip, but the airline says your suitcase can only weigh 24 kilograms. Your entire wardrobe weighs 140 kg. You have two choices: buy a bigger suitcase (rent more GPUs), or learn to pack smarter (quantization). Most people start by trying to buy a bigger suitcase. Eventually, everyone learns to pack.</p>
 
-<p>The key question is: how much quality do you lose? Surprisingly little, if you do it right.</p>
+<p>Let&rsquo;s make this concrete. A 7-billion-parameter model stores each parameter as a 16-bit floating-point number. That&rsquo;s 2 bytes per parameter. So the weight storage alone is:</p>
 
-<h3>Symmetric vs Asymmetric Quantization</h3>
+<pre><code>7,000,000,000 parameters &times; 2 bytes = 14,000,000,000 bytes = 14 GB</code></pre>
 
-<p><strong>Symmetric quantization</strong> maps values to a range centered at zero: [&minus;max, +max]. You pick a scale factor <code>s = max_abs_value / (2^(b-1) - 1)</code> and quantize each value as <code>q = round(x / s)</code>. Simple and fast, but wastes range if your distribution is skewed.</p>
+<p>An NVIDIA RTX 4090 has 24 GB of VRAM. An A100 has 80 GB. So a 7B model in FP16 fits on a 4090 with room to spare, and a 70B model (140 GB) doesn&rsquo;t fit on <em>anything</em> with a single GPU. That&rsquo;s the suitcase problem for inference.</p>
 
-<p><strong>Asymmetric quantization</strong> allows the range to be off-center: [min, max]. It introduces a zero-point offset <code>z</code> so that <code>q = round(x / s) + z</code>. Better for distributions that aren&rsquo;t centered at zero (like ReLU activations, which are always &ge; 0), but slightly more compute overhead during inference.</p>
+<p>For fine-tuning, the suitcase gets even heavier. You need the weights, the gradients (same size as weights), and the optimizer states. Adam keeps two extra copies &mdash; a running mean and a running variance &mdash; both in FP32. The math shakes out like this:</p>
 
-<pre><code># Symmetric quantization
-def symmetric_quantize(tensor, num_bits=8):
-    qmax = 2**(num_bits - 1) - 1       # 127 for INT8
-    scale = tensor.abs().max() / qmax
-    quantized = torch.round(tensor / scale).clamp(-qmax, qmax).to(torch.int8)
-    return quantized, scale
+<pre><code># The memory budget for fine-tuning a 7B model
 
-def symmetric_dequantize(quantized, scale):
-    return quantized.float() * scale
+weights    = 7B &times; 2 bytes  =  14 GB   (FP16)
+gradients  = 7B &times; 2 bytes  =  14 GB   (FP16)
+optimizer  = 7B &times; 8 bytes  =  56 GB   (FP32 master + 2 &times; FP32 moments)
+                              ─────────
+total                       &asymp;  84 GB
 
-# Asymmetric quantization
-def asymmetric_quantize(tensor, num_bits=8):
-    qmin, qmax = 0, 2**num_bits - 1    # 0-255 for UINT8
-    min_val, max_val = tensor.min(), tensor.max()
-    scale = (max_val - min_val) / (qmax - qmin)
-    zero_point = round(-min_val / scale)
-    quantized = torch.round(tensor / scale + zero_point).clamp(qmin, qmax).to(torch.uint8)
-    return quantized, scale, zero_point
+# For a 70B model:  840 GB.  That&rsquo;s ten A100-80GB GPUs,
+# and we haven&rsquo;t even counted activations yet.</code></pre>
 
-def asymmetric_dequantize(quantized, scale, zero_point):
-    return (quantized.float() - zero_point) * scale
-</code></pre>
+<p>This is the problem that the rest of this section exists to solve. We&rsquo;re going to pack the same model into a much smaller suitcase &mdash; and we&rsquo;re going to learn to customize it without unpacking everything.</p>
 
-<h3>Granularity: Per-Tensor vs Per-Channel vs Per-Group</h3>
+<p>I&rsquo;ll be using a running scenario throughout: you&rsquo;ve trained (or downloaded) a 7B language model that works well for general conversation. Now you need to deploy it for a customer support product. You need it to run on a single GPU. And three different clients want their own customized version. This is the kind of real-world problem where quantization and PEFT go from &ldquo;nice to know&rdquo; to &ldquo;I literally cannot ship without this.&rdquo;</p>
 
-<p>The granularity of quantization &mdash; how many values share a single scale factor &mdash; has a massive impact on quality.</p>
+<!-- ═══════════════════════════════════════════ -->
+<!-- WHAT QUANTIZATION DOES TO A NUMBER -->
+<!-- ═══════════════════════════════════════════ -->
 
-<table>
-  <thead>
-    <tr><th>Granularity</th><th>Scale Factors</th><th>Quality</th><th>Overhead</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><strong>Per-tensor</strong></td>
-      <td>1 per entire weight matrix</td>
-      <td>Worst &mdash; one outlier ruins the range for millions of values</td>
-      <td>Minimal</td>
-    </tr>
-    <tr>
-      <td><strong>Per-channel</strong></td>
-      <td>1 per output channel (row of weight matrix)</td>
-      <td>Good &mdash; each row gets its own range</td>
-      <td>Low</td>
-    </tr>
-    <tr>
-      <td><strong>Per-group</strong></td>
-      <td>1 per group of values (e.g., every 128 values)</td>
-      <td>Best &mdash; fine-grained adaptation to local distributions</td>
-      <td>Moderate (store extra scale factors)</td>
-    </tr>
-  </tbody>
-</table>
+<h2>What Quantization Actually Does to a Number</h2>
 
-<p><strong>Group quantization with group size 128</strong> has become the industry standard for 4-bit quantization. It provides an excellent quality-overhead tradeoff &mdash; each group of 128 weights gets its own scale factor, so local outliers don&rsquo;t wreck the quantization for the whole row. The overhead is storing one FP16 scale per 128 INT4 values, which adds about 0.8 bits per parameter (4.0 &rarr; ~4.8 effective bits). Totally worth it.</p>
+<p>Before we get to fancy methods with intimidating acronyms, we need to understand one very simple operation: rounding.</p>
 
-<h3>The Memory Savings</h3>
+<p>A 16-bit floating-point number (FP16) can represent about 65,000 distinct values. An 8-bit integer (INT8) can represent 256 values. A 4-bit integer can represent 16 values. <strong>Quantization</strong> is the act of mapping those 65,000 possible values down to 256, or 16, or even fewer. Every value in the original weight matrix gets snapped to the nearest value on a much coarser grid.</p>
 
-<pre><code># Memory per parameter at different precisions
+<p>Let&rsquo;s walk through a tiny example. Say we have four weights from one layer of our model:</p>
 
-Precision     Bits    Bytes/param    7B model    70B model
-─────────────────────────────────────────────────────────
-FP32          32      4.0            28 GB       280 GB
-FP16/BF16     16      2.0            14 GB       140 GB
-INT8          8       1.0            7 GB        70 GB
-INT4 (group)  ~4.8    ~0.6           4.2 GB      42 GB
-INT4 (pure)   4       0.5            3.5 GB      35 GB
-</code></pre>
+<pre><code>Original (FP16):   [0.23,  -0.71,  0.02,  1.05]</code></pre>
 
-<div class="info-box">
-  <strong>BF16 vs FP16:</strong> Both are 16-bit, but BF16 (bfloat16) uses 8 exponent bits and 7 mantissa bits, while FP16 uses 5 exponent bits and 10 mantissa bits. BF16 has the same dynamic range as FP32 (same number of exponent bits) but less precision. For LLM training and inference, BF16 is almost always preferred because the wider range prevents overflow/underflow issues that plague FP16.
-</div>
+<p>We want to store these as 4-bit signed integers, which means we have values from &minus;8 to +7 &mdash; a total of 16 possible slots. First, we find the largest absolute value: 1.05. We compute a <strong>scale factor</strong> that maps 1.05 to the maximum INT4 value (7):</p>
 
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  POST-TRAINING QUANTIZATION                                        -->
-<!-- ═══════════════════════════════════════════════════════════════════ -->
+<pre><code>scale = 1.05 / 7 = 0.15</code></pre>
 
-<h2>Post-Training Quantization (PTQ)</h2>
+<p>Now we divide each weight by the scale and round to the nearest integer:</p>
 
-<p>Post-training quantization means you take a pre-trained model and quantize it <em>after</em> training, without retraining. This is the practical path &mdash; you download a model from Hugging Face, quantize it, and serve it. No GPU-months of training required. The challenge is doing this without destroying quality.</p>
+<pre><code>0.23  / 0.15 =  1.53  &rarr;  round to  2
+-0.71 / 0.15 = -4.73  &rarr;  round to -5
+0.02  / 0.15 =  0.13  &rarr;  round to  0
+1.05  / 0.15 =  7.00  &rarr;  round to  7
 
-<h3>GPTQ: The First Practical 4-bit Method</h3>
+Quantized (INT4):   [2,  -5,  0,  7]</code></pre>
 
-<p>GPTQ (Frantar et al., 2023) was a breakthrough: the first method that could quantize LLMs to 4 bits with acceptable quality loss. It&rsquo;s based on Optimal Brain Quantization (OBQ), which quantizes one weight at a time and adjusts the remaining unquantized weights to compensate for the error.</p>
+<p>Each of those numbers fits in 4 bits instead of 16. To use the weights during inference, we multiply them back by the scale factor:</p>
 
-<p>The key ideas:</p>
+<pre><code>Dequantized:   [2 &times; 0.15,  -5 &times; 0.15,  0 &times; 0.15,  7 &times; 0.15]
+             = [0.30,      -0.75,       0.00,       1.05]
 
-<ul>
-  <li><strong>Weight-only quantization:</strong> Only weights are quantized; activations stay in FP16. This is important because weight distributions are relatively well-behaved (roughly Gaussian), while activations can have severe outliers.</li>
-  <li><strong>Layer-by-layer quantization with Hessian-based error compensation:</strong> For each layer, GPTQ uses the Hessian (second-order gradient information) to decide the optimal order to quantize weights and how to adjust remaining weights to minimize total reconstruction error.</li>
-  <li><strong>Calibration data required:</strong> You need a small calibration set (128&ndash;256 examples is typical) to estimate the Hessian. The model processes these examples to determine which weights matter most.</li>
-</ul>
+Error:         [+0.07,     -0.04,       -0.02,      0.00]</code></pre>
 
-<pre><code># Using GPTQ via AutoGPTQ (practical usage)
-from transformers import AutoModelForCausalLM, AutoTokenizer
+<p>That&rsquo;s quantization. We introduced some rounding error &mdash; 0.23 became 0.30, 0.02 became 0.00 &mdash; but the overall structure of the values is preserved. The weight that was biggest is still biggest. The one that was negative is still negative. And we&rsquo;re using 4&times; less memory.</p>
+
+<p>The entire field of quantization research is, at its core, about making these rounding errors as small as possible. Everything from GPTQ to AWQ to NF4 is a different strategy for minimizing the damage of this rounding step.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- SYMMETRIC VS ASYMMETRIC -->
+<!-- ═══════════════════════════════════════════ -->
+
+<h2>Symmetric vs Asymmetric Quantization</h2>
+
+<p>The example above used <strong>symmetric quantization</strong>: the range is centered at zero, stretching from &minus;max to +max. One scale factor, done. This works well for LLM weight matrices, which tend to be roughly centered around zero (they&rsquo;re usually close to a Gaussian distribution).</p>
+
+<p>But what about values that aren&rsquo;t centered at zero? If you have activations coming out of a ReLU layer, they&rsquo;re always non-negative. If we use symmetric quantization, half of our 16 INT4 slots represent negative numbers that will never appear. We&rsquo;re wasting half our precision.</p>
+
+<p><strong>Asymmetric quantization</strong> fixes this by allowing the range to be off-center. Instead of mapping [&minus;max, +max], it maps [min, max]. This requires a second number, the <strong>zero-point</strong>, to track where zero falls on the quantized grid.</p>
+
+<pre><code># Symmetric: one number to store (scale)
+quantized = round(value / scale)
+dequantized = quantized &times; scale
+
+# Asymmetric: two numbers to store (scale + zero_point)
+quantized = round(value / scale) + zero_point
+dequantized = (quantized - zero_point) &times; scale</code></pre>
+
+<p>In practice, LLM weight quantization almost always uses symmetric quantization. The weights are well-behaved enough that the centered range works well, and you save the overhead of storing a zero-point for every group. Activation quantization sometimes benefits from asymmetric, especially after ReLU-style nonlinearities.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- GRANULARITY -->
+<!-- ═══════════════════════════════════════════ -->
+
+<h2>Granularity: How Many Numbers Share a Ruler</h2>
+
+<p>Here&rsquo;s a subtlety I didn&rsquo;t appreciate until I saw it break things: the scale factor from our example above was computed from the entire set of four weights. In a real model, a single weight matrix might have 4096 &times; 4096 = 16 million values. If we compute one scale factor for all 16 million values, a single outlier &mdash; one weight that&rsquo;s 10&times; larger than the rest &mdash; forces us to stretch the quantization grid so wide that most values get crushed into just a few bins near zero.</p>
+
+<p>Think of it like using one ruler to measure both a skyscraper and a matchbox. The tick marks on the ruler are so far apart that you can&rsquo;t tell a 2-inch matchbox from a 3-inch one.</p>
+
+<p>This problem is called <strong>per-tensor quantization</strong>, and it&rsquo;s the worst option. You get one scale factor for millions of values. One outlier ruins everything.</p>
+
+<p><strong>Per-channel quantization</strong> is better: each row of the weight matrix gets its own scale factor. Now each row has its own ruler, so an outlier in row 37 doesn&rsquo;t affect row 4,000. This helps a lot.</p>
+
+<p><strong>Per-group quantization</strong> takes it further: we chop each row into groups of, say, 128 consecutive values, and each group gets its own scale factor. Now we have 128 values sharing a ruler, which is fine-grained enough to handle local variations in the weight distribution. The cost is storing one extra FP16 scale factor per 128 INT4 values &mdash; that&rsquo;s an overhead of about 0.8 bits per parameter. Going from a theoretical 4.0 bits to about 4.8 effective bits.</p>
+
+<p>Group-128 has become the industry standard for 4-bit LLM quantization. I still don&rsquo;t have a clean theoretical explanation for why 128 is the magic number, but empirically it lands right in the sweet spot between quality and overhead. Every major method &mdash; GPTQ, AWQ, GGUF&rsquo;s k-quant &mdash; defaults to it.</p>
+
+<p>Our suitcase analogy extends: per-tensor is like one compression bag for all your clothes. Per-group is like rolling each outfit individually &mdash; more packaging overhead, but everything arrives in better shape.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- POST-TRAINING QUANTIZATION -->
+<!-- ═══════════════════════════════════════════ -->
+
+<h2>Post-Training Quantization: GPTQ, AWQ, and GGUF</h2>
+
+<p>Everything so far has been basic rounding. The question is: can we do something smarter than naive rounding to minimize the damage? That&rsquo;s what the big post-training quantization (PTQ) methods do. You take a pre-trained model, run it through a quantization algorithm, and get a smaller model with (hopefully) minimal quality loss. No retraining required.</p>
+
+<p>Let me walk through the three methods that matter most, in the order they appeared.</p>
+
+<h3>GPTQ: Error Compensation</h3>
+
+<p>GPTQ (Frantar et al., 2023) was the first method that could reliably quantize LLMs to 4 bits without catastrophic quality loss. The key insight: when you round one weight and introduce error, you can <em>adjust the remaining unquantized weights</em> to compensate.</p>
+
+<p>Imagine you&rsquo;re packing a suitcase and you fold a shirt a bit too tight &mdash; it creates a bulge. Instead of ignoring it, you rearrange the next few items to smooth things out. GPTQ does this for every weight, one at a time, using the <strong>Hessian</strong> (second-order gradient information from a small calibration dataset) to figure out which adjustments matter most.</p>
+
+<p>In practice, you feed 128&ndash;256 representative examples through the model to compute the Hessian, then quantize layer by layer. The whole process takes a few hours for a 7B model on a single GPU.</p>
+
+<pre><code># GPTQ with the AutoGPTQ library
 from auto_gptq import AutoGPTQForCausalLM, BaseQuantizeConfig
 
-# 1. Load the FP16 model
-model_id = "meta-llama/Llama-2-7b-hf"
-tokenizer = AutoTokenizer.from_pretrained(model_id)
-
-# 2. Prepare calibration data
-calibration_texts = [
-    "The meaning of life is",
-    "In a recent study, researchers found that",
-    # ... 128-256 diverse examples
-]
-calibration_data = [
-    tokenizer(text, return_tensors="pt") for text in calibration_texts
-]
-
-# 3. Configure and run quantization
 quantize_config = BaseQuantizeConfig(
     bits=4,             # 4-bit quantization
-    group_size=128,     # group quantization (sweet spot)
-    damp_percent=0.01,  # dampening for Hessian inverse
+    group_size=128,     # per-group with 128 values per group
+    damp_percent=0.01,  # dampening for Hessian inverse stability
 )
 
 model = AutoGPTQForCausalLM.from_pretrained(model_id, quantize_config)
-model.quantize(calibration_data)
+model.quantize(calibration_data)    # needs ~128 examples
+model.save_quantized("model-gptq-4bit")
+# 14 GB model &rarr; ~3.9 GB on disk</code></pre>
 
-# 4. Save the quantized model
-model.save_quantized("llama-2-7b-gptq-4bit")
-# Original: ~14GB → Quantized: ~3.9GB
-</code></pre>
+<p>GPTQ was a breakthrough, but it has limitations. The quantization process is slow. Quality depends heavily on having good calibration data. And the Hessian-based compensation, while smart, is expensive to compute.</p>
 
-<p>GPTQ is still widely used and has excellent ecosystem support. The main limitation: it&rsquo;s slow to quantize (hours for large models) and the quality depends on good calibration data.</p>
+<h3>AWQ: Protecting What Matters</h3>
 
-<h3>AWQ: Activation-Aware Weight Quantization</h3>
+<p>AWQ (Lin et al., 2023) came next and took a different philosophical approach. Instead of compensating for errors after the fact, AWQ asks: <em>which weights matter most, and can we protect them?</em></p>
 
-<p>AWQ (Lin et al., 2023) takes a different approach. Instead of using Hessian-based compensation, AWQ observes that <strong>not all weights are equally important</strong>. Specifically, a small fraction of weights (&sim;1%) correspond to &ldquo;salient&rdquo; channels &mdash; channels that produce large-magnitude activations. These salient weights need more protection during quantization.</p>
+<p>The answer comes from looking at activations. About 1% of weight channels consistently produce large-magnitude activations &mdash; they&rsquo;re &ldquo;salient&rdquo; channels that carry disproportionate importance. If naive quantization crushes these salient weights, quality collapses. AWQ&rsquo;s trick: scale up the salient weights <em>before</em> quantizing (giving them more of the INT4 range), and scale down the corresponding activations to compensate. The mathematical result is identical, but the salient weights get much finer quantization resolution.</p>
 
-<p>AWQ&rsquo;s trick: scale up salient weights before quantization (giving them more of the INT4 range) and scale down the corresponding activations to compensate. The math works out perfectly &mdash; the rescaling is absorbed into the computation with no inference overhead.</p>
-
-<pre><code># AWQ conceptual flow
+<pre><code># AWQ conceptual trick (not actual code, but the idea)
 #
-# Standard quantization:
-#   y = Quantize(W) · x                    ← salient weights get crushed
+# Before:  y = Quantize(W) &middot; x          &larr; salient weights get crushed
+# After:   y = Quantize(W &middot; s) &middot; (x / s)   &larr; salient weights preserved
 #
-# AWQ insight:
-#   y = Quantize(W · diag(s)) · (x / s)   ← scale up important weights,
-#                                              scale down activations
-#   where s is chosen to minimize quantization error
-#   for weights that matter most (based on activation magnitudes)
-</code></pre>
+# s is chosen based on activation magnitudes
+# The math is identical: (W &middot; s) &middot; (x / s) = W &middot; x</code></pre>
 
-<p>Why AWQ is often preferred over GPTQ:</p>
-<ul>
-  <li>Better quality at the same bit width (especially noticeable at 4-bit)</li>
-  <li>Faster quantization process</li>
-  <li>Excellent integration with vLLM for serving</li>
-</ul>
+<p>AWQ tends to produce slightly better quality than GPTQ at the same bit width (roughly 0.1&ndash;0.2 perplexity points closer to the FP16 baseline), quantizes faster, and integrates beautifully with vLLM for production serving. For GPU deployment, it&rsquo;s become the default choice in 2024.</p>
 
-<h3>GGUF / llama.cpp: LLMs on Your Laptop</h3>
+<h3>GGUF: The Laptop Format</h3>
 
-<p>GGUF (GPT-Generated Unified Format, formerly GGML) is the quantization format used by llama.cpp. It&rsquo;s a fundamentally different beast from GPTQ and AWQ &mdash; it&rsquo;s designed for <strong>CPU inference</strong>, not GPU. This is what lets you run a 7B model on a MacBook with no GPU at all.</p>
+<p>GPTQ and AWQ are GPU-first formats. <strong>GGUF</strong> (GPT-Generated Unified Format) is something completely different: it&rsquo;s the format used by llama.cpp, and it&rsquo;s designed for <strong>CPU inference</strong>. This is what lets you run a 7B model on a MacBook with no GPU.</p>
 
-<p>GGUF uses a zoo of quantization types, each a different tradeoff between quality and size:</p>
+<p>GGUF offers a whole spectrum of quantization levels, each a different tradeoff:</p>
 
-<table>
-  <thead>
-    <tr><th>Quant Type</th><th>Bits/Weight</th><th>7B Model Size</th><th>Quality</th><th>Notes</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><code>Q2_K</code></td>
-      <td>~2.6</td>
-      <td>~2.8 GB</td>
-      <td>Poor</td>
-      <td>Barely usable, for extreme memory constraints</td>
-    </tr>
-    <tr>
-      <td><code>Q4_K_M</code></td>
-      <td>~4.8</td>
-      <td>~4.1 GB</td>
-      <td>Good</td>
-      <td><strong>Sweet spot</strong> for most users</td>
-    </tr>
-    <tr>
-      <td><code>Q5_K_M</code></td>
-      <td>~5.7</td>
-      <td>~4.8 GB</td>
-      <td>Very Good</td>
-      <td>Slight quality bump over Q4</td>
-    </tr>
-    <tr>
-      <td><code>Q6_K</code></td>
-      <td>~6.6</td>
-      <td>~5.5 GB</td>
-      <td>Excellent</td>
-      <td>Near-FP16 quality</td>
-    </tr>
-    <tr>
-      <td><code>Q8_0</code></td>
-      <td>8.0</td>
-      <td>~7.2 GB</td>
-      <td>Near-lossless</td>
-      <td>Baseline for quality comparison</td>
-    </tr>
-  </tbody>
-</table>
+<pre><code>Quant Type    Bits/Weight    7B Size     Quality
+──────────────────────────────────────────────────
+Q2_K          ~2.6 bits      ~2.8 GB     Barely usable
+Q4_K_M        ~4.8 bits      ~4.1 GB     Good  &larr; sweet spot
+Q5_K_M        ~5.7 bits      ~4.8 GB     Very good
+Q6_K          ~6.6 bits      ~5.5 GB     Excellent
+Q8_0          8.0 bits       ~7.2 GB     Near-lossless</code></pre>
 
-<p>The &ldquo;K&rdquo; quantization types (Q4_K_M, Q5_K_M, etc.) use a trick called <strong>k-quant</strong>: they allocate more bits to important layers (like attention) and fewer bits to less important ones. The &ldquo;M&rdquo; stands for medium (there&rsquo;s also S for small and L for large, reflecting different quality-size tradeoffs within the same bit budget).</p>
+<p>The &ldquo;K&rdquo; in those names stands for <strong>k-quant</strong>, a clever technique that allocates more bits to important layers (like attention projections) and fewer bits to less important ones (like certain feed-forward layers). The &ldquo;M&rdquo; is for medium aggressiveness. There&rsquo;s also &ldquo;S&rdquo; for small (more aggressive, lower quality) and &ldquo;L&rdquo; for large (less aggressive, higher quality).</p>
 
-<pre><code># Using GGUF models with llama-cpp-python
+<p>GGUF matters because it democratized local LLM access. Tools like Ollama, LM Studio, and Jan all use GGUF under the hood. When someone says &ldquo;I run LLaMA on my laptop,&rdquo; they&rsquo;re almost certainly using a GGUF quantized model.</p>
 
-from llama_cpp import Llama
+<p>Coming back to our scenario: if a client wants to run the model on their own hardware without a GPU, GGUF Q4_K_M is the answer. If we&rsquo;re serving from a GPU in the cloud, AWQ 4-bit with vLLM. Different suitcases for different trips.</p>
 
-# Load a GGUF quantized model — runs on CPU!
-llm = Llama(
-    model_path="./llama-2-7b.Q4_K_M.gguf",
-    n_ctx=4096,       # context length
-    n_threads=8,      # CPU threads
-    n_gpu_layers=0,   # 0 = pure CPU, or set higher for GPU offloading
-)
+<!-- ═══════════════════════════════════════════ -->
+<!-- SMOOTHQUANT -->
+<!-- ═══════════════════════════════════════════ -->
 
-# Generate text — same API regardless of quantization
-output = llm(
-    "Explain quantization in one paragraph:",
-    max_tokens=256,
-    temperature=0.7,
-)
-print(output["choices"][0]["text"])
-</code></pre>
+<h2>SmoothQuant: Taming the Outliers</h2>
 
-<div class="info-box">
-  <strong>Why GGUF matters:</strong> GPTQ and AWQ are GPU-first formats. GGUF is CPU-first with optional GPU offloading. This means anyone with a modern laptop can run a 7B model (Q4_K_M, ~4GB) or even a 13B model. It&rsquo;s the format that truly democratized local LLM access. Tools like Ollama, LM Studio, and Jan all use GGUF under the hood.
+<p>All three methods above quantize weights only. Activations stay in full precision during inference. There&rsquo;s a good reason for this: activations have <em>nasty</em> outliers. Some channels produce values 100&times; larger than others, and if you try to quantize them to INT8, you either clip the outliers (catastrophic quality loss) or stretch the range so wide that all the normal values collapse to a few bins near zero.</p>
+
+<p>But if we <em>could</em> quantize both weights and activations to INT8, we&rsquo;d unlock hardware-native INT8 matrix multiplication. On modern GPUs, INT8 matmul is roughly 2&times; faster than FP16. That&rsquo;s worth pursuing.</p>
+
+<p>SmoothQuant (Xiao et al., 2023) found an elegant solution: <strong>transfer the quantization difficulty from activations to weights</strong>. The idea is to divide each activation channel by a smoothing factor <code>s</code>, and multiply the corresponding weight column by <code>s</code>. Mathematically, the result is identical: (X / s) &middot; (W &middot; s) = X &middot; W. But now the activation outliers have been tamed, and the weights have absorbed the extra variance. Both are now &ldquo;smooth&rdquo; enough to quantize to INT8 cleanly.</p>
+
+<pre><code># SmoothQuant transform
+#
+# Original:    Y = X &middot; W         (X has outlier channels)
+# Smoothed:    Y = (X / s) &middot; (W &middot; s)
+#
+# s = max(|X|)^&alpha; / max(|W|)^(1-&alpha;)
+# &alpha; controls migration strength (&alpha; = 0.5 is typical)
+#
+# After smoothing, both X/s and W&middot;s quantize cleanly to INT8</code></pre>
+
+<p>SmoothQuant is the go-to method for high-throughput production serving where you want W8A8 (weights and activations both in INT8). The 2&times; speedup from hardware INT8 is real and meaningful at scale.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- QUANTIZATION-AWARE TRAINING -->
+<!-- ═══════════════════════════════════════════ -->
+
+<h2>Quantization-Aware Training</h2>
+
+<p>Everything above happens <em>after</em> training. But what if the model could learn to be quantization-friendly during training itself?</p>
+
+<p><strong>Quantization-aware training (QAT)</strong> simulates quantization during the forward pass: weights are fake-quantized (rounded to low precision, then cast back to float for gradient computation). The model learns to produce weights whose values land cleanly on the quantization grid, reducing the rounding errors that plague post-training methods.</p>
+
+<p>The downside: QAT requires actually training (or fine-tuning) the model, which is expensive. For most practitioners, PTQ methods like GPTQ and AWQ are good enough. QAT becomes worth it when you&rsquo;re pushing to extreme compression (2-bit) or when every last fraction of a perplexity point matters.</p>
+
+<p>Recent work like EfficientQAT (2024) has made this more accessible &mdash; training a 2-bit 70B model on a single A100 in about 41 hours, with less than 3% accuracy degradation. And on the frontier, researchers at Microsoft have demonstrated <strong>BitNet</strong> &mdash; models trained from scratch in 1-bit (ternary: -1, 0, +1) &mdash; which would fundamentally change the hardware requirements for inference. I&rsquo;m still developing my intuition for whether 1-bit models will become practical for mainstream use, but the direction is fascinating.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- REST STOP -->
+<!-- ═══════════════════════════════════════════ -->
+
+<div class="info-box" style="background: linear-gradient(135deg, #f0f9ff 0%, #e8f5e9 100%); border-left: 4px solid #4caf50;">
+<h3 style="margin-top: 0;">Rest Stop</h3>
+
+<p>Congratulations on making it this far. Seriously &mdash; you can stop here if you want.</p>
+
+<p>You now have a solid mental model of model compression. You understand that quantization is controlled rounding, that the granularity of the scale factors matters enormously, that GPTQ compensates for errors, AWQ protects salient weights, GGUF enables CPU inference, and SmoothQuant smooths activations for W8A8 deployment. That suitcase analogy we started with? You now know five different ways to pack it.</p>
+
+<p>Here&rsquo;s the short version for those who want to bail: for GPU serving, use AWQ 4-bit with vLLM. For laptop inference, use GGUF Q4_K_M with Ollama. You&rsquo;re 80% of the way to being effective in production. There. Done.</p>
+
+<p>What we haven&rsquo;t covered yet is the other half of the problem: <em>customizing</em> the model. Our three clients each want different behavior, and full fine-tuning is impossibly expensive. The techniques that follow &mdash; LoRA, QLoRA, and the broader PEFT family &mdash; are how the industry actually solves this. They&rsquo;re also some of the most elegant ideas in modern ML.</p>
+
+<p>If the discomfort of not knowing how to efficiently customize a 7B model for three different clients is nagging at you, read on.</p>
 </div>
 
-<h3>SmoothQuant: Taming Activation Outliers</h3>
+<!-- ═══════════════════════════════════════════ -->
+<!-- THE FINE-TUNING MEMORY WALL -->
+<!-- ═══════════════════════════════════════════ -->
 
-<p>All the methods above quantize <em>weights only</em>. Activations stay in FP16 during inference. But if you could quantize both weights <em>and</em> activations to INT8, you&rsquo;d unlock hardware-native INT8 matrix multiplication, which is 2&times; faster than FP16 on most accelerators.</p>
+<h2>The Fine-Tuning Memory Wall</h2>
 
-<p>The problem: activations have severe outliers. Some channels produce values 100&times; larger than others. Quantizing these to INT8 either clips the outliers (destroying quality) or wastes most of the INT8 range on near-zero values.</p>
+<p>We&rsquo;ve solved the deployment problem. Our 7B model, quantized to 4-bit, fits comfortably on a single GPU at about 4 GB. But now Client A wants the model tuned for medical Q&amp;A, Client B for legal document summarization, and Client C for customer support in Spanish. We need to fine-tune three separate versions.</p>
 
-<p>SmoothQuant (Xiao et al., 2023) solves this elegantly: <strong>migrate the quantization difficulty from activations to weights.</strong> It divides each activation channel by a smoothing factor <code>s</code> and multiplies the corresponding weight channel by <code>s</code>. The mathematical result is identical, but now both activations and weights have well-behaved distributions that quantize cleanly to INT8.</p>
+<p>Standard fine-tuning updates every one of the 7 billion parameters. We already computed the memory: 84 GB for weights + gradients + optimizer states. That&rsquo;s more than an A100-80GB can hold. And we&rsquo;d have to store three full copies of the model &mdash; 42 GB each in FP16 &mdash; one per client.</p>
 
-<pre><code># SmoothQuant conceptual transform
-#
-# Original:    Y = X · W       (X has outlier channels)
-#
-# Smoothed:    Y = (X / s) · (W * s)    where s = max(|X|)^α / max(|W|)^(1-α)
-#                   ─────     ─────
-#                   smoother  absorbs difficulty
-#
-# α ∈ [0, 1] controls migration strength (α = 0.5 is typical)
-# Both X/s and W*s are now easier to quantize to INT8
-</code></pre>
+<p>This is the motivation for PEFT. Not academic curiosity. Not a &ldquo;nice to have&rdquo; optimization. We literally cannot do the thing our clients need without it.</p>
 
-<h3>PTQ Methods Compared</h3>
+<!-- ═══════════════════════════════════════════ -->
+<!-- LORA: THE LOW-RANK INSIGHT -->
+<!-- ═══════════════════════════════════════════ -->
 
-<table>
-  <thead>
-    <tr>
-      <th>Method</th>
-      <th>What&rsquo;s Quantized</th>
-      <th>Bit Width</th>
-      <th>Hardware</th>
-      <th>Speed</th>
-      <th>Quality</th>
-      <th>Best Use Case</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><strong>GPTQ</strong></td>
-      <td>Weights only</td>
-      <td>4-bit</td>
-      <td>GPU</td>
-      <td>Fast inference</td>
-      <td>Good</td>
-      <td>GPU serving with broad ecosystem support</td>
-    </tr>
-    <tr>
-      <td><strong>AWQ</strong></td>
-      <td>Weights only</td>
-      <td>4-bit</td>
-      <td>GPU</td>
-      <td>Fast inference</td>
-      <td>Better than GPTQ</td>
-      <td>Production GPU serving (esp. with vLLM)</td>
-    </tr>
-    <tr>
-      <td><strong>GGUF</strong></td>
-      <td>Weights only</td>
-      <td>2&ndash;8 bit</td>
-      <td>CPU (+GPU offload)</td>
-      <td>Slower (CPU-bound)</td>
-      <td>Good (varies by quant type)</td>
-      <td>Local/laptop inference, CPU-only deployment</td>
-    </tr>
-    <tr>
-      <td><strong>SmoothQuant</strong></td>
-      <td>Weights + activations</td>
-      <td>INT8 (W8A8)</td>
-      <td>GPU (INT8 tensor cores)</td>
-      <td>Fastest (hardware INT8)</td>
-      <td>Good (INT8 only, not 4-bit)</td>
-      <td>High-throughput serving on INT8 hardware</td>
-    </tr>
-  </tbody>
-</table>
+<h2>LoRA: The Low-Rank Insight</h2>
 
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  LoRA: LOW-RANK ADAPTATION                                         -->
-<!-- ═══════════════════════════════════════════════════════════════════ -->
+<p>I&rsquo;ll be honest &mdash; when I first read the LoRA paper (Hu et al., 2021), I didn&rsquo;t believe the central claim. They argued that when you fine-tune a pre-trained model, the actual change to each weight matrix lives in a <em>tiny subspace</em>. Even though a weight matrix might be 4096 &times; 4096 (about 16 million numbers), the update during fine-tuning has very low <strong>intrinsic rank</strong> &mdash; maybe 8 or 16 meaningful dimensions out of 4096.</p>
 
-<h2>LoRA: Low-Rank Adaptation</h2>
+<p>Let&rsquo;s build this up from a toy example. Say we have a small 4 &times; 4 weight matrix W in our model. During fine-tuning, the update &Delta;W would normally be another 4 &times; 4 matrix &mdash; 16 new parameters to learn:</p>
 
-<p>LoRA is the single most important PEFT method. If you learn one thing from this section, make it LoRA. It&rsquo;s the technique that made fine-tuning accessible to anyone with a single GPU.</p>
+<pre><code>W (frozen base)        &Delta;W (full update)
+┌                 ┐     ┌                 ┐
+│ 0.5  0.1 -0.3  0.2│     │ 0.02  0.01 -0.01  0.03│
+│-0.1  0.8  0.4 -0.6│     │ 0.04  0.02 -0.02  0.06│
+│ 0.3 -0.2  0.7  0.1│     │ 0.01  0.005 -0.005 0.015│
+│ 0.6  0.0 -0.5  0.9│     │ 0.03  0.015 -0.015 0.045│
+└                 ┘     └                 ┘</code></pre>
 
-<h3>The Core Insight</h3>
+<p>Look closely at &Delta;W. Every row is a scaled version of the same pattern: [2, 1, -1, 3]. Row 1 is that pattern &times; 0.01, row 2 is that pattern &times; 0.02, row 3 is &times; 0.005, row 4 is &times; 0.015. This matrix has <strong>rank 1</strong> &mdash; all the information can be captured by one column vector times one row vector:</p>
 
-<p>Hu et al. (2021) observed something fascinating: when you fine-tune a large pre-trained model, the weight updates &Delta;W tend to have <strong>very low intrinsic rank</strong>. Even though W is a d &times; d matrix (potentially millions of parameters), the actual change during fine-tuning lies in a much lower-dimensional subspace.</p>
+<pre><code>&Delta;W = B &middot; A
 
-<p>So instead of learning &Delta;W directly (which has d &times; d parameters), decompose it into two small matrices:</p>
+where B (4&times;1) = [0.01, 0.02, 0.005, 0.015]&sup1;
+and   A (1&times;4) = [2, 1, -1, 3]
 
-<pre><code># The LoRA decomposition
-#
-# Standard fine-tuning:
-#   W' = W + ΔW          where ΔW is d × d  (huge)
-#
-# LoRA:
-#   W' = W + B · A        where A is r × d, B is d × r  (tiny)
-#                          r << d  (rank, typically 8-64)
-#
-# Example for a 4096 × 4096 weight matrix with r = 16:
-#   Full ΔW:  4096 × 4096 = 16,777,216 parameters
-#   LoRA:     4096 × 16 + 16 × 4096 = 131,072 parameters
-#   Reduction: 128×  (0.78% of full update)
-#
-#            ┌──────────────────┐
-#    x ────→ │   W (frozen)     │────→  W·x + B·A·x = (W + BA)·x
-#    │       └──────────────────┘  ↑
-#    │       ┌────┐    ┌────┐     │
-#    └─────→ │ A  │──→ │ B  │─────┘
-#            └────┘    └────┘
-#            r × d     d × r
-#           (down)    (up)
-</code></pre>
+Parameters: 4 + 4 = 8  (instead of 16)
+That&rsquo;s a 2&times; reduction for our tiny example.</code></pre>
 
-<p>During training, W is <strong>frozen</strong> &mdash; you only train A and B. This slashes memory because you don&rsquo;t need optimizer states for the frozen weights (which are the vast majority of parameters).</p>
+<p>For a real 4096 &times; 4096 matrix with rank r = 16:</p>
 
-<p>During inference, you can <strong>merge</strong> the LoRA weights back into the base model: <code>W_merged = W + B &middot; A</code>. This is a one-time matrix addition. After merging, the model is exactly the same architecture as the original &mdash; <strong>zero inference overhead</strong>. No extra latency, no architecture changes, just different weight values.</p>
+<pre><code>Full &Delta;W:   4096 &times; 4096 = 16,777,216 parameters
+LoRA:       4096 &times; 16 + 16 &times; 4096 = 131,072 parameters
 
-<h3>Initialization and Scaling</h3>
+That&rsquo;s a 128&times; reduction.  0.78% of the original.</code></pre>
 
-<p>LoRA has a specific initialization scheme that matters:</p>
+<p>This is the LoRA decomposition. Instead of learning a full update matrix &Delta;W, we learn two small matrices: <strong>A</strong> (the &ldquo;down-projection,&rdquo; from d dimensions to r) and <strong>B</strong> (the &ldquo;up-projection,&rdquo; from r back to d). Their product B&middot;A is a rank-r approximation of whatever update the model needs.</p>
 
-<ul>
-  <li><strong>A</strong> is initialized with random Gaussian values (like a standard linear layer)</li>
-  <li><strong>B</strong> is initialized to <strong>zero</strong></li>
-  <li>This means B &middot; A = 0 at initialization &mdash; the model starts identical to the pretrained model. No random perturbation at step 0.</li>
-</ul>
+<p>The reason this works connects to a concept called <strong>intrinsic dimensionality</strong>. Research has shown that for most downstream tasks, the useful fine-tuning updates live in a subspace of perhaps a few hundred dimensions, even though the parameter space has billions of dimensions. Think of it like steering a ship: the ship has millions of parts, but to change its course, you only need to turn the rudder. LoRA is learning the rudder, not rebuilding the hull.</p>
 
-<p>The <strong>alpha parameter</strong> (α) controls the magnitude of the LoRA update:</p>
+<p>I should note: this works <em>because</em> the pre-trained model is already good. It has learned rich, general representations during pre-training. Fine-tuning is making small adjustments to these representations for a specific task. If you were training from scratch, the updates wouldn&rsquo;t be low-rank at all. The foundation has to be solid before the rudder metaphor applies.</p>
 
-<pre><code># The scaling formula
-#
-# Output = W·x + (α/r) · B·A·x
-#
-# α/r is the effective scaling factor.
-# Common setting: α = r  (so α/r = 1, no extra scaling)
-# Some practitioners use α = 2r (doubles update magnitude)
-#
-# Higher α → larger updates → faster adaptation but risk instability
-# Lower α → smaller updates → more conservative, less capacity
-</code></pre>
+<!-- ═══════════════════════════════════════════ -->
+<!-- LORA IN PRACTICE -->
+<!-- ═══════════════════════════════════════════ -->
 
-<h3>Which Layers to Adapt</h3>
+<h2>LoRA in Practice: Initialization, Scaling, and Rank</h2>
 
-<p>You don&rsquo;t have to apply LoRA to every weight matrix. The choice of <em>which</em> layers to target matters:</p>
+<p>The LoRA paper made several specific design choices that turn out to matter a lot in practice.</p>
 
-<table>
-  <thead>
-    <tr><th>Target</th><th>Matrices</th><th>Quality Impact</th><th>Parameter Count</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>Q, V only</td>
-      <td>Query &amp; Value projections</td>
-      <td>Good &mdash; original LoRA paper setting</td>
-      <td>Low</td>
-    </tr>
-    <tr>
-      <td>Q, K, V, O</td>
-      <td>All attention projections</td>
-      <td>Better &mdash; most common in practice</td>
-      <td>Moderate</td>
-    </tr>
-    <tr>
-      <td>All attention + FFN</td>
-      <td>Q, K, V, O + gate, up, down</td>
-      <td>Best &mdash; maximal capacity</td>
-      <td>Higher (but still &lt;3% of total)</td>
-    </tr>
-  </tbody>
-</table>
+<p><strong>Initialization.</strong> Matrix A is initialized with small random Gaussian values (standard Xavier/Kaiming). Matrix B is initialized to <strong>all zeros</strong>. This means that at the start of training, B &middot; A = 0, so the model is <em>identical</em> to the pre-trained base. There&rsquo;s no random perturbation at step 0, no sudden change in behavior. Training starts from exactly where pre-training left off. This is a small detail that makes a big difference in training stability.</p>
 
-<p>The empirical finding: adapting <strong>all linear layers</strong> (attention + FFN) gives the best results, especially for complex tasks. The parameter overhead is still tiny compared to full fine-tuning.</p>
+<p><strong>The alpha parameter.</strong> The LoRA output gets scaled by &alpha;/r before being added to the base model&rsquo;s output:</p>
 
-<h3>Rank Selection</h3>
+<pre><code>output = W&middot;x + (&alpha;/r) &middot; B&middot;A&middot;x</code></pre>
 
-<p>The rank <code>r</code> controls the capacity of the LoRA adapter:</p>
+<p>The ratio &alpha;/r controls how aggressively the LoRA adapter modifies the base model. Common choices: &alpha; = r (scaling factor of 1, no extra amplification) or &alpha; = 2r (scaling factor of 2, more aggressive updates). Higher &alpha; means faster adaptation but more risk of instability. For most tasks, &alpha; = 2r is a solid default.</p>
 
-<ul>
-  <li><strong>r = 4&ndash;8:</strong> Minimal capacity. Good for simple tasks (style transfer, single-domain classification)</li>
-  <li><strong>r = 16&ndash;32:</strong> The sweet spot for most fine-tuning tasks. Works well for instruction following, domain adaptation, and moderate task complexity</li>
-  <li><strong>r = 64&ndash;128:</strong> High capacity. Use when fine-tuning on complex, diverse datasets. Approaches full fine-tuning quality at a fraction of the cost</li>
-  <li><strong>r = 256+:</strong> Diminishing returns. At this point, consider whether full fine-tuning might be simpler</li>
-</ul>
+<p><strong>Which layers to adapt.</strong> You don&rsquo;t have to put LoRA on every weight matrix. The original paper targeted only the query and value projections in attention. In practice, targeting all linear layers (Q, K, V, O projections in attention plus gate, up, and down projections in the feed-forward network) gives the best results. The overhead is still tiny &mdash; less than 1% of total parameters even with all layers adapted.</p>
 
-<div class="warning-box">
-  <strong>Common mistake:</strong> setting rank too high &ldquo;just to be safe.&rdquo; Higher rank doesn&rsquo;t just use more memory &mdash; it also increases the risk of overfitting, especially on small datasets. If you have 1K training examples, r=64 on all layers will almost certainly memorize the data. Start with r=16 and increase only if validation loss stalls.
-</div>
+<p><strong>Rank selection</strong> is where I&rsquo;ve gotten burned more than once. My instinct was always to crank the rank higher &ldquo;to be safe.&rdquo; That&rsquo;s wrong. Higher rank means more capacity, which means more risk of overfitting, especially on small datasets. Here&rsquo;s the rough guide I&rsquo;ve converged on after too much trial and error:</p>
 
-<h3>Full Working Example</h3>
+<pre><code>Rank 4&ndash;8:    Simple tasks. Style transfer, single-domain classification.
+             Good when your task is close to what the model already does.
 
-<pre><code>from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments
-from peft import LoraConfig, get_peft_model, TaskType
-from trl import SFTTrainer
-from datasets import load_dataset
+Rank 16&ndash;32:  The sweet spot for most fine-tuning. Instruction following,
+             domain adaptation, moderate complexity. Start here.
 
-# 1. Load base model
-model_name = "meta-llama/Llama-2-7b-hf"
-model = AutoModelForCausalLM.from_pretrained(
-    model_name,
-    torch_dtype=torch.bfloat16,
-    device_map="auto",
-)
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-tokenizer.pad_token = tokenizer.eos_token
+Rank 64&ndash;128: Complex, diverse datasets. When r=32 isn&rsquo;t enough and you
+             have the data to justify the extra capacity.
 
-# 2. Configure LoRA
-lora_config = LoraConfig(
-    task_type=TaskType.CAUSAL_LM,
-    r=16,                             # rank
-    lora_alpha=32,                    # scaling: alpha/r = 2
-    lora_dropout=0.05,
-    target_modules=[                  # which layers to adapt
-        "q_proj", "k_proj", "v_proj", "o_proj",  # attention
-        "gate_proj", "up_proj", "down_proj",       # FFN
-    ],
-    bias="none",
-)
+Rank 256+:   Diminishing returns. At this point, consider whether full
+             fine-tuning with DeepSpeed might be simpler.</code></pre>
 
-# 3. Wrap model with LoRA
-model = get_peft_model(model, lora_config)
-model.print_trainable_parameters()
-# Output: trainable params: 20,971,520 || all params: 6,758,400,000
-#         || trainable%: 0.31%
+<p>The crucial insight about rank: if you have 1,000 training examples and you set r=64 on all layers, you will almost certainly memorize the training data. Start with r=16. Increase only when validation loss plateaus and you&rsquo;ve verified you&rsquo;re not overfitting.</p>
 
-# 4. Prepare dataset
-dataset = load_dataset("tatsu-lab/alpaca", split="train")
+<p><strong>Zero inference overhead.</strong> This is LoRA&rsquo;s killer feature. After training, you compute W_merged = W + B&middot;A and replace the original weight matrix. The merged model has exactly the same architecture as the original &mdash; no extra layers, no branching paths, no runtime overhead. It&rsquo;s as if you did full fine-tuning, except you got there with 128&times; fewer trainable parameters.</p>
 
-def format_prompt(example):
-    if example["input"]:
-        return f"### Instruction:\n{example['instruction']}\n\n### Input:\n{example['input']}\n\n### Response:\n{example['output']}"
-    return f"### Instruction:\n{example['instruction']}\n\n### Response:\n{example['output']}"
+<p>For our three-client scenario: we train three separate LoRA adapters, each about 80 MB (for rank 16 on all layers of a 7B model). We store one base model (14 GB in FP16) and three tiny adapter files. To switch between clients, we swap the adapter. To deploy, we merge the adapter into the base and quantize. Three clients, one base model, 240 MB of adapters total.</p>
 
-# 5. Train with SFTTrainer (handles tokenization, packing, etc.)
-trainer = SFTTrainer(
-    model=model,
-    train_dataset=dataset,
-    args=TrainingArguments(
-        output_dir="./lora-llama2",
-        num_train_epochs=3,
-        per_device_train_batch_size=4,
-        gradient_accumulation_steps=4,
-        learning_rate=2e-4,
-        bf16=True,
-        logging_steps=10,
-        save_strategy="epoch",
-        warmup_ratio=0.03,
-        lr_scheduler_type="cosine",
-    ),
-    formatting_func=format_prompt,
-    max_seq_length=2048,
-)
+<pre><code>from peft import LoraConfig, get_peft_model
 
-trainer.train()
-
-# 6. Save adapter (only the LoRA weights — ~80MB, not 14GB!)
-model.save_pretrained("./lora-llama2-adapter")
-
-# 7. Merge and export for inference (optional)
-merged_model = model.merge_and_unload()  # BA merged into W
-merged_model.save_pretrained("./llama2-merged")
-# Now it's a standard model — no PEFT dependency needed at inference
-</code></pre>
-
-<h3>The LoRA Math</h3>
-
-<pre><code># How many trainable parameters for LoRA on LLaMA-2-7B?
-
-# LLaMA-2-7B architecture:
-hidden_dim = 4096        # d_model
-num_layers = 32
-intermediate_dim = 11008 # FFN intermediate size
-r = 16                   # LoRA rank
-
-# Per attention layer: Q, K, V, O projections
-# Each projection: d_model × d_model = 4096 × 4096
-# LoRA adds: 2 × d_model × r per projection
-attn_lora_per_layer = 4 * 2 * hidden_dim * r
-# = 4 × 2 × 4096 × 16 = 524,288
-
-# Per FFN layer: gate_proj, up_proj (d × 4d), down_proj (4d × d)
-ffn_lora_per_layer = 2 * (hidden_dim + intermediate_dim) * r  # gate + up
-ffn_lora_per_layer += 2 * (intermediate_dim + hidden_dim) * r  # down
-# Simplified: 3 projections, each adds 2 × (input_dim + output_dim) × r... but
-# more precisely for LLaMA:
-#   gate_proj: 4096 → 11008, LoRA: 4096×16 + 16×11008 = 241,664
-#   up_proj:   4096 → 11008, same: 241,664
-#   down_proj: 11008 → 4096, LoRA: 11008×16 + 16×4096 = 241,664
-ffn_lora_per_layer = 3 * (hidden_dim * r + r * intermediate_dim)
-# = 3 × (65,536 + 176,128) = 724,992
-
-total_lora_params = num_layers * (attn_lora_per_layer + ffn_lora_per_layer)
-# = 32 × (524,288 + 724,992) = 32 × 1,249,280 ≈ 40M
-
-total_model_params = 6_738_000_000  # ~6.7B (LLaMA-2-7B actual)
-print(f"LoRA params: {total_lora_params:,}")
-print(f"Percentage: {total_lora_params/total_model_params*100:.2f}%")
-# LoRA params: ~40M (all layers) or ~20M (attention only)
-# Percentage: ~0.3-0.6% of total model parameters
-</code></pre>
-
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  QLoRA                                                              -->
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-
-<h2>QLoRA: The Game-Changer</h2>
-
-<p>LoRA reduces trainable parameters from billions to millions. But you still need to load the <em>full base model</em> into VRAM in FP16/BF16. For a 7B model, that&rsquo;s 14GB. For a 65B model, that&rsquo;s 130GB. QLoRA (Dettmers et al., 2023) eliminates this bottleneck by combining 4-bit quantization of the base model with LoRA adapters that train in BF16.</p>
-
-<p>The result: <strong>fine-tune a 65B model on a single 48GB GPU.</strong> Fine-tune a 7B model on a free Colab T4 (16GB). That&rsquo;s not a typo.</p>
-
-<h3>The Three Innovations</h3>
-
-<p><strong>1. NF4 (4-bit NormalFloat) quantization:</strong> Standard INT4 evenly spaces quantization levels across the range. But LLM weights are normally distributed &mdash; most values cluster near zero with a few outliers. NF4 spaces quantization levels to match this normal distribution, placing more levels near zero (where most values are) and fewer near the tails. Result: better information retention per bit.</p>
-
-<pre><code># INT4 vs NF4 quantization levels (conceptual)
-#
-# INT4 (uniform):
-# ──┬───┬───┬───┬───┬───┬───┬───┬───┬───┬───┬───┬───┬───┬───┬───┬──
-#  -8  -7  -6  -5  -4  -3  -2  -1   0   1   2   3   4   5   6   7
-#   Equal spacing — wastes levels in the tails where few weights exist
-#
-# NF4 (normal-distributed):
-# ──┬─┬─┬──┬───┬────┬────────┬────────┬────┬───┬──┬─┬─┬──
-#  Dense near zero (where most weights are)   Sparse in tails
-#  Optimal for normally-distributed weights
-</code></pre>
-
-<p><strong>2. Double quantization:</strong> Group quantization stores one FP16 scale factor per group of 128 weights. For a 7B model, that&rsquo;s ~55M scale factors &times; 2 bytes = ~110MB. Not huge, but not nothing. Double quantization quantizes <em>these scale factors themselves</em> to 8-bit, reducing the overhead from ~0.5 bits per parameter to ~0.37 bits. Small win per parameter, meaningful win at scale.</p>
-
-<p><strong>3. Paged optimizers:</strong> During training, optimizer states (Adam&rsquo;s first and second moments) for the LoRA parameters can occasionally spike and exceed GPU memory, especially with gradient accumulation on long sequences. Paged optimizers use CUDA unified memory to automatically page optimizer states to CPU RAM when GPU memory is full, then page them back when needed. Like virtual memory for GPU training.</p>
-
-<div class="info-box">
-  <strong>The QLoRA insight:</strong> The base model weights are only used for the forward pass and to compute gradients for the LoRA adapters. They don&rsquo;t need full precision &mdash; 4-bit is enough for this purpose. Only the LoRA adapter weights (which are &lt;1% of total) need to be in higher precision for stable gradient updates.
-</div>
-
-<h3>QLoRA Training Setup</h3>
-
-<pre><code>import torch
-from transformers import (
-    AutoModelForCausalLM, AutoTokenizer,
-    BitsAndBytesConfig, TrainingArguments,
-)
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-from trl import SFTTrainer
-from datasets import load_dataset
-
-# 1. Configure 4-bit quantization (NF4 + double quant)
-bnb_config = BitsAndBytesConfig(
-    load_in_4bit=True,
-    bnb_4bit_quant_type="nf4",           # NormalFloat4 — optimal for LLM weights
-    bnb_4bit_compute_dtype=torch.bfloat16, # compute in BF16 for stability
-    bnb_4bit_use_double_quant=True,       # quantize the quantization constants
-)
-
-# 2. Load model in 4-bit — a 7B model uses ~3.5GB VRAM!
-model_name = "meta-llama/Llama-2-7b-hf"
-model = AutoModelForCausalLM.from_pretrained(
-    model_name,
-    quantization_config=bnb_config,
-    device_map="auto",
-)
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-tokenizer.pad_token = tokenizer.eos_token
-
-# 3. Prepare model for LoRA training on quantized weights
-model = prepare_model_for_kbit_training(model)
-# This handles:
-#   - Freezing all base model parameters
-#   - Enabling gradient checkpointing
-#   - Casting layer norms to FP32 for stability
-
-# 4. Add LoRA adapters (these train in BF16)
 lora_config = LoraConfig(
     r=16,
-    lora_alpha=32,
+    lora_alpha=32,              # alpha/r = 2
     lora_dropout=0.05,
     target_modules=[
         "q_proj", "k_proj", "v_proj", "o_proj",
@@ -969,385 +679,175 @@ lora_config = LoraConfig(
     bias="none",
     task_type="CAUSAL_LM",
 )
-model = get_peft_model(model, lora_config)
 
-# 5. Memory comparison
-print("Memory footprint:")
-print(f"  Base model (4-bit): ~{model.get_memory_footprint() / 1e9:.1f} GB")
-print(f"  + LoRA adapters (BF16): ~{sum(p.numel() * 2 for p in model.parameters() if p.requires_grad) / 1e9:.2f} GB")
-# Total: ~4-5 GB for 7B model (vs 84 GB for full fine-tuning!)
+model = get_peft_model(base_model, lora_config)
+model.print_trainable_parameters()
+# trainable: ~20M (0.31%)  |  total: ~6.7B</code></pre>
 
-# 6. Training
-dataset = load_dataset("tatsu-lab/alpaca", split="train")
+<!-- ═══════════════════════════════════════════ -->
+<!-- QLoRA -->
+<!-- ═══════════════════════════════════════════ -->
 
-trainer = SFTTrainer(
-    model=model,
-    train_dataset=dataset,
-    args=TrainingArguments(
-        output_dir="./qlora-llama2",
-        num_train_epochs=3,
-        per_device_train_batch_size=4,
-        gradient_accumulation_steps=8,
-        learning_rate=2e-4,
-        bf16=True,
-        logging_steps=10,
-        save_strategy="epoch",
-        warmup_ratio=0.03,
-        lr_scheduler_type="cosine",
-        optim="paged_adamw_8bit",       # ← paged optimizer!
-        gradient_checkpointing=True,     # trade compute for memory
-        max_grad_norm=0.3,
-    ),
-    formatting_func=format_prompt,       # same as LoRA example
-    max_seq_length=2048,
-)
+<h2>QLoRA: Quantized Base, Full-Precision Adapters</h2>
 
-trainer.train()
+<p>LoRA brought trainable parameters down from billions to millions. But there&rsquo;s still a problem: you need to load the <em>base model</em> into VRAM in FP16 to compute the forward pass. For a 7B model, that&rsquo;s 14 GB. For a 65B model, that&rsquo;s 130 GB. LoRA made the optimizer lightweight, but the base model itself is still heavy luggage.</p>
 
-# 7. Save and deploy
-model.save_pretrained("./qlora-adapter")
-# To deploy: load quantized base + merge adapter, or serve with adapter
-</code></pre>
+<p>QLoRA (Dettmers et al., 2023) has a bold idea: what if the base model was quantized to 4-bit during training, and only the LoRA adapters ran in full precision? The intuition seems dangerous &mdash; surely 4-bit base weights would produce garbage gradients for the adapters. But the result was the paper&rsquo;s most surprising finding: <strong>it barely matters.</strong> QLoRA matches full 16-bit fine-tuning quality on benchmark after benchmark.</p>
 
-<h3>QLoRA Memory Budget</h3>
+<p>I&rsquo;ll be honest, the fact that this works still surprises me. The base weights are only used to compute the forward pass and to route gradients to the adapter parameters. Apparently, 4-bit precision is enough for that routing job. The adapter parameters themselves, which are the ones actually being optimized, stay in BF16 where they get clean gradient updates.</p>
 
-<pre><code># Memory comparison: Full FT vs LoRA vs QLoRA for 7B model
+<p>QLoRA introduced three specific innovations that made this work:</p>
 
-Method                Weights    Gradients    Optimizer    Total
-───────────────────────────────────────────────────────────────────
-Full fine-tune (FP16) 14 GB      14 GB        56 GB        ~84 GB
-LoRA (FP16 base)      14 GB      ~0.04 GB     ~0.16 GB     ~14.2 GB
-QLoRA (NF4 base)      3.5 GB     ~0.04 GB     ~0.16 GB     ~3.7 GB
+<p><strong>NF4 (4-bit NormalFloat).</strong> Standard INT4 spaces its 16 quantization levels evenly across the range. But LLM weights follow a roughly Gaussian distribution &mdash; most values cluster near zero, with sparse outliers in the tails. NF4 spaces its 16 levels to match this bell curve, placing more levels near zero (where most weights are) and fewer in the tails. More levels where the data is dense means less information lost per bit.</p>
 
-# And for 65B:
-Full fine-tune (FP16) 130 GB     130 GB       520 GB       ~780 GB  (10× A100-80GB)
-QLoRA (NF4 base)      ~35 GB     ~0.2 GB      ~0.8 GB      ~36 GB   (1× A100-80GB!)
-</code></pre>
+<pre><code># Conceptual: INT4 vs NF4 level spacing
+#
+# INT4 (uniform):     |--|--|--|--|--|--|--|--|--|--|--|--|--|--|--|--|
+#                    -8 -7 -6 -5 -4 -3 -2 -1  0  1  2  3  4  5  6  7
+#                     Even spacing. Wastes levels in sparse tails.
+#
+# NF4 (Gaussian):    |-|--|---|------|------|---|--|-|
+#                     Dense near zero        Sparse in tails
+#                     Matches where weights actually live.</code></pre>
 
-<div class="warning-box">
-  <strong>Quality note:</strong> Dettmers et al. showed that QLoRA matches full 16-bit fine-tuning quality on most benchmarks, including Vicuna and MMLU. The 4-bit quantization of the base model does <em>not</em> significantly degrade the gradient signal for LoRA training. This was the surprising result that made QLoRA a game-changer &mdash; everyone expected 4-bit to degrade training quality, and it basically didn&rsquo;t.
-</div>
+<p><strong>Double quantization.</strong> Per-group quantization stores one FP16 scale factor per 128 weights. For a 7B model, that&rsquo;s about 55 million scale factors &times; 2 bytes = ~110 MB of overhead. Double quantization quantizes these scale factors <em>themselves</em> to 8-bit, cutting the overhead roughly in half. It&rsquo;s quantizing the quantization constants. A small savings per parameter, but meaningful at 7 billion of them.</p>
 
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  OTHER PEFT METHODS                                                -->
-<!-- ═══════════════════════════════════════════════════════════════════ -->
+<p><strong>Paged optimizers.</strong> Even with a 4-bit base model and tiny LoRA adapters, optimizer states can occasionally spike beyond GPU memory &mdash; especially with gradient accumulation on long sequences. Paged optimizers use CUDA unified memory to transparently move optimizer states to CPU RAM when GPU memory fills up, then bring them back when needed. Think of it as virtual memory for your GPU.</p>
 
-<h2>Other PEFT Methods</h2>
+<p>Putting it together, the memory budget becomes remarkable:</p>
 
-<p>LoRA dominates, but it&rsquo;s not the only parameter-efficient fine-tuning method. Here&rsquo;s the landscape:</p>
+<pre><code>Method                Weights    Gradients  Optimizer   Total
+──────────────────────────────────────────────────────────────
+Full fine-tune (FP16) 14 GB      14 GB      56 GB       ~84 GB
+LoRA (FP16 base)      14 GB      ~0.04 GB   ~0.16 GB    ~14.2 GB
+QLoRA (NF4 base)       3.5 GB    ~0.04 GB   ~0.16 GB    ~3.7 GB
 
-<h3>Adapters</h3>
+# For 65B:
+Full fine-tune        130 GB     130 GB     520 GB      ~780 GB
+QLoRA                  ~35 GB    ~0.2 GB    ~0.8 GB     ~36 GB  &larr; one A100!</code></pre>
 
-<p>The original PEFT method (Houlsby et al., 2019). Small bottleneck layers (down-project, nonlinearity, up-project) inserted <em>between</em> existing transformer layers. Conceptually simple, but they add inference latency because you can&rsquo;t merge them away like LoRA. Largely superseded by LoRA in practice.</p>
+<p>Our running scenario: we can now fine-tune all three client-specific adapters on a single A100, one after the other. Each run takes a few hours and costs $10&ndash;50 in cloud GPU time. That $2,400 weekly bill is a distant memory.</p>
 
-<h3>Prefix Tuning</h3>
-
-<p>Learn a set of &ldquo;virtual prefix&rdquo; key-value pairs that are prepended to each attention layer. These virtual tokens don&rsquo;t correspond to real input tokens &mdash; they&rsquo;re learned continuous vectors that steer the attention mechanism. Effective for generation tasks, but the virtual tokens consume context window space.</p>
-
-<h3>Prompt Tuning</h3>
-
-<p>Simpler than prefix tuning: learn a small set of &ldquo;soft prompt&rdquo; embeddings that are prepended to the input at the embedding layer only (not at every attention layer). Extremely parameter-efficient but less expressive. Works well when you have many tasks and want a tiny adapter per task.</p>
-
-<h3>IA3 (Infused Adapter by Inhibiting and Amplifying Inner Activations)</h3>
-
-<p>Learns three vectors that rescale key, value, and FFN activations. Even fewer parameters than LoRA (just vectors, not matrices). Quality can be competitive on some benchmarks, but generally less expressive for complex tasks.</p>
-
-<h3>PEFT Methods Compared</h3>
-
-<table>
-  <thead>
-    <tr>
-      <th>Method</th>
-      <th>Trainable Params (7B)</th>
-      <th>Inference Overhead</th>
-      <th>Quality</th>
-      <th>Best Use Case</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><strong>Full Fine-tuning</strong></td>
-      <td>7B (100%)</td>
-      <td>None</td>
-      <td>Best (ceiling)</td>
-      <td>Unlimited compute &amp; data</td>
-    </tr>
-    <tr>
-      <td><strong>LoRA</strong></td>
-      <td>~20&ndash;40M (0.3&ndash;0.6%)</td>
-      <td>None (merge)</td>
-      <td>Near full FT</td>
-      <td>General fine-tuning (default choice)</td>
-    </tr>
-    <tr>
-      <td><strong>QLoRA</strong></td>
-      <td>~20&ndash;40M (0.3&ndash;0.6%)</td>
-      <td>4-bit inference</td>
-      <td>Near full FT</td>
-      <td>Limited GPU memory</td>
-    </tr>
-    <tr>
-      <td><strong>Adapters</strong></td>
-      <td>~5&ndash;50M (0.1&ndash;0.7%)</td>
-      <td>Yes (extra layers)</td>
-      <td>Good</td>
-      <td>Legacy, multi-task serving</td>
-    </tr>
-    <tr>
-      <td><strong>Prefix Tuning</strong></td>
-      <td>~1&ndash;10M (&lt;0.1%)</td>
-      <td>Uses context window</td>
-      <td>Good for generation</td>
-      <td>Many tasks, tiny adapters</td>
-    </tr>
-    <tr>
-      <td><strong>Prompt Tuning</strong></td>
-      <td>~10&ndash;100K (&lt;0.01%)</td>
-      <td>Uses context window</td>
-      <td>Moderate</td>
-      <td>Extreme parameter efficiency</td>
-    </tr>
-    <tr>
-      <td><strong>IA3</strong></td>
-      <td>~500K (&lt;0.01%)</td>
-      <td>Minimal</td>
-      <td>Moderate&ndash;Good</td>
-      <td>Few-shot adaptation</td>
-    </tr>
-  </tbody>
-</table>
-
-<div class="info-box">
-  <strong>The practical takeaway:</strong> Use LoRA (or QLoRA) as your default. It has the best quality-to-complexity ratio, the strongest ecosystem support (HuggingFace PEFT, Axolotl, LLaMA-Factory), and zero inference overhead after merging. Only consider other methods if you have a specific constraint that LoRA doesn&rsquo;t satisfy.
-</div>
-
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  PRUNING & SPARSITY                                                -->
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-
-<h2>Pruning &amp; Sparsity</h2>
-
-<p>Pruning removes weights from a model entirely &mdash; set them to zero and (ideally) never compute with them again. It&rsquo;s the oldest model compression technique, predating transformers by decades, and it&rsquo;s making a comeback for LLMs.</p>
-
-<h3>Unstructured vs Structured Pruning</h3>
-
-<p><strong>Unstructured pruning</strong> zeros out individual weights wherever they have the smallest magnitude. You can achieve high sparsity (90%+ zeros) with minimal quality loss. The catch: you don&rsquo;t actually get speedups on standard hardware. GPUs operate on dense tensor operations &mdash; a matrix with 90% zeros still takes the same time to multiply unless you have special sparse-computation hardware (like NVIDIA&rsquo;s Ampere sparse tensor cores, which support 2:4 structured sparsity).</p>
-
-<p><strong>Structured pruning</strong> removes entire rows, columns, attention heads, or layers. This gives real speedups on standard hardware because you&rsquo;re physically shrinking the tensor dimensions. But it&rsquo;s harder to do without quality loss &mdash; removing an entire head is a much coarser operation than zeroing a single weight.</p>
-
-<pre><code># Magnitude pruning — the simplest approach
+<pre><code>from transformers import BitsAndBytesConfig
 import torch
 
-def magnitude_prune(weight_matrix, sparsity=0.5):
-    """Zero out the smallest weights by magnitude."""
-    threshold = torch.quantile(weight_matrix.abs(), sparsity)
-    mask = weight_matrix.abs() >= threshold
-    return weight_matrix * mask, mask
+# Load the base model in 4-bit NF4
+bnb_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_quant_type="nf4",
+    bnb_4bit_compute_dtype=torch.bfloat16,
+    bnb_4bit_use_double_quant=True,        # double quantization
+)
 
-# Example: prune 50% of weights in a layer
-W = model.layers[0].self_attn.q_proj.weight.data
-W_pruned, mask = magnitude_prune(W, sparsity=0.5)
-# 50% of weights are now zero — model is "sparse"
-# But dense matmul doesn't benefit unless hardware supports it
-</code></pre>
+model = AutoModelForCausalLM.from_pretrained(
+    "meta-llama/Llama-2-7b-hf",
+    quantization_config=bnb_config,
+    device_map="auto",
+)
+# This 7B model now uses ~3.5 GB of VRAM
 
-<h3>SparseGPT: One-Shot Pruning for LLMs</h3>
+# Prepare for LoRA training
+from peft import prepare_model_for_kbit_training, get_peft_model
+model = prepare_model_for_kbit_training(model)
+model = get_peft_model(model, lora_config)  # same config as before
 
-<p>SparseGPT (Frantar &amp; Alistarh, 2023) extends the OBQ framework (same as GPTQ) to pruning. It can prune LLMs to 50&ndash;60% unstructured sparsity in a single pass, with no retraining. The key: after pruning each weight, it adjusts the remaining weights to compensate for the error (same Hessian-based approach as GPTQ). This is far better than naive magnitude pruning, which destroys quality at high sparsity.</p>
-
-<h3>2:4 Structured Sparsity</h3>
-
-<p>NVIDIA&rsquo;s Ampere and Hopper GPUs support a specific sparsity pattern: out of every 4 consecutive values, exactly 2 must be zero. This &ldquo;2:4&rdquo; pattern gives a genuine 2&times; speedup on sparse tensor cores while keeping 50% of the weights. Combined with quantization, you get multiplicative savings: 2&times; from sparsity &times; 2&times; from INT8 quantization = 4&times; effective speedup.</p>
-
-<h3>The Lottery Ticket Hypothesis</h3>
-
-<p>Frankle &amp; Carlin (2019) proposed that dense neural networks contain sparse subnetworks (&ldquo;winning tickets&rdquo;) that, if trained from the same initialization, can match the full network&rsquo;s performance. The implication: maybe we don&rsquo;t need all those parameters. The practical challenge: finding the winning ticket requires training the full network first, so you don&rsquo;t save anything during training. It&rsquo;s a theoretical insight more than a practical technique for LLMs &mdash; but it motivates the search for better pruning methods.</p>
-
-<div class="warning-box">
-  <strong>Reality check on pruning:</strong> For most LLM practitioners, quantization gives better bang-for-buck than pruning. A 4-bit quantized model is 4&times; smaller and runs on standard hardware without special sparse kernels. Pruning becomes compelling when combined with quantization (sparse + quantized) or when you specifically need to hit a latency target that quantization alone can&rsquo;t achieve.
-</div>
-
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  KNOWLEDGE DISTILLATION                                            -->
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-
-<h2>Knowledge Distillation</h2>
-
-<p>Knowledge distillation is a completely different approach: instead of compressing a model, you train a <em>smaller</em> model to mimic a <em>larger</em> one. The large model is the &ldquo;teacher&rdquo;; the small model is the &ldquo;student.&rdquo; The student learns not just the correct answers, but the teacher&rsquo;s full output distribution &mdash; which contains much richer information than hard labels.</p>
-
-<h3>White-Box vs Black-Box Distillation</h3>
-
-<p><strong>White-box distillation:</strong> You have full access to the teacher&rsquo;s logits (output probability distribution over the vocabulary). The student is trained to match these soft targets. This is the classical Hinton et al. (2015) approach.</p>
-
-<p><strong>Black-box distillation:</strong> You only have API access to the teacher (e.g., GPT-4). You can&rsquo;t see logits, only generated text. The student is trained on the teacher&rsquo;s outputs as if they were ground-truth training data. Less information-rich than white-box, but works with proprietary models.</p>
-
-<h3>Temperature Scaling</h3>
-
-<p>The key trick in white-box distillation. Before computing probabilities, divide the logits by a temperature <code>T</code>:</p>
-
-<pre><code># Standard softmax: p_i = exp(z_i) / Σ exp(z_j)
-# Softmax with temperature: p_i = exp(z_i / T) / Σ exp(z_j / T)
-#
-# T = 1: standard softmax (peaked distribution)
-# T > 1: softer distribution (more probability mass on non-top tokens)
-# T → ∞: uniform distribution
-#
-# Higher T reveals more about the teacher's "knowledge":
-#   At T=1:  "cat" → 0.90, "dog" → 0.05, "fish" → 0.02, ...
-#   At T=5:  "cat" → 0.35, "dog" → 0.20, "fish" → 0.12, ...
-#
-# The T=5 distribution tells the student: "dog is much more similar
-# to cat than fish is" — this relational knowledge is lost at T=1
-
-def distillation_loss(student_logits, teacher_logits, labels, T=4.0, alpha=0.5):
-    """Combined distillation + hard label loss."""
-    # Soft targets from teacher (high temperature)
-    soft_loss = F.kl_div(
-        F.log_softmax(student_logits / T, dim=-1),
-        F.softmax(teacher_logits / T, dim=-1),
-        reduction="batchmean"
-    ) * (T ** 2)  # scale by T² to maintain gradient magnitude
-
-    # Hard targets (standard cross-entropy)
-    hard_loss = F.cross_entropy(student_logits, labels)
-
-    return alpha * soft_loss + (1 - alpha) * hard_loss
-</code></pre>
-
-<h3>Success Stories</h3>
-
-<ul>
-  <li><strong>DistilBERT:</strong> 66M params vs BERT&rsquo;s 110M. Retains 97% of BERT&rsquo;s performance at 60% the size and 60% faster. One of the most successful distillation stories.</li>
-  <li><strong>Phi series (Microsoft):</strong> Phi-1 (1.3B), Phi-2 (2.7B), Phi-3 (3.8B) trained on high-quality synthetic data generated by larger models. A form of black-box distillation at scale. Phi-3-mini matches much larger models on many benchmarks.</li>
-  <li><strong>Alpaca / Vicuna pattern:</strong> Fine-tune a small open model on outputs generated by GPT-4. This is black-box distillation with the teacher&rsquo;s text outputs as training data. Inexpensive and effective for instruction-following.</li>
-  <li><strong>DeepSeek-R1-Distill:</strong> Distilling reasoning capabilities from DeepSeek-R1 (671B MoE) into smaller dense models (1.5B&ndash;70B), maintaining strong reasoning performance at a fraction of the cost.</li>
-</ul>
-
-<div class="info-box">
-  <strong>Distillation vs fine-tuning:</strong> Distillation creates a new, smaller model that runs independently. Fine-tuning (with LoRA/QLoRA) adapts an existing model. If you need to shrink the model size dramatically (e.g., 70B teacher &rarr; 7B student), distillation is the path. If you want to customize behavior while keeping the same model size, fine-tuning is the path.
-</div>
-
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  PRACTICAL DECISION GUIDE                                          -->
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-
-<h2>Practical Decision Guide</h2>
-
-<p>You have a dozen efficiency techniques. Which one do you actually use? Here&rsquo;s the decision framework.</p>
-
-<table>
-  <thead>
-    <tr><th>&ldquo;I want to...&rdquo;</th><th>Use This</th><th>Why</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>Run an LLM on my laptop</td>
-      <td>GGUF (Q4_K_M) via Ollama/llama.cpp</td>
-      <td>CPU-friendly, 4&ndash;8GB for 7B models, no GPU needed</td>
-    </tr>
-    <tr>
-      <td>Serve an LLM on a single GPU</td>
-      <td>AWQ or GPTQ 4-bit + vLLM</td>
-      <td>4&times; memory reduction, excellent throughput with vLLM&rsquo;s PagedAttention</td>
-    </tr>
-    <tr>
-      <td>Fine-tune with limited GPU (&le;24GB)</td>
-      <td>QLoRA (NF4 + LoRA r=16)</td>
-      <td>7B model fits in ~5GB, leaves room for batch size &amp; activations</td>
-    </tr>
-    <tr>
-      <td>Fine-tune for best quality</td>
-      <td>LoRA on BF16 base, then merge, then quantize</td>
-      <td>Full-precision LoRA training → merge → deploy quantized</td>
-    </tr>
-    <tr>
-      <td>Fine-tune a 65B+ model</td>
-      <td>QLoRA on A100-80GB or H100</td>
-      <td>65B in NF4 = ~35GB, leaves room for LoRA + gradients</td>
-    </tr>
-    <tr>
-      <td>Maximize inference throughput</td>
-      <td>SmoothQuant (W8A8) or AWQ + speculative decoding</td>
-      <td>INT8 tensor cores are 2&times; faster, speculative decoding adds another 2&ndash;3&times;</td>
-    </tr>
-    <tr>
-      <td>Create a smaller model (&lt;3B) from a large one</td>
-      <td>Knowledge distillation</td>
-      <td>Only way to dramatically reduce model size while retaining capability</td>
-    </tr>
-    <tr>
-      <td>Squeeze out maximum compression</td>
-      <td>Quantization + structured pruning (2:4 sparsity)</td>
-      <td>Multiplicative savings: 4&times; (quant) &times; 2&times; (sparsity) = 8&times;</td>
-    </tr>
-    <tr>
-      <td>Get full fine-tuning quality, no compromises</td>
-      <td>Full fine-tuning with DeepSpeed ZeRO-3 / FSDP</td>
-      <td>Distribute across many GPUs, highest quality ceiling</td>
-    </tr>
-  </tbody>
-</table>
-
-<h3>The Production Pipeline</h3>
-
-<p>For most teams, the practical workflow looks like this:</p>
-
-<pre><code># The standard efficient fine-tuning → deployment pipeline
-
-Step 1: Choose base model
-    └── Start with a strong pretrained model (LLaMA-3, Mistral, Qwen, etc.)
-
-Step 2: Fine-tune with QLoRA
-    └── NF4 base + LoRA r=16-32 on all linear layers
-    └── Train on your task-specific data
-    └── Costs: ~$10-50 on cloud GPUs for 7B model
-
-Step 3: Merge adapter into base model
-    └── model.merge_and_unload() → standard model checkpoint
-    └── Now you have a full-precision fine-tuned model
-
-Step 4: Quantize for deployment
-    └── AWQ 4-bit for GPU serving (with vLLM)
-    └── GGUF Q4_K_M for CPU/edge serving (with llama.cpp)
-    └── Choose based on your deployment target
-
-Step 5: Serve
-    └── vLLM / TGI for GPU serving (handles batching, KV caching)
-    └── Ollama / llama.cpp for local / edge
-    └── Monitor quality with eval suite, iterate on training data
-</code></pre>
+# Train with paged optimizer
+training_args = TrainingArguments(
+    optim="paged_adamw_8bit",    # paged optimizer for memory safety
+    gradient_checkpointing=True,  # trade compute for memory
+    bf16=True,
+    # ... other standard training args
+)</code></pre>
 
 <div class="warning-box">
-  <strong>Don&rsquo;t quantize twice.</strong> A common mistake: fine-tune with QLoRA (4-bit base), merge the adapter, then quantize the merged model again to 4-bit for deployment. You&rsquo;re quantizing an already-quantized model. Instead, reload the base model in FP16, merge the LoRA adapter, <em>then</em> quantize once for deployment. The adapter weights were trained against the 4-bit base, but the merge should happen at full precision for best results.
+  <strong>A mistake I&rsquo;ve seen too often:</strong> fine-tuning with QLoRA (4-bit base), merging the adapter, then quantizing the merged model again to 4-bit for deployment. You&rsquo;re quantizing an already-quantized model &mdash; double rounding. Instead: reload the base in FP16, merge the LoRA adapter at full precision, <em>then</em> quantize once for deployment. The adapter was trained against the 4-bit base, but the final merge should happen at full precision.
 </div>
 
 <!-- ═══════════════════════════════════════════ -->
-<h2>What You Should Now Be Able To Do</h2>
+<!-- THE REST OF THE PEFT FAMILY -->
+<!-- ═══════════════════════════════════════════ -->
 
-<div class="checklist">
-  <ul>
-    <li>Calculate the VRAM requirements for loading, fine-tuning, and serving an LLM at different precisions (FP32, FP16, INT8, INT4) and explain why full fine-tuning of a 70B model requires &gt;500GB of memory</li>
-    <li>Explain symmetric vs asymmetric quantization and per-tensor vs per-group granularity, and justify why group-128 is the standard for 4-bit LLM quantization</li>
-    <li>Compare GPTQ, AWQ, GGUF, and SmoothQuant &mdash; what each quantizes, what hardware it targets, and when to choose each one</li>
-    <li>Implement LoRA fine-tuning using the HuggingFace PEFT library: configure rank, alpha, target modules, train, save, merge, and deploy</li>
-    <li>Explain the LoRA math: why W&prime; = W + BA is low-rank, how initialization and alpha scaling work, and why merged LoRA adds zero inference overhead</li>
-    <li>Set up a QLoRA training run with bitsandbytes (NF4 quantization, double quantization, paged optimizers) and explain why it matches full fine-tuning quality</li>
-    <li>Distinguish LoRA from adapters, prefix tuning, prompt tuning, and IA3 &mdash; and articulate why LoRA dominates in practice</li>
-    <li>Describe the tradeoffs of structured vs unstructured pruning and explain when pruning is worth pursuing over quantization alone</li>
-    <li>Design a knowledge distillation setup with temperature scaling, and explain white-box vs black-box distillation with concrete examples</li>
-    <li>Choose the right efficiency technique for a given deployment scenario using the practical decision guide: laptop inference, single-GPU serving, limited-memory fine-tuning, or maximum throughput</li>
-  </ul>
-</div>
+<h2>The Rest of the PEFT Family</h2>
 
+<p>LoRA dominates the PEFT landscape, but it&rsquo;s not the only game in town. Four other methods are worth knowing, because each one teaches something about what parts of a transformer are malleable.</p>
+
+<p><strong>Adapters</strong> (Houlsby et al., 2019) were the original PEFT method. They insert small bottleneck layers &mdash; a down-projection, a nonlinearity, an up-projection &mdash; <em>between</em> existing transformer layers. Data flows through the adapter on every forward pass. The idea is sound, but unlike LoRA, adapters can&rsquo;t be merged away after training. They add permanent inference latency. That&rsquo;s why they&rsquo;ve been largely superseded.</p>
+
+<p>Think of adapters as building a detour in a highway. The cars still get where they need to go, but there&rsquo;s always extra travel time. LoRA, by contrast, is like widening a lane that already exists &mdash; once the construction is done, traffic flows at full speed.</p>
+
+<p><strong>Prefix tuning</strong> (Li &amp; Liang, 2021) is an entirely different idea. Instead of modifying weights, it learns a set of &ldquo;virtual tokens&rdquo; &mdash; continuous key-value pairs that get prepended to every attention layer. These virtual tokens steer the attention mechanism without changing any model parameters. The approach works well for generation tasks, but the virtual tokens consume context window space, which is a scarce resource in long-context applications.</p>
+
+<p><strong>Prompt tuning</strong> (Lester et al., 2021) is the minimal version of prefix tuning. It learns soft prompt embeddings that are prepended at the input layer <em>only</em>, not at every attention layer. Extremely parameter-efficient &mdash; sometimes fewer than 100K trainable parameters &mdash; but correspondingly less expressive. The sweet spot is when you have many tasks and want a tiny adapter per task (imagine hundreds of clients, each with a 100KB adapter file).</p>
+
+<p><strong>IA3</strong> (Liu et al., 2022) takes minimalism further: it learns three vectors (not matrices) that rescale the key, value, and feed-forward activations. Even fewer parameters than LoRA. It&rsquo;s competitive on some benchmarks, but for complex tasks that require significant behavioral change, the lack of capacity shows. I think of IA3 as adjusting the volume knobs on an existing signal, while LoRA is remixing the signal itself.</p>
+
+<p>The practical takeaway, which I&rsquo;ve arrived at after trying more methods than I care to admit: <strong>use LoRA</strong>. If memory is the bottleneck, use QLoRA. The ecosystem support (HuggingFace PEFT, Axolotl, LLaMA-Factory, Unsloth) is overwhelmingly focused on LoRA. The quality is near full fine-tuning. The inference overhead is zero after merging. Only reach for other methods if LoRA doesn&rsquo;t satisfy a specific constraint &mdash; and know exactly which constraint that is.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- CHOOSING YOUR METHOD -->
+<!-- ═══════════════════════════════════════════ -->
+
+<h2>Choosing Your Method</h2>
+
+<p>I&rsquo;ve gotten this decision wrong more times than I&rsquo;d like to admit. Here&rsquo;s the decision tree I&rsquo;ve converged on, distilled from a lot of expensive mistakes.</p>
+
+<p>If you need to <strong>shrink a model for inference</strong>: quantize it. AWQ 4-bit for GPU serving, GGUF Q4_K_M for CPU/laptop. This is the first thing you should try, always. The quality loss is smaller than most people expect.</p>
+
+<p>If you need to <strong>customize a model&rsquo;s behavior</strong>: fine-tune it with LoRA (r=16, all linear layers). If your GPU has less than 24 GB, use QLoRA instead. Save the adapter, merge it into the base model, then quantize the merged model for deployment.</p>
+
+<p>If you need <strong>both</strong> &mdash; and you almost always do &mdash; the workflow is: QLoRA fine-tune &rarr; merge at FP16 &rarr; quantize for deployment. That&rsquo;s the pipeline that most production LLM teams actually use.</p>
+
+<pre><code># The standard production pipeline:
+#
+# 1. Download pre-trained base model
+# 2. QLoRA fine-tune on your data (r=16, NF4, all linear layers)
+#    Cost: $10-50 for 7B, few hours on a single GPU
+# 3. Merge LoRA adapter into base model at FP16
+#    merged = model.merge_and_unload()
+# 4. Quantize merged model for deployment
+#    AWQ 4-bit for GPU serving (via vLLM)
+#    GGUF Q4_K_M for CPU serving (via Ollama)
+# 5. Serve and monitor quality</code></pre>
+
+<p>For our running scenario, the final architecture looks like this: one base LLaMA-2-7B model. Three QLoRA-trained adapters (medical, legal, support), each ~80 MB. At deployment time, each client gets the base model merged with their adapter, quantized to AWQ 4-bit (~4 GB), served through vLLM on a single GPU. Total storage for all three: ~12 GB plus 240 MB of adapters, served from a single $1/hour cloud GPU. Compare that to our starting point: three full FP16 models at 42 GB each, requiring three expensive GPU instances.</p>
+
+<p>That&rsquo;s the power of this stuff. It&rsquo;s not theoretical. It&rsquo;s not a premature optimization. It&rsquo;s the difference between a product that ships and one that stays on the whiteboard.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- WRAP-UP -->
+<!-- ═══════════════════════════════════════════ -->
+
+<h2>Wrap-Up</h2>
+
+<p>If you&rsquo;re still with me, thank you. I hope it was worth the trip.</p>
+
+<p>We started with a suitcase problem: a model too large to fit on a GPU, too expensive to fine-tune, and too monolithic to customize for different clients. We learned that quantization &mdash; controlled rounding with smart scale factors &mdash; can compress a 14 GB model to 3.5 GB with surprisingly little damage. We walked through GPTQ&rsquo;s error compensation, AWQ&rsquo;s saliency protection, GGUF&rsquo;s CPU-friendly format, and SmoothQuant&rsquo;s elegant activation smoothing. Then we crossed into fine-tuning territory, where LoRA&rsquo;s low-rank insight lets us customize a model by training 0.3% of its parameters, and QLoRA pushes the base model itself into 4-bit so the whole operation fits on hardware that would have been laughably inadequate for full fine-tuning.</p>
+
+<p>My hope is that the next time someone mentions quantizing a model to 4-bit or fine-tuning with LoRA, instead of that instinctive wince I used to feel &mdash; treating the model like a fragile exhibit &mdash; you&rsquo;ll see these techniques for what they are: precise, well-understood engineering that makes the difference between a model that runs in production and one that exists only in research papers. The symphony doesn&rsquo;t become a ringtone. It becomes a well-compressed FLAC file that fits on your phone and sounds nearly identical.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- RESOURCES -->
+<!-- ═══════════════════════════════════════════ -->
+
+<h2>Resources</h2>
+
+<ul>
+  <li><strong>LoRA paper</strong> (Hu et al., 2021) &mdash; The O.G. paper that started the PEFT revolution. Clear writing, solid experiments. <a href="https://arxiv.org/abs/2106.09685">arxiv.org/abs/2106.09685</a></li>
+  <li><strong>QLoRA paper</strong> (Dettmers et al., 2023) &mdash; The paper that made fine-tuning democratically accessible. NF4, double quantization, paged optimizers &mdash; all in one paper. <a href="https://arxiv.org/abs/2305.14314">arxiv.org/abs/2305.14314</a></li>
+  <li><strong>GPTQ paper</strong> (Frantar et al., 2023) &mdash; The breakthrough in post-training 4-bit quantization. Dense with Hessian math, but the results speak for themselves. <a href="https://arxiv.org/abs/2210.17323">arxiv.org/abs/2210.17323</a></li>
+  <li><strong>AWQ paper</strong> (Lin et al., 2023) &mdash; Activation-aware quantization. Elegant insight about saliency. <a href="https://arxiv.org/abs/2306.00978">arxiv.org/abs/2306.00978</a></li>
+  <li><strong>HuggingFace PEFT library</strong> &mdash; The practical toolkit. Wildly useful documentation with examples for every method we discussed. <a href="https://huggingface.co/docs/peft">huggingface.co/docs/peft</a></li>
+  <li><strong>Tim Dettmers&rsquo; bitsandbytes</strong> &mdash; The library that makes QLoRA work. If you have trouble getting to sleep at night, the CUDA kernel code is insightful reading. <a href="https://github.com/TimDettmers/bitsandbytes">github.com/TimDettmers/bitsandbytes</a></li>
+</ul>
 
 
       <div class="page-nav">
         <a class="prev" href="s06.html">
-          <span class="label">← Previous</span>
+          <span class="label">&larr; Previous</span>
           <span class="link-title">Alignment &amp; Safety</span>
         </a>
         <a class="next" href="s08.html">
-          <span class="label">Next →</span>
+          <span class="label">Next &rarr;</span>
           <span class="link-title">LLM Production &mdash; Serving &amp; Inference</span>
         </a>
       </div>
