@@ -301,48 +301,89 @@
   <span class="tag">Core Skill</span>
 </div>
 
-<div class="tldr">
-  <div class="tldr-label">TL;DR</div>
-  <p>A single train/test split is a coin flip dressed up as science. Cross-validation trains and evaluates your model on multiple different slices of data, giving you a <em>distribution</em> of performance scores instead of one lucky (or unlucky) number. K-Fold is your default workhorse. Stratified K-Fold is the actual default for classification. Time Series Split is mandatory for temporal data. Nested CV is how you honestly report performance when you're also tuning hyperparameters. Always report mean <em>and</em> standard deviation — the mean alone hides instability.</p>
+<!-- ═══════════════════════════════════════════════════ -->
+<!-- OPENING — PERSONAL CONFESSION                       -->
+<!-- ═══════════════════════════════════════════════════ -->
+
+<p>I avoided thinking deeply about cross-validation for an embarrassingly long time. I knew what it was — split, train, average the scores, move on. Every time a colleague mentioned "nested CV" or debated k=5 versus k=10, I'd nod along and quietly change the subject. I had this nagging feeling that I was treating it as a magic incantation rather than understanding what it was actually doing for me. Finally the discomfort of not knowing what's really happening under the hood grew too great. Here is that dive.</p>
+
+<p><strong>Cross-validation</strong> is a family of techniques for estimating how well a model will perform on data it hasn't seen. The core idea dates back to the 1930s (Larson, 1931), but the version most of us use — K-Fold — was formalized by Geisser and Stone in the 1970s. It has since become the standard way to evaluate models, compare algorithms, and tune hyperparameters in both research and industry.</p>
+
+<p>Before we start, a heads-up. We're going to build cross-validation from scratch, work through the mechanics by hand on tiny examples, and eventually get into subtleties like temporal leakage, group contamination, and the nested CV trick. You don't need to know any of it beforehand. We'll add what we need, one piece at a time.</p>
+
+<p>This isn't a short journey, but I hope you'll be glad you came.</p>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<!-- TABLE OF CONTENTS                                   -->
+<!-- ═══════════════════════════════════════════════════ -->
+
+<div class="callout callout-info">
+  <div class="callout-label">What we'll cover</div>
+  <p>
+    The trust problem with a single split<br>
+    Building K-Fold by hand<br>
+    Choosing k — the bias-variance tradeoff of the estimate itself<br>
+    Stratified K-Fold — why class balance matters<br>
+    A rest stop<br>
+    Time Series Split — when shuffling is a crime<br>
+    Group K-Fold — when your data has families<br>
+    The preprocessing trap<br>
+    Nested CV — honest scores when you're also tuning<br>
+    Comparing models on the same folds<br>
+    Reading the tea leaves — what fold scores actually tell you
+  </p>
 </div>
 
 <!-- ═══════════════════════════════════════════════════ -->
-<!-- WHY CROSS-VALIDATION                                -->
+<!-- THE TRUST PROBLEM                                   -->
 <!-- ═══════════════════════════════════════════════════ -->
-<h2>The Problem with a Single Split</h2>
+<h2>The Trust Problem with a Single Split</h2>
 
-<p>You have 1,000 patient records. You want to predict malignant tumors. You split 80/20, train, test, get 94% accuracy. Done?</p>
+<p>Let's start with something concrete. Imagine we work at a small company and we've collected 2,000 customer support emails. 300 are spam. 1,700 are legitimate. Our job is to build a spam classifier.</p>
 
-<p>Shuffle the data, split again. Now it's 88%. Shuffle once more — 96%. Your model didn't change. The <em>data partition</em> changed. And that swing — eight full percentage points — is not signal. It's the luck of which examples landed where.</p>
+<p>The textbook move is to split the data — say 80% for training, 20% for testing — train a model, and measure accuracy on the test set. We do that and get 94.5%. Feels good.</p>
 
-<p>With small or medium datasets (anything under tens of thousands of rows), this randomness can dominate the result. You're measuring the quality of the split, not the quality of the model. That's backwards.</p>
+<p>Then a colleague shuffles the data differently and runs the same experiment. She gets 91.2%. Same model, same algorithm, same hyperparameters. A different shuffle, and the accuracy dropped by 3.3 percentage points. We shuffle a third time: 96.1%.</p>
 
-<h3>What Cross-Validation Actually Does</h3>
+<p>The model didn't change. The <em>data partition</em> changed. And that five-point swing between the worst and best split is not telling us anything about the model. It's telling us about the luck of the draw — which spam emails happened to land in the test set, which legitimate ones happened to land in training.</p>
 
-<p><strong>Cross-validation</strong> repeats the split→train→test cycle multiple times, each time holding out a different chunk. Instead of one score, you get several. Their average is a far more stable estimate of real-world performance, and their spread (standard deviation) tells you how sensitive your model is to the particular data it trained on.</p>
+<p>Think of it this way. If you wanted to know whether a chef is any good, you wouldn't judge them on a single dish served on a single night. Maybe the oven was acting up. Maybe the ingredients that evening were off. You'd want to see them cook multiple meals, on different nights, with different ingredients. That's the intuition behind cross-validation: don't judge your model on one random slice. Judge it on several.</p>
 
-<p>One test score is an anecdote. A distribution of test scores is evidence.</p>
-
-<h3>Better Use of Limited Data</h3>
-
-<p>There's a practical bonus. When data is scarce, locking away 20% for testing feels wasteful. In 5-fold CV, every example gets used for testing exactly once and for training four times. You evaluate on <em>all</em> the data without ever testing on something you trained on. That's a much better deal when you're data-poor.</p>
+<p>A single test score is an anecdote. A distribution of test scores is evidence.</p>
 
 <!-- ═══════════════════════════════════════════════════ -->
-<!-- TECHNIQUES                                          -->
+<!-- BUILDING K-FOLD BY HAND                             -->
 <!-- ═══════════════════════════════════════════════════ -->
-<h2>The Techniques</h2>
+<h2>Building K-Fold by Hand</h2>
 
-<h3>Hold-Out Validation</h3>
+<p>Let's make this tangible. Forget the 2,000 emails for a moment. Imagine we have ten. Ten emails. I'll label them A through J. Three are spam (C, F, I), seven are legitimate.</p>
 
-<p>Split once. Train on the big chunk, evaluate on the small chunk. Optionally carve out a third piece (validation set) for tuning.</p>
+<p>We want to evaluate our classifier, but we don't want to waste data, and we don't want to depend on a single lucky split. So we divide the ten emails into five groups — we'll call them <strong>folds</strong> — with two emails each.</p>
 
-<p>Hold-out is fast, simple, and perfectly fine when you have hundreds of thousands of rows — at that scale, the randomness of a single split washes out. It's the starting point, not the finish line. For anything under ~50k rows, you should do better.</p>
+<p>Fold 1: [A, B]. Fold 2: [C, D]. Fold 3: [E, F]. Fold 4: [G, H]. Fold 5: [I, J].</p>
 
-<h3>K-Fold Cross-Validation</h3>
+<p>Now we run five rounds. In Round 1, we hold out Fold 1 as our test set and train on Folds 2 through 5 (eight emails). We measure accuracy on Fold 1. In Round 2, we hold out Fold 2 and train on the rest. We keep going until every fold has had its turn as the test set.</p>
 
-<p>This is the workhorse. Divide the dataset into <em>k</em> equally-sized chunks called <strong>folds</strong>. In each round, one fold is the test set, the remaining k−1 are training data. Train from scratch each round, record the score, average them at the end.</p>
+<p>At the end, we have five accuracy scores — one per round. We average them. That average is our estimate of how this model would perform on emails it has never seen.</p>
 
-<p>The standard choices are <strong>k=5</strong> or <strong>k=10</strong>. Why those? k=5 is a good bias-variance tradeoff for the <em>estimate itself</em> — each fold uses 80% of data for training, which is close enough to "all the data" that the per-fold models are decent. k=10 uses 90% per fold (even closer) but takes twice as long. In practice, 5-fold is the default unless you have a specific reason to want 10.</p>
+<p>Two things to notice. First, every email gets used for testing exactly once and for training four times. Nothing is wasted. Second, the final estimate doesn't depend on which emails happened to land in which fold, because every fold gets its turn. That's a much better deal than a single 80/20 split, especially when data is scarce.</p>
+
+<p>This procedure is called <strong>K-Fold Cross-Validation</strong>, and it's the workhorse of model evaluation. In our toy example, k was 5. In practice, the most common choices are k=5 and k=10. But why those numbers?</p>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<!-- CHOOSING K                                          -->
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>Choosing k — The Estimate's Own Bias-Variance Tradeoff</h2>
+
+<p>Here's something that tripped me up for a while. When people talk about the bias-variance tradeoff of cross-validation, they're not talking about the model's bias and variance. They're talking about the bias and variance <em>of the performance estimate itself</em>. The CV score is an estimator, and like any estimator, it has its own accuracy and stability.</p>
+
+<p>When k is small — say k=2 — each fold uses only 50% of the data for training. Models trained on half the data are worse than models trained on most of the data. So the per-fold scores are pessimistic. The estimate has <strong>high bias</strong> — it systematically underestimates how well a model trained on all the data would perform. On the upside, the two training sets are quite different from each other, so the two scores bring genuinely independent information. That keeps the <strong>variance</strong> of the estimate low.</p>
+
+<p>When k is large — say k = n, which is Leave-One-Out Cross-Validation (LOOCV) — each fold trains on n−1 examples, almost the entire dataset. The bias is tiny. But here's the surprise: the variance of the estimate actually <em>increases</em>. I'll be honest, this felt counterintuitive the first time I encountered it. Training on nearly all the data sounds like it should give you a very stable estimate. But the training sets overlap almost completely — the difference between any two is a single data point — so the models are nearly identical, and the per-fold scores are highly correlated. Averaging a bunch of highly correlated numbers doesn't reduce variance much. And if one data point happens to be influential — an outlier, a mislabeled example — omitting it swings the score hard.</p>
+
+<p>The sweet spot sits in between. Kohavi's 1995 empirical study — still one of the most cited papers on this — found that k=10 tends to give the best tradeoff: low enough bias (training on 90% of the data per fold) and enough diversity between folds to keep variance manageable. k=5 is nearly as good and takes half the time. That's why 5 and 10 have become the community defaults.</p>
+
+<p>In practice, I use 5-fold for exploratory work and early experiments. For final performance reporting — the number that goes in a paper or a stakeholder presentation — I bump it to 10, or use Repeated K-Fold (more on that later).</p>
 
 <pre><code>from sklearn.model_selection import KFold, cross_val_score
 from sklearn.ensemble import RandomForestClassifier
@@ -360,18 +401,22 @@ print(f"Mean accuracy: {scores.mean():.4f} ± {scores.std():.4f}")
 # Fold scores: [0.9649 0.9561 0.9474 0.9649 0.9558]
 # Mean accuracy: 0.9578 ± 0.0068</code></pre>
 
-<p>Notice <code>shuffle=True</code>. Without it, folds follow the original row order — disastrous if the data was sorted by class label. Always shuffle unless your data has a temporal component.</p>
+<p>That <code>shuffle=True</code> matters. Without it, folds follow the original row order — which is catastrophic if the data was sorted by class label. The first fold could be all negatives, the last fold all positives. Always shuffle unless your data has a time dimension (which we'll get to).</p>
 
-<div class="callout callout-warning">
-  <div class="callout-label">⚠️ Pin Your Random Seed</div>
-  <p><code>shuffle=True</code> without <code>random_state</code> means different folds every run. Your results become unreproducible. Always set the seed when you want comparable experiments.</p>
-</div>
+<p>But standard K-Fold has a blind spot. It doesn't care about class balance. If 15% of your emails are spam, one fold might end up with 25% spam and another with 5%. The model trained without the spam-heavy fold barely knows spam exists. We need something smarter.</p>
 
-<h3>Stratified K-Fold</h3>
+<!-- ═══════════════════════════════════════════════════ -->
+<!-- STRATIFIED K-FOLD                                   -->
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>Stratified K-Fold — Why Class Balance Matters</h2>
 
-<p>Suppose your dataset is 90% negative, 10% positive. A regular K-Fold split might, by chance, dump most positives into one or two folds. The model trained without those folds barely knows the minority class exists.</p>
+<p>Back to our spam classifier. Of our 2,000 emails, 300 are spam — that's 15%. In a standard 5-fold split, each fold has 400 emails. On average, each fold should contain about 60 spam emails. But "on average" hides a lot of mischief. By random chance, one fold might get 90 spam emails and another might get 30.</p>
 
-<p><strong>Stratified K-Fold</strong> ensures each fold has approximately the same class distribution as the full dataset. For classification, this should be your default. Full stop.</p>
+<p>When the fold with 90 spam emails becomes the test set, the model was trained with fewer spam examples. When the fold with 30 spam emails is the test set, the model looks great — but only because the test set underrepresents the hard cases. The fold scores bounce around not because of the model, but because of the imbalanced splits.</p>
+
+<p><strong>Stratified K-Fold</strong> fixes this by ensuring each fold has approximately the same proportion of each class as the full dataset. If the full dataset is 15% spam, each fold will be close to 15% spam. The mechanics are identical to regular K-Fold — five rounds, hold one out, average the scores — but the initial assignment of examples to folds is constrained to preserve class ratios.</p>
+
+<p>For classification tasks, stratified K-Fold should be your default. Not "a nice option." The default.</p>
 
 <pre><code>from sklearn.model_selection import StratifiedKFold
 
@@ -383,28 +428,37 @@ print(f"Mean accuracy: {scores.mean():.4f} ± {scores.std():.4f}")
 # Stratified scores: [0.9561 0.9737 0.9561 0.9649 0.9469]
 # Mean accuracy: 0.9596 ± 0.0090</code></pre>
 
-<p>Fun fact: when you pass an integer to <code>cv=5</code> in scikit-learn for a classifier, it silently uses Stratified K-Fold under the hood. But being explicit is better than being clever — future-you will thank present-you.</p>
+<p>A useful bit of scikit-learn trivia: when you pass an integer to <code>cv=5</code> for a classifier, it silently uses Stratified K-Fold under the hood. For regressors, it uses plain K-Fold. The library is trying to be helpful, and it usually is. But I prefer being explicit — future-me reading this code in six months will thank present-me for not relying on silent magic.</p>
 
-<h3>Leave-One-Out Cross-Validation (LOOCV)</h3>
+<p>Stratification solves the class balance problem. But it still assumes something fundamental about the data: that any email can sit next to any other email, that the order doesn't matter, that shuffling is fine. For a lot of real-world problems, that assumption is dead wrong.</p>
 
-<p>K-Fold taken to the extreme: k = n (number of samples). Each round holds out exactly one example, trains on all the rest. Repeat for every single example.</p>
+<!-- ═══════════════════════════════════════════════════ -->
+<!-- REST STOP                                           -->
+<!-- ═══════════════════════════════════════════════════ -->
 
-<p>The appeal: maximum training data per fold, deterministic results (no randomness from the split). The cost: if you have 10,000 examples, you train 10,000 models. It also has a counterintuitive property — despite using nearly all data for training, LOOCV has <strong>high variance</strong> as a performance estimator, because the training sets overlap almost completely, making the fold scores highly correlated.</p>
+<div class="callout callout-info">
+  <div class="callout-label">🛑 Rest Stop</div>
+  <p>If you've made it this far, congratulations. You can stop here if you want. You now have a solid mental model: cross-validation rotates through multiple train/test splits, averages the scores, and gives you a much more trustworthy estimate than a single split ever could. Stratified K-Fold preserves class balance. k=5 or k=10 for the fold count. Report mean <em>and</em> standard deviation.</p>
+  <p>That mental model will serve you well for 80% of practical situations. The short version of everything that follows is: temporal data needs special splits that respect time, grouped data needs splits that respect groups, hyperparameter tuning needs an extra layer of nesting, and preprocessing must happen inside the fold loop or you'll leak information. There. You're 80% of the way there.</p>
+  <p>But if the discomfort of not knowing what lies underneath is nagging at you, read on.</p>
+</div>
 
-<p>Use LOOCV for very small datasets (under ~100 samples) where every data point is precious. Everywhere else, 5-fold or 10-fold gives you a better tradeoff between computation and estimation quality.</p>
+<!-- ═══════════════════════════════════════════════════ -->
+<!-- TIME SERIES SPLIT                                   -->
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>Time Series Split — When Shuffling Is a Crime</h2>
 
-<h3>Time Series Split</h3>
+<p>Let's change the scenario. Instead of a static pile of 2,000 emails, imagine we're receiving emails over time — a hundred per week for twenty weeks. We want to predict whether next week's emails are spam. The data has a timestamp, and that timestamp matters.</p>
 
-<p>Everything above assumes data points are independent — shuffling is fine. Time series data violates that assumption <em>hard</em>.</p>
+<p>If we shuffle these emails and split them into folds, we'll have a situation where our model trains on emails from Week 18 and tests on emails from Week 3. It's using future information to predict the past. That's called <strong>temporal leakage</strong>, and it's one of the most expensive mistakes in applied ML. I've watched teams chase phantom accuracy for months because of this — their offline metrics looked spectacular, and the production model was useless. The gap was leakage.</p>
 
-<p>If you're predicting tomorrow's stock price, you can't train on next month's data and test on last week's. That's <strong>temporal leakage</strong> — using future information to predict the past. Your model looks spectacular in evaluation and falls apart in production. I've seen teams waste months chasing phantom accuracy from exactly this mistake.</p>
+<p>Think back to our chef analogy. Temporal leakage is like letting the chef taste the dish <em>after</em> the judges have scored it, then pretending the chef cooked it that way on purpose. The performance looks amazing, but it's fictional.</p>
 
-<p><strong>Time Series Split</strong> uses an expanding training window. Fold 1 trains on months 1–2, tests on month 3. Fold 2 trains on months 1–3, tests on month 4. The training set always precedes the test set in time. Always.</p>
+<p><strong>Time Series Split</strong> respects the arrow of time. It uses an expanding training window: Fold 1 trains on the earliest data and tests on the next chunk. Fold 2 trains on everything from Fold 1's training <em>and</em> test data combined, and tests on the next chunk after that. The training set always precedes the test set in time. Always.</p>
 
 <pre><code>from sklearn.model_selection import TimeSeriesSplit
 import numpy as np
 
-# Simulate 1000 time-ordered observations
 n_samples = 1000
 tscv = TimeSeriesSplit(n_splits=5)
 
@@ -419,55 +473,90 @@ for i, (train_idx, test_idx) in enumerate(tscv.split(np.arange(n_samples))):
 # Fold 3: Train [0..666]   (667 samples) → Test [667..833]  (167 samples)
 # Fold 4: Train [0..833]   (834 samples) → Test [834..999]  (166 samples)</code></pre>
 
-<p>Use this for any data with a natural time ordering: financial data, sensor streams, log events, weather forecasts. If your rows have timestamps, do not shuffle them.</p>
+<p>Notice how the training set grows with each fold. The first fold trains on very little data, so its score might be poor. That's not a problem — it reflects the reality that early in a time series, you don't have much history to learn from.</p>
 
-<div class="callout callout-warning">
-  <div class="callout-label">⚠️ The #1 Source of Inflated Metrics in Industry</div>
-  <p>Shuffling temporal data before cross-validation is one of the most common — and most costly — mistakes in applied ML. Your offline metrics look amazing. Your production model does nothing useful. The gap is leakage, and it can persist for months before anyone notices.</p>
-</div>
+<p>For financial data, the story gets even more subtle. Marcos López de Prado introduced <strong>purged cross-validation</strong> in his book <em>Advances in Financial Machine Learning</em>. The idea: even after splitting by time, some training samples might have label windows that overlap with the test period. Purging removes those contaminated training samples. An additional <strong>embargo</strong> period can be added — a buffer of time between training and test — to guard against delayed information leakage from slow market reactions. If you're doing anything with financial time series, this is required reading.</p>
 
-<h3>Group K-Fold</h3>
+<p>The rule is iron-clad: if your rows have timestamps, do not shuffle them. Use Time Series Split. If the domain has delayed effects, add purging. There are no exceptions.</p>
 
-<p>Sometimes your data has <strong>groups</strong> that must not be split across train and test. Medical imaging is the classic example: one patient contributes 20 scans. If some of Patient A's scans land in training and others in testing, your model can "recognize" Patient A rather than learning the actual medical pattern. Performance looks great. Generalization to new patients is terrible.</p>
+<!-- ═══════════════════════════════════════════════════ -->
+<!-- GROUP K-FOLD                                        -->
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>Group K-Fold — When Your Data Has Families</h2>
 
-<p><strong>Group K-Fold</strong> keeps all data from the same group in the same fold. You pass a <code>groups</code> array that labels each row.</p>
+<p>Back to our email classifier. A new wrinkle: it turns out that 50 of our users are power users who each contributed dozens of emails to our dataset. If Alice's emails appear in both training and testing, the model might learn to recognize <em>Alice's writing style</em> rather than learning what makes an email spam. Performance on Alice's test emails looks great. Performance on a brand-new user — someone the model has never seen — is much worse.</p>
+
+<p>This is <strong>group leakage</strong>. The model learned to recognize the source rather than the pattern. It shows up everywhere: medical imaging where one patient contributes multiple scans, NLP datasets where one author writes multiple documents, sensor data where one device generates thousands of readings.</p>
+
+<p><strong>Group K-Fold</strong> keeps all data from the same group in the same fold. All of Alice's emails land together — either all in training or all in testing, never split across the two. You provide a <code>groups</code> array that tells the splitter which rows belong together.</p>
 
 <pre><code>from sklearn.model_selection import GroupKFold
 import numpy as np
 
-# 100 samples from 20 patients (5 samples each)
+# 100 samples from 20 users (5 emails each)
 groups = np.repeat(np.arange(20), 5)
 
 gkf = GroupKFold(n_splits=5)
 for i, (train_idx, test_idx) in enumerate(gkf.split(X[:100], y[:100], groups)):
     train_groups = set(groups[train_idx])
     test_groups = set(groups[test_idx])
-    # Verify: no group appears in both train and test
     assert train_groups.isdisjoint(test_groups)
-    print(f"Fold {i}: Train patients={sorted(train_groups)}")
-    print(f"         Test  patients={sorted(test_groups)}")</code></pre>
+    print(f"Fold {i}: Train users={sorted(train_groups)}")
+    print(f"         Test  users={sorted(test_groups)}")</code></pre>
 
-<p>Other scenarios where Group K-Fold matters: multiple essays from the same student, multiple transactions from the same user, multiple frames from the same video, multiple reviews from the same product. If you can answer "could the model be recognizing the <em>source</em> rather than the <em>pattern</em>?" with yes, you need group-aware splitting.</p>
+<p>The question to ask yourself: "Could the model be recognizing the <em>source</em> rather than the <em>pattern</em>?" If the answer is yes — or even maybe — you need group-aware splitting. Multiple essays from the same student, multiple transactions from the same customer, multiple frames from the same video. If there's a natural grouping, respect it.</p>
 
-<h3>Nested Cross-Validation</h3>
+<!-- ═══════════════════════════════════════════════════ -->
+<!-- THE PREPROCESSING TRAP                              -->
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>The Preprocessing Trap</h2>
 
-<p>Here's a subtle trap that catches a lot of people.</p>
+<p>This is the mistake that gets the most experienced people. I still catch myself almost making it from time to time.</p>
 
-<p>You use 5-fold CV to tune hyperparameters — trying different values of tree count, max depth, regularization strength. You pick the combination with the best average CV score. Then you report that score as your model's expected performance. Is that honest?</p>
+<p>Here's the scenario. Before training your model, you need to scale your features — subtract the mean, divide by the standard deviation. Sensible. You do this:</p>
 
-<p><strong>No.</strong> You selected the hyperparameters that happened to score highest on <em>those particular</em> folds. That "best CV score" is optimistically biased — it overestimates real-world performance. This is the same sin as evaluating on your training set, just one level of abstraction higher.</p>
+<pre><code># THE WRONG WAY — don't do this
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import cross_val_score
 
-<p><strong>Nested CV</strong> fixes this with two loops:</p>
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)  # fits on ALL data, including future test folds
+scores = cross_val_score(model, X_scaled, y, cv=5)</code></pre>
 
-<ul>
-  <li><strong>Outer loop</strong> — splits data into train/test folds for <em>unbiased evaluation</em></li>
-  <li><strong>Inner loop</strong> — runs inside each outer training set to <em>tune hyperparameters</em></li>
-</ul>
+<p>The scaler learned the mean and standard deviation from <em>all</em> the data — including the examples that will later become the test fold. Every test fold has been subtly contaminated. The model's features were computed using information it shouldn't have had access to.</p>
 
-<p>The outer test fold is never touched during tuning. So the outer scores are honest.</p>
+<p>The magnitude of this leak depends on the dataset. Sometimes it barely matters. Sometimes it's the difference between a model that looks production-ready and one that falls apart on real data. A healthcare team building a sepsis prediction model discovered this the hard way — their cross-validated metrics looked excellent, their deployed model performed significantly worse, and the root cause was imputation computed on the full dataset before splitting.</p>
 
-<pre><code>from sklearn.model_selection import GridSearchCV, cross_val_score
-from sklearn.model_selection import StratifiedKFold
+<p>The fix is elegant: use a <strong>Pipeline</strong>. It wraps preprocessing and modeling into a single object. When cross-validation holds out a fold, the pipeline fits the scaler only on the training folds and transforms the test fold using those training-only statistics. No leakage.</p>
+
+<pre><code># THE RIGHT WAY
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
+
+pipe = make_pipeline(StandardScaler(), LogisticRegression(max_iter=5000))
+scores = cross_val_score(pipe, X, y, cv=5, scoring='accuracy')</code></pre>
+
+<p>This applies to everything that learns from data: scalers, imputers, encoders, feature selectors, dimensionality reduction. If it has a <code>fit()</code> method, it needs to be inside the pipeline. No exceptions.</p>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<!-- NESTED CV                                           -->
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>Nested CV — Honest Scores When You're Also Tuning</h2>
+
+<p>Here's a subtle trap that catches a lot of people, and I'll admit it caught me too.</p>
+
+<p>You use 5-fold CV to try different hyperparameter combinations — tree counts, max depth, regularization strength. For each combination, you record the average CV score. You pick the winner. Then you report that winning score as your model's expected performance.</p>
+
+<p>Is that honest? No. And here's why.</p>
+
+<p>You searched through, say, 12 hyperparameter combinations and picked the one that happened to score highest on <em>those particular folds</em>. Even if each individual CV was fair, the act of <em>selecting the best</em> introduces optimistic bias. It's the same logic as testing on your training set — but at one level of abstraction higher. The hyperparameters were fit to the CV folds, and now you're evaluating on those same folds.</p>
+
+<p>Back to the chef analogy. It's like asking the chef to cook five different dishes, then reporting the score of the best one as their average skill level. The best dish is an optimistic representation.</p>
+
+<p><strong>Nested cross-validation</strong> fixes this with two loops. The outer loop splits data into train/test folds for unbiased evaluation. The inner loop runs inside each outer training set to tune hyperparameters. The outer test fold is never touched during tuning. So the outer scores are honest — they reflect true out-of-sample performance, including the cost of having to choose hyperparameters.</p>
+
+<pre><code>from sklearn.model_selection import GridSearchCV, cross_val_score, StratifiedKFold
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.datasets import load_breast_cancer
 
@@ -492,138 +581,27 @@ outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 nested_scores = cross_val_score(grid_search, X, y, cv=outer_cv, scoring='accuracy')
 
 print(f"Nested CV scores: {nested_scores}")
-print(f"Unbiased estimate: {nested_scores.mean():.4f} ± {nested_scores.std():.4f}")
-# Nested CV scores: [0.9561 0.9649 0.9561 0.9649 0.9558]
-# Unbiased estimate: 0.9596 ± 0.0043</code></pre>
+print(f"Unbiased estimate: {nested_scores.mean():.4f} ± {nested_scores.std():.4f}")</code></pre>
 
-<div class="callout callout-info">
-  <div class="callout-label">💡 When Do You Actually Need This?</div>
-  <p>Use nested CV whenever you're both tuning hyperparameters <em>and</em> reporting final performance in the same experiment. If you have a completely separate held-out test set that you never use for any decisions, single-level CV for tuning is fine. But if your paper or report quotes the CV score as "expected performance," that number must come from the outer loop of a nested procedure. Otherwise you're lying — politely, accidentally, but still lying.</p>
-</div>
-
-<h3>Repeated K-Fold</h3>
-
-<p><strong>Repeated K-Fold</strong> runs the entire K-Fold procedure multiple times, each with a different random shuffle. 10 repeats of 5-fold gives you 50 scores. The variance of your performance estimate drops, and you get tighter confidence intervals — which matters when you need to decide whether Model A's 0.3% edge over Model B is real or noise.</p>
-
-<pre><code>from sklearn.model_selection import RepeatedStratifiedKFold
-
-# 10 repeats × 5 folds = 50 evaluation rounds
-rskf = RepeatedStratifiedKFold(n_splits=5, n_repeats=10, random_state=42)
-scores = cross_val_score(model, X, y, cv=rskf, scoring='accuracy')
-
-print(f"50 scores, mean: {scores.mean():.4f} ± {scores.std():.4f}")
-
-# Bonus: 95% confidence interval
-ci_low = np.percentile(scores, 2.5)
-ci_high = np.percentile(scores, 97.5)
-print(f"95% CI: [{ci_low:.4f}, {ci_high:.4f}]")</code></pre>
-
-<p>The cost is proportional — 10 repeats means 10× the computation. Worth it for final model comparisons. Overkill for exploratory work.</p>
+<p>When do you need this? Whenever you're both tuning hyperparameters <em>and</em> reporting final performance in the same experiment. If you have a completely separate held-out test set that you never use for any decisions, single-level CV for tuning is fine. But if your paper or dashboard quotes the CV score as "expected performance," that number must come from the outer loop. The cost is computational — 5 outer folds × 3 inner folds × 12 hyperparameter combos = 180 model fits. Worth it for honesty.</p>
 
 <!-- ═══════════════════════════════════════════════════ -->
-<!-- COMPARISON TABLE                                    -->
+<!-- COMPARING MODELS                                    -->
 <!-- ═══════════════════════════════════════════════════ -->
-<h2>Which Technique When</h2>
+<h2>Comparing Models on the Same Folds</h2>
 
-<p>This is the decision table. Bookmark it.</p>
+<p>If you're comparing two models — say Random Forest versus Logistic Regression — running them on <em>different</em> random folds is comparing apples to oranges. One model might get lucky folds. The other might get hard ones. The difference you see comes from the splits, not the algorithms.</p>
 
-<div class="table-responsive">
-<table>
-  <thead>
-    <tr>
-      <th>Technique</th>
-      <th>When to Use</th>
-      <th>Pros</th>
-      <th>Cons</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><strong>Hold-Out</strong></td>
-      <td>Large datasets (100k+ rows), quick sanity checks</td>
-      <td>Fast, simple, one model to train</td>
-      <td>High variance estimate on small data; wastes test data for training</td>
-    </tr>
-    <tr>
-      <td><strong>K-Fold</strong></td>
-      <td>General-purpose default for regression</td>
-      <td>Good bias-variance tradeoff; every sample tested once</td>
-      <td>Doesn't preserve class balance; not suitable for temporal or grouped data</td>
-    </tr>
-    <tr>
-      <td><strong>Stratified K-Fold</strong></td>
-      <td>Classification (especially imbalanced classes) — <em>your actual default</em></td>
-      <td>Preserves class distribution in each fold; stable estimates</td>
-      <td>Only applies to classification; doesn't handle groups or time</td>
-    </tr>
-    <tr>
-      <td><strong>LOOCV</strong></td>
-      <td>Tiny datasets (&lt;100 samples)</td>
-      <td>Maximum training data; deterministic</td>
-      <td>Computationally brutal; high variance as an estimator (correlated folds)</td>
-    </tr>
-    <tr>
-      <td><strong>Time Series Split</strong></td>
-      <td>Any data with temporal ordering</td>
-      <td>Respects time; prevents future→past leakage</td>
-      <td>Earlier folds train on less data; can't shuffle</td>
-    </tr>
-    <tr>
-      <td><strong>Group K-Fold</strong></td>
-      <td>Data with natural groups (patients, users, devices)</td>
-      <td>Prevents group-level leakage</td>
-      <td>Fold sizes can be uneven; need a meaningful group label</td>
-    </tr>
-    <tr>
-      <td><strong>Nested CV</strong></td>
-      <td>Tuning hyperparameters + reporting performance in same experiment</td>
-      <td>Unbiased performance estimate even with tuning</td>
-      <td>Expensive (k<sub>outer</sub> × k<sub>inner</sub> × param combos); complex to set up</td>
-    </tr>
-    <tr>
-      <td><strong>Repeated K-Fold</strong></td>
-      <td>Final model comparisons; need tight confidence intervals</td>
-      <td>Lower variance estimate; more statistical power</td>
-      <td>n_repeats × k models to train; overkill for exploration</td>
-    </tr>
-  </tbody>
-</table>
-</div>
+<p>The fix is dead simple: use the same fold assignments for both models. Then the difference between their scores on each fold is a genuine head-to-head comparison on identical data.</p>
 
-<p>The decision flowchart in your head should be: <strong>Is there a time component?</strong> → Time Series Split. <strong>Are there groups?</strong> → Group K-Fold. <strong>Classification?</strong> → Stratified K-Fold. <strong>Regression?</strong> → K-Fold. <strong>Also tuning?</strong> → Wrap in nested CV. <strong>Need tighter estimates?</strong> → Repeat it.</p>
+<p><strong>Repeated K-Fold</strong> makes this comparison even sharper. It runs the entire K-Fold procedure multiple times with different shuffles — 10 repeats of 5-fold gives you 50 paired scores. More data points means more statistical power to detect small differences.</p>
 
-<!-- ═══════════════════════════════════════════════════ -->
-<!-- INTERPRETING CV RESULTS                             -->
-<!-- ═══════════════════════════════════════════════════ -->
-<h2>Interpreting CV Results</h2>
-
-<h3>Mean ± Standard Deviation</h3>
-
-<p>Always report both. A model at 0.92 ± 0.01 is far more trustworthy than one at 0.93 ± 0.05. The second model performs better <em>on average</em>, but it's wildly inconsistent — hitting 0.98 on an easy fold and 0.88 on a hard one. That kind of instability usually signals overfitting to certain patterns in the training data.</p>
-
-<h3>What High Variance Across Folds Tells You</h3>
-
-<p>If your fold scores swing widely, ask why:</p>
-
-<ul>
-  <li><strong>Small dataset</strong> — each fold is a small, noisy sample. More data is the real fix; Repeated K-Fold is the band-aid.</li>
-  <li><strong>Distribution shift across the data</strong> — some folds contain a cluster of unusual examples (e.g., a region, a time period, a subpopulation). This is a feature, not a bug — it tells you your model's performance varies by context.</li>
-  <li><strong>Overfitting</strong> — a complex model that memorizes folds with friendly data and crashes on the rest. Try a simpler model or more regularization.</li>
-  <li><strong>Data leakage</strong> — if variance is <em>suspiciously low</em> and the mean is <em>suspiciously high</em>, you might be accidentally leaking information. Check your preprocessing pipeline.</li>
-</ul>
-
-<p>Don't just look at the summary stats. Print the individual fold scores. If one fold is dramatically worse, dig into it. Understanding <em>why</em> a fold is hard teaches you more about your problem than the mean ever will.</p>
-
-<h3>Comparing Models Statistically</h3>
-
-<p>When comparing two models, run them on the <strong>exact same folds</strong>. This way, differences come from the models, not from random fold assignments.</p>
-
-<pre><code>from sklearn.linear_model import LogisticRegression
+<pre><code>from sklearn.model_selection import RepeatedStratifiedKFold, cross_val_score
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import RepeatedStratifiedKFold, cross_val_score
-from sklearn.datasets import load_breast_cancer
+from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import make_pipeline
+from sklearn.datasets import load_breast_cancer
 from scipy import stats
 import numpy as np
 
@@ -632,7 +610,6 @@ X, y = load_breast_cancer(return_X_y=True)
 rf = RandomForestClassifier(n_estimators=100, random_state=42)
 lr = make_pipeline(StandardScaler(), LogisticRegression(max_iter=5000, random_state=42))
 
-# Same folds for both — critical for fair comparison
 cv = RepeatedStratifiedKFold(n_splits=5, n_repeats=10, random_state=42)
 rf_scores = cross_val_score(rf, X, y, cv=cv, scoring='accuracy')
 lr_scores = cross_val_score(lr, X, y, cv=cv, scoring='accuracy')
@@ -640,32 +617,117 @@ lr_scores = cross_val_score(lr, X, y, cv=cv, scoring='accuracy')
 print(f"Random Forest:       {rf_scores.mean():.4f} ± {rf_scores.std():.4f}")
 print(f"Logistic Regression: {lr_scores.mean():.4f} ± {lr_scores.std():.4f}")
 
-# Per-fold paired difference
 diff = rf_scores - lr_scores
 print(f"\nPer-fold diff (RF - LR): {diff.mean():.4f} ± {diff.std():.4f}")
 
-# Paired t-test (caveat: assumes independent folds, which they aren't exactly)
 t_stat, p_value = stats.ttest_rel(rf_scores, lr_scores)
 print(f"Paired t-test: t={t_stat:.3f}, p={p_value:.4f}")</code></pre>
 
-<p>The per-fold difference is the most informative number. If Random Forest beats Logistic Regression on 45 out of 50 folds, that's convincing even if the average gap is small. If it wins on 28 and loses on 22, the models are equivalent in practice — pick the simpler one.</p>
+<p>The per-fold difference is the most informative number. If Random Forest wins on 45 out of 50 folds, that's convincing even if the average gap is small. If it wins on 28 and loses on 22, the models are equivalent in practice — pick the simpler one.</p>
 
-<div class="callout callout-info">
-  <div class="callout-label">💡 Statistical Significance ≠ Practical Significance</div>
-  <p>With 50 repeated folds, you have a lot of statistical power. A 0.2% accuracy difference can register as "significant" at p &lt; 0.05. That doesn't mean it matters. Always pair the p-value with the actual magnitude of the difference. If two models are within one standard deviation of each other, prefer the simpler one — it'll be easier to debug, faster to train, and more robust when the data distribution shifts in production.</p>
-</div>
+<p>A word of caution. With 50 repeated folds, you have a lot of statistical power. A 0.2% accuracy difference can register as "statistically significant" at p < 0.05. That doesn't mean it matters. A 0.2% accuracy difference is invisible to users, invisible in production, and will vanish the moment the data distribution shifts. Always pair the p-value with the actual magnitude. If two models are within noise of each other, prefer the simpler one.</p>
 
-<div class="callout callout-warning">
-  <div class="callout-label">⚠️ On the Paired t-test</div>
-  <p>The standard paired t-test assumes fold scores are independent. They're not — folds share training data. For repeated K-Fold, the <strong>Nadeau–Bengio corrected test</strong> adjusts for this dependence. In most practical work, the paired t-test gives directionally correct answers, but if you're writing a paper, use the correction.</p>
-</div>
+<p>One more subtlety: the standard paired t-test assumes fold scores are independent. They're not — folds share training data. For repeated K-Fold, the <strong>Nadeau–Bengio corrected test</strong> adjusts for this dependence. In practice, the uncorrected test gives directionally correct answers, but if you're writing a paper, use the correction.</p>
 
 <!-- ═══════════════════════════════════════════════════ -->
-<!-- PUTTING IT TOGETHER                                 -->
+<!-- READING FOLD SCORES                                 -->
 <!-- ═══════════════════════════════════════════════════ -->
-<h2>The Bottom Line</h2>
+<h2>Reading the Tea Leaves — What Fold Scores Tell You</h2>
 
-<p>Cross-validation isn't a technique you apply once and move on from. It's a discipline that runs through every modeling decision. Engineer a new feature? Re-run CV. Swap algorithms? Compare on the same folds. Tune hyperparameters? Nest it. The core lesson: never trust a single number from a single split. Data is noisy. Models are sensitive. The only honest way to estimate real-world performance is to test on multiple slices and look at the full distribution.</p>
+<p>Most people compute the mean CV score, maybe the standard deviation, and move on. That's throwing away information.</p>
+
+<p>Always print the individual fold scores. If four folds score 0.95 and one scores 0.82, that one bad fold is more interesting than the mean. Something about that slice of data is different — a subpopulation the model struggles with, a cluster of noisy labels, a distribution shift. Understanding <em>why</em> a fold is hard teaches you more about your problem than the average ever will.</p>
+
+<p>Here's what different patterns of fold scores tend to mean:</p>
+
+<p>If fold scores have <strong>high variance on small data</strong>, each fold is a small, noisy sample. More data is the real fix. Repeated K-Fold is the band-aid — it averages over more random shuffles and gives you a tighter confidence interval.</p>
+
+<p>If one or two folds are <strong>dramatically worse</strong> than the rest, there's likely a subpopulation or context shift in the data. Some folds contain a cluster of unusual examples — a different region, a different time period, a different user segment. This is valuable signal. It tells you your model's performance varies by context, and that's exactly what you'll see in production.</p>
+
+<p>If fold scores are <strong>suspiciously uniform</strong> and the mean is <strong>suspiciously high</strong>, check for data leakage. When information leaks from test to train, the model performs consistently well everywhere — too well. This is the scariest pattern because it looks like success.</p>
+
+<p>I've developed a habit of always looking at the worst fold first. If the worst fold is acceptable for my use case, the model is ready. If it's not, the mean doesn't matter.</p>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<!-- DECISION GUIDE                                      -->
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>The Decision Guide</h2>
+
+<div class="table-responsive">
+<table>
+  <thead>
+    <tr>
+      <th>Technique</th>
+      <th>When to Reach for It</th>
+      <th>What It Gives You</th>
+      <th>What It Costs</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Hold-Out</strong></td>
+      <td>Large datasets (100k+ rows), quick sanity checks</td>
+      <td>Speed, simplicity</td>
+      <td>Unstable estimates on small data; wastes test data</td>
+    </tr>
+    <tr>
+      <td><strong>K-Fold</strong></td>
+      <td>General-purpose default for regression</td>
+      <td>Stable estimate; every sample tested once</td>
+      <td>Ignores class balance, time, and groups</td>
+    </tr>
+    <tr>
+      <td><strong>Stratified K-Fold</strong></td>
+      <td>Classification — this is your actual default</td>
+      <td>Preserves class ratios; stable across folds</td>
+      <td>Classification only; doesn't handle time or groups</td>
+    </tr>
+    <tr>
+      <td><strong>LOOCV</strong></td>
+      <td>Tiny datasets (&lt;100 samples)</td>
+      <td>Maximum training data; deterministic</td>
+      <td>High variance as an estimator; computationally brutal</td>
+    </tr>
+    <tr>
+      <td><strong>Time Series Split</strong></td>
+      <td>Any data with temporal ordering</td>
+      <td>Prevents future→past leakage</td>
+      <td>Earlier folds train on less data</td>
+    </tr>
+    <tr>
+      <td><strong>Group K-Fold</strong></td>
+      <td>Data with natural groups (patients, users, devices)</td>
+      <td>Prevents group-level leakage</td>
+      <td>Uneven fold sizes; need a meaningful group label</td>
+    </tr>
+    <tr>
+      <td><strong>Nested CV</strong></td>
+      <td>Tuning + reporting performance in same experiment</td>
+      <td>Unbiased performance despite hyperparameter search</td>
+      <td>Expensive (outer × inner × param combos)</td>
+    </tr>
+    <tr>
+      <td><strong>Repeated K-Fold</strong></td>
+      <td>Final model comparisons; tight confidence intervals</td>
+      <td>Lower variance estimate; more statistical power</td>
+      <td>n_repeats × k models to train</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>The decision tree in your head: Does the data have a time component? Time Series Split. Does the data have groups? Group K-Fold. Classification? Stratified K-Fold. Regression? K-Fold. Also tuning hyperparameters? Wrap it in nested CV. Need to compare two models? Use the same folds and look at paired differences.</p>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<!-- WRAP-UP                                             -->
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>Wrap-Up</h2>
+
+<p>If you're still with me, thank you. I hope it was worth it.</p>
+
+<p>We started with a simple observation — that a single train/test split gives you a number that depends more on the luck of the shuffle than on the quality of the model. We built K-Fold from scratch on ten emails. We explored why k=5 and k=10 are the standard choices, saw why stratification matters for classification, and then ventured into the places where standard CV breaks down: temporal data that demands respect for the arrow of time, grouped data where sources must not be split, preprocessing that must happen inside the fold loop, and the nested CV trick for honest reporting when you're also tuning.</p>
+
+<p>My hope is that the next time you see a cross-validation score, instead of treating it as a black-box number to be compared against a threshold, you'll pause and ask the questions that matter: Was the split appropriate for this data? Did preprocessing happen inside or outside the fold? Is this score from the inner loop or the outer loop? And what does the worst fold look like? Those questions — not the mean accuracy — are what separate a practitioner who understands model evaluation from one who is going through the motions.</p>
 
 <!-- ═══════════════════════════════════════════════════ -->
 <!-- CHECKLIST                                           -->
@@ -674,14 +736,16 @@ print(f"Paired t-test: t={t_stat:.3f}, p={p_value:.4f}")</code></pre>
 
 <div class="checklist">
   <ul>
-    <li>Explain why a single train/test split produces unreliable performance estimates</li>
-    <li>Implement K-Fold and Stratified K-Fold CV in scikit-learn and interpret the output</li>
-    <li>Choose the right CV strategy based on your data structure (temporal, grouped, imbalanced, small)</li>
-    <li>Use <code>TimeSeriesSplit</code> for any dataset with a time component — and explain why shuffling temporal data is leakage</li>
-    <li>Set up nested cross-validation to get unbiased performance estimates when also tuning hyperparameters</li>
-    <li>Compare two models on the same folds and assess whether the difference is practically meaningful</li>
-    <li>Diagnose what high variance across fold scores is telling you about your model or data</li>
-    <li>Know when hold-out is sufficient and when LOOCV is worth the cost</li>
+    <li>Explain why a single train/test split produces unreliable estimates and what cross-validation does about it</li>
+    <li>Walk through K-Fold mechanics on a toy example and explain why each data point gets used for both training and testing</li>
+    <li>Articulate the bias-variance tradeoff of the CV <em>estimator itself</em> — why k=2 has high bias, why LOOCV has high variance, and why k=5 or k=10 sits in the sweet spot</li>
+    <li>Use Stratified K-Fold as the default for classification and explain why class balance in folds matters</li>
+    <li>Apply <code>TimeSeriesSplit</code> for temporal data, explain temporal leakage, and know when purged CV is needed</li>
+    <li>Recognize when Group K-Fold is necessary and identify group leakage in real-world datasets</li>
+    <li>Put all preprocessing inside a <code>Pipeline</code> to prevent fit/transform leakage during cross-validation</li>
+    <li>Set up nested CV to get unbiased performance estimates while tuning hyperparameters</li>
+    <li>Compare two models on the same folds, interpret paired differences, and distinguish statistical from practical significance</li>
+    <li>Read individual fold scores diagnostically — high variance, one bad fold, suspiciously uniform scores — and know what each pattern means</li>
   </ul>
 </div>
 
