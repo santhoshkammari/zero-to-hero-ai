@@ -296,186 +296,430 @@
 <h1>NumPy</h1>
 <div class="chapter-meta">
   <span class="tag">Chapter 1: Python &amp; Programming Foundations</span>
-  <span class="tag">9 concept areas</span>
+  <span class="tag">10 concept areas</span>
 </div>
 
-<p>NumPy is the foundation everything else sits on — Pandas, scikit-learn, PyTorch. Every tensor, every DataFrame column, every <code>fit()</code> call eventually bottoms out in a NumPy <code>ndarray</code>. Two concepts separate people who read ML code fluently from people who don't: broadcasting and vectorization. Once those click, the rest is just API.</p>
+<!-- ════════════════════════════════════════════ -->
+<!-- PHASE 1: OPENING -->
+<!-- ════════════════════════════════════════════ -->
+
+<p>I avoided looking under NumPy's hood for years. I used it every day — <code>np.array</code>, <code>.reshape()</code>, broadcasting with a prayer — but whenever something broke, I'd stare at the shape mismatch error, try random transposes until it worked, and move on. I told myself the internals didn't matter. That the API was all I needed. But every time I hit a bug I couldn't explain, or watched someone write a vectorized operation in one line that would have taken me twenty, the discomfort of not really understanding what was happening underneath grew a little more unbearable. Here is that dive.</p>
+
+<p>NumPy — short for Numerical Python — was created by Travis Oliphant in 2005 by unifying two earlier array libraries. It provides a single data structure, the <strong>ndarray</strong>, that stores numbers in a contiguous block of memory and operates on them in compiled C. Every major ML library — Pandas, scikit-learn, PyTorch, TensorFlow — is built on top of it. When you call <code>model.fit(X)</code>, when you compute a loss, when you normalize a feature matrix, you're using NumPy whether you realize it or not.</p>
+
+<p>Before we start, a heads-up. We're going to look at memory layouts, byte-level strides, C code, and BLAS libraries. You don't need to know any of that beforehand. We'll add the concepts we need one at a time, with explanation.</p>
+
+<p>This isn't a short journey, but I hope you'll be glad you came.</p>
 
 <!-- ════════════════════════════════════════════ -->
-<h2>Arrays in 30 Seconds</h2>
+<!-- PHASE 2: TABLE OF CONTENTS -->
+<!-- ════════════════════════════════════════════ -->
 
-<p>You create arrays with a handful of constructors. No table needed — just know they exist:</p>
+<div class="toc" style="margin: 2em 0; padding-left: 2em; line-height: 2;">
+  Why arrays exist at all<br>
+  The four ingredients of an ndarray<br>
+  Strides — the trick that makes everything work<br>
+  Views and copies — the consequence of strides<br>
+  Broadcasting from scratch<br>
+  Why NumPy is fast — the assembly line under the hood<br>
+  Rest stop and an off-ramp<br>
+  Reshaping and the stride connection<br>
+  einsum — the universal tensor language<br>
+  Production patterns and the gotchas that bite<br>
+  Resources and credits
+</div>
+
+<!-- ════════════════════════════════════════════ -->
+<!-- WHY ARRAYS EXIST -->
+<!-- ════════════════════════════════════════════ -->
+
+<h2>Why Arrays Exist at All</h2>
+
+<p>To see why NumPy exists, we need to feel the pain of not having it. Imagine we're building a tiny movie recommendation engine. We have three users and four movies, and each user has rated each movie on a scale of 1 to 5. In pure Python, we'd store this as a list of lists.</p>
+
+<pre><code class="language-python">ratings = [
+    [5, 3, 1, 4],   # Alice
+    [4, 5, 3, 2],   # Bob
+    [1, 2, 5, 4],   # Carol
+]</code></pre>
+
+<p>Looks fine. Now suppose we want to compute each user's average rating. We'd write a loop, iterate through each inner list, sum the values, divide by the length. Three users? No problem. Three million users with ten thousand movies each? That loop is going to hurt.</p>
+
+<p>The reason it hurts is architectural. A Python list is not a block of numbers. It's a collection of pointers, each pointing to a separate Python object somewhere in memory. Think of it like a filing cabinet full of sticky notes, where each sticky note says "the actual number is in room 4,207 on shelf B." To do math on those numbers, Python has to follow each pointer, find the object, check what type it is, unwrap the actual value, do the arithmetic, wrap the result back into a new Python object, and store a pointer to it. For every. single. element.</p>
+
+<p>NumPy takes a completely different approach. It stores all the numbers side by side in one continuous block of memory — like books arranged in order on a shelf, spine to spine. No pointers. No wrapping. No type-checking per element. When you say "add 1 to every element," a single C function walks through that block of memory and adds 1 to each raw number in place. No Python interpreter involved.</p>
 
 <pre><code class="language-python">import numpy as np
 
-np.array([1, 2, 3])          # from existing data
-np.zeros((3, 4))              # all zeros — buffers, accumulators
-np.ones((2, 5))               # all ones — bias init, masks
-np.arange(0, 10, 0.5)         # evenly spaced by step — like range() but for floats
-np.linspace(0, 1, 50)         # evenly spaced by count — plotting grids, schedules</code></pre>
+ratings = np.array([
+    [5, 3, 1, 4],
+    [4, 5, 3, 2],
+    [1, 2, 5, 4],
+], dtype=np.float32)
 
-<p>And three attributes you'll check constantly: <code>.shape</code> (the dimensions), <code>.dtype</code> (the element type), <code>.ndim</code> (how many axes). When something goes wrong in NumPy, the answer is almost always in one of those three.</p>
+# Average rating per user — one line, no loop
+avg = ratings.mean(axis=1)
+# array([3.25, 3.5 , 3.  ])</code></pre>
 
-<!-- ════════════════════════════════════════════ -->
-<h2>Indexing &amp; Slicing</h2>
-
-<p><strong>Basic slicing</strong> works like Python lists, extended to multiple dimensions: <code>arr[0]</code>, <code>arr[1:5]</code>, <code>arr[:, 0]</code> (all rows, first column). If you know Python lists, this is just more commas.</p>
-
-<p><strong>Boolean masking</strong> is the one to internalize. It shows up everywhere in ML — filtering samples, selecting features, applying thresholds:</p>
-
-<pre><code class="language-python"># You have predictions and you want only the confident ones
-predictions = model.predict(X)          # shape (1000,)
-confident = predictions[predictions > 0.9]  # only high-confidence predictions
-
-# Select all samples belonging to class 1
-X_class1 = X[y == 1]   # y is your label array — this grabs matching rows</code></pre>
-
-<p><strong>Fancy indexing</strong> lets you cherry-pick specific rows: <code>arr[[0, 3, 5]]</code>. Useful for grabbing a specific batch of samples by index.</p>
-
-<p>One thing to keep straight: basic slicing returns a <strong>view</strong> (modifying the slice modifies the original). Boolean and fancy indexing return <strong>copies</strong>. If you're ever unsure: <code>np.shares_memory(a, b)</code>.</p>
+<p>That <code>axis=1</code> means "compute the mean along axis 1" — the columns. We'll come back to axes in a moment, but the key thing is: no Python loop. The entire computation happened in compiled C, on a contiguous block of memory, in one call. That's the entire promise of NumPy.</p>
 
 <!-- ════════════════════════════════════════════ -->
-<h2>Broadcasting — The Mental Model</h2>
+<!-- THE FOUR INGREDIENTS -->
+<!-- ════════════════════════════════════════════ -->
 
-<p>Here's the thing about broadcasting — once it clicks, you stop writing loops entirely. Everything becomes an operation on shapes.</p>
+<h2>The Four Ingredients of an ndarray</h2>
 
-<p>The intuition: when you subtract the mean from every row of a matrix, NumPy doesn't loop. It "broadcasts" the mean vector across all rows simultaneously. Understanding <em>how it decides what to broadcast</em> is the key to reading any ML codebase.</p>
+<p>Every NumPy array, no matter how complex, is made of exactly four things. Understanding these four things is what separates people who use NumPy from people who understand it.</p>
 
-<p>There are three rules, and they're simpler than they sound:</p>
+<p>Let's inspect our ratings array.</p>
 
-<p><strong>Rule 1: Pad with 1s.</strong> If the arrays have different numbers of dimensions, NumPy pads the smaller shape with 1s on the left. So a shape <code>(3,)</code> operating against <code>(5, 3)</code> first becomes <code>(1, 3)</code>.</p>
+<pre><code class="language-python">print(ratings.shape)    # (3, 4)
+print(ratings.dtype)    # float32
+print(ratings.strides)  # (16, 4)
+print(ratings.data)     # &lt;memory at 0x...&gt;</code></pre>
 
-<p><strong>Rule 2: Stretch the 1s.</strong> Any dimension of size 1 stretches to match the other array. That <code>(1, 3)</code> stretches to <code>(5, 3)</code>. No data is copied — NumPy just pretends the row is repeated 5 times.</p>
+<p>The <strong>data pointer</strong> is just a memory address — "the numbers start here." It points to the beginning of that contiguous block of bytes we talked about. Think of it as a street address.</p>
 
-<p><strong>Rule 3: If it doesn't fit, it breaks.</strong> If two dimensions differ and neither is 1, you get a <code>ValueError</code>. No guessing, no silent nonsense.</p>
+<p>The <strong>shape</strong> is a tuple that tells NumPy how to interpret that flat block of bytes as a multi-dimensional structure. Our <code>(3, 4)</code> shape means "3 rows, 4 columns." The shape doesn't live in the data. It's metadata — a label on the block that says "read this as a 3×4 grid."</p>
 
-<p>The canonical example — centering a feature matrix:</p>
+<p>The <strong>dtype</strong> tells NumPy how many bytes each element occupies and how to interpret them. Our <code>float32</code> means each number takes 4 bytes. If we'd used <code>float64</code> (NumPy's default), each number would take 8 bytes — double the memory for precision we almost never need in ML.</p>
 
-<pre><code class="language-python">X = np.random.randn(500, 10)   # 500 samples, 10 features
-centered = X - X.mean(axis=0)  # X.mean(axis=0) has shape (10,)
-
-# What just happened:
-# X shape:         (500, 10)
-# mean shape:      (10,)       → Rule 1 pads to (1, 10)
-#                               → Rule 2 stretches to (500, 10)
-# Result: (500, 10) — each column now has zero mean. No loop. One line.</code></pre>
-
-<p><strong>The gotcha nobody warns you about:</strong> shapes like <code>(100, 1) + (1, 200)</code> silently create a <code>(100, 200)</code> array. Both dimensions are 1, so both stretch. That's 20,000 elements from two small arrays. Scale those to <code>(10000, 1) + (1, 50000)</code> and you've just allocated 2 GB.</p>
-
-<div class="callout-warning"><strong>Debug rule:</strong> If you're ever confused about a broadcasting operation, print the shapes. <code>print(a.shape, b.shape)</code>. Always print the shapes.</div>
+<p>And then there are <strong>strides</strong>. This is the one that unlocks everything.</p>
 
 <!-- ════════════════════════════════════════════ -->
-<h2>Vectorization — Why NumPy Is Fast</h2>
+<!-- STRIDES -->
+<!-- ════════════════════════════════════════════ -->
 
-<p>The mental model is simple: Python loops are slow because every iteration goes through the interpreter — type checking, reference counting, dispatch. NumPy operations happen in compiled C, operating on entire arrays at once. One call into C replaces thousands of Python iterations.</p>
+<h2>Strides — The Trick That Makes Everything Work</h2>
 
-<p>Rule of thumb: if you're writing a <code>for</code> loop over array elements, you're probably doing it wrong.</p>
+<p>I'll be honest — when I first saw strides in a NumPy tutorial, I skipped right past them. They looked like an implementation detail. It took me an embarrassingly long time to realize that strides are <em>the</em> central idea that makes views, broadcasting, transpose, and reshape all work without copying data.</p>
 
-<pre><code class="language-python"># ❌ The loop way — 3x the code, 100x slower
-def normalize_loop(X):
-    result = np.empty_like(X)
+<p>Here's what strides mean. Our ratings array is stored as 12 numbers, side by side, in memory:</p>
+
+<pre><code class="language-python"># In memory (float32 = 4 bytes each):
+# [5.0][3.0][1.0][4.0][4.0][5.0][3.0][2.0][1.0][2.0][5.0][4.0]
+#  ^--- byte 0          ^--- byte 16         ^--- byte 32</code></pre>
+
+<p>The strides tuple <code>(16, 4)</code> says: to move to the next row, jump 16 bytes forward. To move to the next column, jump 4 bytes forward. That's it. NumPy knows the data starts at some memory address, and it uses strides to compute where any element lives.</p>
+
+<p>Want element <code>[1, 2]</code> — Bob's rating of the third movie? Start at the base address, jump <code>1 × 16 + 2 × 4 = 24</code> bytes forward. There it is. No search. No traversal. Direct computation.</p>
+
+<pre><code class="language-python">print(ratings[1, 2])  # 3.0 — Bob's rating of movie #3
+# NumPy computed: base_address + 1*16 + 2*4 = base + 24 bytes</code></pre>
+
+<p>Why 16 bytes per row? Because each row has 4 elements, each element is 4 bytes (float32), and 4 × 4 = 16. The stride is literally "how many bytes until the next element along this axis."</p>
+
+<p>Let me bring back our bookshelf analogy. If the books (numbers) are arranged spine-to-spine on one long shelf, the strides tell you how far to reach to grab the next book in each direction. "Every 4 inches for the next column, every 16 inches for the next row." The books themselves don't move. You're changing the rule for which book to grab next.</p>
+
+<p>This seems like a small thing, but it has a massive consequence: if you can change the strides without changing the data, you can change the shape of the array without copying anything.</p>
+
+<!-- ════════════════════════════════════════════ -->
+<!-- VIEWS AND COPIES -->
+<!-- ════════════════════════════════════════════ -->
+
+<h2>Views and Copies — The Consequence of Strides</h2>
+
+<p>When you slice an array with basic indexing — <code>ratings[0]</code>, <code>ratings[:, 1:3]</code>, <code>ratings[::2]</code> — NumPy doesn't copy any data. It creates a new array object that points to the same block of memory, with different shape and strides. This new object is called a <strong>view</strong>.</p>
+
+<pre><code class="language-python">alice = ratings[0]        # Alice's ratings
+print(alice.shape)         # (4,)
+print(alice.strides)       # (4,)
+print(np.shares_memory(alice, ratings))  # True — same data!</code></pre>
+
+<p>Alice's ratings live inside the same memory block as the full ratings array. NumPy adjusted the starting pointer (to the beginning of row 0) and the shape (just 4 elements now). Modifying <code>alice[0]</code> will modify <code>ratings[0, 0]</code>. They're the same bytes.</p>
+
+<p>I've been bitten by this more times than I'd like to admit. You slice an array, modify the slice thinking you have your own copy, and then wonder why the original array changed. The fix is straightforward — use <code>.copy()</code> when you need independence.</p>
+
+<pre><code class="language-python">alice_copy = ratings[0].copy()   # independent data
+alice_copy[0] = 999
+print(ratings[0, 0])              # still 5.0 — original untouched</code></pre>
+
+<p>The rule for when you get a view versus a copy is important enough to commit to memory. <strong>Basic slicing</strong> (using colons and integers) gives you a <strong>view</strong>. <strong>Fancy indexing</strong> (using a list of indices like <code>arr[[0, 2]]</code>) and <strong>boolean masking</strong> (like <code>arr[arr &gt; 3]</code>) give you <strong>copies</strong>. The reason is that basic slicing can always be expressed as a change in strides and offset, while fancy indexing picks arbitrary elements that may not form a regular pattern in memory.</p>
+
+<p>When you're unsure, <code>np.shares_memory(a, b)</code> will tell you the truth.</p>
+
+<p>Now — transpose. When you call <code>ratings.T</code>, NumPy doesn't rearrange any data. It swaps the strides.</p>
+
+<pre><code class="language-python">print(ratings.strides)     # (16, 4) — rows are 16 bytes apart, columns 4
+print(ratings.T.strides)   # (4, 16) — now columns are 4 bytes apart, rows 16
+
+print(np.shares_memory(ratings, ratings.T))  # True — same data, different strides</code></pre>
+
+<p>A transpose is free. Zero cost. It's a metadata change. But here's the subtle consequence: the transposed array is no longer C-contiguous — the rows aren't laid out consecutively in memory anymore. Some operations on non-contiguous arrays are slower because the CPU's cache can't predict which memory addresses you'll access next. We'll come back to this when we talk about why NumPy is fast.</p>
+
+<!-- ════════════════════════════════════════════ -->
+<!-- BROADCASTING -->
+<!-- ════════════════════════════════════════════ -->
+
+<h2>Broadcasting from Scratch</h2>
+
+<p>Broadcasting confused me for a long time. Not the rules — the rules fit on an index card. What confused me was <em>how</em> it worked without copying data. Now that we understand strides, we can see the trick.</p>
+
+<p>Back to our recommendation engine. We have our 3×4 ratings matrix, and we want to center each user's ratings — subtract their mean so that a 3.5 becomes 0.0, a 5 becomes +1.5, and so on. This is a common preprocessing step.</p>
+
+<pre><code class="language-python">user_means = ratings.mean(axis=1, keepdims=True)
+print(user_means.shape)  # (3, 1)
+print(user_means)
+# [[3.25],
+#  [3.5 ],
+#  [3.  ]]
+
+centered = ratings - user_means
+print(centered.shape)  # (3, 4) — it worked. But how?</code></pre>
+
+<p>We subtracted a <code>(3, 1)</code> array from a <code>(3, 4)</code> array and got a <code>(3, 4)</code> result. NumPy "broadcast" the means across the columns. It behaved <em>as if</em> the <code>(3, 1)</code> means were repeated 4 times to become <code>(3, 4)</code>, but it never actually copied the data. Internally, it set the stride along axis 1 to zero — meaning "when you move to the next column, don't move in memory." Same number, read four times.</p>
+
+<p>The broadcasting rules determine when this is allowed. They're applied from the rightmost dimension, working left.</p>
+
+<p>Compare the shapes dimension by dimension, starting from the right. Two dimensions are compatible if they're equal, or if one of them is 1. If neither condition holds, NumPy raises a <code>ValueError</code>. If one array has fewer dimensions, pad its shape with 1s on the left.</p>
+
+<p>Let's trace through our example to see the rules in action.</p>
+
+<pre><code class="language-python"># ratings shape:     (3, 4)
+# user_means shape:  (3, 1)
+#
+# Rightmost dim: 4 vs 1 → 1 stretches to 4 ✓
+# Next dim:      3 vs 3 → equal ✓
+# Result shape:  (3, 4)</code></pre>
+
+<p>Another example — suppose we want to add a "movie popularity bonus" to each column. We have a 1D array of four bonuses, one per movie.</p>
+
+<pre><code class="language-python">bonus = np.array([0.5, 0.0, 0.2, 0.1])   # shape (4,)
+adjusted = ratings + bonus
+
+# ratings shape:  (3, 4)
+# bonus shape:    (4,)    → padded to (1, 4)
+#
+# Rightmost dim: 4 vs 4 → equal ✓
+# Next dim:      3 vs 1 → 1 stretches to 3 ✓
+# Result shape:  (3, 4)</code></pre>
+
+<p>The bonus array was treated as if it had a leading dimension of 1, then stretched to 3 rows. No loop. No copy. One underlying C operation.</p>
+
+<p>Here's where it gets dangerous. Shapes like <code>(1000, 1)</code> and <code>(1, 5000)</code> are broadcast-compatible. Both dimensions are 1, so both stretch. The result is <code>(1000, 5000)</code> — five million elements materialized from two small arrays. I've seen this silently allocate gigabytes in production code when someone forgot a <code>keepdims=True</code> and the shapes accidentally aligned.</p>
+
+<p>I still print shapes compulsively. <code>print(a.shape, b.shape)</code> before any binary operation. It's the single most effective debugging habit I've picked up in years of NumPy work.</p>
+
+<!-- ════════════════════════════════════════════ -->
+<!-- WHY NUMPY IS FAST -->
+<!-- ════════════════════════════════════════════ -->
+
+<h2>Why NumPy Is Fast — The Assembly Line Under the Hood</h2>
+
+<p>We've been saying "NumPy runs in C" and "no Python loop." Let's make that concrete, because the speed difference isn't 2× or 5× — it's often 100× or more, and the reason goes deeper than "C is faster than Python."</p>
+
+<p>Think of a Python <code>for</code> loop over a list of numbers as a craftsman hand-building each item. For every number, the Python interpreter has to: look up the variable in a dictionary, check its type, unbox the raw value from the Python object, perform the arithmetic, box the result back into a new Python object, and update the reference count for garbage collection. That's six or seven operations of overhead for one addition.</p>
+
+<p>NumPy is an assembly line. When you write <code>a + b</code> on two arrays, Python makes <em>one</em> call into C. The C function knows the type (no checking needed — every element has the same dtype), knows the memory layout (contiguous, predictable), and blasts through the data in a tight loop. Modern CPUs can even use <strong>SIMD instructions</strong> — Single Instruction, Multiple Data — to add 4 or 8 float32 values in a single CPU cycle. The assembly line doesn't stop and inspect each item. It processes them in bulk, on a conveyor belt.</p>
+
+<p>For matrix operations — <code>A @ B</code>, <code>np.linalg.solve</code>, <code>np.linalg.svd</code> — NumPy goes even further. It delegates to <strong>BLAS</strong> (Basic Linear Algebra Subprograms) and <strong>LAPACK</strong> (Linear Algebra Package). These are libraries that have been optimized for decades, with hand-tuned assembly code for specific CPU architectures. OpenBLAS and Intel's MKL use cache-blocking strategies, multi-threaded execution, and instruction-level parallelism that no Python code could ever touch.</p>
+
+<p>My favorite thing about BLAS is that, aside from the high-level algorithmic ideas (like Strassen's algorithm and cache-oblivious blocking), nobody is completely certain why the fastest implementations are <em>quite</em> as fast as they are. The hand-tuned assembly in something like GotoBLAS was written by one person who understood a specific CPU's pipeline deeply enough to squeeze out the last few percent. It's part science, part craft.</p>
+
+<p>Let's make the speed tangible with our movie ratings example. Suppose we scale up to 10,000 users and 5,000 movies. We want each user's average rating.</p>
+
+<pre><code class="language-python">big_ratings = np.random.randn(10000, 5000).astype(np.float32)
+
+# The Python loop way
+def mean_loop(X):
+    result = np.empty(X.shape[0])
     for i in range(X.shape[0]):
-        row_mean = X[i].mean()
-        row_std = X[i].std()
-        result[i] = (X[i] - row_mean) / (row_std + 1e-8)
+        total = 0.0
+        for j in range(X.shape[1]):
+            total += X[i, j]
+        result[i] = total / X.shape[1]
     return result
 
-# ✅ The vectorized way — one shot
-def normalize_vectorized(X):
-    mean = X.mean(axis=1, keepdims=True)
-    std = X.std(axis=1, keepdims=True)
-    return (X - mean) / (std + 1e-8)</code></pre>
+# The NumPy way
+means = big_ratings.mean(axis=1)
 
-<p>Same result. The vectorized version is cleaner <em>and</em> faster — typically 50-100× on large arrays. The speed gap only grows with array size because the C code can use SIMD instructions and cache-friendly access patterns that Python loops can never touch.</p>
+# The loop takes ~15 seconds. NumPy takes ~5 milliseconds.
+# That's a 3000× difference. Not a typo.</code></pre>
 
-<p>A real example — cosine similarity between all pairs of vectors. This shows up in retrieval, recommendation, and embedding analysis:</p>
+<p>The gap comes from all three layers stacking up: no interpreter overhead, cache-friendly memory access on a contiguous block, and SIMD instructions processing multiple values at once. The Python loop hits none of those. The NumPy call hits all three.</p>
 
-<pre><code class="language-python">def cosine_similarity_matrix(A, B):
-    """A: (n, d), B: (m, d) → (n, m) similarity matrix"""
-    A_norm = A / np.linalg.norm(A, axis=1, keepdims=True)
-    B_norm = B / np.linalg.norm(B, axis=1, keepdims=True)
-    return A_norm @ B_norm.T  # matmul handles the pairwise dot products
-
-# No loops. Handles 10k × 10k comparisons in under a second.</code></pre>
+<p>This has a practical consequence that becomes a kind of design principle: if you're writing a <code>for</code> loop over array elements in NumPy, you're almost certainly doing it wrong. The game is to express your computation as operations on whole arrays — what's called <strong>vectorization</strong>. Not because it's elegant (though it is), but because it's the only way to access the fast path.</p>
 
 <!-- ════════════════════════════════════════════ -->
-<h2>Reshaping</h2>
+<!-- REST STOP -->
+<!-- ════════════════════════════════════════════ -->
 
-<p><code>.reshape()</code>, <code>.ravel()</code>, <code>.flatten()</code>, <code>.T</code> — these change how you view the data, not the data itself.</p>
+<h2>Rest Stop and an Off-Ramp</h2>
 
-<p>The key insight: <code>reshape</code> gives you a <strong>view</strong>, not a copy. Modifying the reshaped array modifies the original. This is fast (zero-cost) but can bite you if you don't expect it. <code>.flatten()</code> always copies if you need independence.</p>
+<p>Congratulations on making it this far. You can stop here if you want.</p>
 
-<p><code>np.newaxis</code> (or just <code>None</code>) is the trick for adding dimensions, and it's critical for making broadcasting work when shapes don't quite line up:</p>
+<p>You now have a mental model of what a NumPy array actually is: a raw block of memory, plus four pieces of metadata (pointer, shape, strides, dtype) that tell NumPy how to interpret that block. You understand that views share memory, that broadcasting works by manipulating strides, and that the speed comes from delegating tight loops to compiled C and BLAS. That model is genuinely useful — it will help you debug shape errors, understand why <code>.T</code> is free, and write vectorized code that doesn't fight the library.</p>
 
-<pre><code class="language-python"># You have a 1D array of biases, shape (128,)
-# Model expects (1, 128) for broadcasting across a batch
-bias = np.zeros(128)
-bias_row = bias[np.newaxis, :]    # shape (1, 128) — ready to broadcast
+<p>It doesn't tell the complete story. We haven't talked about how reshape connects to strides, how <code>einsum</code> can express any tensor operation in one line, or the production gotchas that separate working code from fast code. But the core mental model? You have it.</p>
 
-# Reshaping for model input: (n_samples, n_features) → (n_samples, 1, n_features)
-X = np.random.randn(64, 784)
-X_seq = X[:, np.newaxis, :]       # shape (64, 1, 784) — added a "sequence" dimension</code></pre>
+<p>The short version of everything that follows: reshape changes strides without copying when it can; <code>einsum</code> is a compact language for saying "contract these tensor axes"; and in production, watch your dtypes, avoid appending in loops, and use in-place operations when memory matters. There. You're 80% of the way there.</p>
 
-<p>Use <code>-1</code> in reshape to auto-compute one dimension: <code>arr.reshape(-1, 3)</code> means "whatever number of rows gives me 3 columns."</p>
+<p>But if the discomfort of not knowing what's underneath is nagging at you, read on.</p>
 
 <!-- ════════════════════════════════════════════ -->
-<h2>dtypes</h2>
+<!-- RESHAPING -->
+<!-- ════════════════════════════════════════════ -->
 
-<p>ML models almost always use <code>float32</code>. NumPy defaults to <code>float64</code>, which wastes memory for no accuracy gain in training. Cast early.</p>
+<h2>Reshaping and the Stride Connection</h2>
 
-<table>
-<thead><tr><th>dtype</th><th>Size</th><th>Precision</th><th>When to Use</th></tr></thead>
-<tbody>
-<tr><td><code>float64</code></td><td>8 bytes</td><td>~15 decimal digits</td><td>NumPy default. Scientific computing, loss where precision matters. Avoid on GPU.</td></tr>
-<tr><td><code>float32</code></td><td>4 bytes</td><td>~7 decimal digits</td><td><strong>ML standard.</strong> PyTorch/TensorFlow default. Always cast to this before training.</td></tr>
-<tr><td><code>int64</code></td><td>8 bytes</td><td>Exact integers</td><td>NumPy default int. Large indices, counts.</td></tr>
-<tr><td><code>int32</code></td><td>4 bytes</td><td>Exact integers</td><td>Class labels, token IDs. Sufficient for most index arrays.</td></tr>
-<tr><td><code>float16</code></td><td>2 bytes</td><td>~3 decimal digits</td><td>Mixed-precision training (AMP). Limited range — use with care.</td></tr>
-<tr><td><code>uint8</code></td><td>1 byte</td><td>0–255</td><td>Image pixels, quantized model weights.</td></tr>
-<tr><td><code>bool</code></td><td>1 byte</td><td>True/False</td><td>Masks, filter conditions.</td></tr>
-</tbody>
-</table>
+<p>Now that we understand strides, reshaping becomes transparent. When you call <code>.reshape()</code>, NumPy tries to find new strides that make the same flat block of memory look like a different shape. If it can, it returns a view — zero cost. If it can't (because the data isn't contiguous in the right way), it copies.</p>
 
-<p>The one method to remember: <code>X = X.astype(np.float32)</code>. A <code>(100000, 768)</code> embedding table in float64 is 587 MB; in float32 it's 293 MB. That difference compounds across every operation.</p>
+<pre><code class="language-python"># Our ratings: shape (3, 4), strides (16, 4)
+flat = ratings.reshape(12)      # shape (12,), strides (4,)
+print(np.shares_memory(flat, ratings))  # True — same data, new strides
+
+# Reshape to (4, 3)
+reshaped = ratings.reshape(4, 3)  # shape (4, 3), strides (12, 4)
+print(np.shares_memory(reshaped, ratings))  # True — still a view</code></pre>
+
+<p>The <code>-1</code> shorthand lets NumPy compute one dimension for you. <code>ratings.reshape(-1, 2)</code> means "give me 2 columns, figure out the rows yourself." NumPy divides the total number of elements (12) by 2 and gets 6 rows. This is essential when you know one dimension but the other depends on the data size — batching, for instance.</p>
+
+<p><code>np.newaxis</code> (which is literally <code>None</code>) adds a dimension of size 1 by inserting a stride of 0. This is the tool for making broadcasting work when shapes don't quite line up.</p>
+
+<pre><code class="language-python"># user_means has shape (3,) — we need (3, 1) for broadcasting
+user_means = ratings.mean(axis=1)          # shape (3,)
+user_means_col = user_means[:, np.newaxis]  # shape (3, 1)
+
+# Now we can subtract: (3, 4) - (3, 1) → (3, 4)
+centered = ratings - user_means_col</code></pre>
+
+<p>The <code>keepdims=True</code> parameter does the same thing inline — <code>ratings.mean(axis=1, keepdims=True)</code> directly gives shape <code>(3, 1)</code> instead of <code>(3,)</code>. I use <code>keepdims</code> almost always now. It makes the broadcasting intention explicit and avoids the newaxis dance.</p>
+
+<p>One subtlety: <code>.reshape()</code> returns a view, but <code>.flatten()</code> always returns a copy. <code>.ravel()</code> returns a view when it can, a copy when it must. If you want guaranteed independence, use <code>.flatten()</code>. If you want speed and don't mind shared data, use <code>.ravel()</code>.</p>
+
+<p>And <code>.T</code> — transpose — is the reshape that swaps strides, as we saw earlier. For 2D arrays it's rows-to-columns. For higher dimensions, <code>.transpose(2, 0, 1)</code> lets you specify the axis order. This comes up constantly when converting between image formats: <code>(height, width, channels)</code> to <code>(channels, height, width)</code> is a single <code>.transpose(2, 0, 1)</code> — zero copy, instant.</p>
 
 <!-- ════════════════════════════════════════════ -->
-<h2>Common Operations Quick Reference</h2>
+<!-- EINSUM -->
+<!-- ════════════════════════════════════════════ -->
 
-<table>
-<thead><tr><th>Operation</th><th>What It Does</th><th>Gotcha</th></tr></thead>
-<tbody>
-<tr><td><code>np.dot(a, b)</code></td><td>Dot product (1D) or matrix multiply (2D)</td><td>Behaves differently for 1D vs 2D. Use <code>@</code> for matrices — it's unambiguous.</td></tr>
-<tr><td><code>A @ B</code> / <code>np.matmul</code></td><td>Matrix multiplication</td><td>Doesn't broadcast the same way as <code>*</code>. Last two axes are the matrix dims.</td></tr>
-<tr><td><code>np.concatenate([a, b], axis=0)</code></td><td>Join along existing axis</td><td>Arrays must match on all <em>other</em> dimensions. Use <code>np.stack</code> to create a new axis.</td></tr>
-<tr><td><code>np.stack([a, b])</code></td><td>Join along a <em>new</em> axis</td><td>All arrays must have the same shape. Creates a new leading dimension by default.</td></tr>
-<tr><td><code>np.where(cond, a, b)</code></td><td>Element-wise if/else</td><td>With one arg, returns indices (tuple of arrays). With three args, returns values.</td></tr>
-<tr><td><code>np.clip(a, lo, hi)</code></td><td>Clamp values to a range</td><td>In-place: <code>np.clip(a, 0, 1, out=a)</code>. Useful for gradient clipping, pixel clamping.</td></tr>
-<tr><td><code>np.sort(a)</code></td><td>Returns sorted copy</td><td><code>a.sort()</code> sorts in-place. <code>np.argsort</code> returns the <em>indices</em> that would sort — critical for ranking.</td></tr>
-</tbody>
-</table>
+<h2>einsum — The Universal Tensor Language</h2>
+
+<p>For a long time I avoided <code>np.einsum</code>. It looked like hieroglyphics. Then I watched someone rewrite five separate operations — transpose, batch matrix multiply, trace, outer product — each in a single einsum call, and I realized I'd been doing things the hard way.</p>
+
+<p><code>einsum</code> stands for Einstein summation. The idea is that you label each axis of each input tensor with a letter, and the letters that appear in the output are kept. Letters that appear only in the input get summed over. That's the entire language.</p>
+
+<p>Let's start with our movie ratings. We want the dot product between Alice's ratings and Bob's ratings — a measure of how similar their tastes are.</p>
+
+<pre><code class="language-python">alice = ratings[0]   # shape (4,)
+bob = ratings[1]      # shape (4,)
+
+# The familiar way
+similarity = np.dot(alice, bob)   # 39.0
+
+# The einsum way
+similarity = np.einsum('i,i->', alice, bob)   # 39.0</code></pre>
+
+<p>Read the subscript string: both inputs have one axis labeled <code>i</code>. The output (after the <code>-></code>) has no axes — so <code>i</code> gets summed over. Multiply corresponding elements, sum them up. That's a dot product.</p>
+
+<p>Now suppose we want all pairwise similarities — a 3×3 matrix where entry <code>[a, b]</code> is the dot product of user <code>a</code>'s ratings with user <code>b</code>'s ratings.</p>
+
+<pre><code class="language-python"># The matmul way
+sim_matrix = ratings @ ratings.T   # (3, 4) @ (4, 3) → (3, 3)
+
+# The einsum way
+sim_matrix = np.einsum('ik,jk->ij', ratings, ratings)   # (3, 3)</code></pre>
+
+<p>The string says: first array has axes <code>i</code> and <code>k</code>, second array has axes <code>j</code> and <code>k</code>. Output keeps <code>i</code> and <code>j</code>, sums over <code>k</code>. That's matrix multiplication — and the einsum version makes the contraction axis (<code>k</code>) explicit. No need to mentally track which dimension is which in a transpose.</p>
+
+<p>Where einsum becomes truly essential is batch operations. Imagine we have embeddings for a batch of sequences and we need attention scores — the dot product of every query with every key, separately for each item in the batch.</p>
+
+<pre><code class="language-python">Q = np.random.randn(8, 10, 64).astype(np.float32)   # (batch, seq_len, d_model)
+K = np.random.randn(8, 10, 64).astype(np.float32)
+
+# Without einsum: transpose K, then batch matmul
+scores = np.matmul(Q, K.transpose(0, 2, 1))   # (8, 10, 10)
+
+# With einsum
+scores = np.einsum('bid,bjd->bij', Q, K)   # (8, 10, 10)</code></pre>
+
+<p>The einsum version says exactly what we mean: for each batch <code>b</code>, take the dot product of query position <code>i</code> with key position <code>j</code>, summing over the model dimension <code>d</code>. No transposing, no worrying about which axis to swap. The letters <em>are</em> the documentation.</p>
+
+<p>I'm still developing my intuition for when einsum is faster versus when it's equivalent to a well-written <code>@</code> call. For simple matrix multiplies, <code>@</code> often delegates to BLAS more directly. For complex multi-axis contractions — especially with batch dimensions — einsum can be faster because it avoids creating intermediate arrays. The <code>optimize=True</code> flag helps einsum find efficient contraction orderings for large expressions.</p>
 
 <!-- ════════════════════════════════════════════ -->
-<h2>Nice to Know</h2>
+<!-- PRODUCTION PATTERNS -->
+<!-- ════════════════════════════════════════════ -->
 
-<p><strong><code>np.einsum</code></strong> — Einstein summation. Express any tensor contraction in a short string: <code>np.einsum('ij,jk->ik', A, B)</code> is matmul. Becomes essential for attention scores (<code>'bqd,bkd->bqk'</code>) and batch operations. Learn it when you hit your first transformer.</p>
+<h2>Production Patterns and the Gotchas That Bite</h2>
 
-<p><strong><code>np.memmap</code></strong> — memory-mapped arrays that load from disk on demand. Your escape hatch when datasets exceed RAM.</p>
+<p>There's a gap between "I can use NumPy" and "I can use NumPy in production without burning money on compute." These are the patterns I've learned the hard way, mostly by watching monitoring dashboards spike at 3 AM.</p>
 
-<p><strong><code>np.random.default_rng(seed=42)</code></strong> — the modern way to do reproducible random. Always seed your Generator in experiments. Avoid the legacy <code>np.random.seed()</code> global state.</p>
+<p><strong>Cast your dtypes early.</strong> NumPy defaults to <code>float64</code>. ML frameworks use <code>float32</code>. A <code>(100000, 768)</code> embedding matrix in float64 is 587 MB; in float32 it's 293 MB. That difference compounds across every operation, every intermediate array, every gradient. Cast on ingest: <code>X = np.array(data, dtype=np.float32)</code>.</p>
 
-<p><strong>Structured arrays</strong> — heterogeneous dtypes per column in a single ndarray. Niche, but useful for C struct interop without Pandas.</p>
+<pre><code class="language-python"># Don't:
+X = np.array(data)               # float64 by default
+X = X.astype(np.float32)          # wasteful — allocated float64 first, then copied
+
+# Do:
+X = np.array(data, dtype=np.float32)   # right from the start</code></pre>
+
+<p><strong>Never grow arrays in a loop.</strong> Every call to <code>np.append()</code> or <code>np.concatenate()</code> inside a loop allocates a brand new array and copies everything. For <code>n</code> iterations, that's O(n²) time and memory. Collect results in a Python list, then convert once at the end.</p>
+
+<pre><code class="language-python"># This is O(n²) and will destroy your performance:
+result = np.array([])
+for x in stream:
+    result = np.append(result, process(x))
+
+# This is O(n):
+results = []
+for x in stream:
+    results.append(process(x))
+result = np.array(results, dtype=np.float32)</code></pre>
+
+<p><strong>Use in-place operations when you can.</strong> <code>a += b</code> modifies <code>a</code> in place. <code>a = a + b</code> creates a new array for the result, then points <code>a</code> at it, leaving the old one for garbage collection. For large arrays in tight loops — like a training step — the memory allocation overhead adds up.</p>
+
+<p><strong>Boolean masks compose.</strong> When filtering data, combine masks with <code>&amp;</code> (and), <code>|</code> (or), and <code>~</code> (not) before applying them, rather than filtering multiple times.</p>
+
+<pre><code class="language-python"># Filter to confident positive predictions
+mask = (predictions > 0.9) & (labels == 1)
+selected = X[mask]   # one copy, one filter
+
+# Not this — two intermediate arrays:
+step1 = X[predictions > 0.9]      # copy
+step2 = step1[labels_subset == 1]   # another copy</code></pre>
+
+<p><strong>Understand contiguity.</strong> After a transpose or non-trivial slice, your array may not be C-contiguous. BLAS operations expect contiguous data; if your array isn't, NumPy will silently copy it before calling BLAS. If you're doing repeated matrix operations on transposed data, call <code>np.ascontiguousarray()</code> once up front rather than letting NumPy copy it on every operation.</p>
+
+<p><strong>Random numbers: use the modern API.</strong> The legacy <code>np.random.seed(42)</code> sets a global state — any library you import could read from or write to it, making your experiments non-reproducible in subtle ways. The modern approach creates a local generator.</p>
+
+<pre><code class="language-python">rng = np.random.default_rng(seed=42)
+batch = rng.choice(dataset, size=256, replace=False)
+noise = rng.normal(0, 0.1, size=(256, 768))</code></pre>
+
+<p>The <code>default_rng</code> generator uses the PCG64 algorithm — statistically better than the old Mersenne Twister, and crucially, its state is local to that object. Pass the <code>rng</code> object through your code, and your randomness is fully controlled and reproducible.</p>
+
+<p><strong>Memory-mapped arrays for datasets that exceed RAM.</strong> <code>np.memmap</code> lets you create an array backed by a file on disk. Only the pages you access get loaded into memory. For a 50 GB dataset, you can work with it as if it were a normal array, and the operating system handles the paging.</p>
+
+<pre><code class="language-python">mmap = np.memmap('embeddings.dat', dtype=np.float32,
+                  mode='r', shape=(10_000_000, 768))
+batch = mmap[1000:2000]   # only loads these 1000 rows from disk</code></pre>
 
 <!-- ════════════════════════════════════════════ -->
-<h2>What You Should Now Be Able To Do</h2>
+<!-- WRAP-UP -->
+<!-- ════════════════════════════════════════════ -->
+
+<h2>Wrap-Up</h2>
+
+<p>If you're still with me, thank you. I hope it was worth it.</p>
+
+<p>We started from the question of why Python lists are too slow for numerical work and discovered that the answer is a single contiguous block of memory, interpreted by four pieces of metadata. We saw how strides let NumPy create views, transposes, and broadcasts without copying data. We followed the call from Python down into C and BLAS to understand where the 100× speedup actually comes from. We used einsum to express tensor contractions in a language that reads like a recipe. And we looked at the production patterns that separate code that works from code that works at scale.</p>
+
+<p>My hope is that the next time you see a broadcasting error, or a mysterious shape mismatch, or a training loop that's slower than it should be, instead of trying random transposes until something works, you'll check the strides, print the shapes, and trace the path from your Python call down to the contiguous memory underneath — having a pretty darn good mental model of what's going on under the hood.</p>
+
+<!-- ════════════════════════════════════════════ -->
+<!-- RESOURCES -->
+<!-- ════════════════════════════════════════════ -->
+
+<h2>Resources and Credits</h2>
 
 <ul>
-  <li>Apply the three broadcasting rules mentally and predict the output shape of any operation</li>
-  <li>Rewrite a Python loop over array elements as a single vectorized NumPy expression</li>
-  <li>Use boolean masking to filter arrays by condition — and know it returns a copy, not a view</li>
-  <li>Reshape arrays for model input using <code>.reshape()</code>, <code>np.newaxis</code>, and <code>-1</code></li>
-  <li>Cast arrays to <code>float32</code> before training and explain why it matters</li>
-  <li>Debug shape mismatches by printing <code>.shape</code> at every step</li>
-  <li>Write a vectorized feature normalization and cosine similarity without any loops</li>
+  <li><a href="https://numpy.org/doc/stable/reference/internals.html">NumPy Internals Documentation</a> — the official guide to array internals. Dry but authoritative. This is where I finally understood the PyArrayObject C struct.</li>
+  <li><a href="https://numpy.org/doc/stable/user/basics.broadcasting.html">NumPy Broadcasting Guide</a> — the official broadcasting rules, with diagrams. Wildly helpful once you have the strides intuition.</li>
+  <li>Travis Oliphant, <em>Guide to NumPy</em> (2006) — the O.G. NumPy book by its creator. Dense, but it's the primary source for understanding design decisions.</li>
+  <li><a href="https://ipython-books.github.io/45-understanding-the-internals-of-numpy-to-avoid-unnecessary-array-copying/">IPython Cookbook: NumPy Internals</a> — an insightful walkthrough of views, copies, and when data gets silently duplicated.</li>
+  <li><a href="https://ajcr.net/stride-guide-part-1/">Stride Guide by Alex Riley</a> — the single best visual explanation of strides I've found. Made the concept click for me permanently.</li>
+  <li><a href="https://numpy.org/neps/nep-0019-rng-policy.html">NEP 19: Random Number Generator Policy</a> — the design document behind <code>default_rng</code>. If you've ever wondered why the legacy API is bad, this is unforgettable reading.</li>
 </ul>
 
       <div class="page-nav">
