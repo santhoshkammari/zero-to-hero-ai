@@ -299,184 +299,220 @@
   <span class="tag">The bottleneck problem · Bahdanau · Luong · Dynamic context</span>
 </div>
 
-<div class="tldr">
-  <div class="tldr-label">TL;DR</div>
-  <p>Seq2Seq models encode an input sequence into a single fixed-size vector, then decode it into an output sequence. The problem: that one vector is a brutal bottleneck — long inputs get crushed. Attention fixes this by letting the decoder look back at <em>every</em> encoder hidden state at every generation step, computing a fresh weighted combination each time. Bahdanau attention uses a small neural network to score relevance; Luong attention simplifies it to a dot product. The core mechanic — score, softmax, weighted sum — is the same pattern that later becomes self-attention in Transformers.</p>
+<!-- ════════════════════ OPENING ════════════════════ -->
+
+<p>I avoided the attention mechanism for longer than I care to admit. I could use LSTMs. I could build encoder-decoder models that sort of worked on short sentences. Every time someone mentioned "Bahdanau attention" I'd nod slowly and change the subject. Finally the discomfort of not knowing what was actually happening inside these models grew too great for me. Here is that dive.</p>
+
+<p>The <strong>sequence-to-sequence</strong> (seq2seq) architecture was introduced in 2014 by Sutskever, Vinyals, and Le, alongside parallel work by Cho et al. It's the workhorse behind machine translation, text summarization, and chatbot response generation — any task where both the input and output are sequences of variable length. The <strong>attention mechanism</strong>, introduced by Bahdanau, Cho, and Bengio in 2015, fixed the most crippling flaw of the original design, and in doing so, planted the seed that grew into the Transformer.</p>
+
+<p>Before we start, a heads-up. We'll be working through matrix multiplications, probability distributions, and a bit of neural network machinery. You don't need to know any of it beforehand. We'll add the concepts we need one at a time, with explanation.</p>
+
+<p>This isn't a short journey, but I hope you'll be glad you came.</p>
+
+<!-- ════════════════════ TABLE OF CONTENTS ════════════════════ -->
+
+<div style="margin: 2rem 0; padding-left: 1.5rem; border-left: 3px solid var(--accent, #6c63ff);">
+  <p style="margin:0.3rem 0">A tiny translation problem</p>
+  <p style="margin:0.3rem 0">Two RNNs stitched together</p>
+  <p style="margin:0.3rem 0">The sticky-note bottleneck</p>
+  <p style="margin:0.3rem 0">Training the decoder: teacher forcing</p>
+  <p style="margin:0.3rem 0">Choosing words at inference: beam search and friends</p>
+  <p style="margin:0.3rem 0">Rest stop and an off-ramp</p>
+  <p style="margin:0.3rem 0">Letting the decoder peek: Bahdanau attention</p>
+  <p style="margin:0.3rem 0">A faster way to score: Luong attention</p>
+  <p style="margin:0.3rem 0">The three-step pattern you'll see everywhere</p>
+  <p style="margin:0.3rem 0">Reading the alignment map</p>
+  <p style="margin:0.3rem 0">From cross-attention to self-attention</p>
+  <p style="margin:0.3rem 0">Wrap-up</p>
+  <p style="margin:0.3rem 0">Resources</p>
 </div>
 
-<h2>The Encoder-Decoder Architecture</h2>
+<!-- ════════════════════ A TINY TRANSLATION PROBLEM ════════════════════ -->
 
-<p>Translation, summarization, question answering — these are all tasks where the input and output are both <em>sequences</em>, but of different lengths. You can't do this with a single RNN that maps one input to one output at each time step. You need two stages: one that <em>reads</em> the input, and one that <em>writes</em> the output.</p>
+<h2>A Tiny Translation Problem</h2>
 
-<p>That's the <strong>encoder-decoder</strong> (or seq2seq) architecture, introduced by Sutskever et al. (2014) and Cho et al. (2014). Here's the setup:</p>
+<p>Imagine we're building a model that translates short Spanish cooking instructions into English. We'll start absurdly small — a vocabulary of seven Spanish words and seven English words — so we can trace every moving part by hand.</p>
 
-<ul>
-  <li>The <strong>encoder</strong> is an RNN (usually LSTM or GRU) that reads the input sequence token by token. It produces a hidden state at each step, but we only care about the <strong>final hidden state</strong> — a single vector that supposedly summarizes the entire input. This is the <strong>context vector</strong>, often called <code>c</code>.</li>
-  <li>The <strong>decoder</strong> is a separate RNN that takes the context vector as its initial hidden state and generates the output sequence one token at a time. At each step, it predicts the next token, feeds that prediction back in as input, and repeats until it emits a special end-of-sequence token.</li>
-</ul>
+<p>Our training data has three sentences:</p>
+
+<pre><code class="language-text">"corta las cebollas"   →  "chop the onions"
+"mezcla las especias"  →  "mix the spices"
+"cocina las cebollas"  →  "cook the onions"</code></pre>
+
+<p>Both sides are sequences, but they don't have to be the same length. A Spanish sentence might be three words; the English translation might be four. Or vice versa. We can't do this with a single RNN that maps one input token to one output token at each time step. We need something with two stages: one that <em>reads</em> the Spanish, and one that <em>writes</em> the English.</p>
+
+<p>That two-stage setup is the heart of everything in this section. Let's build it.</p>
+
+<!-- ════════════════════ TWO RNNS STITCHED TOGETHER ════════════════════ -->
+
+<h2>Two RNNs Stitched Together</h2>
+
+<p>The idea, published independently by Sutskever et al. and Cho et al. in 2014, is elegantly simple. Take two RNNs and connect them through a single vector.</p>
+
+<p>The first RNN is the <strong>encoder</strong>. It reads the Spanish input one token at a time — "corta," then "las," then "cebollas" — and after each token, updates its hidden state. Think of the hidden state as the encoder's running summary of everything it's seen so far. After the last token, the final hidden state is supposed to capture the meaning of the entire input sentence. This final vector is called the <strong>context vector</strong>.</p>
+
+<p>The second RNN is the <strong>decoder</strong>. It receives the context vector as its starting state and generates the English output one token at a time. It predicts "chop," feeds "chop" back as input, predicts "the," feeds "the" back, predicts "onions," and finally emits a special end-of-sequence token that says "I'm done."</p>
+
+<p>That's it. Two RNNs, one vector passed between them. The architecture is called <strong>encoder-decoder</strong>, or <strong>seq2seq</strong> (sequence-to-sequence).</p>
 
 <pre><code class="language-python">import torch
 import torch.nn as nn
 
 class Encoder(nn.Module):
-    def __init__(self, vocab_size, embed_dim, hidden_dim, num_layers=1):
+    def __init__(self, vocab_size, embed_dim, hidden_dim):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, embed_dim)
-        self.rnn = nn.LSTM(embed_dim, hidden_dim, num_layers, batch_first=True)
+        self.rnn = nn.LSTM(embed_dim, hidden_dim, batch_first=True)
 
     def forward(self, src):
-        # src: (batch, src_len)
-        embedded = self.embedding(src)        # (batch, src_len, embed_dim)
-        outputs, (hidden, cell) = self.rnn(embedded)
-        # outputs: all hidden states — we'll need these later for attention
-        # hidden, cell: final states — this is the "context vector"
-        return outputs, hidden, cell
+        embedded = self.embedding(src)
+        # all_states: hidden state at every position (we'll need these later)
+        # (hidden, cell): the final states — our "context vector"
+        all_states, (hidden, cell) = self.rnn(embedded)
+        return all_states, hidden, cell
 
 class Decoder(nn.Module):
-    def __init__(self, vocab_size, embed_dim, hidden_dim, num_layers=1):
+    def __init__(self, vocab_size, embed_dim, hidden_dim):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, embed_dim)
-        self.rnn = nn.LSTM(embed_dim, hidden_dim, num_layers, batch_first=True)
+        self.rnn = nn.LSTM(embed_dim, hidden_dim, batch_first=True)
         self.fc_out = nn.Linear(hidden_dim, vocab_size)
 
     def forward(self, token, hidden, cell):
-        # token: (batch, 1) — one token at a time
-        embedded = self.embedding(token)      # (batch, 1, embed_dim)
+        embedded = self.embedding(token)
         output, (hidden, cell) = self.rnn(embedded, (hidden, cell))
-        prediction = self.fc_out(output.squeeze(1))  # (batch, vocab_size)
+        prediction = self.fc_out(output.squeeze(1))
         return prediction, hidden, cell</code></pre>
 
-<p>The encoder reads "Je suis étudiant" and compresses it into a vector. The decoder takes that vector and produces "I am a student," one word at a time. Elegant. Simple. And deeply flawed.</p>
+<p>The encoder reads "corta las cebollas" and compresses it into a vector. The decoder takes that vector and produces "chop the onions," one word at a time.</p>
 
-<h2>The Bottleneck Problem</h2>
+<p>Let's trace through our tiny example. After the encoder processes "corta," its hidden state holds some representation of "corta." After "las," the state blends in "las." After "cebollas," the final hidden state — a vector of, say, 256 numbers — is supposed to represent "chop the onions." The decoder starts from that vector, and at each step it predicts the next English word.</p>
 
-<p>Here's the flaw. That context vector — the final hidden state of the encoder — is a fixed-size vector. Maybe 256 dimensions. Maybe 1024. Doesn't matter. It's <em>fixed</em>.</p>
+<p>Elegant. And deeply flawed.</p>
 
-<p>Now imagine translating a 50-word sentence. All 50 words, their relationships, their nuances — crammed into one vector. Now imagine a 200-word paragraph. Same vector size. The model has to compress increasingly more information into the same tiny space. Something has to give.</p>
+<!-- ════════════════════ THE STICKY-NOTE BOTTLENECK ════════════════════ -->
 
-<div class="callout-danger">
-  <div class="callout-title">The Information Bottleneck</div>
-  <p>BLEU scores on machine translation tasks <em>collapsed</em> as sentence length increased beyond ~20 tokens. The context vector simply couldn't hold enough information. This wasn't a training problem — it was an architectural ceiling. You could train longer, use more data, make the hidden state bigger — but the fundamental issue remained: <strong>one vector is not enough to represent a variable-length sequence</strong>.</p>
-</div>
+<h2>The Sticky-Note Bottleneck</h2>
 
-<p>Think of it like this. Someone reads you a full page of instructions in French, then you have to recite them in English — but you're only allowed to take one sticky note of fixed size between the reading and the reciting. Short instructions? Fine. A whole page? You're going to lose details.</p>
+<p>Here's the flaw. That context vector is a fixed-size vector. Maybe 256 dimensions. Maybe 1024. Doesn't matter. It's <em>fixed</em>.</p>
 
-<p>What you <em>want</em> is to look back at the original French text while you're translating. Not all of it at once — just the relevant parts for whatever word you're currently producing. That's attention.</p>
+<p>For our three-word cooking instructions, this is fine. 256 dimensions is more than enough to represent "chop the onions." But imagine we're translating a 50-word recipe paragraph. All 50 words, their relationships, which ingredients go with which verbs, the order of the steps — crammed into the same 256-dimensional vector. Now imagine a 200-word recipe. Same vector size.</p>
 
-<h2>Teacher Forcing and Exposure Bias</h2>
+<p>I'll be honest — when I first saw BLEU scores tanking on long sentences, I assumed it was a data problem. Not enough long examples in the training set, maybe. It took me an embarrassingly long time to realize the problem was structural: one vector is fundamentally not enough to represent a variable-length sequence.</p>
 
-<p>Before we get to attention, there's a training detail you need to understand, because it affects every seq2seq model.</p>
+<p>Picture it this way. Someone reads you a full page of cooking instructions in Spanish. Then you have to recite the English version. But the only thing you're allowed to carry from the reading to the reciting is one sticky note. A sticky note of fixed size. Short instructions? You scribble the key words and you're fine. A full page? You're going to lose details. The quantities, the timing, the specific technique for julienning vs. dicing — gone.</p>
 
-<p>During inference, the decoder feeds its own previous prediction as input to the next step. If it predicts "I" at step 1, it feeds "I" into step 2 to predict the next word. But during training, this creates a problem: early in training, the model's predictions are garbage. If it predicts "potato" when it should have said "I," then step 2 receives "potato" as context and has no chance of getting the rest right. Errors compound. Training becomes extremely slow.</p>
+<p>What you <em>want</em> is to keep the original Spanish text on the table and glance back at the relevant line while you're translating each part. Not all of it at once. The line that matters for whatever word you're currently producing.</p>
 
-<p><strong>Teacher forcing</strong> is the fix: during training, ignore the model's own predictions and feed the <em>ground truth</em> previous token instead. The model always gets the correct previous word, so it can focus on learning to predict the next one. Convergence is dramatically faster.</p>
+<p>That's attention. But before we get there, we need to talk about how we train the decoder in the first place, because the training story has its own plot twist.</p>
 
-<div class="callout-warning">
-  <div class="callout-title">Exposure Bias</div>
-  <p>Teacher forcing creates a train/inference mismatch called <strong>exposure bias</strong>. During training, the decoder always sees perfect previous tokens. During inference, it sees its own (imperfect) predictions. The model has never learned to recover from its own mistakes, so a single wrong prediction can derail the entire output sequence. This is especially damaging for long outputs.</p>
-</div>
+<!-- ════════════════════ TEACHER FORCING ════════════════════ -->
 
-<p><strong>Scheduled sampling</strong> (Bengio et al., 2015) is the standard compromise. Start training with 100% teacher forcing, then gradually increase the probability of using the model's own predictions. By the end of training, the model has practiced recovering from its own errors. In code, it's just a coin flip at each step:</p>
+<h2>Training the Decoder: Teacher Forcing</h2>
+
+<p>During inference, the decoder feeds its own previous prediction as input to the next step. If it predicts "chop" at step 1, "chop" goes into step 2 to predict the next word. This sounds reasonable until you think about what happens during training.</p>
+
+<p>Early in training, the model's predictions are garbage. Suppose it predicts "onions" when it should have said "chop." Now step 2 receives "onions" as context and has to somehow predict "the" based on the information that the sentence starts with "onions." It can't. The prediction at step 2 is garbage too. And step 3 receives that garbage, and it compounds. The errors cascade down the sequence like dominoes. Training becomes agonizingly slow.</p>
+
+<p>The fix is called <strong>teacher forcing</strong>, and the name captures the idea well. During training, we ignore the model's own predictions. Instead, we feed the correct previous token — the ground truth — at every step. The model always sees "chop" before predicting "the," and always sees "the" before predicting "onions," regardless of what it would have predicted on its own. This is like a teacher who corrects each step before the student moves on. Convergence is dramatically faster.</p>
+
+<p>But teacher forcing creates a subtle problem. During training, the decoder always sees perfect previous tokens. During inference, it sees its own imperfect predictions. The model has practiced translating in a world where it never makes mistakes. Then we drop it into a world where it makes mistakes constantly. This train/inference mismatch is called <strong>exposure bias</strong>, and it's especially damaging for long outputs where a single early error can derail the entire sequence.</p>
+
+<p>I still occasionally mix up which direction the fix goes, so let me be explicit. <strong>Scheduled sampling</strong> (Bengio et al., 2015) starts training with 100% teacher forcing — all ground truth, all the time. Then, as training progresses, it gradually <em>increases</em> the probability of feeding the model's own predictions back in. By the end of training, the model has practiced recovering from its own errors. In code, it's a coin flip at each time step:</p>
 
 <pre><code class="language-python">import random
 
-def train_step(decoder, encoder_out, target_seq, teacher_forcing_ratio=0.5):
-    hidden, cell = encoder_out
-    # Start with &lt;SOS&gt; token
-    input_token = target_seq[:, 0:1]
+def train_decoder_step(decoder, encoder_hidden, target_seq,
+                       teacher_forcing_ratio=0.5):
+    hidden, cell = encoder_hidden
+    input_token = target_seq[:, 0:1]   # start with &lt;SOS&gt; token
     outputs = []
 
     for t in range(1, target_seq.size(1)):
         prediction, hidden, cell = decoder(input_token, hidden, cell)
         outputs.append(prediction)
 
-        # Scheduled sampling: sometimes use truth, sometimes use prediction
-        if random.random() < teacher_forcing_ratio:
-            input_token = target_seq[:, t:t+1]          # ground truth
+        # coin flip: ground truth or own prediction?
+        if random.random() &lt; teacher_forcing_ratio:
+            input_token = target_seq[:, t:t+1]
         else:
-            input_token = prediction.argmax(dim=-1, keepdim=True)  # own prediction
+            input_token = prediction.argmax(dim=-1, keepdim=True)
 
     return torch.stack(outputs, dim=1)</code></pre>
 
-<h2>Decoding Strategies</h2>
+<p>The ratio typically follows a schedule — 1.0 at the start of training (pure teacher forcing), decaying toward 0.5 or lower as the model improves. The exact schedule is one of those things you tune by experiment.</p>
 
-<p>At inference time, the decoder needs a strategy for choosing the next token from its probability distribution. This choice matters a lot more than people realize — the same model can produce wildly different outputs depending on how you decode.</p>
+<!-- ════════════════════ DECODING STRATEGIES ════════════════════ -->
 
-<table>
-  <thead>
-    <tr>
-      <th>Strategy</th>
-      <th>How It Works</th>
-      <th>Tradeoff</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><strong>Greedy</strong></td>
-      <td>Always pick the highest-probability token</td>
-      <td>Fast but misses better sequences that start with lower-probability tokens</td>
-    </tr>
-    <tr>
-      <td><strong>Beam search</strong></td>
-      <td>Keep top-<em>k</em> partial sequences at each step, expand all, prune back to top-<em>k</em></td>
-      <td>Better than greedy; beam width 4–10 is typical. Can produce repetitive, "safe" text</td>
-    </tr>
-    <tr>
-      <td><strong>Top-k sampling</strong></td>
-      <td>Sample from only the top <em>k</em> most likely tokens</td>
-      <td>More diverse than beam search; <em>k</em>=40 is a common default. Fixed <em>k</em> can be too wide or too narrow depending on context</td>
-    </tr>
-    <tr>
-      <td><strong>Nucleus (top-p)</strong></td>
-      <td>Sample from the smallest set of tokens whose cumulative probability ≥ <em>p</em></td>
-      <td>Adapts the candidate set size dynamically. <em>p</em>=0.9–0.95 is typical. Currently the most popular strategy for open-ended generation</td>
-    </tr>
-  </tbody>
-</table>
+<h2>Choosing Words at Inference: Beam Search and Friends</h2>
 
-<p>Beam search dominates when there's one "right" answer (translation). Sampling methods win when you want creativity (story generation, dialogue). Temperature scaling adjusts the distribution's sharpness before sampling — low temperature (0.2–0.5) makes the model more confident; high temperature (1.0+) makes it more random.</p>
+<p>At inference time, the decoder produces a probability distribution over the entire vocabulary at each step. It needs a strategy for choosing which token to emit. This choice matters more than most people realize — the same trained model can produce wildly different outputs depending on how you decode.</p>
 
-<pre><code class="language-python">import torch
-import torch.nn.functional as F
+<p>The most obvious strategy is <strong>greedy decoding</strong>: at each step, pick the single highest-probability token and move on. It's fast, but it's short-sighted. A word that looks best right now might lead to a dead end two steps later. Imagine the model is 60% sure the next word is "cook" and 40% sure it's "prepare." Greedy picks "cook." But maybe "prepare the spiced mixture" is a much better translation, and the model never gets a chance to explore that path.</p>
 
-def top_p_sample(logits, p=0.9, temperature=1.0):
-    """Nucleus (top-p) sampling from logits."""
-    logits = logits / temperature
-    sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-    cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+<p><strong>Beam search</strong> fixes this by keeping multiple candidates alive at once. The key parameter is the <strong>beam width</strong>, often called <em>k</em>. Let's trace through beam search with k=2 on our cooking example, starting from the &lt;SOS&gt; token.</p>
 
-    # Zero out tokens beyond the nucleus
-    sorted_mask = cumulative_probs - F.softmax(sorted_logits, dim=-1) >= p
-    sorted_logits[sorted_mask] = float('-inf')
+<p>Step 1: the model predicts probabilities for the first word. Suppose "chop" gets probability 0.6 and "cook" gets 0.3. We keep both — these are our two beams. Step 2: for <em>each</em> beam, we expand to all possible next words. "chop the" might score 0.6 × 0.8 = 0.48, "chop a" might score 0.6 × 0.1 = 0.06, "cook the" might score 0.3 × 0.7 = 0.21. We have four candidates (two per beam), but we only keep the top 2: "chop the" (0.48) and "cook the" (0.21). We continue expanding and pruning until both beams produce an end token. The beam with the highest cumulative score wins.</p>
 
-    # Sample from the filtered distribution
-    probs = F.softmax(sorted_logits, dim=-1)
-    sampled_index = torch.multinomial(probs, 1)
-    return sorted_indices.gather(-1, sampled_index)</code></pre>
+<p>Beam search dominates when there's a single "right" answer, as in translation. A beam width of 4 to 10 is typical. Wider beams find better translations but cost proportionally more compute, and they tend to produce repetitive, "safe" text — the kind of bland translation that is technically correct but lacks any spark.</p>
 
-<h2>Bahdanau Attention: Let the Decoder Look Back</h2>
+<p>For tasks where you want diversity — story generation, dialogue, creative writing — sampling methods win. <strong>Top-k sampling</strong> picks randomly from the k most likely tokens. <strong>Nucleus sampling</strong> (also called top-p) picks from the smallest set of tokens whose cumulative probability exceeds a threshold p, typically 0.9 to 0.95. This adapts the candidate set size dynamically — confident predictions get a narrow set, uncertain ones get a wider pool. <strong>Temperature</strong> is a knob that sharpens or flattens the distribution before sampling: low temperature (0.2–0.5) makes the model more confident, high temperature (1.0+) makes it more adventurous.</p>
 
-<p>In 2015, Bahdanau, Cho, and Bengio published <em>"Neural Machine Translation by Jointly Learning to Align and Translate"</em> — one of the most important papers in modern deep learning. The idea was refreshingly simple: instead of forcing the decoder to work from a single context vector, <strong>let it look at all of the encoder's hidden states at every step and decide which ones matter right now</strong>.</p>
+<p>All of these decoding strategies work with any seq2seq model — with or without attention. They're about what happens <em>after</em> the model produces probabilities. But the quality of those probabilities is only as good as the architecture that produces them, and our vanilla seq2seq architecture has that sticky-note bottleneck.</p>
 
-<p>Here's how it works. The encoder is bidirectional, producing a hidden state <code>hᵢ</code> for each input position <code>i</code>. At each decoder step <code>t</code>, we compute an <strong>attention score</strong> between the decoder's current state <code>sₜ₋₁</code> and every encoder state <code>hᵢ</code>:</p>
+<!-- ════════════════════ REST STOP ════════════════════ -->
+
+<h2>Rest Stop and an Off-Ramp</h2>
+
+<p>Congratulations on making it this far. If you want, you can stop here.</p>
+
+<p>You now have a working mental model of the seq2seq architecture: an encoder that reads, a decoder that writes, a context vector that connects them. You understand why that context vector is a bottleneck for long sequences. You know how teacher forcing speeds up training and how scheduled sampling patches its train/inference gap. You know how beam search explores multiple candidate outputs.</p>
+
+<p>That's a solid foundation. It doesn't tell the complete story — we haven't addressed the bottleneck yet — but if you're in a hurry, here's the one-sentence version of what's coming: attention lets the decoder look back at every encoder state instead of relying on one compressed vector, and the specific way it does the looking is a three-step pattern (score, normalize, aggregate) that becomes the foundation of the entire Transformer architecture.</p>
+
+<p>There. You're 70% of the way there.</p>
+
+<p>But if the discomfort of not knowing what's underneath is nagging at you, read on.</p>
+
+<!-- ════════════════════ BAHDANAU ATTENTION ════════════════════ -->
+
+<h2>Letting the Decoder Peek: Bahdanau Attention</h2>
+
+<p>In 2015, Dzmitry Bahdanau, Kyunghyun Cho, and Yoshua Bengio published "Neural Machine Translation by Jointly Learning to Align and Translate." The title is modest. The impact was seismic.</p>
+
+<p>The idea: instead of forcing the decoder to work from one sticky note, let it look at the full stack of encoder notes — one for every input position — and decide which notes matter <em>right now</em>.</p>
+
+<p>Let's trace through it with our cooking example. The encoder reads "corta las cebollas" and produces a hidden state at each position: h₁ for "corta," h₂ for "las," h₃ for "cebollas." In the original paper the encoder is <strong>bidirectional</strong> — it reads the input left-to-right and right-to-left, then concatenates the two hidden states at each position — so each hᵢ captures context from both directions. We now have three vectors sitting there, waiting to be consulted.</p>
+
+<p>The decoder is about to predict its first English word. Its current hidden state is s₀ (initialized from the encoder). The question is: which of the three encoder states should it pay attention to?</p>
+
+<p>The first time I saw the scoring formula, it looked like three random operations stitched together. But there's a logic to it. We want a single number — a score — that says "how relevant is encoder state hᵢ to what the decoder is trying to do right now?" Bahdanau's solution is to run both vectors through a small neural network:</p>
 
 <p><code>eₜᵢ = v<sup>T</sup> tanh(W₁ sₜ₋₁ + W₂ hᵢ)</code></p>
 
-<p>This is a small neural network — two linear projections, a tanh, and a dot product with a learned vector <code>v</code>. It's called <strong>additive attention</strong> (or concat attention) because we add the two projections before the nonlinearity.</p>
+<p>Let me unpack that. W₁ projects the decoder state into a shared space. W₂ projects the encoder state into the same space. We add them together — that's why this is called <strong>additive attention</strong>. The tanh squashes the sum into the range [-1, 1]. Then v (a learned vector) collapses the result into a single scalar score. Three operations, but each one has a clear job: project, combine, score.</p>
 
-<p>Next, we normalize the scores into a probability distribution over the input positions:</p>
+<p>We compute this score for every encoder position, giving us a list of scores: e₁, e₂, e₃ for our three-word input. Now we normalize them into a probability distribution using softmax:</p>
 
-<p><code>αₜᵢ = softmax(eₜᵢ) = exp(eₜᵢ) / Σⱼ exp(eₜⱼ)</code></p>
+<p><code>αₜᵢ = exp(eₜᵢ) / (exp(eₜ₁) + exp(eₜ₂) + exp(eₜ₃))</code></p>
 
-<p>These <code>α</code> values are the <strong>attention weights</strong>. They tell us: "When generating output token <code>t</code>, pay this much attention to input position <code>i</code>." They sum to 1 across all input positions.</p>
+<p>These α values are the <strong>attention weights</strong>. They sum to 1 and tell us: "When generating the current output token, pay this fraction of your attention to each input position."</p>
 
-<p>Finally, we compute a <strong>weighted sum</strong> of the encoder hidden states:</p>
+<p>Suppose when generating "chop," the weights come out as α₁=0.85 (strong focus on "corta"), α₂=0.05 ("las"), α₃=0.10 ("cebollas"). The model is telling us it's mostly looking at "corta" — the verb — to produce the English verb "chop." That makes intuitive sense.</p>
 
-<p><code>cₜ = Σᵢ αₜᵢ hᵢ</code></p>
+<p>The final step: we compute a weighted sum of the encoder hidden states.</p>
 
-<p>This <code>cₜ</code> is the <strong>context vector for step t</strong> — and crucially, it's <em>different</em> for every decoder step. When translating "student" from our French sentence, the model can put most of its attention weight on "étudiant." When producing "am," it focuses on "suis." Each output token gets its own custom view of the input.</p>
+<p><code>cₜ = α₁ h₁ + α₂ h₂ + α₃ h₃</code></p>
 
-<pre><code class="language-python">class BahdanauAttention(nn.Module):
+<p>This weighted sum cₜ is the <strong>context vector for this specific decoder step</strong>. And here's what makes it powerful: it's <em>different</em> at every step. When the decoder moves on to predict "the," it recomputes new scores, gets new weights (maybe more spread out, since "las" is an article that maps to "the"), and produces a new context vector. When it predicts "onions," it shifts attention to "cebollas." Each output token gets its own custom view of the input.</p>
+
+<p>The sticky note is gone. The decoder has the full Spanish text on the table and glances at the relevant line for each word.</p>
+
+<pre><code class="language-python">import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class BahdanauAttention(nn.Module):
     def __init__(self, encoder_dim, decoder_dim, attention_dim):
         super().__init__()
         self.W1 = nn.Linear(decoder_dim, attention_dim, bias=False)
@@ -487,246 +523,215 @@ def top_p_sample(logits, p=0.9, temperature=1.0):
         # decoder_state:   (batch, decoder_dim)
         # encoder_outputs: (batch, src_len, encoder_dim)
 
-        # Project decoder state and broadcast across source positions
         query = self.W1(decoder_state).unsqueeze(1)   # (batch, 1, attn_dim)
         keys = self.W2(encoder_outputs)               # (batch, src_len, attn_dim)
 
-        # Additive scoring
+        # additive scoring: project, combine, score
         scores = self.v(torch.tanh(query + keys))     # (batch, src_len, 1)
         scores = scores.squeeze(-1)                   # (batch, src_len)
 
-        # Normalize to attention weights
-        weights = F.softmax(scores, dim=-1)            # (batch, src_len)
+        weights = F.softmax(scores, dim=-1)           # (batch, src_len)
 
-        # Weighted sum of encoder states
-        context = torch.bmm(weights.unsqueeze(1), encoder_outputs)  # (batch, 1, enc_dim)
-        context = context.squeeze(1)                   # (batch, enc_dim)
+        # weighted sum of encoder states
+        context = torch.bmm(
+            weights.unsqueeze(1), encoder_outputs
+        ).squeeze(1)                                  # (batch, enc_dim)
 
         return context, weights</code></pre>
 
-<p>The context vector <code>cₜ</code> is then concatenated with the decoder's current input and fed into the decoder RNN. Some implementations concatenate it with the decoder output instead. Either way, the decoder now has direct access to the input — not through a bottleneck, but through a <em>dynamic, content-based lookup</em>.</p>
+<p>One detail that tripped me up for a while: Bahdanau computes attention <em>before</em> the decoder RNN step. The decoder state used for scoring is sₜ₋₁ — the state from the <em>previous</em> step. The resulting context vector gets concatenated with the current input embedding and fed into the decoder RNN to produce sₜ. This ordering matters because it means attention influences the decoder's hidden state, not the other way around.</p>
 
-<h2>Luong Attention: Simpler Scoring</h2>
+<p>The limitation? That small neural network inside the scoring function. It has learnable parameters (W₁, W₂, v), which makes it flexible but also somewhat slow. For every decoder step, we compute a forward pass through this mini-network for every encoder position. With a 100-token input and a 50-token output, that's 5,000 forward passes through the scoring network in a single sentence. People tolerated this cost for a year, but everyone suspected there had to be a leaner way.</p>
 
-<p>Later in 2015, Luong et al. published <em>"Effective Approaches to Attention-based Neural Machine Translation"</em> with a streamlined variant. The key difference: instead of a neural network for scoring, just use a <strong>dot product</strong>.</p>
+<!-- ════════════════════ LUONG ATTENTION ════════════════════ -->
 
-<p>Luong proposed three scoring functions:</p>
+<h2>A Faster Way to Score: Luong Attention</h2>
 
-<table>
-  <thead>
-    <tr>
-      <th>Variant</th>
-      <th>Score Function</th>
-      <th>Parameters</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><strong>Dot</strong></td>
-      <td><code>eₜᵢ = sₜ<sup>T</sup> hᵢ</code></td>
-      <td>None — requires encoder and decoder dims to match</td>
-    </tr>
-    <tr>
-      <td><strong>General</strong></td>
-      <td><code>eₜᵢ = sₜ<sup>T</sup> W hᵢ</code></td>
-      <td>One weight matrix <code>W</code></td>
-    </tr>
-    <tr>
-      <td><strong>Concat</strong></td>
-      <td><code>eₜᵢ = v<sup>T</sup> tanh(W[sₜ; hᵢ])</code></td>
-      <td>Equivalent to Bahdanau</td>
-    </tr>
-  </tbody>
-</table>
+<p>Later in 2015, Minh-Thang Luong, Hieu Pham, and Christopher Manning published "Effective Approaches to Attention-based Neural Machine Translation" with a streamlined alternative. The question they asked: do we really need a neural network to compute relevance scores, or can we get away with something cheaper?</p>
 
-<p>The dot variant is the most popular because it's fast and has zero additional parameters. It also scales well — which turns out to be important when we get to Transformers.</p>
+<p>Their most popular variant replaces Bahdanau's mini-network with a plain <strong>dot product</strong>:</p>
 
-<p>Another difference: Bahdanau computes attention <em>before</em> the decoder RNN step (using <code>sₜ₋₁</code>). Luong computes it <em>after</em> (using <code>sₜ</code>). The Luong approach feeds the current decoder output through attention, then combines the context with the output to make the prediction. In practice, both work well.</p>
+<p><code>eₜᵢ = sₜ<sup>T</sup> hᵢ</code></p>
 
-<pre><code class="language-python">class LuongAttention(nn.Module):
-    def __init__(self, method, hidden_dim):
-        super().__init__()
-        self.method = method
-        if method == 'general':
-            self.W = nn.Linear(hidden_dim, hidden_dim, bias=False)
-        elif method == 'concat':
-            self.W = nn.Linear(hidden_dim * 2, hidden_dim, bias=False)
-            self.v = nn.Linear(hidden_dim, 1, bias=False)
+<p>That's it. Multiply the decoder state and the encoder state element-wise, sum the products. No learned parameters at all — the dot product is free. This is called <strong>multiplicative attention</strong> (because scores arise from multiplying vectors, as opposed to Bahdanau's additive combination).</p>
 
+<p>Let's make this concrete with our cooking example. Suppose at decoder step 2, the decoder state sₜ is a vector [0.3, -0.5, 0.8, 0.1] and the encoder state for "cebollas" is h₃ = [0.2, -0.4, 0.9, 0.0]. The dot product is (0.3×0.2) + (-0.5×-0.4) + (0.8×0.9) + (0.1×0.0) = 0.06 + 0.20 + 0.72 + 0.0 = 0.98. High score — the decoder considers "cebollas" highly relevant at this step. Compare that with h₂ for "las," which might score 0.15. After softmax, "cebollas" gets most of the attention weight. Same three-step pattern: score, normalize, weighted sum.</p>
+
+<p>Luong proposed three scoring variants in total:</p>
+
+<p>The <strong>dot</strong> variant (sₜᵀ hᵢ) has zero extra parameters, which makes it fast and memory-efficient. The catch: it requires the encoder and decoder hidden dimensions to match — you can't take a dot product of vectors with different sizes.</p>
+
+<p>The <strong>general</strong> variant (sₜᵀ W hᵢ) inserts a learnable weight matrix W between the two vectors. This allows different dimensions and gives the model one knob to turn, adding expressiveness without the full overhead of Bahdanau's neural network.</p>
+
+<p>The <strong>concat</strong> variant (vᵀ tanh(W[sₜ; hᵢ])) concatenates the two states and runs them through the same architecture as Bahdanau. It's equivalent in expressiveness, included for completeness.</p>
+
+<p>There's a second structural difference between Bahdanau and Luong that's easy to miss. Bahdanau computes attention <em>before</em> the decoder RNN step, using the previous state sₜ₋₁. Luong computes attention <em>after</em> the RNN step, using the current state sₜ. The Luong decoder first runs the RNN to get sₜ, then uses sₜ to attend over the encoder, then combines the context vector with sₜ to make the final prediction. In practice, both orderings work well. The Luong approach is slightly more common in modern implementations because the dot product scoring integrates cleanly with the RNN output.</p>
+
+<pre><code class="language-python">class LuongDotAttention(nn.Module):
+    """Simplest Luong variant: dot-product scoring."""
     def forward(self, decoder_output, encoder_outputs):
         # decoder_output:  (batch, hidden_dim)
         # encoder_outputs: (batch, src_len, hidden_dim)
 
-        if self.method == 'dot':
-            # Simple dot product
-            scores = torch.bmm(
-                encoder_outputs,
-                decoder_output.unsqueeze(2)
-            ).squeeze(2)    # (batch, src_len)
-
-        elif self.method == 'general':
-            energy = self.W(encoder_outputs)   # (batch, src_len, hidden_dim)
-            scores = torch.bmm(
-                energy,
-                decoder_output.unsqueeze(2)
-            ).squeeze(2)
-
-        elif self.method == 'concat':
-            # Broadcast decoder output across source length
-            dec_expanded = decoder_output.unsqueeze(1).expand_as(encoder_outputs)
-            combined = torch.cat([dec_expanded, encoder_outputs], dim=2)
-            scores = self.v(torch.tanh(self.W(combined))).squeeze(2)
+        scores = torch.bmm(
+            encoder_outputs,
+            decoder_output.unsqueeze(2)
+        ).squeeze(2)                        # (batch, src_len)
 
         weights = F.softmax(scores, dim=-1)
-        context = torch.bmm(weights.unsqueeze(1), encoder_outputs).squeeze(1)
+        context = torch.bmm(
+            weights.unsqueeze(1),
+            encoder_outputs
+        ).squeeze(1)                        # (batch, hidden_dim)
+
         return context, weights</code></pre>
 
-<h2>The Mechanics: A Pattern You'll See Again</h2>
+<p>The dot product scoring is not only simpler — it's a direct ancestor of what happens inside the Transformer. When Vaswani et al. designed scaled dot-product attention in 2017, they took Luong's dot product and added one tweak: dividing by √d_k (the square root of the key dimension) to keep the scores from growing too large in high dimensions. The lineage is direct.</p>
 
-<p>Step back and notice the pattern. Every attention mechanism does exactly three things:</p>
+<p>But I'm getting ahead of myself. Let's step back and name the pattern that both Bahdanau and Luong share.</p>
 
-<ol>
-  <li><strong>Score</strong> — compute a scalar relevance between a <em>query</em> (decoder state) and each <em>key</em> (encoder state)</li>
-  <li><strong>Normalize</strong> — softmax over scores to get weights that sum to 1</li>
-  <li><strong>Aggregate</strong> — weighted sum of <em>values</em> (encoder states) using those weights</li>
-</ol>
+<!-- ════════════════════ THE THREE-STEP PATTERN ════════════════════ -->
 
-<p>Query, key, value. Score, softmax, weighted sum. Memorize this pattern. It's the same pattern that shows up in Transformer self-attention, cross-attention, multi-head attention — everywhere. The only things that change are (a) where the queries, keys, and values come from and (b) how you compute the score.</p>
+<h2>The Three-Step Pattern You'll See Everywhere</h2>
 
-<div class="callout-info">
-  <div class="callout-title">The QKV Connection</div>
-  <p>In Bahdanau/Luong attention, the <strong>query</strong> is the decoder hidden state, the <strong>keys</strong> are the encoder hidden states, and the <strong>values</strong> are also the encoder hidden states (keys = values). In Transformer attention, queries, keys, and values all get their own learned linear projections — but the underlying mechanic is identical. If you understand attention here, you already understand 80% of Transformers.</p>
-</div>
+<p>Every attention mechanism — Bahdanau, Luong, self-attention, cross-attention, multi-head attention — does exactly three things:</p>
 
-<h2>Attention as Alignment: Visualization</h2>
+<p>First, it computes a <strong>score</strong> between a <strong>query</strong> and each <strong>key</strong>. The query is what you're trying to match. The keys are the candidates you're searching through. The score says: "how relevant is this key to this query?" Bahdanau uses a neural network to compute the score. Luong uses a dot product. The Transformer uses a scaled dot product. Different mechanisms, same purpose.</p>
 
-<p>One beautiful side effect of attention: the weights <code>αₜᵢ</code> form a matrix that you can visualize. Rows are decoder steps (output tokens), columns are encoder steps (input tokens). Each cell's intensity shows how much the decoder focused on that input position when generating that output position.</p>
+<p>Second, it <strong>normalizes</strong> the scores into weights that sum to 1 using softmax. This turns raw scores into a probability distribution. "I'm 85% interested in position 1, 5% in position 2, 10% in position 3."</p>
 
-<p>For translation between languages with similar word order (English → French), you get a roughly diagonal pattern — output word 1 aligns with input word 1, and so on. For languages with different word order (English → Japanese), the alignment matrix shows the structural rearrangement the model has learned. Adjective-noun order flips, verbs move to the end — all visible in the attention pattern.</p>
+<p>Third, it computes a <strong>weighted sum</strong> of the <strong>values</strong> using those weights. In Bahdanau and Luong attention, the values are the encoder hidden states — the same vectors used as keys. In the Transformer, values get their own separate learned projection, which gives the model more flexibility.</p>
 
-<pre><code class="language-python">import matplotlib.pyplot as plt
-import numpy as np
+<p>Score. Normalize. Aggregate. Query, key, value. That's the entire machinery. If an interviewer asks you "what is attention?" — that's the answer. Everything else is details about where the Q, K, and V come from and how you compute the score.</p>
 
-def plot_attention(attention_weights, src_tokens, tgt_tokens):
-    """Visualize attention alignment matrix.
+<p>In the attention we've built so far, the <strong>query</strong> comes from the decoder (it's asking "what should I focus on?"), and the <strong>keys</strong> and <strong>values</strong> both come from the encoder (they're offering "here's what I have"). Because the query and key/value sources are different sequences, this is called <strong>cross-attention</strong>. We'll revisit that naming when we get to the Transformer, where queries, keys, and values can all come from the <em>same</em> sequence.</p>
 
-    attention_weights: (tgt_len, src_len) numpy array
-    src_tokens: list of source token strings
-    tgt_tokens: list of target token strings
-    """
-    fig, ax = plt.subplots(figsize=(8, 6))
-    cax = ax.matshow(attention_weights, cmap='Blues')
-    fig.colorbar(cax)
+<p>I'm still developing my intuition for why this particular formulation works so extraordinarily well. The mathematical structure is a soft version of a hash table lookup — the query finds the most relevant keys, and returns a blend of their associated values. My favorite thing about it is that, aside from high-level explanations like the one I gave, no one is completely certain why this pattern generalizes so powerfully across domains — language, vision, audio, protein structure. It works. Beautifully.</p>
 
-    ax.set_xticks(range(len(src_tokens)))
-    ax.set_yticks(range(len(tgt_tokens)))
-    ax.set_xticklabels(src_tokens, rotation=45, ha='left')
-    ax.set_yticklabels(tgt_tokens)
+<!-- ════════════════════ ALIGNMENT VISUALIZATION ════════════════════ -->
 
-    ax.set_xlabel('Source (encoder)')
-    ax.set_ylabel('Target (decoder)')
-    plt.tight_layout()
-    plt.show()
+<h2>Reading the Alignment Map</h2>
 
-# Example: French → English attention pattern
-src = ["Je", "suis", "étudiant", "&lt;EOS&gt;"]
-tgt = ["I", "am", "a", "student", "&lt;EOS&gt;"]
-# Simulated attention weights showing soft alignment
-attn = np.array([
-    [0.85, 0.10, 0.03, 0.02],   # "I"       → focuses on "Je"
-    [0.05, 0.82, 0.08, 0.05],   # "am"      → focuses on "suis"
-    [0.04, 0.10, 0.75, 0.11],   # "a"       → focuses on "étudiant" (no French "a")
-    [0.02, 0.05, 0.88, 0.05],   # "student" → focuses on "étudiant"
-    [0.01, 0.02, 0.02, 0.95],   # &lt;EOS&gt;     → focuses on &lt;EOS&gt;
-])
-plot_attention(attn, src, tgt)</code></pre>
+<p>One unexpectedly beautiful side effect of attention: the weights form a matrix you can look at with your eyes.</p>
 
-<p>These visualizations aren't just pretty — they're a debugging tool. If your translation model is failing on long sentences, plot the attention. If you see it collapsing to uniform weights (everything gets equal attention), the model has given up on aligning. If you see it fixating on a single source token for many output steps, it's probably stuck in a repetition loop.</p>
+<p>Every time the decoder generates an output token, it produces a set of attention weights — one weight per input position. Stack all those weight vectors into rows, and you get a 2D grid. Columns are input (Spanish) positions. Rows are output (English) positions. Each cell's intensity shows how much the decoder focused on that input word when generating that output word.</p>
 
-<h2>Putting It All Together: Seq2Seq with Attention</h2>
+<p>For our cooking example "corta las cebollas" → "chop the onions," the alignment matrix might look something like this:</p>
 
-<p>Here's a complete encoder-decoder model with Bahdanau attention. The key difference from vanilla seq2seq: the decoder receives a fresh context vector at every step instead of squeezing everything through one initial hidden state.</p>
+<pre><code class="language-python">import numpy as np
+
+# Rows = English output tokens, Columns = Spanish input tokens
+#                 corta   las    cebollas
+alignment = np.array([
+    [0.88,  0.04,  0.08],    # "chop"   — focuses on "corta" (the verb)
+    [0.06,  0.82,  0.12],    # "the"    — focuses on "las" (the article)
+    [0.03,  0.07,  0.90],    # "onions" — focuses on "cebollas" (the noun)
+])</code></pre>
+
+<p>The pattern is nearly diagonal — "chop" aligns with "corta," "the" aligns with "las," "onions" aligns with "cebollas." Spanish and English share similar word order here, so the alignment is tidy. For languages with different word order — say, English to Japanese, where the verb moves to the end — you'd see the alignment pattern shift and cross. Adjective-noun order flips. Subject-object-verb rearrangements. All visible in the matrix.</p>
+
+<p>These visualizations are not decorative. They're a genuine debugging tool. If your model is failing on long sentences, plot the attention. If you see the weights collapsing toward uniform (every input position gets roughly equal attention), the model has given up on aligning and is spreading its bets. If you see the decoder fixating on one input position for many output steps, it's probably stuck in a repetition loop — generating the same word over and over because it can't look away from one source token.</p>
+
+<p>I haven't figured out a great way to explain the subtlety of what "good" attention looks like without showing many examples, but the quick heuristic is: sharp attention (most weight concentrated on one or two source positions per output step) usually indicates the model has learned meaningful alignment. Fuzzy, spread-out attention usually indicates it hasn't.</p>
+
+<!-- ════════════════════ PUTTING IT TOGETHER ════════════════════ -->
+
+<h2>The Full Picture: Seq2Seq with Attention</h2>
+
+<p>Let's wire everything together. The complete architecture: an encoder that stores a hidden state at every input position, a Bahdanau attention module that computes a fresh context vector at every decoder step, and a decoder that uses both the context and its own state to predict each output token.</p>
 
 <pre><code class="language-python">class Seq2SeqWithAttention(nn.Module):
-    def __init__(self, src_vocab, tgt_vocab, embed_dim, hidden_dim, attn_dim):
+    def __init__(self, src_vocab, tgt_vocab, embed_dim,
+                 hidden_dim, attn_dim):
         super().__init__()
         self.encoder = Encoder(src_vocab, embed_dim, hidden_dim)
-        self.attention = BahdanauAttention(hidden_dim, hidden_dim, attn_dim)
-
-        self.decoder_embedding = nn.Embedding(tgt_vocab, embed_dim)
-        self.decoder_rnn = nn.LSTMCell(embed_dim + hidden_dim, hidden_dim)
+        self.attention = BahdanauAttention(
+            hidden_dim, hidden_dim, attn_dim
+        )
+        self.dec_embedding = nn.Embedding(tgt_vocab, embed_dim)
+        self.dec_rnn = nn.LSTMCell(embed_dim + hidden_dim, hidden_dim)
         self.output_proj = nn.Linear(hidden_dim * 2, tgt_vocab)
-        self.hidden_dim = hidden_dim
 
     def forward(self, src, tgt, teacher_forcing_ratio=0.5):
         batch_size, tgt_len = tgt.size()
-        encoder_outputs, hidden, cell = self.encoder(src)
-        # hidden: (1, batch, hidden_dim) → (batch, hidden_dim)
+        enc_outputs, hidden, cell = self.encoder(src)
         h = hidden.squeeze(0)
         c = cell.squeeze(0)
 
         outputs = []
-        input_token = tgt[:, 0]  # &lt;SOS&gt;
+        input_token = tgt[:, 0]
 
         for t in range(1, tgt_len):
-            embedded = self.decoder_embedding(input_token)  # (batch, embed_dim)
+            embedded = self.dec_embedding(input_token)
 
-            # Attention: query is current decoder state
-            context, attn_weights = self.attention(h, encoder_outputs)
+            # attention: decoder asks "what should I look at?"
+            context, _ = self.attention(h, enc_outputs)
 
-            # Combine embedding + context as decoder input
+            # feed both the embedded token and context into decoder
             rnn_input = torch.cat([embedded, context], dim=1)
-            h, c = self.decoder_rnn(rnn_input, (h, c))
+            h, c = self.dec_rnn(rnn_input, (h, c))
 
-            # Prediction from decoder state + context
-            prediction = self.output_proj(torch.cat([h, context], dim=1))
+            # predict from decoder state + context
+            prediction = self.output_proj(
+                torch.cat([h, context], dim=1)
+            )
             outputs.append(prediction)
 
-            # Teacher forcing decision
-            if random.random() < teacher_forcing_ratio:
+            # teacher forcing decision
+            if random.random() &lt; teacher_forcing_ratio:
                 input_token = tgt[:, t]
             else:
                 input_token = prediction.argmax(dim=-1)
 
-        return torch.stack(outputs, dim=1)
+        return torch.stack(outputs, dim=1)</code></pre>
 
-# Build and test
-model = Seq2SeqWithAttention(
-    src_vocab=8000, tgt_vocab=6000,
-    embed_dim=256, hidden_dim=512, attn_dim=128
-)
-src_batch = torch.randint(0, 8000, (4, 20))   # 4 sentences, max 20 tokens
-tgt_batch = torch.randint(0, 6000, (4, 25))   # target up to 25 tokens
-out = model(src_batch, tgt_batch)
-print(out.shape)  # (4, 24, 6000) — predictions for each target step</code></pre>
+<p>The difference from vanilla seq2seq is concentrated in one line: the attention call inside the loop. Instead of starting from one compressed vector and hoping for the best, the decoder consults the full set of encoder states at every step. It's the difference between memorizing a recipe and cooking with the recipe open on the counter.</p>
 
-<h2>The Bridge to Self-Attention</h2>
+<p>On the original WMT translation benchmarks, this architecture improved BLEU scores dramatically, especially for sentences longer than 20 tokens — exactly where vanilla seq2seq collapsed. The bottleneck was gone.</p>
 
-<p>Look at what attention gave us. The decoder no longer relies on a single compressed vector. It has direct access to the encoder's full memory — a dynamic, learned lookup mechanism. And it works beautifully for translation, summarization, and dialogue.</p>
+<!-- ════════════════════ BRIDGE TO SELF-ATTENTION ════════════════════ -->
 
-<p>But here's the question that unlocks the next revolution: <strong>what if we applied attention not between an encoder and a decoder, but within a single sequence?</strong></p>
+<h2>From Cross-Attention to Self-Attention</h2>
 
-<p>In Bahdanau and Luong attention, the query comes from the decoder and the keys/values come from the encoder — two different sequences. But there's nothing stopping us from making the query, keys, and values all come from the <em>same</em> sequence. Each token attends to every other token in the same sequence. "The cat sat on the mat" — the word "sat" can directly attend to "cat" regardless of how far apart they are. No hidden state needed as a middleman. No recurrence at all.</p>
+<p>Look at what attention gave us. The decoder no longer relies on a compressed sticky note. It has direct access to the encoder's full memory through a dynamic, learned lookup. The cooking recipe stays open on the counter.</p>
 
-<p>That's <strong>self-attention</strong>, and it's the foundation of the Transformer. We'll get there in the next sections. But the machinery — score, softmax, weighted sum — is exactly what you just learned. The only change is where the queries, keys, and values come from.</p>
+<p>Here's the question that unlocks the next revolution: what if we applied this same lookup not between two separate sequences, but within a single sequence?</p>
 
-<div class="callout-info">
-  <div class="callout-title">The Historical Arc</div>
-  <p>Seq2Seq (2014) gave us the encoder-decoder framework. Bahdanau attention (2015) eliminated the bottleneck. Luong attention (2015) simplified the scoring. Self-attention (2017) removed the recurrence entirely. Each step is a direct consequence of the one before. If you understand why the fixed context vector was a problem, everything that follows is the natural solution being refined.</p>
-</div>
+<p>In everything we've built so far, the query comes from the decoder and the keys and values come from the encoder. Two different sequences. But nothing about the score-normalize-aggregate pattern <em>requires</em> that. We could make the query, keys, and values all come from the same sequence.</p>
 
-<h2>What You Should Now Be Able To Do</h2>
+<p>Consider the sentence "The chef seasoned the steak before it was served." What does "it" refer to? A human reader knows "it" means "the steak," not "the chef." If we let every word attend to every other word in the same sentence, the representation of "it" can incorporate information from "steak" — regardless of how far apart they are. No recurrence needed. No hidden state threading the information through step by step. Direct connection.</p>
 
-<ul>
-  <li>Draw the encoder-decoder architecture and explain why the final hidden state is a bottleneck for long sequences</li>
-  <li>Explain teacher forcing, why it speeds up training, and how exposure bias arises from the train/inference mismatch</li>
-  <li>Compare greedy decoding, beam search, top-k, and nucleus sampling — and know when to use each</li>
-  <li>Write the three attention equations from memory: score → softmax → weighted sum</li>
-  <li>Explain the difference between Bahdanau (additive) and Luong (multiplicative) attention, and when each computes the context vector relative to the decoder RNN step</li>
-  <li>Implement a basic attention module in PyTorch and integrate it into an encoder-decoder model</li>
-  <li>Interpret an attention alignment matrix and use it to diagnose translation failures</li>
-  <li>Explain how cross-attention (encoder-decoder) naturally leads to self-attention (within a single sequence) — the query-key-value pattern is the bridge</li>
-</ul>
+<p>That's <strong>self-attention</strong>. Each position in the sequence attends to all positions, including itself. The query, key, and value all come from the same sequence. The scoring pattern — dot product, softmax, weighted sum — is exactly the same machinery you've been building intuition for this entire section.</p>
+
+<p>In 2017, Vaswani et al. published "Attention Is All You Need" and built the <strong>Transformer</strong> architecture entirely on self-attention, discarding recurrence altogether. The timeline is direct: Sutskever (2014) gave us the encoder-decoder framework. Bahdanau (2015) eliminated the bottleneck with cross-attention. Luong (2015) simplified the scoring to a dot product. Vaswani (2017) asked "what if attention is all we need?" and proved it was. Each step is a consequence of the one before it.</p>
+
+<p>We'll build the Transformer from scratch in the next section. But the hardest part — understanding what attention actually <em>does</em> and why it works — that's behind us.</p>
+
+<!-- ════════════════════ WRAP-UP ════════════════════ -->
+
+<h2>Wrap-Up</h2>
+
+<p>If you're still with me, thank you. I hope it was worth it.</p>
+
+<p>We started with the simplest possible problem — translating three-word cooking instructions between languages — and used it to expose the fundamental flaw in the original seq2seq design: the sticky-note bottleneck. We built the encoder-decoder architecture, grappled with the training challenges of teacher forcing and exposure bias, explored how beam search navigates the space of possible outputs, and then watched attention dissolve the bottleneck by letting the decoder consult the full input at every step. We traced the three-step pattern — score, normalize, aggregate — through Bahdanau's neural network and Luong's dot product, and saw how this same pattern points directly toward self-attention and the Transformer.</p>
+
+<p>My hope is that the next time you encounter the word "attention" in a paper or a codebase, instead of nodding vaguely and hoping context makes it clear, you'll picture the decoder scanning through encoder states, computing scores, softmaxing them into weights, and blending values — and you'll have a pretty darn good mental model of what's going on under the hood.</p>
+
+<!-- ════════════════════ RESOURCES ════════════════════ -->
+
+<h2>Resources</h2>
+
+<p><strong>Sutskever, Vinyals, Le — "Sequence to Sequence Learning with Neural Networks" (2014).</strong> The O.G. seq2seq paper. Worth reading for the input-reversal trick alone — they found that reversing the source sentence improved LSTM-based translation by reducing the effective dependency distance.</p>
+
+<p><strong>Bahdanau, Cho, Bengio — "Neural Machine Translation by Jointly Learning to Align and Translate" (2015).</strong> The paper that birthed attention. The alignment visualizations in Figure 3 are unforgettable.</p>
+
+<p><strong>Luong, Pham, Manning — "Effective Approaches to Attention-based Neural Machine Translation" (2015).</strong> Streamlined attention scoring and the global vs. local attention distinction. Cleaner writing than most papers in this space.</p>
+
+<p><strong>Jay Alammar — "Visualizing A Neural Machine Translation Model."</strong> Wildly helpful animated walkthrough of seq2seq with attention. If you learn better from visuals, start here.</p>
+
+<p><strong>Lilian Weng — "Attention? Attention!" (2018).</strong> An insightful survey that covers every major attention variant in one place, with consistent notation. I keep this bookmarked.</p>
+
+<p><strong>Vaswani et al. — "Attention Is All You Need" (2017).</strong> Where all of this leads. The Transformer paper. Everything we built in this section is the backstory to that paper's opening line.</p>
 
       <div class="page-nav">
         <a class="prev" href="s01.html">

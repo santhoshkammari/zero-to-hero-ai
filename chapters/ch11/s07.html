@@ -297,150 +297,249 @@
 <h1>Nice to Know</h1>
 <div class="chapter-meta">
   <span class="tag">Chapter 11: Natural Language Processing</span>
-  <span class="tag">Tooling · Metrics · Augmentation · Tips</span>
+  <span class="tag">Linguistics · Multimodal · Reasoning · Safety · Tool Use</span>
 </div>
 
-<p>These are things that are genuinely useful but don't need their own deep section. You'll encounter all of them in production. Here's what each is, when you'd reach for it, and enough to get started.</p>
+<p>I'll be honest — for a long time I thought NLP was a solved problem. You tokenize text, run it through a transformer, and collect your results. Then I started building a system that needed to handle customer messages in three languages, uploaded receipt photos, voice recordings, and policy-based reasoning — all at once. The "solved problem" crumbled in about an hour. The rabbit holes I fell into were fascinating, and I want to share what I found at the bottom of each one.</p>
+
+<p>This section covers the territories that sit at the edges of core NLP: how language has structure beyond word sequences, how models leap across languages, how text meets images and audio, and how we coax language models into reasoning, staying safe, and calling external tools. These aren't footnotes. They're the pieces that turn a basic text classifier into something that actually works in the messy real world.</p>
+
+<p>Before we start, a heads-up. We're going to travel through linguistics, vision-language models, speech processing, and AI safety. You don't need background in any of them. We'll build each idea from scratch, one concept at a time.</p>
+
+<p>This isn't a short journey, but I hope you'll be glad you came.</p>
+
+<div style="margin:1.5em 0; padding-left:1.5em; border-left:3px solid var(--accent, #666);">
+  Linguistic Structure: Parsing Sentences<br>
+  Cross-Lingual Transfer: One Model, Many Languages<br>
+  Code-Switching: When Languages Collide Mid-Sentence<br>
+  Multimodal NLP: Where Text Meets Vision<br>
+  Document Understanding: Reading the Layout<br>
+  Speech-Text Integration: Hearing Words<br>
+  Rest Stop<br>
+  Prompt Engineering Taxonomy<br>
+  Chain-of-Thought Reasoning<br>
+  Constitutional AI: Teaching Models to Self-Correct<br>
+  Tool Use and Function Calling<br>
+  Wrap-Up<br>
+  Resources
+</div>
 
 <!-- ════════════════════════════════════════════ -->
-<h2>HuggingFace Transformers — The Standard Toolkit</h2>
+<h2>Linguistic Structure: Parsing Sentences</h2>
 
-<p>HuggingFace standardized NLP tooling. Every model — BERT, GPT-2, T5, LLaMA, Mistral — uses the same API: <code>AutoModel.from_pretrained("model-name")</code>. Same interface for PyTorch and TensorFlow.</p>
+<p>Imagine we're building a customer support bot. A customer writes: "The defective battery in my new laptop died." Our bot needs to understand that "defective" describes "battery," that "my new laptop" is a location, and that "died" is what happened. A bag-of-words model sees seven unrelated tokens. A parser sees architecture.</p>
 
-<p>Three layers to know: <strong>Pipelines</strong> (one line, zero config — use for prototyping), <strong>Auto classes</strong> (<code>AutoTokenizer</code>, <code>AutoModel</code> — use when you need control), and <strong>Specific model classes</strong> (<code>BertModel</code>, <code>GPT2LMHeadModel</code> — use when you need architecture-specific features).</p>
+<p>There are two fundamentally different ways to diagram a sentence, and they reveal different things.</p>
 
-<pre><code>from transformers import pipeline
+<p><strong>Constituency parsing</strong> — also called phrase structure parsing — asks: "How do words group into phrases, and how do phrases nest inside larger phrases?" It produces a tree. At the bottom are individual words. Above them, groups form: "The defective battery" becomes a Noun Phrase (NP). "in my new laptop" becomes a Prepositional Phrase (PP). "died" is a Verb Phrase (VP). These phrases then nest inside each other, all the way up to a single root node labeled S for "sentence." The grammar driving this is called a <strong>context-free grammar</strong> (CFG), which defines rules like S → NP VP and NP → Det Adj N.</p>
 
-# One-line inference for any task
-classifier = pipeline("sentiment-analysis")
-print(classifier("I love NLP!"))
-# [{'label': 'POSITIVE', 'score': 0.9998}]
+<p>Picture it like Russian nesting dolls. The smallest doll is a word. The next doll is a phrase containing words. The biggest doll is the sentence containing all the phrases. Every doll fits inside exactly one bigger doll.</p>
 
-ner = pipeline("ner", grouped_entities=True)
-print(ner("Elon Musk founded SpaceX in California."))
+<p><strong>Dependency parsing</strong> takes a different angle. Instead of asking "what groups together," it asks "what depends on what?" Every word in the sentence has exactly one parent — the word it modifies or is governed by. The result is a directed graph where edges are labeled with grammatical relationships: "battery" is the <em>subject</em> of "died," "defective" is an <em>adjectival modifier</em> of "battery," "laptop" is the <em>object</em> of "in." The root of the tree is the main verb — "died."</p>
 
-summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
-translator = pipeline("translation_en_to_fr", model="Helsinki-NLP/opus-mt-en-fr")
-qa = pipeline("question-answering")
-</code></pre>
+<p>Think of it like an organizational chart. The CEO (main verb) is at the top. Every employee (word) reports to exactly one manager. The reporting relationship (edge label) tells you how they contribute.</p>
 
-<p><strong>When you'd use this:</strong> Every NLP project. Start with pipelines for prototyping, switch to Auto classes for production.</p>
+<p>For our support bot, dependency parsing is usually more practical. If we want to extract that the battery died, we need the subject-verb relationship — "battery → died" — which is one edge in the dependency tree. In a constituency tree, we'd have to navigate up through multiple nested phrases to figure out the same thing. That's why tools like spaCy default to dependency parsing. It gives you the who-did-what-to-whom structure that downstream tasks like information extraction and relation identification need most.</p>
+
+<p>But here's the limitation. Both parsers assume a single, well-formed language. They assume grammar rules are followed. The moment a customer writes "battery dead laptop won't turn on pls help" — no verb agreement, no articles, telegram-style abbreviations — parsers struggle. Real text is messy, and parsing is a tool for when you need precise structural understanding of reasonably well-formed sentences. For the rest, we'll need other approaches.</p>
 
 <!-- ════════════════════════════════════════════ -->
-<h2>HuggingFace Datasets Library</h2>
+<h2>Cross-Lingual Transfer: One Model, Many Languages</h2>
 
-<p>The companion to <code>transformers</code>. Provides thousands of datasets in a unified format with streaming for datasets too large for memory. Uses Apache Arrow under the hood — memory-mapped, not loaded into RAM.</p>
+<p>Our support bot gets a new requirement: handle Spanish and Japanese customers alongside English ones. The naive approach would be to train three separate models. That means three labeled datasets, three training pipelines, three sets of bugs to debug. There has to be a better way.</p>
 
-<pre><code>from datasets import load_dataset
+<p>There is. <strong>Multilingual BERT</strong> (mBERT) was trained on Wikipedia dumps from 104 languages simultaneously — with no explicit alignment between them. No parallel sentences. No translation dictionaries. It was trained the same way as regular BERT, with masked language modeling, except the training data happened to come from many languages. And something remarkable emerged: the model learned to represent similar meanings in different languages with similar vectors. Train a sentiment classifier in English, run it on Spanish text, and it works. Not perfectly, but shockingly well for having seen zero Spanish examples.</p>
 
-dataset = load_dataset("imdb")
-# Streaming for huge datasets
-large = load_dataset("c4", "en", split="train", streaming=True)
+<p>I'll be honest — when I first read that mBERT could do this without any parallel data, I didn't believe it. The mechanism turns out to be the shared subword vocabulary. Byte-pair encoding finds common character sequences across all 104 languages. Many languages share roots, borrowed words, numbers, and punctuation. The word "internet" appears in dozens of languages with nearly identical spelling. These overlapping tokens act like anchor points, pulling the representations for different languages toward a shared space. Not a perfect space — but close enough to transfer.</p>
 
-# Preprocessing pattern
-from transformers import AutoTokenizer
-tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased")
-tokenized = dataset["train"].map(
-    lambda x: tokenizer(x["text"], padding="max_length", truncation=True, max_length=512),
-    batched=True
-)
-</code></pre>
+<p><strong>XLM-RoBERTa</strong> (XLM-R) pushed this further. Trained on CommonCrawl data (much more than Wikipedia) across 100+ languages, with the training improvements from RoBERTa — dynamic masking, larger batches, longer training. XLM-R is the current workhorse for cross-lingual transfer. The pattern is deceptively simple: fine-tune on English labeled data, deploy on any supported language. This is called <strong>zero-shot cross-lingual transfer</strong>.</p>
 
-<p><strong>When you'd use this:</strong> Loading any standard NLP benchmark, or when you need efficient data preprocessing for fine-tuning.</p>
+<p>Our nesting-doll analogy from parsing applies here too, but at a grander scale. Imagine the doll factory produces dolls that look slightly different on the outside (different languages) but have the same internal structure (shared semantic representations). That's what these multilingual models build.</p>
+
+<p>The catch is that transfer quality degrades for languages that are very different from the training-heavy ones. English-to-German transfer works well (same script, similar structure). English-to-Japanese transfer is weaker (different script, different word order, different morphology). And for the roughly 7,000 languages in the world, only a few hundred have meaningful representation in the training data. Cross-lingual transfer is powerful, but it's not magic — it reflects the biases in available data.</p>
 
 <!-- ════════════════════════════════════════════ -->
-<h2>Model Cards — Read Before You Deploy</h2>
+<h2>Code-Switching: When Languages Collide Mid-Sentence</h2>
 
-<p>Every model on HuggingFace Hub has a model card documenting training data, intended use cases, known biases, and evaluation results. Before using any model in production, check: (1) what data was it trained on, (2) what are the intended use cases, (3) what are the known biases, (4) what's the license. A sentiment model trained on movie reviews will fail on financial text.</p>
+<p>In many parts of the world, people don't speak one language at a time. A customer in Miami might write: "My order no ha llegado, can you check the tracking?" That sentence is half English, half Spanish. This is <strong>code-switching</strong> — alternating between two or more languages within a single utterance. It's not a mistake. It's a natural, systematic linguistic behavior practiced by hundreds of millions of bilingual speakers.</p>
 
-<p><strong>When you'd use this:</strong> Always. Before deploying any pretrained model.</p>
+<p>And it breaks almost everything in our NLP pipeline.</p>
 
-<!-- ════════════════════════════════════════════ -->
-<h2>Evaluation Metrics for NLP</h2>
+<p>The first problem is tokenization. Subword tokenizers are trained on monolingual corpora. When they encounter "no ha llegado, can you" they may split the Spanish words into bizarre subtoken sequences because those character patterns weren't common in the training data. The second problem is that there's almost no labeled code-switched training data. Multilingual models like mBERT were trained on separate documents per language, not on sentences that switch mid-word. The third problem is grammar: code-switched sentences follow their own syntactic patterns that don't match either language's grammar perfectly.</p>
 
-<p>Choosing the right metric matters more than choosing the right model. Here's the decision table:</p>
-
-<table>
-  <thead>
-    <tr><th>Metric</th><th>Measures</th><th>Best For</th><th>Weakness</th></tr>
-  </thead>
-  <tbody>
-    <tr><td><strong>BLEU</strong></td><td>N-gram precision vs reference</td><td>Machine translation</td><td>Purely surface-level; penalizes valid paraphrases</td></tr>
-    <tr><td><strong>ROUGE</strong></td><td>N-gram recall vs reference</td><td>Summarization</td><td>Same surface-level problem as BLEU</td></tr>
-    <tr><td><strong>chrF</strong></td><td>Character n-gram F-score</td><td>MT for morphologically rich languages</td><td>Doesn't capture semantic similarity</td></tr>
-    <tr><td><strong>BERTScore</strong></td><td>Embedding cosine similarity</td><td>Any generation task needing semantic matching</td><td>Requires GPU; black box</td></tr>
-    <tr><td><strong>COMET</strong></td><td>Learned quality estimation</td><td>MT (best correlation with human judgment)</td><td>Requires GPU; not interpretable</td></tr>
-    <tr><td><strong>Exact Match / F1</strong></td><td>Span overlap</td><td>Extractive QA</td><td>Too strict for open-ended answers</td></tr>
-    <tr><td><strong>Perplexity</strong></td><td>Model surprise on held-out text</td><td>Language model comparison</td><td>Depends on tokenizer; not comparable across models</td></tr>
-  </tbody>
-</table>
-
-<pre><code>import evaluate
-
-# BLEU
-bleu = evaluate.load("bleu")
-result = bleu.compute(predictions=["The cat is on the mat."], references=[["The cat sat on the mat."]])
-print(f"BLEU: {result['bleu']:.4f}")
-
-# ROUGE
-rouge = evaluate.load("rouge")
-result = rouge.compute(predictions=["ML models learn from data."], references=["Machine learning models improve from data."])
-print(f"ROUGE-1: {result['rouge1']:.4f}, ROUGE-L: {result['rougeL']:.4f}")
-
-# BERTScore (captures semantic similarity)
-bertscore = evaluate.load("bertscore")
-result = bertscore.compute(predictions=["The cat rested on the carpet."], references=["The cat sat on the mat."], lang="en")
-print(f"BERTScore F1: {result['f1'][0]:.4f}")
-</code></pre>
-
-<p><strong>When you'd use these:</strong> BLEU for MT, ROUGE for summarization, BERTScore when paraphrasing is common, COMET for high-stakes MT evaluation. Always combine with human evaluation for production.</p>
+<p>Current approaches include creating synthetic code-switched data (take parallel sentences in both languages and algorithmically splice them together), adding language-identification as a token-level auxiliary task, and building tokenizers that are specifically aware of script boundaries. Benchmarks like LinCE and GLUECoS have begun to standardize evaluation, but this remains one of the genuinely unsolved problems in NLP. I find that refreshing — it's a reminder that language, at its core, is a living, evolving thing that resists being pinned down by any one model.</p>
 
 <!-- ════════════════════════════════════════════ -->
-<h2>Data Augmentation for NLP</h2>
+<h2>Multimodal NLP: Where Text Meets Vision</h2>
 
-<p><strong>Back-translation</strong>: Translate text to another language and back. "The cat sat on the mat" → French → "The cat sat on the carpet." Natural variation while preserving meaning. Most effective augmentation technique for low-resource NLP.</p>
+<p>Our support bot gets another upgrade: customers can now send photos of damaged products alongside their complaints. We need a model that understands both the text "this arrived cracked" and the image showing a broken screen. This is the domain of <strong>multimodal models</strong> — systems that process more than one type of input.</p>
 
-<p><strong>Easy Data Augmentation (EDA)</strong>: Four simple operations — synonym replacement, random insertion, random swap, random deletion. Applied with 10–20% probability. Embarrassingly simple, surprisingly effective (1–3% accuracy gain on small datasets).</p>
+<p>The model that made this mainstream is <strong>CLIP</strong> (Contrastive Language-Image Pretraining), released by OpenAI in 2021. The architecture is almost comically straightforward. CLIP has two separate encoders: an image encoder (typically a Vision Transformer) and a text encoder (a 12-layer Transformer, much like BERT, using byte-pair encoding for tokenization). Each encoder maps its input to a vector in the same shared embedding space — a 512-dimensional space where images and text coexist.</p>
 
-<p><strong>When you'd use this:</strong> When you have fewer than 1,000 labeled examples and can't easily get more. Back-translation for quality; EDA for speed.</p>
+<p>Training is where the cleverness lives. Take a batch of, say, 32,768 image-text pairs scraped from the internet (image and its alt-text caption). For each image, compute its embedding. For each caption, compute its embedding. The training objective is <strong>contrastive</strong>: push the embedding of an image toward the embedding of its matching caption, and away from all 32,767 non-matching captions. The loss function driving this is called <strong>InfoNCE</strong>, and it's computing a kind of massive softmax over all possible pairings in the batch. After training on 400 million image-text pairs, CLIP can match images to arbitrary text descriptions it has never seen before — zero-shot image classification by comparing an image embedding to embeddings of candidate labels like "a photo of a dog" versus "a photo of a cat."</p>
 
-<!-- ════════════════════════════════════════════ -->
-<h2>Explainability for NLP</h2>
+<p>For our support bot, the text encoder side of CLIP is the relevant piece. It gives us a way to embed text so that the resulting vector lives in a space where visual concepts are meaningful. "Cracked screen" and a photo of a cracked screen end up near each other. That's the foundation for multimodal search, content moderation, and automated damage assessment.</p>
 
-<p><strong>LIME for text</strong>: Randomly removes words and observes how predictions change. Model-agnostic — works with any classifier. Slow (many forward passes per explanation) and sometimes unstable.</p>
+<p><strong>Flamingo</strong>, from DeepMind, took a different approach. Instead of two separate encoders, Flamingo interleaves visual information directly into a frozen language model using special cross-attention layers called <strong>Perceiver Resampler</strong> blocks. Feed it a sequence of images interspersed with text — like a conversation with screenshots — and it can reason about them together. Flamingo demonstrated powerful few-shot multimodal learning: show it two examples of "image → description" and it generalizes to new images without any fine-tuning.</p>
 
-<p><strong>Attention visualization</strong>: Tempting to use transformer attention weights as explanations, but research shows attention doesn't always correlate with feature importance. Use as one signal, not ground truth.</p>
-
-<p><strong>When you'd use this:</strong> When stakeholders ask "why did the model predict this?" — especially in regulated domains (finance, healthcare).</p>
+<p>The limitation of all current multimodal models is compositionality. CLIP understands "a red car" and "a blue house" but struggles with "a blue car in front of a red house." The model learns associations between concepts and images, but spatial relationships and compositional scenes remain hard. I'm still developing my intuition for why this particular failure mode persists even at massive scale.</p>
 
 <!-- ════════════════════════════════════════════ -->
-<h2>Sentence Segmentation</h2>
+<h2>Document Understanding: Reading the Layout</h2>
 
-<p>Splitting text into sentences sounds trivial until you hit abbreviations (Mr., U.S., Fig. 3), URLs, and informal text. Rule-based approaches maintain exception lists. ML approaches (NLTK's Punkt, spaCy's sentencizer) learn boundary patterns from data. In practice, spaCy's default segmentation works for most English text. For specialized domains, train a custom model.</p>
+<p>Now imagine a customer uploads a photo of their receipt to request a refund. A standard NLP model would OCR the text and see something like: "Apple $1 3 Banana $2 1 Total $5." All the spatial information — the columns, the alignment of prices with items, the "Total" label at the bottom — is lost. The model has no idea that "$1" belongs to "Apple" and not "Banana."</p>
 
-<p><strong>When you'd use this:</strong> As a preprocessing step for any document-level task — summarization, translation, sentence-level classification.</p>
+<p><strong>LayoutLM</strong>, developed by Microsoft, solves this by doing something that now seems obvious in hindsight: it adds spatial position to the input. Standard BERT takes three inputs per token — the word embedding, a segment embedding, and a position embedding (the token's place in the sequence). LayoutLM adds a fourth: a <strong>2D spatial embedding</strong> encoding the bounding box coordinates [x₀, y₀, x₁, y₁] of where that word physically appears on the page. All four embeddings are summed before entering the Transformer encoder.</p>
 
-<!-- ════════════════════════════════════════════ -->
-<h2>Zero-Shot Classification</h2>
+<p>This means the model knows not only that "Apple" and "$1" are in the same document, but that they sit on the same horizontal line. It can learn that tokens aligned vertically in a column share a relationship. It can learn that "Total" at the bottom of a receipt has a different role than "Total" in a paragraph of prose.</p>
 
-<p>Classify text without any training data by leveraging a model trained on natural language inference (NLI). The model evaluates whether the text "entails" each candidate label. <code>pipeline("zero-shot-classification")</code> handles this automatically.</p>
+<p>Think back to our organizational chart analogy from parsing. LayoutLM is like adding office locations to the org chart. Knowing that two employees sit next to each other tells you something about their working relationship, even if the formal reporting lines don't connect them directly. The spatial signal is that powerful.</p>
 
-<pre><code>from transformers import pipeline
-
-classifier = pipeline("zero-shot-classification")
-result = classifier(
-    "I need to book a flight to Tokyo next week",
-    candidate_labels=["travel", "finance", "food", "technology"]
-)
-print(f"{result['labels'][0]}: {result['scores'][0]:.3f}")  # travel: 0.96+
-</code></pre>
-
-<p><strong>When you'd use this:</strong> When you have no labeled data and need a quick baseline. Won't match a fine-tuned model, but requires zero training.</p>
+<p>LayoutLMv2 extended this by adding visual features from the actual document image (font size, bolding, color), and LayoutLMv3 unified text, layout, and image into a single pretraining framework. These models dominate benchmarks for form understanding (FUNSD), receipt extraction (SROIE), and document classification — the unglamorous but enormously valuable world of automating paperwork.</p>
 
 <!-- ════════════════════════════════════════════ -->
-<h2>The Practical NLP Workflow</h2>
+<h2>Speech-Text Integration: Hearing Words</h2>
 
-<p>The pattern that works in production: (1) Start with a TF-IDF + logistic regression baseline — it takes 5 minutes and costs nothing. (2) Try zero-shot classification with an LLM to see if the task is feasible. (3) If accuracy matters, fine-tune a small transformer (DistilBERT, ~66M params) on your labeled data. (4) Only scale up to larger models if the small one doesn't meet your bar. Most NLP tasks don't need GPT-4.</p>
+<p>Our support bot's final sensory upgrade: voice input. A customer calls in and describes their problem. We need to convert spoken words to text. This is <strong>automatic speech recognition</strong> (ASR), and the model that made it feel accessible is OpenAI's <strong>Whisper</strong>.</p>
+
+<p>Whisper is an encoder-decoder Transformer. On the encoder side, raw audio is converted to a <strong>log-mel spectrogram</strong> — a 2D representation where one axis is time and the other is frequency, with intensity showing how loud each frequency is at each moment. Think of it as a heat map of sound. This spectrogram is fed through a stack of Transformer encoder layers that compress the audio into a sequence of hidden representations — a distilled summary of what was said.</p>
+
+<p>The decoder is autoregressive, generating text one token at a time. At each step, it attends to both the encoded audio (through cross-attention) and the tokens it has already generated (through masked self-attention). The output is plain text — a transcript.</p>
+
+<p>What made Whisper remarkable wasn't the architecture (encoder-decoder Transformers for ASR existed before). It was the training data: 680,000 hours of labeled audio scraped from the internet, covering 99 languages. The sheer scale of weakly-supervised data gave Whisper robustness that previous models lacked. It handles accents, background noise, multiple speakers, and even translates speech in one language directly to English text — without an intermediate transcription step.</p>
+
+<p>For our support bot, Whisper turns a phone call into a text transcript that can be fed into the same NLP pipeline we built for text messages. The text encoder from CLIP, the layout model for uploaded documents, and the dependency parser for understanding structure — they all operate on text. Whisper is the bridge that lets spoken language enter that world.</p>
+
+<p>The limitation is latency. Whisper processes audio in 30-second chunks and the autoregressive decoder is inherently sequential. For real-time applications — live captioning, simultaneous interpretation — models need streaming architectures that can emit partial transcripts as audio arrives. Whisper wasn't designed for that, and adapting it remains an active area of work.</p>
+
+<!-- ════════════════════════════════════════════ -->
+<h2 style="margin-top:2.5em; padding-top:1em; border-top:2px solid var(--accent, #ccc);">Rest Stop</h2>
+
+<p>Congratulations on making it this far. You can stop if you want.</p>
+
+<p>You now have a mental model of NLP that extends well beyond text-in-text-out. You understand how sentences have internal structure (constituency and dependency parsing), how a single model can serve 100+ languages (mBERT, XLM-R), how text meets images (CLIP, Flamingo), how documents carry spatial meaning (LayoutLM), and how speech becomes text (Whisper). That's a genuinely useful map of the multimodal NLP landscape.</p>
+
+<p>It doesn't tell the complete story, though. We haven't talked about what happens after the model processes the input — how we guide its reasoning, keep it safe, and connect it to external systems. Those are the topics that transformed language models from impressive demos into production tools.</p>
+
+<p>The short version: prompting strategies tell the model <em>how</em> to think, constitutional AI tells it <em>what to avoid</em>, and tool use lets it <em>act in the world</em>. There. You're 70% of the way there.</p>
+
+<p>But if the discomfort of not knowing what's underneath is nagging at you, read on.</p>
+
+<!-- ════════════════════════════════════════════ -->
+<h2>Prompt Engineering Taxonomy</h2>
+
+<p>A year ago, "prompt engineering" felt like a meme to me — the idea that rewording a question could dramatically change an AI's answer seemed more like astrology than engineering. Then I watched a colleague turn a model that was scoring 40% on a math benchmark into one scoring 75% by changing nothing except the prompt. No retraining. No new data. The same weights, the same architecture. That got my attention.</p>
+
+<p>Here's the landscape, organized by how much structure you're imposing on the model's behavior.</p>
+
+<p><strong>Zero-shot prompting</strong> is the simplest form: you describe the task and provide the input, with no examples. "Translate this to French: 'The battery is dead.'" The model relies entirely on what it learned during pretraining. This works surprisingly well for tasks the model has seen many times in its training data, and poorly for unusual formats or niche domains.</p>
+
+<p><strong>Few-shot prompting</strong> adds a handful of input-output examples before the actual query. "English: The cat sleeps → French: Le chat dort. English: The dog runs → French: Le chien court. English: The battery is dead → French: ___." The examples set a pattern that the model continues. Two to five examples is usually enough. More than that often doesn't help, and can hurt if the examples are noisy.</p>
+
+<p><strong>Instruction-based prompting</strong> gives explicit constraints: "Summarize in three sentences," "Respond as a JSON object," "Do not include personal opinions." These prompts shape the format and scope of the output. Models fine-tuned on instruction-following data (InstructGPT, FLAN-T5, ChatGPT) respond to these dramatically better than base models.</p>
+
+<p><strong>Role-based prompting</strong> assigns the model a persona: "You are a senior electronics repair technician. A customer describes the following problem..." This primes the model to draw on a specific register of knowledge and communication style. It sounds gimmicky, but it consistently shifts output quality for domain-specific tasks.</p>
+
+<p><strong>Self-consistency prompting</strong> generates multiple answers to the same question (using temperature > 0 for variation), then takes a majority vote. It's like asking five doctors instead of one. The extra compute cost is linear, but the accuracy gain on reasoning tasks is often substantial — especially when combined with chain-of-thought, which we'll get to next.</p>
+
+<p>The organizational chart analogy applies here in a different way. Zero-shot is like hiring an employee and giving them no onboarding. Few-shot is giving them a brief training manual. Instruction-based is giving them a detailed job description. Role-based is telling them what department they're in. Self-consistency is having the whole team vote on the decision. Each layer adds structure, and with it, reliability.</p>
+
+<p>The limitation of all prompting strategies is that they don't change the model's capabilities — they change how the model accesses what it already knows. If the knowledge isn't in the weights, no prompt will extract it. Prompting is about navigation, not creation.</p>
+
+<!-- ════════════════════════════════════════════ -->
+<h2>Chain-of-Thought Reasoning</h2>
+
+<p>Of all the prompting techniques, this is the one that changed my understanding of what language models can do. <strong>Chain-of-thought</strong> (CoT) prompting, introduced by Wei et al. in 2022, is the practice of getting a model to show its work — to generate intermediate reasoning steps before arriving at a final answer.</p>
+
+<p>Here's a toy example from our support bot. A customer asks: "I bought 3 items at $12 each but used a $10 coupon. Then I returned 1 item. What's my refund?" Without chain-of-thought, a model might guess "$12" or "$26." With chain-of-thought, we include worked examples in the prompt that demonstrate step-by-step reasoning:</p>
+
+<pre><code>Q: I bought 2 shirts at $20 each and used a $5 coupon. I returned 1 shirt. What's my refund?
+A: Let me work through this. 2 shirts × $20 = $40 total.
+   After coupon: $40 - $5 = $35 paid.
+   Per-item cost after coupon: $35 / 2 = $17.50.
+   Refund for 1 shirt: $17.50.
+
+Q: I bought 3 items at $12 each but used a $10 coupon.
+   Then I returned 1 item. What's my refund?
+A:</code></pre>
+
+<p>Given this structure, the model generates its own step-by-step reasoning: 3 × $12 = $36, after coupon $36 - $10 = $26, per-item $26 / 3 ≈ $8.67, refund $8.67. The explicit decomposition forces the model to allocate computation to each sub-problem rather than trying to leap to the answer in one step.</p>
+
+<p>Even more striking is <strong>zero-shot CoT</strong>: append "Let's think step by step" to the prompt. That's it. No worked examples. This single phrase improved performance on the GSM8K math benchmark by over 30 percentage points. My favorite thing about chain-of-thought is that, aside from high-level explanations like the one I gave, no one is completely certain why it works so well. The prevailing theory is that it gives the model more "thinking tokens" — each generated token serves as a computation step, and the autoregressive nature of transformers means more output tokens equal more serial computation.</p>
+
+<p><strong>Tree-of-thought</strong> (ToT) extends this further. Instead of a single chain, the model explores multiple reasoning branches, evaluates which paths look most promising, and prunes dead ends. Think of it as the difference between walking a single trail through a forest versus mapping multiple trails and picking the best one. ToT is more expensive (it requires multiple generation passes) but solves problems that linear chains can't — puzzles with dead ends, creative tasks with multiple valid approaches, and planning problems where the order of steps matters.</p>
+
+<p>The limitation of CoT and its variants is that they amplify whatever biases exist in the model's reasoning. If the model has a flawed understanding of probability, chain-of-thought will produce a detailed, convincing, and wrong derivation. Showing work makes errors more visible, which is genuinely useful — but it doesn't prevent them.</p>
+
+<!-- ════════════════════════════════════════════ -->
+<h2>Constitutional AI: Teaching Models to Self-Correct</h2>
+
+<p>Now we face a problem that prompting alone can't solve. Our support bot occasionally generates responses that are helpful but harmful — it might suggest a customer bypass a safety feature, or make promises about refund policies that don't exist. We need the model to internalize rules about what it should and shouldn't say.</p>
+
+<p><strong>Constitutional AI</strong> (CAI), developed by Anthropic, addresses this with an elegant idea: instead of relying on thousands of human labelers to rate every possible response, write down a set of principles — a "constitution" — and train the model to critique and revise its own outputs according to those principles.</p>
+
+<p>The process has two phases. In the first phase, the model generates a response, then is asked to critique that response against a specific principle (e.g., "Is this response harmful? Does it encourage dangerous behavior?"). Based on its own critique, it generates a revised response. This self-critique loop can repeat multiple times, with the model improving its answer with each pass. The result is a dataset of (original response, revised response) pairs that were generated entirely by the AI itself.</p>
+
+<p>In the second phase, Anthropic trains a reward model on this AI-generated preference data and uses it for reinforcement learning. This is <strong>RLAIF</strong> — Reinforcement Learning from AI Feedback — as opposed to the more familiar RLHF (from Human Feedback). The constitutional principles replace the human labelers as the source of truth for what "good" behavior looks like.</p>
+
+<p>For our support bot, the constitution might include principles like: "Do not guarantee specific refund amounts," "Do not recommend actions that void the product warranty," and "If you're uncertain about a policy, say so rather than guessing." The beauty of CAI is that these principles are explicit, auditable, and modifiable. When a new policy changes, we update the constitution rather than re-collecting thousands of human preference labels.</p>
+
+<p>I still occasionally get tripped up by a subtle point here: CAI doesn't make the model "understand" ethics in any deep sense. It makes the model skilled at pattern-matching against a set of written rules. The quality of the constitution determines the quality of the behavior. Write vague principles, get vague compliance.</p>
+
+<!-- ════════════════════════════════════════════ -->
+<h2>Tool Use and Function Calling</h2>
+
+<p>The final piece of our support bot: the customer asks "Where is my order?" and the bot needs to look up order #4521 in a database. No amount of pretraining data contains this customer's order status. The model needs to reach outside itself and call an API.</p>
+
+<p><strong>Tool use</strong> — also called <strong>function calling</strong> — is the mechanism by which a language model decides to invoke an external function, receives the result, and incorporates it into its response. The architecture works like this:</p>
+
+<p>First, the developer registers a set of available tools by providing their names, descriptions, and parameter schemas in JSON format. Each tool definition looks like a function signature: name, what it does, what arguments it takes, and their types. This registration happens before the conversation begins.</p>
+
+<pre><code>{
+  "name": "lookup_order",
+  "description": "Get the current status and tracking info for a customer order",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "order_id": {"type": "string", "description": "The order ID to look up"}
+    },
+    "required": ["order_id"]
+  }
+}</code></pre>
+
+<p>When the model processes a user message, it decides whether to respond with text or with a structured function call. If it chooses a function call, it emits a JSON object specifying which function to invoke and with what arguments: <code>{"name": "lookup_order", "arguments": {"order_id": "4521"}}</code>. The host application executes this call against the real API, gets the result, and feeds it back to the model as a new message. The model then generates a natural language response that incorporates the real data: "Your order #4521 shipped yesterday and is expected to arrive by Thursday."</p>
+
+<p>The model doesn't execute anything itself. It generates a structured request. The execution happens in the application layer, which can enforce permissions, rate limits, and validation. Think of it like a dispatcher at a call center: the dispatcher (model) decides which department to transfer the call to and what information to pass along, but the actual work is done by the department (API).</p>
+
+<p>The key insight that makes this work is that modern LLMs, after fine-tuning on examples of function-call conversations, learn to output well-formed JSON with the right argument types and values. They learn the meta-skill of "when my knowledge runs out, call for backup." The model can chain multiple tool calls — look up the order, then check the shipping carrier's API, then calculate the estimated delivery date — and synthesize all the results into a coherent response.</p>
+
+<p>The limitation is reliability. Models sometimes hallucinate function calls — calling tools that don't exist or passing malformed arguments. They sometimes call tools when they shouldn't (the answer was in the prompt all along) or fail to call tools when they should (guessing an order status instead of looking it up). Robust tool use requires validation layers, retry logic, and careful prompt engineering to set clear expectations about when to call versus when to answer directly.</p>
+
+<!-- ════════════════════════════════════════════ -->
+<h2>Wrap-Up</h2>
+
+<p>If you're still with me, thank you. I hope it was worth it.</p>
+
+<p>We started with sentence parsing — learning that language has a hidden structural skeleton of phrases and dependencies. We watched a single model leap across 100+ languages through shared subword tokens. We confronted the real-world chaos of code-switching. We saw text meet images in CLIP's shared embedding space, documents gain spatial awareness through LayoutLM's bounding boxes, and spoken words become text through Whisper's spectrogram encoder. Then we crossed into the realm of guiding models: prompt taxonomies that range from zero-shot to self-consistency voting, chain-of-thought reasoning that teaches models to show their work, constitutional AI that embeds safety principles into the training loop, and function calling that lets models reach beyond their weights into the real world.</p>
+
+<p>My hope is that the next time you encounter one of these topics in a design doc, a system architecture review, or an interview question, instead of that vague feeling of "I've heard of that," you'll have a working mental model of what's actually happening under the hood — one built from the ground up, one piece at a time.</p>
+
+<!-- ════════════════════════════════════════════ -->
+<h2>Resources</h2>
+
+<p>A curated set of readings that shaped my understanding of these topics:</p>
+
+<p><strong>Jurafsky &amp; Martin, "Speech and Language Processing" (3rd edition draft)</strong> — The most comprehensive NLP textbook in existence, and freely available online. The chapters on constituency and dependency parsing are the gold standard. <a href="https://web.stanford.edu/~jurafsky/slp3/">web.stanford.edu/~jurafsky/slp3/</a></p>
+
+<p><strong>Conneau et al., "Unsupervised Cross-lingual Representation Learning at Scale" (2020)</strong> — The XLM-R paper. Demonstrates that enough data and compute can produce cross-lingual representations that rival monolingual models. Wildly influential. <a href="https://arxiv.org/abs/1911.02116">arxiv.org/abs/1911.02116</a></p>
+
+<p><strong>Radford et al., "Learning Transferable Visual Models From Natural Language Supervision" (2021)</strong> — The CLIP paper. The writing is unusually clear for a research paper, and the ablation studies are insightful. <a href="https://arxiv.org/abs/2103.00020">arxiv.org/abs/2103.00020</a></p>
+
+<p><strong>Wei et al., "Chain-of-Thought Prompting Elicits Reasoning in Large Language Models" (2022)</strong> — The paper that made the world take "let's think step by step" seriously. Short, readable, and paradigm-shifting. <a href="https://arxiv.org/abs/2201.11903">arxiv.org/abs/2201.11903</a></p>
+
+<p><strong>Bai et al., "Constitutional AI: Harmlessness from AI Feedback" (2022)</strong> — Anthropic's Constitutional AI paper. Essential reading for anyone building production AI systems where safety matters. <a href="https://arxiv.org/abs/2212.08073">arxiv.org/abs/2212.08073</a></p>
+
+<p><strong>Radford et al., "Robust Speech Recognition via Large-Scale Weak Supervision" (2022)</strong> — The Whisper paper. An unforgettable demonstration that scale of (noisy) data can trump cleverness of architecture. <a href="https://arxiv.org/abs/2212.04356">arxiv.org/abs/2212.04356</a></p>
 
 
       <div class="page-nav">
