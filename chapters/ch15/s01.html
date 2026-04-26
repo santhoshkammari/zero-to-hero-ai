@@ -285,7 +285,7 @@
 
   <div class="main">
     <div class="topbar">
-      <div class="breadcrumb"><a href="../../index.html">Home</a><span class="sep">/</span><a href="../../chapters/ch15/index.html">Ch 15</a><span class="sep">/</span><span>Autoencoders &amp; VAEs</span></div>
+      <div class="breadcrumb"><a href="../../index.html">Home</a><span class="sep">/</span><a href="../../chapters/ch15/index.html">Ch 15</a><span class="sep">/</span><span>Classic Generative Models</span></div>
       <div class="topbar-actions">
         <button class="theme-toggle">🌙</button>
       </div>
@@ -295,477 +295,412 @@
 
 <h1>Classic Generative Models</h1>
 <div class="chapter-meta">
-  
-  <span class="tag">Autoencoders · VAEs · GANs</span>
+  <span class="tag">Autoencoders · VAEs · GANs · Flows · EBMs</span>
 </div>
 
-<div class="tldr">
-  <div class="tldr-label">Section Overview</div>
-  <p>This section combines Autoencoders &amp; VAEs and Generative Adversarial Networks into one comprehensive reference.</p>
+<!-- ═══════════ OPENING ═══════════ -->
+
+<p>I avoided generative models for longer than I'd like to admit. Every time someone mentioned "latent spaces" or "adversarial training" or "evidence lower bound," I'd nod along and quietly change the subject. I understood what these models <em>did</em> — they generate images, text, molecules — but how they actually worked under the hood? The mechanics of making a neural network <em>create</em> something new, rather than classify or predict? That felt like a different kind of magic, and I didn't trust myself to explain it. Finally the discomfort of not knowing grew too great. Here is that dive.</p>
+
+<p>Generative models learn the underlying distribution of training data so they can produce new samples from that distribution. The idea has been around in various forms since the 1980s (Boltzmann machines, anyone?), but the modern era really kicked off around 2013–2014 with Variational Autoencoders and Generative Adversarial Networks. Since then, normalizing flows, energy-based models, and eventually diffusion models have all entered the picture, each attacking the same problem from a different mathematical angle.</p>
+
+<p>Before we start, a heads-up. We're going to be working with probability distributions, KL divergence, Jacobian determinants, and minimax optimization. But you don't need to know any of it beforehand. We'll add the concepts we need one at a time, with explanation.</p>
+
+<p>This isn't a short journey, but I hope you'll be glad you came.</p>
+
+<!-- ═══════════ TABLE OF CONTENTS ═══════════ -->
+
+<div class="toc">
+  <p style="margin-left:1em;">The compression game</p>
+  <p style="margin-left:1em;">Vanilla autoencoders</p>
+  <p style="margin-left:1em;">Denoising and sparse autoencoders</p>
+  <p style="margin-left:1em;">The problem with autoencoder latent spaces</p>
+  <p style="margin-left:1em;">Variational autoencoders: encoding to distributions</p>
+  <p style="margin-left:1em;">The reparameterization trick</p>
+  <p style="margin-left:1em;">The ELBO: why the loss looks the way it does</p>
+  <p style="margin-left:1em;">Rest stop</p>
+  <p style="margin-left:1em;">The adversarial game</p>
+  <p style="margin-left:1em;">Training a GAN: the delicate dance</p>
+  <p style="margin-left:1em;">Mode collapse and the dirt-pile fix</p>
+  <p style="margin-left:1em;">Conditional generation: steering the output</p>
+  <p style="margin-left:1em;">Normalizing flows: invertible transformations</p>
+  <p style="margin-left:1em;">Energy-based models: the landscape view</p>
+  <p style="margin-left:1em;">The generative model landscape</p>
+  <p style="margin-left:1em;">Resources and credits</p>
 </div>
 
+<!-- ═══════════ THE COMPRESSION GAME ═══════════ -->
+<h2 id="compression-game">The compression game</h2>
 
-<!-- ═══════════ Autoencoders &amp; VAEs ═══════════ -->
-<h2>Autoencoders &amp; VAEs</h2>
+<p>Imagine you run a tiny portrait studio. You've taken thousands of 28×28 pixel grayscale headshots. Each image is 784 numbers. You want to store them efficiently, and you notice something: most of those 784 numbers are redundant. Faces share structure — two eyes, a nose, a mouth, roughly the same layout. If you could find the <em>essential</em> information that distinguishes one face from another, you could store each face as a much smaller set of numbers.</p>
 
-<p class="chapter-intro">The core idea is embarrassingly simple: compress input into a small latent vector, then reconstruct the input from that vector. The network that compresses is the <strong>encoder</strong>. The one that reconstructs is the <strong>decoder</strong>. The small vector in the middle—the <strong>bottleneck</strong>—is where all the interesting stuff happens. That bottleneck <em>is</em> representation learning: the network is forced to discover the most informative features just to survive the compression.</p>
+<p>That's the core idea behind an <strong>autoencoder</strong>. It's two neural networks glued together. The first one, the <strong>encoder</strong>, takes a 784-dimensional image and squeezes it down to, say, 20 numbers. The second one, the <strong>decoder</strong>, takes those 20 numbers and tries to reconstruct the original 784-dimensional image. The 20-number representation in the middle is called the <strong>latent code</strong>, and the narrow passage it must squeeze through is called the <strong>bottleneck</strong>.</p>
 
-      <!-- ================================================================ -->
-      <h2 id="standard-autoencoder">Standard Autoencoder</h3>
+<p>The whole thing is trained with a single objective: make the output look as close to the input as possible. The loss is typically mean squared error — the average squared difference between each original pixel and its reconstruction.</p>
 
-      <p>Take an input <strong>x</strong> of dimension <em>d</em>. Map it through an encoder <em>f</em> to a latent code <strong>z</strong> of dimension <em>k</em> (where <em>k</em> &lt;&lt; <em>d</em>). Map <strong>z</strong> through a decoder <em>g</em> back to <strong>x̂</strong> of dimension <em>d</em>. Minimize the reconstruction loss—typically MSE for continuous data, binary cross-entropy for images normalized to [0, 1].</p>
+<p>Here's the thing that makes this interesting. The bottleneck is tiny. 784 dimensions in, 20 dimensions in the middle, 784 dimensions out. The network <em>cannot</em> memorize inputs — there's not enough room. It has to figure out which features of a face actually matter (the angle, the expression, whether there are glasses) and throw away the rest. The bottleneck <em>forces</em> the network to learn a compressed representation. That's representation learning, and the autoencoder didn't even know it was doing it.</p>
 
-      <p>The bottleneck is what makes this non-trivial. Without it, the network could learn the identity function and call it a day. With it, the encoder must figure out which features actually matter. Think of it as a lossy compression algorithm where the compression strategy is learned from data.</p>
+<!-- ═══════════ VANILLA AUTOENCODERS ═══════════ -->
+<h2 id="vanilla-autoencoder">Vanilla autoencoders</h2>
 
-      <p>If <strong>z</strong> has the same dimensionality as <strong>x</strong>, or the encoder/decoder are too powerful, you get a useless identity mapping. The tension between limited capacity and reconstruction quality is what forces useful representations.</p>
+<p>Let's trace through a concrete example. We'll take our tiny portrait studio's simplest possible case: 4-pixel grayscale images. Each image is a vector of 4 numbers between 0 and 1. Our encoder compresses that to 2 numbers. Our decoder expands those 2 numbers back to 4.</p>
 
-      <div class="info-box">
-        <strong>Autoencoders vs. PCA:</strong> A single-layer linear autoencoder with MSE loss learns the same subspace as PCA. The deep, nonlinear version learns richer manifolds—same spirit, more expressive.
-      </div>
+<pre><code>Input image:     [0.9, 0.1, 0.8, 0.2]   (4 pixels)
+                        │
+                   ┌────▼────┐
+                   │ Encoder  │   (4 → 2)
+                   └────┬────┘
+                        │
+Latent code:         [0.7, -0.3]           (2 numbers)
+                        │
+                   ┌────▼────┐
+                   │ Decoder  │   (2 → 4)
+                   └────┬────┘
+                        │
+Reconstruction:  [0.85, 0.15, 0.78, 0.22] (4 pixels)</code></pre>
 
-      <!-- ================================================================ -->
-      <h2 id="denoising-autoencoders">Denoising Autoencoders</h3>
+<p>The reconstruction isn't perfect — we lost information in the bottleneck. But it's close. The loss (mean squared error between input and reconstruction) measures how close, and training adjusts the encoder and decoder weights to minimize it.</p>
 
-      <p>Corrupt the input (Gaussian noise, dropout/masking, salt-and-pepper) and train the autoencoder to reconstruct the <em>clean</em> original. This prevents the network from memorizing inputs and forces it to learn robust features that capture the underlying data distribution, not surface noise.</p>
+<p>Here's a useful mental model. Picture the encoder as a person summarizing a book into a tweet. The decoder is a different person who reads only the tweet and tries to rewrite the book. If the tweet captures the essence of the story, the rewrite will be recognizable. If it doesn't, you get nonsense. Training is the process of both people getting better at their jobs simultaneously.</p>
 
-      <p>The idea was ahead of its time—BERT's masked language modeling is essentially the same trick applied to text. Corrupt some tokens, predict the originals, learn great representations as a side effect.</p>
+<p>A subtle but important point: if the bottleneck were the same size as the input (or larger), the network could learn the identity function — pass everything through unchanged, reconstruct perfectly, and learn nothing interesting. A single-layer linear autoencoder with MSE loss learns exactly the same subspace as PCA. The deep, nonlinear version learns richer structures, but the spirit is the same: find the dimensions that matter most and ignore the rest.</p>
 
-      <!-- ================================================================ -->
-      <h2 id="vae">Variational Autoencoders (VAEs)</h3>
+<!-- ═══════════ DENOISING AND SPARSE ═══════════ -->
+<h2 id="denoising-sparse">Denoising and sparse autoencoders</h2>
 
-      <p>Standard autoencoders give you an encoder and decoder, but the latent space is a mess. Points are scattered arbitrarily—there's no structure, and you can't meaningfully sample from it to generate new data. This is where VAEs change the game.</p>
+<p>The vanilla autoencoder has a problem that becomes apparent quickly: it can be lazy. If the bottleneck is even slightly too generous, or the network is too powerful, it starts memorizing inputs rather than learning meaningful structure. Two ideas emerged to fight this, and both are worth knowing.</p>
 
-      <h3 id="vae-idea">The Key Idea</h4>
+<p>A <strong>denoising autoencoder</strong> deliberately corrupts the input before feeding it to the encoder — adding Gaussian noise, randomly zeroing out pixels, or both. But the loss is still measured against the <em>clean</em> original. The network can't memorize the corrupted input (it changes every time), so it's forced to learn what the underlying clean signal looks like. Think of our portrait studio: we're handing the encoder a blurry, scratched photo and asking the decoder to reconstruct the clean original. To do that, the encoder must understand what a face <em>is</em>, not what any particular noisy version of a face looks like.</p>
 
-      <p>Instead of encoding <strong>x</strong> to a single point <strong>z</strong>, encode it to a <em>distribution</em> over <strong>z</strong>. Specifically, the encoder outputs parameters of a Gaussian: a mean vector <strong>μ</strong> and a log-variance vector <strong>log σ²</strong>. Then you <em>sample</em> from that distribution to get <strong>z</strong>, and decode as before.</p>
+<p>This idea was ahead of its time. BERT's masked language modeling — corrupt some words, predict the originals — is the same trick applied to text, published over a decade later.</p>
 
-      <p>The magic: you add a KL divergence term to the loss that pushes every encoding distribution toward a standard normal <em>N</em>(0, I). This regularizes the latent space into something smooth and continuous—nearby points decode to similar outputs, and you can sample <em>z</em> ~ <em>N</em>(0, I) at generation time and get coherent outputs.</p>
+<p>A <strong>sparse autoencoder</strong> takes a different approach. Instead of corrupting the input, it adds a penalty to the loss that discourages the latent code from having too many active (non-zero) neurons at once. The typical approach is to add a KL divergence penalty that pushes the average activation of each hidden neuron toward some small target value, like 0.05. The result: for any given input, only a handful of latent dimensions "fire." Each active dimension represents a distinct, meaningful feature. It's like forcing the tweet-summarizer to use only 5 of their 20 available words — they choose very carefully, and each word carries heavy meaning.</p>
 
-      <h3 id="reparameterization">The Reparameterization Trick</h4>
+<p>Both denoising and sparse autoencoders produce better representations than vanilla autoencoders. But they share a fundamental limitation: the latent space they produce is unstructured. Points are scattered wherever the optimization happens to put them. There's no guarantee that nearby latent codes correspond to similar images, and no way to sample from the latent space to generate <em>new</em> images. The decoder can reconstruct codes it was trained on, but hand it a random point in latent space and it'll produce garbage.</p>
 
-      <p>You can't backpropagate through a random sampling operation. The trick: instead of sampling <strong>z</strong> ~ <em>N</em>(<strong>μ</strong>, <strong>σ²</strong>), sample <strong>ε</strong> ~ <em>N</em>(0, I) and compute <strong>z</strong> = <strong>μ</strong> + <strong>σ</strong> ⊙ <strong>ε</strong>. The randomness is now in <strong>ε</strong> (which doesn't depend on parameters), and <strong>z</strong> is a deterministic, differentiable function of <strong>μ</strong> and <strong>σ</strong>. Gradients flow cleanly.</p>
+<p>That limitation is what pulls us toward the next idea.</p>
 
-      <h3 id="elbo">ELBO Loss</h4>
+<!-- ═══════════ THE PROBLEM ═══════════ -->
+<h2 id="latent-space-problem">The problem with autoencoder latent spaces</h2>
 
-      <p>The VAE optimizes the <strong>Evidence Lower Bound (ELBO)</strong>:</p>
+<p>Let me make this concrete. Suppose we train a vanilla autoencoder on our portrait studio dataset — thousands of headshots — and look at the resulting 2D latent space. We'd see something like this: each face maps to a specific point, but the points form irregular clusters with vast empty regions in between. Image of a smiling woman? That's at coordinates (3.7, -1.2). Image of a frowning man? That's at (-8.4, 5.6). What's at (0, 0)? Who knows. Probably nothing coherent.</p>
 
-      <div class="formula">
-        <p><strong>Loss = Reconstruction Loss + KL Divergence</strong></p>
-        <p>L(θ, φ; x) = −𝔼<sub>q<sub>φ</sub>(z|x)</sub>[log p<sub>θ</sub>(x|z)] + D<sub>KL</sub>(q<sub>φ</sub>(z|x) ∥ p(z))</p>
-      </div>
+<p>We can't <em>generate</em> new faces from this space because we have no idea which coordinates produce valid faces and which produce noise. We can't <em>interpolate</em> between faces because the path between two points in latent space might pass through dead zones that decode to static. The autoencoder learned to compress and decompress, but it didn't learn the <em>distribution</em> of faces. It knows individual faces, not face-ness.</p>
 
-      <p>The first term says "reconstruct well." The second says "keep the latent distributions close to the prior." For Gaussian encoder and standard normal prior, the KL term has a closed-form solution—no sampling needed:</p>
+<p>I'll be honest — when I first heard people describe the latent space of a standard autoencoder, I didn't understand why this was such a big deal. Compression is useful, right? Who cares about sampling? But then I realized: if you want a <em>generative</em> model — one that creates new data rather than parroting old data — you need a latent space you can navigate. You need to know that any point you pick will decode to something meaningful. That requires structure. That requires probability.</p>
 
-      <div class="formula">
-        <p>D<sub>KL</sub> = −½ Σ(1 + log σ² − μ² − σ²)</p>
-      </div>
+<!-- ═══════════ VAEs ═══════════ -->
+<h2 id="vae">Variational autoencoders: encoding to distributions</h2>
 
-      <p>In practice, these two terms fight each other. Cranking up reconstruction quality tends to spread encodings apart; the KL term pulls them together. Finding the right balance is the art of training VAEs.</p>
+<p>The Variational Autoencoder, introduced by Kingma and Welling in 2013, makes one conceptual change to the autoencoder that transforms everything. Instead of encoding an image to a single point in latent space, the encoder outputs the parameters of a <em>probability distribution</em>.</p>
 
-      <h3 id="why-smooth">Why a Smooth Latent Space Matters</h4>
+<p>Let's walk through it with our portrait studio. We feed in a headshot. The encoder doesn't output a single latent code like [0.7, −0.3]. Instead, it outputs two vectors: a <strong>mean</strong> vector <strong>μ</strong> = [0.7, −0.3] and a <strong>log-variance</strong> vector <strong>log σ²</strong> = [−1.0, −0.8]. Together, these define a Gaussian distribution centered at μ with spread σ. We then <em>sample</em> a latent code z from that distribution and pass it to the decoder.</p>
 
-      <p>Without KL regularization, the encoder can map different classes to tiny, isolated clusters with dead space between them. Sample from that dead space and you get garbage. The KL term forces overlap, continuity, and smoothness. You get:</p>
+<pre><code>Input image → Encoder → μ = [0.7, -0.3], log σ² = [-1.0, -0.8]
+                              │
+                         Sample z from N(μ, σ²)
+                              │
+                         z = [0.65, -0.25]  (a random draw)
+                              │
+                         Decoder → Reconstructed image</code></pre>
 
-      <ul>
-        <li><strong>Interpolation:</strong> Walk between two latent codes and get smooth, meaningful transitions in output space.</li>
-        <li><strong>Sampling:</strong> Draw <strong>z</strong> ~ <em>N</em>(0, I) and the decoder produces plausible outputs.</li>
-        <li><strong>Disentanglement:</strong> Individual latent dimensions can correspond to interpretable factors (with the right pressure).</li>
-      </ul>
+<p>Why log-variance instead of variance directly? Because variance must be positive, and log-variance can be any real number, making it easier for a neural network to output. We recover σ by computing exp(0.5 × log σ²).</p>
 
-      <h3 id="vae-code">VAE in PyTorch</h4>
+<p>Now here's the crucial part. The loss function has <em>two</em> terms. The first is the same reconstruction loss as before: make the decoder's output match the input. The second is new — a <strong>KL divergence</strong> term that measures how far each encoding distribution is from a standard normal distribution N(0, I). This term penalizes the encoder for putting images in wildly different regions of latent space. It gently pulls all the encoding distributions toward the origin, toward each other, creating overlap and continuity.</p>
 
-      <pre><code class="language-python">import torch
-import torch.nn as nn
-import torch.nn.functional as F
+<p>The result is a latent space with structure. Nearby points decode to similar images. Paths between points produce smooth transitions. And critically, we can sample z from a standard normal, hand it to the decoder, and get a coherent new portrait that doesn't exist in the training data. The VAE hasn't memorized faces — it's learned face-ness.</p>
 
-class VAE(nn.Module):
-    def __init__(self, input_dim=784, hidden_dim=400, latent_dim=20):
-        super().__init__()
-        # Encoder
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
-        self.fc_mu = nn.Linear(hidden_dim, latent_dim)
-        self.fc_logvar = nn.Linear(hidden_dim, latent_dim)
-        # Decoder
-        self.fc3 = nn.Linear(latent_dim, hidden_dim)
-        self.fc4 = nn.Linear(hidden_dim, input_dim)
+<p>Back to our portrait studio analogy: the vanilla autoencoder was a filing system — each photo in its own arbitrary drawer. The VAE is more like a map. Similar photos are near each other. You can walk from "smiling woman" to "smiling man" and the images morph smoothly along the way. And you can point to a random spot on the map and find a reasonable face there.</p>
 
-    def encode(self, x):
-        h = F.relu(self.fc1(x))
-        return self.fc_mu(h), self.fc_logvar(h)
+<!-- ═══════════ REPARAMETERIZATION ═══════════ -->
+<h2 id="reparam">The reparameterization trick</h2>
 
-    def reparameterize(self, mu, logvar):
-        std = torch.exp(0.5 * logvar)          # σ = exp(0.5 * log σ²)
-        eps = torch.randn_like(std)             # ε ~ N(0, I)
-        return mu + std * eps                   # z = μ + σ ⊙ ε
+<p>There's a mechanical problem with what I described. During training, we need to backpropagate gradients through the entire network — from the reconstruction loss, back through the decoder, through the latent code z, and into the encoder. But z was <em>sampled</em> from a distribution. Sampling is a random operation. You can't take the derivative of randomness.</p>
 
-    def decode(self, z):
-        h = F.relu(self.fc3(z))
-        return torch.sigmoid(self.fc4(h))
+<p>The reparameterization trick is the solution, and it's clever in a way that makes you feel silly for not thinking of it yourself. Instead of sampling z directly from N(μ, σ²), we do this:</p>
 
-    def forward(self, x):
-        mu, logvar = self.encode(x.view(-1, 784))
-        z = self.reparameterize(mu, logvar)
-        return self.decode(z), mu, logvar
+<p>First, sample ε from a standard normal N(0, I). This is pure randomness that doesn't depend on any model parameters. Then compute z = μ + σ ⊙ ε, where ⊙ means element-wise multiplication.</p>
 
+<p>z is the <em>same</em> random variable — it has the same distribution. But now it's expressed as a deterministic, differentiable function of μ and σ (which are the encoder's outputs, and therefore functions of its weights). The randomness is quarantined in ε, which sits outside the computation graph. Gradients flow cleanly through μ and σ back into the encoder.</p>
 
-def vae_loss(recon_x, x, mu, logvar):
-    # Reconstruction: binary cross-entropy (per-element, summed)
-    bce = F.binary_cross_entropy(recon_x, x.view(-1, 784), reduction='sum')
-    # KL divergence: closed-form for Gaussian q vs N(0,I) prior
-    kl = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-    return bce + kl
+<pre><code># The trick in three lines of PyTorch:
+std = torch.exp(0.5 * logvar)   # σ = exp(½ log σ²)
+eps = torch.randn_like(std)      # ε ~ N(0, I) — no gradients needed
+z = mu + std * eps               # z = μ + σ ⊙ ε — differentiable in μ, σ</code></pre>
 
+<p>I remember reading this for the first time and thinking: "Wait, that's it? You moved the randomness to a separate variable?" Yes. That's it. And it's the thing that made VAEs trainable with standard backpropagation. Without this trick, you'd need reinforcement-learning-style gradient estimators, which are noisy and slow. With it, you get clean, low-variance gradients for free.</p>
 
-# Training loop sketch
-model = VAE()
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+<!-- ═══════════ ELBO ═══════════ -->
+<h2 id="elbo">The ELBO: why the loss looks the way it does</h2>
 
-for epoch in range(num_epochs):
-    for batch, _ in train_loader:
-        recon, mu, logvar = model(batch)
-        loss = vae_loss(recon, batch, mu, logvar)
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+<p>The VAE loss is called the <strong>Evidence Lower Bound</strong>, or ELBO. The name sounds imposing, but the logic behind it is surprisingly natural.</p>
 
-# Generation: sample from prior and decode
-with torch.no_grad():
-    z = torch.randn(64, 20)       # sample latent codes
-    samples = model.decode(z)      # decode to image space</code></pre>
+<p>Here's the situation. We want to maximize the probability of our training data under the model — the quantity log p(x). But this quantity requires integrating over all possible latent codes z, which is intractable. We can't compute it directly.</p>
 
-      <!-- ================================================================ -->
-      <h2 id="beta-vae">β-VAE: Disentanglement</h3>
+<p>So we do something practical. We introduce our approximate encoder q(z|x) and use it to derive a lower bound on log p(x). The math involves Jensen's inequality, but the result is clean:</p>
 
-      <p>The β-VAE (Higgins et al., 2017) introduces a single hyperparameter <strong>β</strong> that scales the KL term:</p>
-
-      <div class="formula">
-        <p>L = Reconstruction Loss + <strong>β</strong> · D<sub>KL</sub>(q(z|x) ∥ p(z))</p>
-      </div>
-
-      <p>When β &gt; 1, you're applying stronger pressure to keep the latent space structured. The result: individual latent dimensions tend to capture <em>independent</em> factors of variation—one dimension for rotation, another for color, another for size. This is <strong>disentanglement</strong>, and it's genuinely useful for interpretable representations and controlled generation.</p>
-
-      <p>The tradeoff: higher β means blurrier reconstructions. You're squeezing more structure out of the latent space at the cost of reconstruction fidelity. In practice, β between 1 and 10 works well depending on the dataset.</p>
-
-      <!-- ================================================================ -->
-      <h2 id="vq-vae">VQ-VAE: Discrete Latent Codes</h3>
-
-      <p>Vector-Quantized VAE (van den Oord et al., 2017) replaces the continuous Gaussian latent space with a <strong>discrete codebook</strong>. The encoder outputs a continuous vector, which gets snapped to the nearest entry in a learned codebook of <em>K</em> embedding vectors.</p>
-
-      <p>Why go discrete? Three reasons:</p>
-      <ul>
-        <li><strong>Avoids posterior collapse:</strong> VAEs sometimes learn to ignore the latent code entirely (the decoder becomes so powerful it doesn't need z). Discrete codes are harder to ignore.</li>
-        <li><strong>Better for sequences:</strong> You can train an autoregressive prior (like a Transformer) over the discrete codes, then sample from that prior to generate. This is exactly how <strong>DALL·E 1</strong> worked—VQ-VAE encodes images to discrete tokens, then GPT generates those tokens.</li>
-        <li><strong>Natural for compression:</strong> Discrete codes map directly to codebook indices, giving you a genuine compression scheme.</li>
-      </ul>
-
-      <p>The quantization step isn't differentiable, so VQ-VAE uses a <strong>straight-through estimator</strong>: gradients from the decoder are passed directly to the encoder, bypassing the quantization. The codebook is updated via exponential moving average or an auxiliary loss.</p>
-
-      <!-- ================================================================ -->
-      <h2 id="practical-uses">Practical Applications</h3>
-
-      <h4>Anomaly Detection</h4>
-      <p>Train the autoencoder exclusively on normal/healthy data. At inference, compute the reconstruction error for new inputs. Normal data reconstructs well; anomalies don't. Set a threshold on reconstruction error and you have an anomaly detector. This works remarkably well in manufacturing defect detection, network intrusion detection, and medical imaging.</p>
-
-      <h4>Representation Learning</h4>
-      <p>The encoder's latent space is a compressed, learned feature space. Use it as input to downstream classifiers, clustering, or retrieval systems. VAE latent spaces are particularly good here because the KL regularization ensures smooth, well-organized representations rather than arbitrary point clouds.</p>
-
-      <h4>Data Generation</h4>
-      <p>VAEs generate by sampling <strong>z</strong> ~ <em>N</em>(0, I) and decoding. The samples tend to be blurrier than GANs (because of the reconstruction loss averaging over modes) but VAEs offer something GANs don't: a proper latent space you can interpolate, manipulate, and reason about.</p>
-
-      <table>
-        <thead>
-          <tr>
-            <th>Use Case</th>
-            <th>Variant</th>
-            <th>Why It Works</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>Anomaly detection</td>
-            <td>Standard AE / VAE</td>
-            <td>High reconstruction error on OOD inputs</td>
-          </tr>
-          <tr>
-            <td>Image generation</td>
-            <td>VAE / VQ-VAE</td>
-            <td>Smooth latent space enables sampling</td>
-          </tr>
-          <tr>
-            <td>Disentangled features</td>
-            <td>β-VAE</td>
-            <td>KL pressure separates factors of variation</td>
-          </tr>
-          <tr>
-            <td>Discrete tokenization</td>
-            <td>VQ-VAE</td>
-            <td>Codebook creates discrete tokens for downstream models</td>
-          </tr>
-          <tr>
-            <td>Drug discovery</td>
-            <td>VAE on molecular graphs</td>
-            <td>Smooth latent space enables optimization of molecular properties</td>
-          </tr>
-          <tr>
-            <td>Data augmentation</td>
-            <td>VAE / Conditional VAE</td>
-            <td>Generate synthetic training examples with controlled attributes</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <!-- ================================================================ -->
-      <h2 id="autoencoder-landscape">The Autoencoder Family at a Glance</h3>
-
-      <table>
-        <thead>
-          <tr>
-            <th>Variant</th>
-            <th>Latent Space</th>
-            <th>Key Innovation</th>
-            <th>Generation?</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>Standard AE</td>
-            <td>Continuous, unstructured</td>
-            <td>Bottleneck forces compression</td>
-            <td>No (messy latent space)</td>
-          </tr>
-          <tr>
-            <td>Denoising AE</td>
-            <td>Continuous, unstructured</td>
-            <td>Input corruption → robust features</td>
-            <td>No</td>
-          </tr>
-          <tr>
-            <td>VAE</td>
-            <td>Continuous, regularized</td>
-            <td>Reparameterization + KL divergence</td>
-            <td>Yes (sample from prior)</td>
-          </tr>
-          <tr>
-            <td>β-VAE</td>
-            <td>Continuous, disentangled</td>
-            <td>Scaled KL for factor separation</td>
-            <td>Yes (with control)</td>
-          </tr>
-          <tr>
-            <td>VQ-VAE</td>
-            <td>Discrete codebook</td>
-            <td>Vector quantization + straight-through</td>
-            <td>Yes (with autoregressive prior)</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <!-- ================================================================ -->
-      <h2 id="checklist">What You Should Now Be Able To Do</h3>
-
-      <ul class="checklist">
-        <li>Explain why the bottleneck in an autoencoder forces useful representations and how it relates to dimensionality reduction.</li>
-        <li>Describe how denoising autoencoders learn more robust features than vanilla AEs.</li>
-        <li>Implement a VAE in PyTorch, including the reparameterization trick, and explain <em>why</em> the trick is needed (can't backprop through sampling).</li>
-        <li>Write out the ELBO loss and explain the tension between reconstruction quality and KL regularization.</li>
-        <li>Explain why KL divergence against <em>N</em>(0, I) produces a smooth, interpolable latent space—and what goes wrong without it.</li>
-        <li>Use β-VAE to control the disentanglement-reconstruction tradeoff.</li>
-        <li>Describe VQ-VAE's discrete codebook approach and why it mattered for models like DALL·E 1.</li>
-        <li>Build an anomaly detection system using reconstruction error from an autoencoder trained on normal data.</li>
-        <li>Choose the right autoencoder variant for a given problem (representation learning vs. generation vs. anomaly detection).</li>
-      </ul>
-<!-- ═══════════ Generative Adversarial Networks ═══════════ -->
-<h2>Generative Adversarial Networks</h2>
-
-<div class="tldr">
-  <div class="tldr-label">TL;DR</div>
-  <p>GANs pit two networks against each other — a generator that creates fake data and a discriminator that tries to catch it. This adversarial game produces stunningly sharp images, but the training dynamics are notoriously unstable: mode collapse, oscillation, and delicate hyperparameter balancing plagued practitioners for years. Variants like WGAN and StyleGAN patched many issues, and GANs dominated image generation from 2014–2021. Then diffusion models solved the fundamental problems GANs couldn't, and took the crown. GANs still matter for real-time generation and data augmentation.</p>
+<div class="formula">
+  <p>log p(x) ≥ 𝔼<sub>q(z|x)</sub>[log p(x|z)] − D<sub>KL</sub>(q(z|x) ∥ p(z))</p>
 </div>
 
-<h3>The Adversarial Game</h3>
+<p>That's the ELBO. Two terms, fighting each other.</p>
 
-<p>Ian Goodfellow's 2014 insight was elegantly simple: train two networks simultaneously, with opposing objectives. The <b>generator G</b> takes random noise z and produces a fake sample G(z). The <b>discriminator D</b> receives both real samples from the training data and fakes from G, and outputs a probability that the input is real.</p>
+<p>The first term, 𝔼<sub>q(z|x)</sub>[log p(x|z)], is the <strong>reconstruction loss</strong>. It says: "For the latent codes that the encoder produces, how well does the decoder reconstruct the original input?" Maximizing this term pushes the model toward perfect reconstruction. In practice, this is the mean squared error or binary cross-entropy between input and output.</p>
 
-<p>The classic analogy: G is a counterfeiter trying to produce convincing fake bills, D is a detective trying to spot them. As the detective gets better at catching fakes, the counterfeiter improves technique. As the counterfeiter improves, the detective must sharpen skills. Both improve through competition.</p>
+<p>The second term, D<sub>KL</sub>(q(z|x) ∥ p(z)), is the <strong>KL divergence</strong> between the encoder's distribution and the prior. It says: "How different is the distribution the encoder learned from the simple standard normal we chose as our prior?" Minimizing this pushes all encoding distributions toward N(0, I).</p>
 
-<pre><code>  Random noise z ~ N(0,1)
-        │
-   ┌────▼────┐
-   │Generator │  G(z) → fake image
-   │    G     │
-   └────┬────┘
-        │
-        ▼
-   ┌─────────┐      Real images x ~ p_data
-   │Discrim- │◄─────────────┘
-   │inator D │
-   └────┬────┘
-        │
-   D(x) → P(real)     Goal: D(real)→1, D(fake)→0
-                       Goal of G: make D(G(z))→1</code></pre>
+<p>For Gaussian encoders with a standard normal prior, the KL term has a beautiful closed-form solution. No sampling, no approximation:</p>
 
-<p>The formal objective is a <b>minimax game</b>:</p>
-
-<pre><code>  min_G max_D  V(D, G) = E_x[log D(x)] + E_z[log(1 - D(G(z)))]</code></pre>
-
-<p>D wants to maximize this: push D(x) toward 1 for real data (making log D(x) large) and D(G(z)) toward 0 for fakes (making log(1 − D(G(z))) large). G wants to minimize it: make D(G(z)) close to 1 so log(1 − D(G(z))) becomes very negative.</p>
-
-<div class="key-concept">
-<p><strong>Nash equilibrium.</strong> In theory, training converges when D can't tell real from fake — D(x) = 0.5 for everything. At this point, G has learned the true data distribution p_data. In practice, reaching this equilibrium is extremely difficult, which is the central challenge of GANs.</p>
+<div class="formula">
+  <p>D<sub>KL</sub> = −½ Σ<sub>j</sub>(1 + log σ<sub>j</sub>² − μ<sub>j</sub>² − σ<sub>j</sub>²)</p>
 </div>
 
-<p>In practice, the generator loss is often swapped to <b>−log D(G(z))</b> instead of log(1 − D(G(z))). Why? Early in training, when G produces garbage, D easily rejects it and D(G(z)) ≈ 0. The gradient of log(1 − D(G(z))) near 0 is tiny — the generator gets almost no learning signal. The −log D(G(z)) formulation provides stronger gradients early on, giving G a fighting chance to improve.</p>
+<p>Where j runs over each dimension of the latent space. This is computationally cheap and exact.</p>
 
-<h3>The GAN Training Loop</h3>
+<p>Now, these two terms are in tension. The reconstruction term wants the encoder to spread different inputs far apart in latent space — it's easier to reconstruct if each input has its own unique, distant code. The KL term wants everything pulled together near the origin. Train a VAE and you're mediating a never-ending argument between fidelity and structure. This is why VAE outputs tend to be slightly blurry compared to, say, GAN outputs. The KL term is smoothing things out, and that smoothing costs sharpness.</p>
 
-<p>Here's the skeleton that every GAN implementation follows. Two optimizers, alternating updates, and the critical detail: you train D more reliably than G.</p>
+<p>I'm still developing my intuition for why the β-VAE trick works as well as it does. The idea, from Higgins et al. (2017), is to multiply the KL term by a scalar β > 1. Higher β means more pressure toward a structured latent space, which encourages <strong>disentanglement</strong> — individual latent dimensions capture independent factors like rotation, color, size. But it also means blurrier reconstructions. The tradeoff is real, and picking the right β is more art than science.</p>
 
-<pre><code>import torch
-import torch.nn as nn
+<!-- ═══════════ REST STOP ═══════════ -->
+<h2 id="rest-stop">Rest stop</h2>
 
-# Generator: noise → image
-G = Generator()    # z (latent_dim,) → image (C, H, W)
-D = Discriminator() # image (C, H, W) → scalar (real/fake)
+<p>Congratulations on making it this far. You can stop here if you want.</p>
 
-opt_G = torch.optim.Adam(G.parameters(), lr=2e-4, betas=(0.5, 0.999))
-opt_D = torch.optim.Adam(D.parameters(), lr=2e-4, betas=(0.5, 0.999))
-criterion = nn.BCEWithLogitsLoss()
+<p>You now have a mental model for the entire autoencoder family: vanilla autoencoders compress and reconstruct through a bottleneck, denoising autoencoders learn robust features by training on corrupted inputs, sparse autoencoders encourage selective feature activation, and VAEs impose probabilistic structure on the latent space so you can actually sample new data from it. The reparameterization trick makes VAEs trainable, and the ELBO loss balances reconstruction quality against latent space regularity.</p>
 
-for epoch in range(num_epochs):
-    for real_imgs, _ in dataloader:
-        batch_size = real_imgs.size(0)
-        real_label = torch.ones(batch_size, 1)
-        fake_label = torch.zeros(batch_size, 1)
+<p>That's a useful mental model. If someone asks you how a VAE works in an interview, you can explain the encoder-to-distribution idea, the KL penalty, and the reparameterization trick, and you'll be in solid shape.</p>
 
-        # ---- Train Discriminator ----
-        z = torch.randn(batch_size, latent_dim)
-        fake_imgs = G(z).detach()  # detach: don't backprop into G
+<p>But this doesn't tell the whole story. VAEs produce smooth, structured outputs, but they tend to be blurry. What if you want razor-sharp generated images? What if you want exact likelihood computation? What if you want to control <em>what</em> gets generated? Those questions pull us into GANs, normalizing flows, and energy-based models — three radically different approaches to the same generation problem.</p>
 
-        loss_D_real = criterion(D(real_imgs), real_label)
-        loss_D_fake = criterion(D(fake_imgs), fake_label)
-        loss_D = (loss_D_real + loss_D_fake) / 2
+<p>But if the discomfort of not knowing what's underneath is nagging at you, read on.</p>
 
-        opt_D.zero_grad()
-        loss_D.backward()
-        opt_D.step()
+<!-- ═══════════ THE ADVERSARIAL GAME ═══════════ -->
+<h2 id="adversarial-game">The adversarial game</h2>
 
-        # ---- Train Generator ----
-        z = torch.randn(batch_size, latent_dim)
-        fake_imgs = G(z)
-        # G wants D to think fakes are real
-        loss_G = criterion(D(fake_imgs), real_label)
+<p>In 2014, Ian Goodfellow proposed something that felt almost absurd: instead of training one network to generate data, train <em>two</em> networks that fight each other.</p>
 
-        opt_G.zero_grad()
-        loss_G.backward()
-        opt_G.step()</code></pre>
+<p>The <strong>generator</strong> G takes random noise z (sampled from a simple distribution, usually a standard normal) and produces a fake sample — say, a fake portrait for our studio. The <strong>discriminator</strong> D looks at images — some real from the training set, some fake from G — and tries to tell them apart, outputting a probability that its input is real.</p>
 
-<p>Key details: the <code>.detach()</code> call when training D prevents gradients from flowing back into G — we only want to update D's weights at that step. When training G, we do <em>not</em> detach, because G needs gradients through D to learn what "fools" the discriminator. The <code>betas=(0.5, 0.999)</code> in Adam is a widely-adopted GAN trick — lower momentum stabilizes training.</p>
+<p>Back to our portrait studio. The generator is a forger who's never seen a real photograph but has been given a pile of random noise and told "make this look like a face." The discriminator is a detective who examines photos and says "real" or "fake." As the detective gets sharper, the forger has to improve technique. As the forger improves, the detective has to look more carefully. Both get better through competition.</p>
 
-<h3>Training Dynamics: Why GANs Are Hard</h3>
+<p>The formal objective captures this as a <strong>minimax game</strong>:</p>
 
-<p>If you've only read about GANs, you might think training is straightforward. It's not. GANs are the most finicky models to train in all of deep learning. Here's why.</p>
-
-<h4>Mode Collapse</h4>
-
-<p>This is the signature GAN failure mode. The generator discovers that producing one particular output (or a small set of outputs) reliably fools the discriminator, and just keeps producing that. Ask for 1000 face samples and you get the same face 1000 times, maybe with tiny variations.</p>
-
-<p>Why does it happen? The generator is optimizing to fool D right now, not to cover the full data distribution. If one mode of the data is particularly easy to imitate, G overexploits it. D eventually catches on and G shifts to another mode — creating an oscillation where G cycles through modes without ever covering them all simultaneously.</p>
-
-<div class="callout">
-<p><strong>Mode collapse in practice.</strong> You're training a GAN on CIFAR-10 (10 classes). You check generated samples and notice: great-looking trucks, decent cars, and... nothing else. Eight classes are completely missing. The generator found that trucks and cars are "enough" to keep the discriminator confused and stopped exploring.</p>
+<div class="formula">
+  <p>min<sub>G</sub> max<sub>D</sub> V(D, G) = 𝔼<sub>x~p<sub>data</sub></sub>[log D(x)] + 𝔼<sub>z~p<sub>z</sub></sub>[log(1 − D(G(z)))]</p>
 </div>
 
-<h4>Non-Convergence and Oscillation</h4>
+<p>Let's unpack that. D wants to <em>maximize</em> this expression: push D(x) toward 1 for real data (making log D(x) large) and D(G(z)) toward 0 for fakes (making log(1 − D(G(z))) large, since log(1 − 0) = 0). G wants to <em>minimize</em> it: make D(G(z)) close to 1 so the second term collapses.</p>
 
-<p>The minimax game has no guarantee of convergence. Unlike a standard loss function that decreases monotonically, GAN training is a two-player game where both players are adapting. D gets better, then G responds, then D responds again. The loss curves oscillate rather than decrease, and there's no clear "we're done" signal.</p>
+<p>In theory, this game has a <strong>Nash equilibrium</strong> where the generator has perfectly learned the data distribution and the discriminator can't do better than random guessing — D(x) = 0.5 for everything. In practice, reaching that equilibrium is extraordinarily difficult, and therein lies the entire drama of GAN training.</p>
 
-<p>Monitoring GAN training is an art. Loss values alone are nearly meaningless — D loss going down doesn't mean things are improving if G loss is going up. Practitioners typically monitor generated sample quality visually and use FID scores periodically.</p>
+<p>One practical note that matters: the generator's loss is often modified from log(1 − D(G(z))) to −log D(G(z)). Why? Early in training, the generator produces obvious garbage. The discriminator rejects it with confidence: D(G(z)) ≈ 0. At that point, the gradient of log(1 − D(G(z))) is tiny — the generator gets almost no learning signal. It's trying to climb a hill but the ground is flat. The −log D(G(z)) formulation has steeper gradients near zero, giving the generator enough signal to start improving. This is a small change in the math, but it's the difference between a GAN that learns and one that sits there doing nothing.</p>
 
-<h4>The Balance Problem</h4>
+<!-- ═══════════ TRAINING A GAN ═══════════ -->
+<h2 id="training-gan">Training a GAN: the delicate dance</h2>
 
-<p>If D becomes too strong too fast, it rejects everything G produces with near-100% confidence. The gradients flowing back to G become vanishingly small (because D's output is saturated), and G stops learning. If G somehow gets ahead and fools D completely, D's gradients become meaningless too. You need both networks to improve at roughly the same pace — a delicate balancing act that depends heavily on architecture, learning rates, and batch size.</p>
+<p>If you've trained classifiers or regression models, GAN training will feel alien. There's no single loss that decreases monotonically. There are two losses, for two networks, and they oscillate. The discriminator gets better at catching fakes, then the generator adapts, then the discriminator responds, and on it goes. There's no natural "we're done" signal.</p>
 
-<p>Common hacks that help: train D for k steps per G step (usually k=1 or k=5), use label smoothing (replace 1.0 with 0.9 for real labels), add noise to D's inputs early in training.</p>
+<p>The training loop alternates between two steps. First, fix the generator and update the discriminator: show it real images (label: 1) and fake images from G (label: 0), compute binary cross-entropy loss, update D's weights. Second, fix the discriminator and update the generator: generate fake images, pass them through D, compute loss based on how well they fooled D (we want D to output 1 for our fakes), update G's weights.</p>
 
-<h3>Key GAN Variants</h3>
+<pre><code>for each training batch:
 
-<p>The original GAN paper spawned a zoo of variants. Most are historical curiosities, but a few solved real problems:</p>
+    # Step 1: Train the detective
+    z = sample_noise(batch_size)
+    fake = G(z).detach()       # .detach() stops gradients into G
+    loss_D = BCE(D(real), 1) + BCE(D(fake), 0)
+    update D
+
+    # Step 2: Train the forger
+    z = sample_noise(batch_size)
+    fake = G(z)                # no detach — G needs gradients through D
+    loss_G = BCE(D(fake), 1)   # G wants D to think fakes are real
+    update G</code></pre>
+
+<p>That <code>.detach()</code> call is critical. When training D, we don't want gradients flowing back into G — we're only improving the detective, not the forger. When training G, we deliberately let gradients flow through D because G needs to learn what D considers convincing.</p>
+
+<p>The balance between these two networks is <em>everything</em>. If D becomes too strong too fast, it rejects everything G produces with near-100% confidence. D's output saturates, the gradients flowing to G become vanishingly small, and G stops learning. If G somehow gets ahead and fools D completely, D's gradients become meaningless too. You need both networks improving at roughly the same pace. Practitioners have tried training D for multiple steps per G step, using label smoothing (labeling real images as 0.9 instead of 1.0), adding noise to D's inputs — an entire bag of tricks developed over years of collective frustration.</p>
+
+<p>I'll be honest — the first time I trained a GAN, I watched the loss curves for an hour and had no idea if things were going well. They were oscillating wildly. Turns out, that was normal. The only reliable way to monitor GAN training is to periodically look at the generated samples yourself, or compute FID scores (a metric that compares the distribution of generated images to real ones). Loss values alone tell you almost nothing.</p>
+
+<!-- ═══════════ MODE COLLAPSE ═══════════ -->
+<h2 id="mode-collapse">Mode collapse and the dirt-pile fix</h2>
+
+<p>Here's the signature GAN failure mode, and once you've seen it you'll never forget it. You're training a GAN on a dataset of faces — men, women, different ages, different expressions. You check the generated samples and every single face is the same middle-aged woman. A thousand samples, a thousand copies of the same face with minor variations.</p>
+
+<p>This is <strong>mode collapse</strong>. The generator discovered that one particular output fools the discriminator reliably, and decided that's all it needs to produce. It's our portrait studio forger who realized the detective can't spot one particular fake, so they produce that exact fake over and over instead of learning to forge different styles.</p>
+
+<p>The mathematical reason is subtle. The generator is optimizing to fool D <em>right now</em>. It has no incentive to cover the full data distribution. If one mode of the data is easier to imitate, G overexploits it. D eventually catches on and G shifts to a different mode, creating an oscillation where G cycles through modes without ever covering them all simultaneously. The GAN objective doesn't care about diversity — it only cares about fooling the discriminator.</p>
+
+<p>The most impactful fix came in 2017 with the <strong>Wasserstein GAN</strong> (WGAN), and the intuition is beautiful. The original GAN loss is closely related to the <strong>Jensen-Shannon divergence</strong> between the real and generated distributions. Here's the problem: when these two distributions have non-overlapping support (which is almost always the case in high dimensions, especially early in training), the JS divergence is constant. It provides zero useful gradient. The generator is standing in a flat field with no indication of which direction to walk.</p>
+
+<p>The <strong>Wasserstein distance</strong>, also called the earth mover's distance, fixes this. Imagine the real data distribution as a pile of dirt and the generated distribution as another pile of dirt. The Wasserstein distance measures the minimum amount of work — dirt times distance moved — needed to reshape one pile into the other. Crucially, this distance is smooth and meaningful even when the piles don't overlap at all. There's always a gradient pointing the generator in the right direction: toward the real data.</p>
+
+<p>WGAN replaces the discriminator with a <strong>critic</strong> (it no longer outputs a probability, but a score), requires the critic to satisfy a <strong>Lipschitz constraint</strong> (originally enforced by weight clipping, later by a gradient penalty in WGAN-GP), and uses the Wasserstein distance as the loss. The result: dramatically more stable training, a loss curve that actually correlates with sample quality, and reduced mode collapse because the gradient signal is always informative.</p>
+
+<p>This won't be the last time we see the idea that "smooth, informative gradients solve training problems." It shows up again in normalizing flows and energy-based models.</p>
+
+<!-- ═══════════ CONDITIONAL GENERATION ═══════════ -->
+<h2 id="conditional">Conditional generation: steering the output</h2>
+
+<p>So far, every generative model we've seen produces random outputs. Sample noise, decode or generate, and you get whatever the model gives you. That's interesting but not very practical. What if we want to generate a portrait of a smiling woman? Or convert a sketch into a photograph? Or generate a specific digit?</p>
+
+<p>The solution is remarkably consistent across model families: feed additional information to the network. In a <strong>Conditional GAN</strong> (cGAN), you concatenate a label y — a class label, a text embedding, an input image — to both the noise vector for G and the input for D. G learns to produce images conditioned on y. D learns to judge whether an image is a realistic example of category y.</p>
+
+<p>The objective becomes:</p>
+
+<div class="formula">
+  <p>min<sub>G</sub> max<sub>D</sub> 𝔼<sub>x</sub>[log D(x|y)] + 𝔼<sub>z</sub>[log(1 − D(G(z|y)|y))]</p>
+</div>
+
+<p>The same idea works for VAEs. A <strong>Conditional VAE</strong> (CVAE) feeds the label y into both the encoder and decoder. The encoder produces q(z|x, y) — a distribution over latent codes given both the image and the label. The decoder produces p(x|z, y). Now you can fix y = "smiling" and sample different z values to get diverse smiling faces.</p>
+
+<p>The applications range widely. Pix2Pix conditions a GAN on an input image to do paired image-to-image translation: sketch to photo, segmentation map to street scene, day to night. CycleGAN extends this to unpaired translation: horses to zebras, photos to paintings, without requiring matched training pairs. The idea of "condition on something extra" is one of those simple additions that opened an enormous space of practical applications.</p>
+
+<p>Back at our portrait studio: the vanilla GAN is a forger who produces random faces. The conditional GAN is a forger who takes commissions. "Give me a bearded man in his 40s" — and the forger obliges.</p>
+
+<!-- ═══════════ NORMALIZING FLOWS ═══════════ -->
+<h2 id="flows">Normalizing flows: invertible transformations</h2>
+
+<p>VAEs and GANs each have a frustrating weakness. VAEs give you a tractable (approximate) likelihood and a structured latent space, but the outputs are blurry. GANs give you sharp outputs, but no likelihood computation and a temperamental training process. Is there a model that gives you exact likelihoods <em>and</em> high-quality samples?</p>
+
+<p>Normalizing flows take a completely different approach. The idea: start with a simple distribution you know how to work with (a standard normal), and warp it through a series of <strong>invertible transformations</strong> until it matches the data distribution. Because every transformation is invertible, you can go both directions — from noise to data (generation) and from data to noise (density evaluation).</p>
+
+<p>The mathematical backbone is the <strong>change of variables formula</strong>. If z has a known density p<sub>z</sub>(z), and x = f(z) where f is invertible and differentiable, then:</p>
+
+<div class="formula">
+  <p>log p<sub>x</sub>(x) = log p<sub>z</sub>(f<sup>−1</sup>(x)) + log |det(∂f<sup>−1</sup>/∂x)|</p>
+</div>
+
+<p>That second term, the log-absolute-determinant of the Jacobian, is what makes this hard. For a transformation f from ℝ<sup>d</sup> to ℝ<sup>d</sup>, the Jacobian is a d×d matrix. Computing its determinant naively costs O(d³). For a 784-dimensional image, that's impractical.</p>
+
+<p>Here's where the clever engineering comes in. <strong>Coupling layers</strong>, introduced in the NICE paper (2014) and refined in <strong>RealNVP</strong> (2017), are transformations specifically designed to have tractable Jacobian determinants. The trick: split the input into two halves, x<sub>a</sub> and x<sub>b</sub>. Leave x<sub>a</sub> unchanged. Transform x<sub>b</sub> using a function that depends on x<sub>a</sub>:</p>
+
+<pre><code>y_a = x_a                                     (unchanged)
+y_b = x_b ⊙ exp(s(x_a)) + t(x_a)            (scaled and shifted)</code></pre>
+
+<p>Here s() and t() are neural networks that output scale and translation parameters. They can be arbitrarily complex — the coupling layer doesn't require them to be invertible because they only operate on the conditioning half. The inverse is easy:</p>
+
+<pre><code>x_a = y_a
+x_b = (y_b - t(y_a)) ⊙ exp(-s(y_a))</code></pre>
+
+<p>And the Jacobian of this transformation is <em>triangular</em>, which means its determinant is the product of the diagonal elements — which is the sum of s(x<sub>a</sub>) in log space. No expensive matrix operations. You stack many coupling layers, alternating which half gets transformed, and the composition of invertible functions is itself invertible. The total log-determinant is the sum of each layer's log-determinant.</p>
+
+<p>The <strong>Glow</strong> model (Kingma and Dhariwal, 2018) added <strong>invertible 1×1 convolutions</strong> between coupling layers — learnable permutations that mix information across channels before each coupling step. This boosted expressiveness substantially and produced the first flow-based model that generated genuinely convincing face images.</p>
+
+<p>The tradeoff with flows is real, though. The invertibility constraint limits what architectures you can use. You can't have a bottleneck (that would destroy invertibility), so there's no dimensionality reduction. The models tend to be large, and while sample quality has improved enormously, it has historically lagged behind GANs and later diffusion models for the most challenging image generation tasks. But for applications where you need exact likelihoods — anomaly detection, density estimation, lossless compression — flows are hard to beat.</p>
+
+<!-- ═══════════ ENERGY-BASED MODELS ═══════════ -->
+<h2 id="ebm">Energy-based models: the landscape view</h2>
+
+<p>Every generative model so far has had a specific architecture with a specific generation mechanism: encode/decode, adversarial game, invertible transform. Energy-based models strip all that away and work with the most general formulation possible.</p>
+
+<p>The idea: define a function E<sub>θ</sub>(x) that assigns a scalar <strong>energy</strong> to every possible input x. Low energy means "this looks like real data." High energy means "this is unlikely." The probability of x is:</p>
+
+<div class="formula">
+  <p>p<sub>θ</sub>(x) = exp(−E<sub>θ</sub>(x)) / Z<sub>θ</sub></p>
+</div>
+
+<p>Where Z<sub>θ</sub> = ∫ exp(−E<sub>θ</sub>(x)) dx is the <strong>partition function</strong>, a normalizing constant that makes the probabilities sum to 1.</p>
+
+<p>Picture an energy landscape — a mountainous terrain where valleys represent likely data points and peaks represent unlikely ones. Faces live in deep valleys. Random noise lives on mountain peaks. Our portrait studio's entire collection of headshots occupies a particular valley in this landscape.</p>
+
+<p>The problem — and it's a big one — is that Z<sub>θ</sub> requires integrating over <em>all possible inputs</em>. For a 784-dimensional image, that's an integral over ℝ<sup>784</sup>. Completely intractable. This means we can evaluate the <em>unnormalized</em> density exp(−E(x)) for any given x, but not the actual probability. We know which valleys are deeper, but not by how much relative to the total landscape.</p>
+
+<p><strong>Score matching</strong> (Hyvärinen, 2005) sidesteps this brilliantly. Instead of learning the density p(x), learn its <strong>score function</strong> — the gradient of log p(x) with respect to x. The score function is ∇<sub>x</sub> log p(x) = −∇<sub>x</sub> E(x). Notice what happened: the partition function Z disappeared. It's a constant with respect to x, so its gradient is zero. We can learn the score function without ever computing Z.</p>
+
+<p>But how do you generate samples if you only know the score? This is where <strong>Langevin dynamics</strong> comes in. Start with a random point x₀ (noise). Then iteratively update:</p>
+
+<div class="formula">
+  <p>x<sub>t+1</sub> = x<sub>t</sub> + (ε/2) ∇<sub>x</sub> log p(x<sub>t</sub>) + √ε · noise</p>
+</div>
+
+<p>Each step nudges x in the direction of higher probability (following the score) while adding a bit of random noise. Over many steps, x migrates from the mountain peaks down into the valleys where real data lives. It's like rolling a ball downhill on the energy landscape, with random jostling to prevent it from getting stuck in shallow dips.</p>
+
+<p>I'll be honest — the connection between energy-based models and diffusion models is one of those things I had to read three times before it clicked. Diffusion models, which we'll cover in the next section, can be understood as a specific way of doing score matching across multiple noise levels. The line between "EBM with Langevin sampling" and "diffusion model" is blurrier than most presentations suggest. Song and Ermon's 2019 work on score-based generative models made this connection explicit and paved the way for the diffusion revolution.</p>
+
+<p>Energy-based models are the most flexible generative framework — the energy function E(x) can be any neural network, with no architectural constraints like invertibility or encoder-decoder structure. The cost of that flexibility is slow, iterative sampling (hundreds or thousands of Langevin steps) and tricky training (score matching has its own failure modes). But the theoretical framework is elegant, and it underpins much of the modern generative modeling landscape.</p>
+
+<!-- ═══════════ THE LANDSCAPE ═══════════ -->
+<h2 id="landscape">The generative model landscape</h2>
+
+<p>We've covered five families of generative models, and at this point it helps to see them side by side. Each makes a different tradeoff.</p>
 
 <table>
-<thead>
-<tr><th>Variant</th><th>Key Innovation</th><th>What It Solved</th></tr>
-</thead>
-<tbody>
-<tr><td><b>DCGAN</b> (2015)</td><td>Convolutional architecture with batch norm, strided convolutions instead of pooling</td><td>Made GANs work reliably on images. Established architectural best practices (no fully-connected layers, use transposed convolutions in G).</td></tr>
-<tr><td><b>WGAN</b> (2017)</td><td>Wasserstein distance instead of JS divergence; critic instead of discriminator</td><td>Training stability. The Wasserstein loss provides meaningful gradients even when distributions don't overlap, fixing the vanishing gradient problem. Loss actually correlates with sample quality.</td></tr>
-<tr><td><b>WGAN-GP</b> (2017)</td><td>Gradient penalty instead of weight clipping</td><td>WGAN's weight clipping caused capacity issues. Gradient penalty enforces the Lipschitz constraint more cleanly.</td></tr>
-<tr><td><b>StyleGAN</b> (2018)</td><td>Style-based generator with mapping network, adaptive instance normalization, progressive growing</td><td>High-resolution face synthesis. Disentangled control over coarse (pose, shape) and fine (hair texture, freckles) attributes.</td></tr>
-<tr><td><b>Pix2Pix</b> (2016)</td><td>Paired image-to-image translation with conditional adversarial loss + L1 reconstruction</td><td>Sketch→photo, segmentation map→street scene, day→night. Requires paired training data.</td></tr>
-<tr><td><b>CycleGAN</b> (2017)</td><td>Cycle-consistency loss for unpaired translation</td><td>Horse→zebra, photo→painting without paired examples. Enforces that translating A→B→A recovers the original.</td></tr>
-</tbody>
+  <thead>
+    <tr>
+      <th>Model Family</th>
+      <th>How It Generates</th>
+      <th>Likelihood?</th>
+      <th>Sample Quality</th>
+      <th>Key Weakness</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>VAE</td>
+      <td>Sample z ~ N(0,I), decode</td>
+      <td>Approximate (ELBO)</td>
+      <td>Smooth, sometimes blurry</td>
+      <td>Reconstruction-KL tension</td>
+    </tr>
+    <tr>
+      <td>GAN</td>
+      <td>Sample z, one forward pass through G</td>
+      <td>None</td>
+      <td>Sharp, realistic</td>
+      <td>Mode collapse, training instability</td>
+    </tr>
+    <tr>
+      <td>Normalizing Flow</td>
+      <td>Sample z, apply inverse transforms</td>
+      <td>Exact</td>
+      <td>Good, improving</td>
+      <td>Invertibility limits architecture</td>
+    </tr>
+    <tr>
+      <td>Energy-Based</td>
+      <td>Langevin dynamics (iterative)</td>
+      <td>Unnormalized</td>
+      <td>Varies</td>
+      <td>Slow sampling, tricky training</td>
+    </tr>
+    <tr>
+      <td>Diffusion (preview)</td>
+      <td>Iterative denoising</td>
+      <td>Approximate</td>
+      <td>Excellent</td>
+      <td>Slow (many denoising steps)</td>
+    </tr>
+  </tbody>
 </table>
 
-<p>WGAN deserves a bit more attention because it addressed the most fundamental issue. The original GAN loss is related to the Jensen-Shannon divergence between real and generated distributions. When these distributions have non-overlapping support (which is almost always the case in high dimensions early in training), JS divergence is constant and provides zero gradient. The Wasserstein distance (earth mover's distance) is smooth even when distributions don't overlap — it measures how much "work" it takes to morph one distribution into the other. This single change made training dramatically more stable and gave practitioners a loss curve that actually means something.</p>
+<p>Notice a pattern: there's no free lunch. Exact likelihoods (flows) cost architectural flexibility. Sharp samples (GANs) cost training stability and mode coverage. Flexible architectures (EBMs) cost efficient sampling. Diffusion models, which we'll meet in the next section, found a sweet spot by combining ideas from score matching and denoising autoencoders — but they pay for it with slow, multi-step generation.</p>
 
-<h3>Conditional GANs</h3>
+<p>The portrait studio analogy holds throughout. The VAE forger produces acceptable work but it's a bit fuzzy. The GAN forger produces photorealistic work but sometimes gets stuck forging the same face. The flow forger can tell you exactly how probable any face is, but needs a very specific set of tools. The energy-based forger is the most versatile artist of the bunch, but takes forever to finish each piece. Each has their place.</p>
 
-<p>Vanilla GANs give you no control over what gets generated — you sample noise and get a random output. <b>Conditional GANs (cGANs)</b> fix this by feeding additional information to both G and D.</p>
+<!-- ═══════════ WRAP-UP ═══════════ -->
+<h2 id="wrap-up">Wrap-up</h2>
 
-<p>The simplest version: concatenate a class label (one-hot encoded) to the noise vector for G, and to the image for D. Now G learns to produce images conditioned on class, and D learns to judge whether an image is a realistic example of that class.</p>
+<p>If you're still with me, thank you. I hope it was worth it.</p>
 
-<pre><code>  Conditional GAN objective:
-  min_G max_D  E_x[log D(x|y)] + E_z[log(1 - D(G(z|y)|y))]
+<p>We started with the simplest possible idea — compress an image through a bottleneck and reconstruct it — and built up, one piece at a time, through denoising and sparsity tricks, through the probabilistic leap of VAEs with their reparameterization trick and ELBO loss, through the adversarial drama of GANs with their mode collapse and the Wasserstein fix, through conditional generation, through the invertible elegance of normalizing flows, and finally to the energy landscape view that connects to everything that came after.</p>
 
-  where y = conditioning variable (class label, text, image, etc.)</code></pre>
+<p>My hope is that the next time you encounter a paper mentioning "ELBO," "Wasserstein distance," "coupling layers," or "score matching," instead of feeling that familiar urge to quietly change the subject, you'll have a pretty good mental model of what's going on under the hood. These aren't separate, disconnected ideas — they're all different answers to the same question: how do you teach a neural network to create?</p>
 
-<p>This idea extends far beyond class labels. Pix2Pix conditions on an input image. Text-to-image GANs condition on text embeddings. Super-resolution GANs condition on a low-resolution input. The conditioning mechanism is the same — feed the extra information to both networks.</p>
+<!-- ═══════════ RESOURCES ═══════════ -->
+<h2 id="resources">Resources and credits</h2>
 
-<h3>Why Diffusion Won</h3>
+<p>Kingma and Welling, <em>"Auto-Encoding Variational Bayes"</em> (2013) — the O.G. VAE paper. Concise and readable, which is rare for a paper this influential.</p>
 
-<p>From 2014 to roughly 2021, GANs were the undisputed kings of image generation. Then diffusion models (DDPM, and later Stable Diffusion, DALL-E 2) took over. It wasn't close. Here's why:</p>
+<p>Goodfellow et al., <em>"Generative Adversarial Nets"</em> (2014) — the paper that started the GAN era. The theoretical analysis is elegant and the experiments look quaint by modern standards.</p>
 
-<p><b>Mode collapse vs. full coverage.</b> GANs optimize a game that has no incentive to cover the entire data distribution. Diffusion models optimize a proper likelihood-based objective that naturally covers all modes. Generate 10,000 samples from a diffusion model and you'll see the full diversity of the training data.</p>
+<p>Arjovsky, Chintala, and Bottou, <em>"Wasserstein GAN"</em> (2017) — a wildly insightful paper. The explanation of why JS divergence fails in high dimensions is worth reading even if you never train a GAN.</p>
 
-<p><b>Training stability.</b> Diffusion models train a single denoising network with a simple MSE loss. No adversarial dynamics, no balancing act, no hyperparameter sensitivity. Training is as stable as training a classifier. GANs require babysitting.</p>
+<p>Dinh, Sohl-Dickstein, and Bengio, <em>"Density estimation using Real-NVP"</em> (2017) — the paper that made normalizing flows practical. The coupling layer idea is one of those things that seems obvious in retrospect.</p>
 
-<p><b>Likelihood computation.</b> GANs provide no way to evaluate the probability of a given sample under the model. Diffusion models (through the connection to score matching) provide approximate log-likelihoods. This matters for evaluation, comparison, and certain downstream applications.</p>
+<p>Lilian Weng's blog posts on VAEs, GANs, and flow-based models — unforgettable overviews. If you read one blog on generative models besides this one, read hers.</p>
 
-<p><b>Controllability.</b> Classifier-free guidance in diffusion models gives fine-grained, stable control over generation. GAN conditioning works but is harder to tune and less flexible.</p>
-
-<div class="key-concept">
-<p><strong>The core tradeoff.</strong> GANs produce sharp images in a single forward pass. Diffusion models produce diverse, high-quality images but require hundreds of denoising steps. GANs traded diversity for speed; diffusion models made the opposite trade — and the field decided diversity and stability mattered more.</p>
-</div>
-
-<h3>Where GANs Still Matter</h3>
-
-<p>GANs aren't dead. They've found niches where their strengths — fast, single-pass inference — outweigh their weaknesses.</p>
-
-<p><b>Real-time generation.</b> A GAN generates an image in one forward pass (~10-50ms). A diffusion model needs 20-50 denoising steps. For applications like real-time video enhancement, game asset generation, or interactive editing, GANs remain practical. Distillation techniques are closing this gap, but GANs still win on raw latency.</p>
-
-<p><b>Data augmentation.</b> Need to expand a small medical imaging dataset? Train a GAN to generate synthetic pathology images. Mode collapse matters less here because you're supplementing real data, not replacing it. The sharp outputs are actually an advantage — blurry augmented images don't help.</p>
-
-<p><b>Super-resolution.</b> ESRGAN and Real-ESRGAN remain state-of-the-art for single-image super-resolution in production. The adversarial loss produces perceptually sharp upscaling that MSE-based methods can't match.</p>
-
-<p><b>Image editing.</b> GAN inversion — projecting a real image into the latent space of a trained GAN — enables precise semantic editing. StyleGAN's disentangled latent space lets you change a face's age, expression, or hair style by moving along specific latent directions.</p>
-
-<p><b>Distillation targets.</b> Ironically, one of the most effective ways to speed up diffusion models is to distill them into GAN-like single-step generators (e.g., consistency distillation, adversarial diffusion distillation). The adversarial loss is too useful to abandon entirely.</p>
-
-<div class="callout">
-<p><strong>Historical perspective.</strong> GANs were the breakthrough that proved neural networks could generate photorealistic images. Every generative model since — including diffusion — builds on intuitions and techniques developed during the GAN era. Understanding GANs isn't just history; it's understanding the foundations that current methods stand on.</p>
-</div>
-
-<h3>What You Should Now Be Able To Do</h3>
-
-<ul>
-  <li>☑ Explain the adversarial game between generator and discriminator, and write the minimax objective from memory</li>
-  <li>☑ Implement a basic GAN training loop in PyTorch — train D on real+fake, train G to fool D, with correct gradient flow</li>
-  <li>☑ Diagnose mode collapse when you see it (low diversity in outputs, cycling between modes)</li>
-  <li>☑ Explain why vanilla GAN training is unstable (JS divergence, vanishing gradients, balance problem) and how WGAN addresses it</li>
-  <li>☑ Distinguish key GAN variants: DCGAN (architecture), WGAN (loss), StyleGAN (controllable generation), Pix2Pix (paired), CycleGAN (unpaired)</li>
-  <li>☑ Describe how conditional GANs work and when to use them</li>
-  <li>☑ Articulate why diffusion models replaced GANs for most generation tasks (mode coverage, training stability, likelihood)</li>
-  <li>☑ Identify where GANs still have an edge: real-time inference, super-resolution, data augmentation</li>
-</ul>
+<p>Song and Ermon, <em>"Generative Modeling by Estimating Gradients of the Data Distribution"</em> (2019) — the bridge between energy-based models and diffusion models. This paper changed everything that followed.</p>
 
       <div class="page-nav">
         <span></span>

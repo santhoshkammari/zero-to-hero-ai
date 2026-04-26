@@ -299,462 +299,359 @@
   <span class="tag">Section 7 of 9</span>
 </div>
 
-<div class="tldr">
-  <div class="tldr-label">TL;DR</div>
-  <p>Your model is only as good as the metal running it. GPUs vs TPUs, horizontal vs vertical scaling, managed vs DIY, AWS vs GCP vs Azure — these are the decisions that determine whether your ML system costs $500/month or $50,000/month. This section is the decision guide: which hardware for which job, which cloud platform for which team, and how to avoid lighting money on fire with idle GPU instances.</p>
+<!-- ═══════════════════════════════════════════ -->
+<!-- OPENING                                     -->
+<!-- ═══════════════════════════════════════════ -->
+
+<p>I avoided thinking about ML infrastructure for an embarrassingly long time. Every time someone mentioned GPU types, cloud pricing tiers, or cluster orchestration, I'd nod along and silently pray nobody asked me a follow-up question. I was an ML person, not an ops person. The model was my job. The metal it ran on was someone else's problem.</p>
+
+<p>Then I accidentally left four A100 GPUs running over a long weekend. The bill was $2,300 for a fine-tuning job that had finished Friday afternoon. That's when the discomfort of not understanding what's underneath grew too sharp to ignore. Here is that dive.</p>
+
+<p>ML infrastructure is the collection of hardware, cloud services, and orchestration tools that turn your <code>model.fit()</code> call into something that actually runs — fast enough, cheap enough, and reliably enough to matter. GPUs became the dominant hardware for deep learning around 2012, cloud ML platforms emerged around 2017–2018, and the landscape has been accelerating since the LLM explosion of 2022–2023. Today, the difference between a well-chosen and a poorly-chosen infrastructure setup can be a factor of 10× in cost for the same work.</p>
+
+<p>Before we start, a heads-up. We're going to be talking about GPU memory hierarchies, distributed computing strategies, cloud platform trade-offs, and cost arithmetic. You don't need to know any of it beforehand. We'll build each concept from the ground up, one piece at a time, with explanation.</p>
+
+<p>This isn't a short journey, but I hope you'll be glad you came.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- TABLE OF CONTENTS                           -->
+<!-- ═══════════════════════════════════════════ -->
+
+<div style="margin: 2rem 0; padding-left: 1.5rem; line-height: 2;">
+  Why hardware matters at all<br>
+  The GPU as a kitchen: VRAM, compute, and bandwidth<br>
+  The GPU landscape: T4 through H100 and beyond<br>
+  The VRAM calculation you'll do a hundred times<br>
+  Rest stop<br>
+  When one GPU isn't enough: scaling up and scaling out<br>
+  Multi-GPU strategies: data, tensor, and pipeline parallelism<br>
+  The three cloud kingdoms: SageMaker, Vertex AI, and Azure ML<br>
+  Spot instances: 70% savings with a catch<br>
+  The on-prem vs. cloud decision<br>
+  Serverless inference: when you don't want GPUs at all<br>
+  Cluster management: Kubernetes, Ray, or managed platforms<br>
+  Wrap-up<br>
+  Resources
 </div>
 
 <!-- ═══════════════════════════════════════════ -->
-<!-- 1. GPU / TPU Selection                      -->
+<!-- WHY HARDWARE MATTERS                        -->
 <!-- ═══════════════════════════════════════════ -->
-<h2 id="gpu-tpu-selection">GPU / TPU Selection</h2>
+<h2 id="why-hardware-matters">Why Hardware Matters at All</h2>
 
-<h3 id="the-hardware-landscape">The Hardware Landscape</h3>
+<p>Here's a scenario we'll carry through this entire section. Imagine you're building <b>PetSnap</b> — a mobile app that identifies dog breeds from photos. You've got a ResNet-50 that works beautifully on your laptop. Accuracy is great. Latency is fine. You show it to your team and everyone's excited.</p>
 
-<p>Training and inference are fundamentally different workloads. Training is throughput-bound — you want maximum TFLOPS to chew through billions of tokens. Inference is latency-bound — you want fast time-to-first-token and high tokens-per-second per dollar. Picking hardware without knowing which problem you're solving is how teams end up paying H100 prices for a job an L4 could handle.</p>
+<p>Then someone asks: "Can we serve this to 10,000 users?" And everything changes.</p>
 
-<table>
-<thead>
-<tr><th>GPU</th><th>VRAM</th><th>FP16 TFLOPS</th><th>Best For</th><th>Cloud $/hr (approx)</th></tr>
-</thead>
-<tbody>
-<tr><td>NVIDIA T4</td><td>16 GB</td><td>65</td><td>Budget inference, small fine-tunes</td><td>$0.50–1</td></tr>
-<tr><td>NVIDIA L4</td><td>24 GB</td><td>121</td><td>Inference sweet spot</td><td>$0.80–1.20</td></tr>
-<tr><td>NVIDIA A10G</td><td>24 GB</td><td>125</td><td>Mid-tier inference &amp; fine-tuning</td><td>$1–1.50</td></tr>
-<tr><td>NVIDIA A100 (80 GB)</td><td>80 GB</td><td>312</td><td>Training workhorse, large model fine-tuning</td><td>$3–5</td></tr>
-<tr><td>NVIDIA H100 (SXM)</td><td>80 GB</td><td>990</td><td>Frontier training, large-scale inference</td><td>$8–12</td></tr>
-<tr><td>NVIDIA B200</td><td>192 GB</td><td>~2,250</td><td>Next-gen training at scale</td><td>TBD</td></tr>
-<tr><td>Google TPU v5e</td><td>16 GB HBM</td><td>197</td><td>JAX/TensorFlow training, cost-efficient</td><td>$1.20–2</td></tr>
-<tr><td>Google TPU v5p</td><td>95 GB HBM</td><td>459</td><td>Large-scale training on GCP</td><td>$4–6</td></tr>
-<tr><td>AWS Trainium2</td><td>96 GB HBM</td><td>~380</td><td>AWS-native training with NeuronSDK</td><td>Competitive</td></tr>
-<tr><td>AWS Inferentia2</td><td>32 GB</td><td>~190</td><td>AWS-native inference, best cost/token</td><td>$0.75–1</td></tr>
-</tbody>
-</table>
+<p>Your laptop GPU has 8 GB of memory. The model needs 100 milliseconds per image. At 10,000 requests per hour, you need either a faster GPU or multiple GPUs running in parallel. And if someone later says "What if we used a larger vision-language model instead?" — now the model itself might not fit in 8 GB at all.</p>
 
-<h3 id="the-decision-logic">The Decision Logic</h3>
+<p>This is the fundamental tension of ML infrastructure. The model is the science. The hardware is the physics. You can design the most elegant architecture in the world, but it has to physically exist somewhere — on silicon that has a fixed amount of memory, a fixed number of arithmetic units, and a fixed rate at which data can flow between them. Ignoring those physical constraints is how teams end up with models that work in a notebook and fail in production.</p>
 
-<p><b>Training a model &gt;7B parameters?</b> You need A100 or H100. No shortcuts. The VRAM alone demands it, and the Tensor Core throughput makes training finish in days instead of weeks.</p>
+<p>Think of it this way. If training a model is like cooking a meal, the GPU is your stove. The stove's size limits how many pots you can run simultaneously. The burner heat determines how fast each pot boils. And the counter space — that's your VRAM — limits how many ingredients you can have out at once. You can be the best chef in the world, but if your kitchen is too small for the recipe, the food doesn't get made.</p>
 
-<p><b>Fine-tuning a 7B model with LoRA?</b> A single A100 or even an A10G with QLoRA. Don't overspend on H100s for adapter training.</p>
+<!-- ═══════════════════════════════════════════ -->
+<!-- GPU AS A KITCHEN                            -->
+<!-- ═══════════════════════════════════════════ -->
+<h2 id="gpu-anatomy">The GPU as a Kitchen: VRAM, Compute, and Bandwidth</h2>
 
-<p><b>Serving an LLM in production?</b> L4s and Inferentia2 give you the best cost per token. T4s work for models under 7B with quantization.</p>
+<p>A GPU has three numbers that matter for ML. Understanding what each one does — and which one will bottleneck you first — is the single most useful piece of infrastructure intuition you can develop.</p>
 
-<p><b>Running on GCP and using JAX?</b> TPUs are genuinely cheaper for large training runs. Their systolic array architecture is tailor-made for matrix multiplies. But you're locked into XLA compilation and Google's ecosystem.</p>
+<p><b>VRAM</b> (Video RAM, also called GPU memory) is the counter space in our kitchen. It's where the model weights, the input data, the intermediate activations, and the gradients all have to fit simultaneously. If your model plus its working data exceeds VRAM, the job crashes. There's no graceful fallback — it's an out-of-memory error, and your training run dies.</p>
 
-<pre><code class="language-python"># Quick VRAM estimation — the calculation you'll do a hundred times
-def estimate_vram_gb(params_billions, precision="fp16", mode="inference"):
+<p>For our PetSnap ResNet-50, the model weights in FP32 (32-bit floating point, meaning each parameter takes 4 bytes) occupy about 100 million parameters × 4 bytes = 400 MB. That's nothing. An 8 GB GPU handles it easily. But a 7-billion parameter LLM in FP16 (2 bytes per parameter) needs 14 GB for the weights alone. Add gradients, optimizer states, and activations during training, and you're looking at 80–100 GB. That doesn't fit on any single consumer GPU.</p>
+
+<p><b>Compute</b> (measured in TFLOPS — trillions of floating-point operations per second) is the heat of the burners. More TFLOPS means more matrix multiplications per second, which means faster training and faster inference. Modern GPUs achieve their highest TFLOPS using specialized hardware called <b>Tensor Cores</b>, which are circuits designed specifically for the matrix multiply-accumulate operations that dominate deep learning.</p>
+
+<p><b>Memory bandwidth</b> is how fast ingredients travel from the fridge to the counter. It's measured in GB/s and determines how quickly data moves between VRAM and the compute units. I'll be honest — I underestimated this number for years. I assumed TFLOPS was everything. But for LLM inference, the model spends most of its time <i>reading</i> weights from memory, not doing arithmetic. The bottleneck is bandwidth, not compute. This is called being <b>memory-bandwidth-bound</b>, and it's why two GPUs with similar TFLOPS can have wildly different inference speeds if their bandwidth differs.</p>
+
+<p>Here's the punchline. Training is usually compute-bound — you want maximum TFLOPS to chew through billions of tokens. Inference, especially for large language models, is usually bandwidth-bound — you want fast memory reads to stream weights through the compute units. Picking hardware without knowing which bottleneck you're solving is how teams end up paying H100 prices for a job that a cheaper GPU could handle at the same speed.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- GPU LANDSCAPE                               -->
+<!-- ═══════════════════════════════════════════ -->
+<h2 id="gpu-landscape">The GPU Landscape: T4 Through H100 and Beyond</h2>
+
+<p>Let's make this concrete. Here are the GPUs you'll actually encounter in cloud ML today, ordered from least to most expensive. I'll keep returning to our PetSnap example to show where each one fits.</p>
+
+<p>The <b>NVIDIA T4</b> is the budget workhorse. It has 16 GB of VRAM, delivers about 65 TFLOPS at FP16, and costs around $0.50–1.00 per hour on cloud. It's based on the Turing architecture from 2018. For PetSnap's ResNet-50 inference, a T4 is more than enough. The model fits in memory with room to spare, and the compute is sufficient for hundreds of predictions per second. Where it struggles: anything larger than about a 3-billion parameter model, and any serious training job.</p>
+
+<p>The <b>NVIDIA L4</b> is the T4's successor, built on the Ada Lovelace architecture (2023). It bumps VRAM to 24 GB, compute to about 121 FP16 TFLOPS, and adds fourth-generation Tensor Cores. Cloud pricing runs $0.80–1.20 per hour. For PetSnap, if we upgrade to a vision-language model around 3–7B parameters with INT8 quantization, the L4 is the sweet spot. It's the inference GPU I'd recommend for most production workloads that don't involve massive models.</p>
+
+<p>The <b>NVIDIA A100</b> changed ML infrastructure when it launched in 2020. With 80 GB of HBM2e memory, 312 TF32 TFLOPS, and 2,039 GB/s memory bandwidth, it became the training workhorse of the industry. Cloud pricing runs $3–5 per hour. For PetSnap, the A100 is overkill for inference, but if we're fine-tuning a 7B language model to understand pet breed descriptions, a single A100 can handle it with QLoRA. Two A100s can handle full fine-tuning of models up to about 13B parameters.</p>
+
+<p>The <b>NVIDIA H100</b> (Hopper architecture, 2022) is the current frontier. Same 80 GB of VRAM as the A100, but 3× the memory bandwidth (3,350 GB/s via HBM3), nearly 3× the compute (989 TF32 TFLOPS), and native FP8 support that the A100 lacks entirely. Cloud pricing runs $8–12 per hour. Benchmarks show the H100 training a model at the same task 3–4× faster than the A100 — and because it finishes sooner, the cost per training run can actually be <i>lower</i> despite the higher hourly rate. I didn't believe this when I first read it. The math checks out.</p>
+
+<p>Beyond NVIDIA's lineup, there are two other players worth knowing. <b>Google TPUs</b> (Tensor Processing Units) are custom silicon designed for matrix multiplications. TPU v5e offers 16 GB HBM at about $1.20–2.00 per hour — competitive pricing, but you're locked into Google's JAX/TensorFlow ecosystem and XLA compilation. The TPU v5p, with 95 GB HBM and 459 TFLOPS, competes with the A100 for large training runs on GCP. <b>AWS custom chips</b> — Trainium2 for training and Inferentia2 for inference — offer competitive performance at potentially lower prices, but require Amazon's NeuronSDK, which means rewriting parts of your training code.</p>
+
+<p>I'm still developing my intuition for when custom silicon like TPUs or Trainium is worth the ecosystem lock-in versus sticking with NVIDIA's universally-supported CUDA stack. The safe answer: if you're already deep in GCP with JAX, TPUs make sense. If you're already on AWS and running standard PyTorch, stay with NVIDIA GPUs unless cost pressure forces you to explore alternatives.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- VRAM CALCULATION                            -->
+<!-- ═══════════════════════════════════════════ -->
+<h2 id="vram-calculation">The VRAM Calculation You'll Do a Hundred Times</h2>
+
+<p>Every infrastructure decision starts with one question: how much GPU memory do I need? Let me walk through the arithmetic, because once you see it, every GPU choice becomes straightforward.</p>
+
+<p>Back to PetSnap. Suppose we've decided to upgrade from ResNet-50 (100M parameters) to a 7-billion parameter vision-language model so users can ask questions about their pets in natural language. How much VRAM does this need?</p>
+
+<p>For <b>inference</b>, the dominant cost is the model weights. Each parameter occupies a number of bytes determined by the numerical precision we store it in. <b>FP32</b> (full precision) uses 4 bytes per parameter. <b>FP16</b> and <b>BF16</b> (half precision) use 2 bytes. <b>INT8</b> uses 1 byte. <b>INT4</b> uses half a byte. So our 7B model in FP16 takes 7 billion × 2 bytes = 14 GB. In INT4, that drops to 3.5 GB. We also need overhead for the KV cache (the memory used to store previous tokens during text generation) — typically an extra 20–30% on top. So FP16 inference needs roughly 18 GB. INT4 inference needs about 4.5 GB.</p>
+
+<p>That means INT4 inference fits on an L4 (24 GB). FP16 inference needs an A100 (80 GB) or at least a GPU with 24+ GB if we're careful. Already, the hardware choice becomes concrete: L4 for quantized serving, A100 for full precision.</p>
+
+<p>For <b>training</b>, the story is harsher. You need memory for the model weights, plus the gradients (same size as the weights), plus the optimizer states. The Adam optimizer — the most common choice — stores two additional FP32 copies of every parameter (the first and second moment estimates). So training a 7B model in BF16 requires roughly: 14 GB (weights in BF16) + 14 GB (gradients in BF16) + 56 GB (optimizer states in FP32, which is 7B × 4 bytes × 2 copies). That's about 84 GB before accounting for activations. Add activation memory (highly variable depending on batch size and sequence length, but often 20–50 GB), and you're well over 100 GB. No single GPU handles this. You need multiple GPUs working together.</p>
+
+<pre><code class="language-python">def estimate_vram_gb(params_billions, precision="fp16", mode="inference"):
+    """The back-of-envelope VRAM calculation every ML engineer needs."""
     bytes_per_param = {"fp32": 4, "fp16": 2, "bf16": 2, "int8": 1, "int4": 0.5}
     bp = bytes_per_param[precision]
     model_mem = params_billions * 1e9 * bp / (1024**3)
 
     if mode == "inference":
-        # Model weights + KV cache overhead (~20-30% for typical batch)
+        # Model weights + KV cache overhead (~20-30%)
         return model_mem * 1.3
     else:
-        # Training: weights + gradients + optimizer states (Adam: 2x fp32)
+        # Weights + gradients + Adam optimizer (2 × FP32 copies) + activations
         optimizer_mem = params_billions * 1e9 * 4 * 2 / (1024**3)
         grad_mem = model_mem
-        activation_mem = model_mem  # rough estimate
+        activation_mem = model_mem  # rough lower bound
         return model_mem + optimizer_mem + grad_mem + activation_mem
 
-print(f"Llama 3 8B inference (INT4): {estimate_vram_gb(8, 'int4', 'inference'):.0f} GB")   # ~7 GB → fits on L4
-print(f"Llama 3 8B training (BF16): {estimate_vram_gb(8, 'bf16', 'training'):.0f} GB")     # ~105 GB → multi-GPU
-print(f"Llama 3 70B inference (INT4): {estimate_vram_gb(70, 'int4', 'inference'):.0f} GB")  # ~46 GB → A100 80GB
+# PetSnap's 7B vision-language model:
+# INT4 inference: ~4.5 GB  → fits on an L4 (24 GB) with room to spare
+# BF16 training:  ~105 GB  → needs multiple GPUs (2× A100 80GB, or 1 H100 with FSDP)
 </code></pre>
 
-<div class="callout callout-warning">
-<strong>The VRAM wall is the real bottleneck.</strong> You'll almost always run out of GPU memory before you run out of compute. Every hardware decision starts with: "How much VRAM do I need?" Compute follows from there.
-</div>
+<p>There's an important asymmetry here. Inference memory scales linearly with model size and precision — predictable, easy to plan for. Training memory has that extra optimizer-states term that makes it grow much faster. This is why teams can often <i>serve</i> a model on cheaper hardware than they used to <i>train</i> it.</p>
 
 <!-- ═══════════════════════════════════════════ -->
-<!-- 2. Scaling Strategies                       -->
+<!-- REST STOP                                   -->
 <!-- ═══════════════════════════════════════════ -->
-<h2 id="scaling-strategies">Scaling Strategies</h2>
+<h2 id="rest-stop">Rest Stop</h2>
 
-<h3 id="vertical-vs-horizontal">Vertical vs. Horizontal</h3>
+<p>Congratulations on making it this far. You can stop here if you want.</p>
 
-<p><b>Vertical scaling</b> means getting a bigger machine — more VRAM, more cores, faster interconnects. Going from an A10G to an A100, or from 1 GPU to 8 GPUs on the same node. It's simple, it avoids network overhead, and it's the right first move for most teams.</p>
+<p>You now have a working mental model for GPU selection: you know that VRAM is the first constraint, that compute and bandwidth determine speed, and you can do the arithmetic to figure out which GPU fits your workload. For PetSnap, you know a T4 handles the ResNet, an L4 handles quantized LLM inference, and training a 7B model needs A100s or H100s. That's a genuinely useful framework — it'll carry you through most hardware conversations.</p>
 
-<p><b>Horizontal scaling</b> means adding more machines. Going from one 8×A100 node to four of them. This is where distributed training and serving get complex. You pay a communication tax — data has to flow between nodes over InfiniBand or (worse) Ethernet.</p>
+<p>What it doesn't cover is what happens when one GPU isn't enough. How do you split a training job across multiple GPUs? How do the three major cloud platforms differ in practice? How do you avoid hemorrhaging money on idle compute? And when does it make sense to buy your own hardware instead of renting it?</p>
 
-<p>The rule of thumb:</p>
+<p>The short version: multi-GPU training uses three flavors of parallelism (data, tensor, pipeline), cloud platforms matter less than where your data already lives, spot instances save 60–90% but require checkpoint discipline, and on-prem breaks even at around 40–50% utilization over three years. There. You're 60% of the way through.</p>
 
-<table>
-<thead>
-<tr><th>Scale</th><th>When</th><th>Complexity</th><th>Communication Cost</th></tr>
-</thead>
-<tbody>
-<tr><td>Vertical (bigger GPU)</td><td>Model fits, need faster training/inference</td><td>Low</td><td>None</td></tr>
-<tr><td>Vertical (more GPUs, same node)</td><td>Model doesn't fit on 1 GPU, or need more throughput</td><td>Medium</td><td>NVLink: 900 GB/s (H100)</td></tr>
-<tr><td>Horizontal (multi-node)</td><td>Model needs &gt;8 GPUs, or serving requires &gt;1 node throughput</td><td>High</td><td>InfiniBand: 50–100 GB/s</td></tr>
-</tbody>
-</table>
-
-<h3 id="scaling-inference">Scaling Inference vs. Scaling Training</h3>
-
-<p><b>Inference scaling</b> is usually straightforward horizontal scaling. Each replica is independent — stick a load balancer in front, add replicas as traffic grows. The challenge is auto-scaling: GPUs are expensive to keep idle but slow to cold-start (30–60 seconds to load a large model). Pre-warming, model caching, and smart scaling policies matter here.</p>
-
-<p><b>Training scaling</b> is fundamentally harder because GPUs have to communicate. You can't just add more machines independently — they all need to synchronize gradients. This is where the parallelism strategies from Ch 8 come in (data, tensor, and pipeline parallelism). The short version:</p>
-
-<ul>
-  <li><b>Data parallelism</b> — replicate the model, split the data. Easy. Use DDP or FSDP.</li>
-  <li><b>Tensor parallelism</b> — split individual layers across GPUs. Within a node only (needs NVLink bandwidth).</li>
-  <li><b>Pipeline parallelism</b> — split layers across GPUs/nodes. Tolerates higher latency between nodes.</li>
-</ul>
-
-<p>See <a href="../../chapters/ch08/s10.html">Ch 8, Section 10: Distributed Training</a> for the full treatment.</p>
+<p>But if the discomfort of not knowing what's underneath is nagging at you, read on.</p>
 
 <!-- ═══════════════════════════════════════════ -->
-<!-- 3. Distributed Training Recap               -->
+<!-- SCALING UP AND OUT                          -->
 <!-- ═══════════════════════════════════════════ -->
-<h2 id="distributed-training-recap">Distributed Training Recap</h2>
+<h2 id="scaling-strategies">When One GPU Isn't Enough: Scaling Up and Scaling Out</h2>
 
-<p>We covered distributed training in depth in <a href="../../chapters/ch08/s10.html">Chapter 8</a>. Here's what matters for infrastructure decisions:</p>
+<p>Our PetSnap 7B model needs ~105 GB for training. An A100 has 80 GB. The model doesn't fit. Now what?</p>
 
-<pre><code class="language-python"># The most common pattern: FSDP for training large models
-# Each GPU shards parameters, gradients, and optimizer states
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+<p>There are two directions to go, and they have very different trade-offs. Think of it as the difference between getting a bigger kitchen versus opening a second kitchen across town.</p>
 
+<p><b>Scaling up</b> (also called <b>vertical scaling</b>) means adding more GPUs within the same physical machine. A server with 8× A100 GPUs connected via <b>NVLink</b> — a high-speed interconnect that moves data between GPUs at 600 GB/s on A100s and 900 GB/s on H100s — acts like one giant kitchen with multiple stoves sharing the same counter. Data flows between GPUs almost as fast as it flows within a single GPU. This is the right first move for most teams. Our PetSnap training job needs 105 GB across two A100s on one node? That works well. The GPUs communicate over NVLink, and the overhead is minimal.</p>
+
+<p><b>Scaling out</b> (also called <b>horizontal scaling</b>) means adding more machines. Going from one 8×A100 node to four of them. Now the kitchens are in different buildings. Data travels between machines over <b>InfiniBand</b> (50–100 GB/s) or, in cheaper setups, plain Ethernet (~12.5 GB/s for 100 Gigabit). That's 10–70× slower than NVLink. Every time GPUs on different machines need to exchange information — and in training, they need to exchange gradient updates after every batch — they pay this communication tax.</p>
+
+<p>The hierarchy matters: NVLink within a node at 900 GB/s, InfiniBand between nodes at 50–100 GB/s, Ethernet at 12.5 GB/s. If a NVLink transfer takes one second at a certain data size, the same transfer takes roughly 10 seconds over InfiniBand and 70 seconds over Ethernet. This isn't a minor detail — it determines which parallelism strategies are even feasible.</p>
+
+<p>For <b>inference</b> scaling, life is easier. Each model replica serves requests independently, so you can add machines without any communication between them. Stick a load balancer in front, add replicas as traffic grows. The challenge is auto-scaling: GPUs are expensive to keep idle but slow to cold-start — loading a large model takes 30–60 seconds. For PetSnap, this means pre-warming at least a few replicas during expected traffic spikes rather than scaling from zero.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- MULTI-GPU STRATEGIES                        -->
+<!-- ═══════════════════════════════════════════ -->
+<h2 id="multi-gpu-strategies">Multi-GPU Strategies: Data, Tensor, and Pipeline Parallelism</h2>
+
+<p>When training needs multiple GPUs, the question becomes: how do you split the work? There are three strategies, each with different trade-offs. I'll be honest — the distinction between tensor and pipeline parallelism confused me for a long time, and I still have to think carefully about which to use when. Walking through a concrete example helped it click.</p>
+
+<p>Let's say PetSnap's 7B model has 32 transformer layers, and we have 4 GPUs on one machine.</p>
+
+<p><b>Data parallelism</b> is the most intuitive approach. Every GPU gets a complete copy of the model. The training data is split into 4 chunks — GPU 0 processes batch chunk 0, GPU 1 processes batch chunk 1, and so on. After each forward and backward pass, the GPUs exchange their gradient updates (via an operation called <b>AllReduce</b>) so every copy stays synchronized. This is what PyTorch's <b>DistributedDataParallel (DDP)</b> does. It's the easiest to set up and works well when the model fits on a single GPU. But PetSnap's 7B model needs 105 GB for training — it doesn't fit on one A100. Data parallelism alone can't help us here.</p>
+
+<p>That's where <b>Fully Sharded Data Parallelism (FSDP)</b> comes in. Instead of replicating the entire model on every GPU, FSDP shards the parameters, gradients, and optimizer states across GPUs. Each GPU only holds 1/N of the model's memory footprint (where N is the number of GPUs). When a layer needs the full parameters for a forward or backward pass, the GPUs gather the relevant shard, compute, and release it. Our 105 GB training job across 4 GPUs becomes about 26 GB per GPU — each A100 handles that comfortably.</p>
+
+<pre><code class="language-python">from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp import MixedPrecision, ShardingStrategy
+
+# FSDP shards everything — each GPU holds 1/N of the memory
 model = FSDP(
-    my_large_model,
-    sharding_strategy=ShardingStrategy.FULL_SHARD,  # Shard everything
+    pet_vision_model,
+    sharding_strategy=ShardingStrategy.FULL_SHARD,
     mixed_precision=MixedPrecision(param_dtype=torch.bfloat16),
 )
-# Memory per GPU drops from N to N/num_gpus
-# Trade-off: more communication, less memory
+# 105 GB model → ~26 GB per GPU across 4 A100s
+# The trade-off: more communication between GPUs, but the model fits
 </code></pre>
 
-<p><b>FSDP vs. DeepSpeed ZeRO</b> — FSDP is native PyTorch, ZeRO is Microsoft's solution with more knobs (ZeRO-1/2/3, CPU offloading). Both solve the same problem: "model too big for one GPU." FSDP is simpler to start with; DeepSpeed gives more control for extreme-scale training.</p>
+<p><b>Tensor parallelism</b> takes a different slice. Instead of splitting the data or the memory footprint, it splits individual layers. Imagine one of PetSnap's transformer layers has a weight matrix of shape [4096, 16384]. Tensor parallelism splits that matrix into 4 columns — GPU 0 handles columns 0–4095, GPU 1 handles 4096–8191, and so on. Each GPU computes part of the layer's output, and they combine results. This is what NVIDIA's <b>Megatron-LM</b> framework does. The catch: this requires extremely fast communication between GPUs, because they need to exchange partial results within every single layer. NVLink is fast enough. InfiniBand is not. So tensor parallelism is viable only within a single node.</p>
 
-<p><b>Scaling efficiency rule:</b> Doubling GPUs rarely halves training time. 75% efficiency (8 GPUs → 6× speedup) is good. Below 60%, you're burning money on communication overhead. Always benchmark before committing to larger clusters.</p>
+<p><b>Pipeline parallelism</b> splits the model by layers. GPU 0 gets layers 0–7, GPU 1 gets layers 8–15, GPU 2 gets 16–23, GPU 3 gets 24–31. Data flows through GPU 0, then GPU 1, then GPU 2, then GPU 3 — like an assembly line. The communication happens only between adjacent stages, and it's less data per transfer than tensor parallelism requires. This tolerates higher-latency interconnects, making it suitable for multi-node training. The downside: <b>pipeline bubbles</b>. While GPU 0 processes micro-batch 2, GPU 3 is waiting for micro-batch 1 to finish the earlier stages. There's inherent idle time unless you interleave micro-batches carefully.</p>
 
-<div class="callout callout-info">
-<strong>Interconnects determine your parallelism strategy.</strong> NVLink within a node (900 GB/s on H100) handles tensor parallelism. InfiniBand between nodes (50–100 GB/s) handles data and pipeline parallelism. If you're on Ethernet (~12.5 GB/s for 100GbE), stick to data parallelism only — anything else will bottleneck on communication.
-</div>
+<p>In practice, large-scale training combines all three. <b>3D parallelism</b> — data parallelism across nodes, tensor parallelism within a node, and pipeline parallelism across groups of nodes — is how frontier labs train models with hundreds of billions of parameters. DeepSpeed and Megatron-LM provide the machinery for this. For PetSnap's 7B model, FSDP across 4 GPUs on one node is all we need. The 3D approach becomes necessary at the 70B+ scale.</p>
+
+<p>An important rule of thumb: doubling GPUs rarely halves training time. Communication overhead eats into the gains. Getting 75% scaling efficiency (8 GPUs delivering 6× the throughput of 1 GPU) is considered good. Below 60%, you're burning money on communication. Always benchmark before committing to larger clusters.</p>
 
 <!-- ═══════════════════════════════════════════ -->
-<!-- 4. Cloud ML Platforms Comparison             -->
+<!-- CLOUD PLATFORMS                             -->
 <!-- ═══════════════════════════════════════════ -->
-<h2 id="cloud-platforms">Cloud ML Platforms: The Big Three</h2>
+<h2 id="cloud-platforms">The Three Cloud Kingdoms: SageMaker, Vertex AI, and Azure ML</h2>
 
-<p>AWS, GCP, and Azure all have comprehensive ML platforms. They're converging on similar feature sets — the difference is less about what they can do and more about where your data already lives and what ecosystem your team knows.</p>
+<p>Let's say PetSnap has grown. We need to train models regularly, serve them to millions of users, and we've decided to use the cloud rather than buying hardware. Three platforms dominate the ML cloud: AWS SageMaker, GCP Vertex AI, and Azure ML. I spent weeks trying to find the "best" one before realizing the question was wrong. The right question is: where does your data already live?</p>
 
-<table>
-<thead>
-<tr><th>Feature</th><th>AWS SageMaker</th><th>GCP Vertex AI</th><th>Azure ML</th></tr>
-</thead>
-<tbody>
-<tr><td><b>Training</b></td><td>Most instance types, spot training built-in</td><td>TPU support (unique), clean API</td><td>Compute clusters with auto-scale</td></tr>
-<tr><td><b>Serving</b></td><td>Real-time endpoints, multi-model endpoints</td><td>Online + batch prediction, Model Garden</td><td>Managed online endpoints, blue/green</td></tr>
-<tr><td><b>Pipelines</b></td><td>SageMaker Pipelines (proprietary SDK)</td><td>Kubeflow Pipelines (open-source SDK)</td><td>Python/YAML/visual designer</td></tr>
-<tr><td><b>Feature Store</b></td><td>Online + offline (S3)</td><td>Online + offline (BigQuery)</td><td>Managed feature store (preview)</td></tr>
-<tr><td><b>GenAI Integration</b></td><td>Bedrock (Claude, Llama, etc.)</td><td>Model Garden + Gemini</td><td>Azure OpenAI Service (GPT-4o, o1)</td></tr>
-<tr><td><b>AutoML</b></td><td>Autopilot (solid)</td><td>Best-in-class AutoML</td><td>Automated ML (good)</td></tr>
-<tr><td><b>Responsible AI</b></td><td>Clarify (bias detection)</td><td>Explainable AI</td><td>Responsible AI Dashboard (standout)</td></tr>
-<tr><td><b>Custom Silicon</b></td><td>Trainium2 / Inferentia2</td><td>TPU v5e / v5p</td><td>None (NVIDIA only)</td></tr>
-<tr><td><b>Pricing Premium</b></td><td>~20-40% over raw EC2</td><td>Comparable to raw Compute Engine</td><td>~15-30% over raw VMs</td></tr>
-<tr><td><b>Sweet Spot</b></td><td>Teams deep in AWS, need breadth</td><td>JAX/TPU users, GenAI-first teams</td><td>Enterprise governance, OpenAI access</td></tr>
-</tbody>
-</table>
+<p><b>AWS SageMaker</b> is the kitchen-sink approach. It has a service for everything — training jobs, real-time endpoints, batch inference, feature stores, pipelines, experiment tracking, AutoML (called Autopilot), and bias detection (Clarify). For PetSnap on AWS, we'd upload our training data to S3, define a training job with instance type and count, and SageMaker handles provisioning the GPU cluster, running the job, and tearing it down afterward. We pay only for the training time — no idle GPUs.</p>
 
-<h3 id="sagemaker-key-features">AWS SageMaker — The Kitchen Sink</h3>
-
-<p>SageMaker has a service for everything. Training jobs abstract away cluster management — you specify an instance type and count, it handles provisioning and teardown. You pay only for training time, no idle GPUs.</p>
-
-<pre><code class="language-python"># SageMaker training job — you define what, it handles where
-from sagemaker.pytorch import PyTorch
+<pre><code class="language-python">from sagemaker.pytorch import PyTorch
 
 estimator = PyTorch(
     entry_point="train.py",
-    instance_count=4,
-    instance_type="ml.p4d.24xlarge",       # 8×A100 per node → 32 GPUs total
+    instance_count=2,
+    instance_type="ml.g5.2xlarge",  # 1× A10G per node, 2 nodes total
     distribution={"torch_distributed": {"enabled": True}},
     hyperparameters={"epochs": 10, "lr": 1e-4},
 )
-estimator.fit({"train": "s3://my-bucket/data/"})
-# Cluster spins up → trains → saves to S3 → tears down. Done.
+estimator.fit({"train": "s3://petsnap-data/images/"})
+# Cluster spins up → trains → saves model to S3 → tears down
 </code></pre>
 
-<p>The downside: SageMaker instances cost 20–40% more than raw EC2. For teams with infrastructure skills, raw EC2 + custom orchestration can be cheaper. For teams that want to focus on models, the premium buys you sanity.</p>
+<p>The trade-off: SageMaker instances cost 20–40% more than the same raw EC2 GPU instances. That premium buys you cluster management, auto-teardown, and integration with the rest of the AWS ML stack. For teams that want to focus on models rather than infrastructure, the premium is worth it. For teams with strong DevOps skills, raw EC2 plus custom orchestration can be cheaper.</p>
 
-<h3 id="vertex-ai-key-features">GCP Vertex AI — The Clean API</h3>
+<p><b>GCP Vertex AI</b> has two genuine differentiators. First, TPU access — Google's custom AI chips aren't available anywhere else. For teams using JAX, TPUs can be 30–50% cheaper per training-FLOP than equivalent NVIDIA GPUs. Second, Model Garden provides one-click fine-tuning and deployment of foundation models (Gemini, Llama, Mistral). Vertex AI Pipelines run on Kubeflow under the hood, which is open-source and somewhat portable to other clouds. The Feature Store is backed by BigQuery, which is natural if your data warehouse is already there.</p>
 
-<p>Vertex AI's superpower is TPU access and the best generative AI integration. Model Garden gives you one-click fine-tuning and deployment of Gemini, Llama, Mistral, and other foundation models. If you're building GenAI applications, Vertex's integration here is hard to beat.</p>
+<p><b>Azure ML</b> wins on enterprise governance. The Responsible AI Dashboard — bundling fairness assessment, interpretability, error analysis, and counterfactual explanations in one interface — is the most comprehensive of the three. Azure OpenAI Service provides enterprise-grade GPT-4o access with data residency guarantees, VNet isolation, and content filtering that regulated industries (healthcare, finance) require. If PetSnap were a veterinary AI company bound by data regulations, Azure would be a strong choice for that reason alone.</p>
 
-<pre><code class="language-python"># Vertex AI training — TPU support is the differentiator
-from google.cloud import aiplatform
-
-job = aiplatform.CustomTrainingJob(
-    display_name="train-on-tpus",
-    script_path="train.py",
-    container_uri="us-docker.pkg.dev/vertex-ai/training/pytorch-xla-tpu:latest",
-)
-model = job.run(
-    machine_type="ct5lp-hightpu-4t",  # TPU v5e pod slice
-    accelerator_type="TPU_V5_LITEPOD",
-    accelerator_count=4,
-)
-</code></pre>
-
-<p>Vertex AI Pipelines use Kubeflow Pipelines under the hood — open-source, somewhat portable, but heavier than SageMaker's SDK. The offline Feature Store runs on BigQuery, which is natural if your data already lives there.</p>
-
-<h3 id="azure-ml-key-features">Azure ML — The Enterprise Play</h3>
-
-<p>Azure ML's differentiator is governance. The Responsible AI Dashboard bundles fairness, interpretability, error analysis, and counterfactual explanations in one interface. Azure OpenAI Service gives you enterprise-grade GPT-4o access with data residency guarantees, VNet integration, and content filtering. For regulated industries, this matters.</p>
-
-<pre><code class="language-python"># Azure ML training — workspace-centric model
-from azure.ai.ml import MLClient, command
-
-training_job = command(
-    code="./src",
-    command="python train.py --data ${{inputs.data}} --lr 1e-4",
-    environment="AzureML-pytorch-2.1-cuda12@latest",
-    compute="gpu-cluster",
-    instance_count=2,
-    distribution={"type": "PyTorch", "process_count_per_instance": 4},
-)
-ml_client.jobs.create_or_update(training_job)
-</code></pre>
-
-<div class="callout callout-info">
-<strong>The real answer:</strong> Pick based on where you already are. Data in S3 → SageMaker. GCP shop or TPU needs → Vertex AI. Enterprise on Azure → Azure ML. Cross-cloud ML is possible but adds complexity that's almost never worth the cost.
-</div>
+<p>Here's the honest assessment: all three platforms can do all the things. The feature checklists are converging. What actually determines the right choice is <b>data gravity</b> — a term for the observation that your ML infrastructure will orbit your data. If PetSnap's images are already in S3, we'd use SageMaker, because moving terabytes of data to another cloud costs both money ($0.09 per GB of egress) and time. If our analytics pipeline runs on BigQuery, Vertex AI. If we're a Microsoft shop with Active Directory and Power BI, Azure ML. That's the whole decision.</p>
 
 <!-- ═══════════════════════════════════════════ -->
-<!-- 5. Managed vs. Self-Managed                 -->
+<!-- SPOT INSTANCES                              -->
 <!-- ═══════════════════════════════════════════ -->
-<h2 id="managed-vs-self-managed">Managed vs. Self-Managed</h2>
+<h2 id="spot-instances">Spot Instances: 70% Savings with a Catch</h2>
 
-<p>This is the question behind every infrastructure decision: do you use the managed service, or build it yourself?</p>
+<p>Cloud GPU instances at on-demand prices are expensive. Running our PetSnap training job on two A10G instances for 20 hours costs about $60 at on-demand rates. Not bad. But training a 70B model on 8× H100 nodes for a week costs over $13,000. At that scale, cost optimization stops being nice-to-have.</p>
 
-<table>
-<thead>
-<tr><th></th><th>Managed (SageMaker, Vertex, etc.)</th><th>Self-Managed (raw VMs + your code)</th></tr>
-</thead>
-<tbody>
-<tr><td><b>Setup time</b></td><td>Minutes to hours</td><td>Days to weeks</td></tr>
-<tr><td><b>Operational burden</b></td><td>Low — they handle scaling, patching, monitoring</td><td>High — you own everything</td></tr>
-<tr><td><b>Cost per unit</b></td><td>Higher (managed service premium)</td><td>Lower (raw compute only)</td></tr>
-<tr><td><b>Flexibility</b></td><td>Constrained by platform's opinions</td><td>Complete control</td></tr>
-<tr><td><b>Debugging</b></td><td>Black box when things go wrong</td><td>Full visibility</td></tr>
-<tr><td><b>Team needed</b></td><td>ML engineers</td><td>ML engineers + infra engineers</td></tr>
-</tbody>
-</table>
+<p><b>Spot instances</b> (AWS's term) or <b>preemptible VMs</b> (GCP's term) are cloud GPUs offered at 60–90% discounts because they use the provider's spare capacity. The catch: the cloud can reclaim them with as little as 30 seconds' notice. Your training job gets terminated mid-step. If you haven't saved your progress, everything since the last checkpoint is lost.</p>
 
-<p>The honest answer for most teams: <b>start managed, migrate components to self-managed as you hit pain points.</b> SageMaker training jobs save you from building cluster orchestration. SageMaker endpoints save you from building serving infrastructure. But the moment their auto-scaling doesn't fit your traffic pattern or their container constraints block your model architecture — that's when you spin up your own stack.</p>
+<p>I remember the first time a spot instance was reclaimed during a training run. It was 14 hours in, no checkpointing configured, and I had to restart from scratch. That was the last time I ran a training job without the checkpoint-and-resume pattern.</p>
 
-<p>The hybrid pattern that works: managed compute (let the cloud handle GPUs and scaling), self-managed orchestration (Airflow or Prefect for pipelines), and open-source tracking (MLflow, W&amp;B) so you're not locked into any platform's experiment tracking.</p>
+<p>The pattern is straightforward. Save checkpoints to durable storage (S3, GCS) every N steps. When the job restarts — either because spot reclaimed the instance or because of any other interruption — load the latest checkpoint and continue from where you left off. You lose at most N steps of work.</p>
 
-<!-- ═══════════════════════════════════════════ -->
-<!-- 6. Cost Optimization                        -->
-<!-- ═══════════════════════════════════════════ -->
-<h2 id="cost-optimization">Cost Optimization</h2>
+<pre><code class="language-python">import torch, os
 
-<p>GPU compute is the largest line item in any ML team's budget. Getting this wrong by 2× is common. Getting it wrong by 10× happens more than anyone admits.</p>
+CHECKPOINT_DIR = "s3://petsnap-checkpoints/"  # Durable storage, survives instance death
 
-<h3 id="spot-preemptible">Spot / Preemptible Instances</h3>
-
-<p>Cloud GPU instances at on-demand prices are expensive. An 8×H100 node runs $25+/hour — over $18,000/month if left running. <b>Spot instances</b> (AWS) and <b>preemptible VMs</b> (GCP) offer 60–90% discounts but can be reclaimed with 30 seconds to 2 minutes notice.</p>
-
-<p>For training, spot instances are a no-brainer if you build for them:</p>
-
-<pre><code class="language-python"># Checkpoint-and-resume pattern for spot training
-import signal, torch, os
-
-CHECKPOINT_DIR = "checkpoints/"
-
-def save_checkpoint(model, optimizer, step):
+def save_checkpoint(model, optimizer, epoch, step, path):
     torch.save({
         "model": model.state_dict(),
         "optimizer": optimizer.state_dict(),
+        "epoch": epoch,
         "step": step,
-    }, os.path.join(CHECKPOINT_DIR, f"ckpt_{step}.pt"))
+    }, path)
 
-def load_latest_checkpoint(model, optimizer):
-    ckpts = sorted(os.listdir(CHECKPOINT_DIR))
-    if not ckpts:
-        return 0
-    state = torch.load(os.path.join(CHECKPOINT_DIR, ckpts[-1]))
-    model.load_state_dict(state["model"])
-    optimizer.load_state_dict(state["optimizer"])
-    return state["step"]
+def resume_from_checkpoint(model, optimizer, checkpoint_dir):
+    checkpoints = sorted(list_s3_objects(checkpoint_dir))
+    if not checkpoints:
+        return 0, 0  # Fresh start
+    latest = torch.load(download(checkpoints[-1]))
+    model.load_state_dict(latest["model"])
+    optimizer.load_state_dict(latest["optimizer"])
+    return latest["epoch"], latest["step"]
 
-# Save every N steps — when spot reclaims, you lose at most N steps
-for step, batch in enumerate(dataloader, start=resume_step):
-    loss = train_step(model, batch)
-    if step % 500 == 0:
-        save_checkpoint(model, optimizer, step)
+# Every 500 steps, save. If spot reclaims, we lose at most 500 steps.
+# At 60-90% discount, the savings easily justify the occasional re-work.
 </code></pre>
 
-<p>For inference, spot is riskier — a reclamation means dropped requests. Use spot for non-latency-sensitive batch inference; keep on-demand or reserved for real-time endpoints.</p>
+<p>For PetSnap's training, spot instances with checkpointing every 500 steps would reduce our compute bill by 60–70%. The job might get interrupted 2–3 times, losing perhaps 20 minutes of work total across a 20-hour run. The math works overwhelmingly in our favor.</p>
 
-<h3 id="reserved-committed">Reserved Capacity &amp; Committed Use</h3>
-
-<p>If you know you'll use GPUs for 1–3 years, reserved instances (AWS) or committed use discounts (GCP) save 30–60% over on-demand. The catch: you pay whether you use them or not. Only commit for your <i>baseline</i> workload — the minimum compute you know you'll always need. Handle spikes with on-demand or spot.</p>
-
-<h3 id="right-sizing">Right-Sizing</h3>
-
-<p>The most common cost mistake isn't overpaying per GPU — it's using the wrong GPU entirely.</p>
-
-<pre><code class="language-bash"># Check GPU utilization — if it's consistently below 50%, you're overpaying
-$ nvidia-smi --query-gpu=utilization.gpu,utilization.memory,memory.used,memory.total \
-    --format=csv -l 5
-
-# Typical findings:
-# - GPU compute utilization: 30% → data loading bottleneck, not a GPU problem
-# - Memory used: 12 GB / 80 GB → you're on an A100 when an L4 would do
-# - Memory used: 78 GB / 80 GB → you're right-sized (or need more VRAM)
-</code></pre>
-
-<p>Profile first, then right-size. An L4 at $1/hr doing inference is better than an A100 at $4/hr sitting 70% idle.</p>
-
-<div class="callout callout-warning">
-<strong>The GPU-hours fallacy:</strong> Teams track cost per GPU-hour but ignore utilization. Running 8 A100s at 30% utilization costs the same as running them at 95% utilization — but delivers 3× less work. Track cost per useful TFLOP, not cost per GPU-hour.
-</div>
+<p>For inference, spot is riskier. A reclaimed instance means dropped requests — users staring at a loading screen. Use spot for batch inference (processing a queue of images overnight) where latency doesn't matter. Keep <b>on-demand</b> or <b>reserved instances</b> for real-time serving. Reserved instances (AWS) and committed use discounts (GCP) lock you into 1–3 year contracts at 30–60% savings over on-demand. The rule: commit only for your baseline load — the minimum compute you'll always need. Handle spikes with on-demand, experiments with spot.</p>
 
 <!-- ═══════════════════════════════════════════ -->
-<!-- 7. Kubernetes for ML                        -->
+<!-- ON-PREM VS CLOUD                            -->
 <!-- ═══════════════════════════════════════════ -->
-<h2 id="kubernetes-for-ml">Kubernetes for ML</h2>
+<h2 id="on-prem-vs-cloud">The On-Prem vs. Cloud Decision</h2>
 
-<h3 id="why-k8s">Why K8s</h3>
+<p>At some point, every ML team doing serious work asks: should we buy our own GPUs?</p>
 
-<p>Kubernetes isn't required for ML. If you're running a single training job on SageMaker and serving one model on a managed endpoint, K8s is overkill. But the moment you have multiple teams, multiple models, heterogeneous hardware, and complex scheduling requirements — K8s becomes the lingua franca.</p>
+<p>The arithmetic is more nuanced than either side admits. Cloud advocates say "you can't beat the flexibility." On-prem advocates say "we saved 60% by buying hardware." Both are right, for their specific situations. Let me walk through the numbers.</p>
 
-<p>What K8s gives you for ML:</p>
+<p>Suppose PetSnap has grown to the point where we're running GPU workloads 18 hours a day, 7 days a week. That's about 6,500 GPU-hours per year per GPU. On cloud, a single A100 at $4/hour costs us $26,000/year. Buying an A100-based server (around $150,000 for an 8-GPU system, which is about $19,000 per GPU slot after amortization) plus $2,000/year in electricity and cooling gives us roughly $21,000/year for three years, then drops to $2,000/year for the remaining life. Over three years, cloud costs $78,000 per GPU. On-prem costs about $25,000 per GPU. The savings are real.</p>
 
-<ul>
-  <li><b>GPU scheduling</b> — request GPUs like any other resource; K8s handles placement</li>
-  <li><b>Multi-tenancy</b> — teams share a GPU cluster with resource quotas and priorities</li>
-  <li><b>Reproducible environments</b> — containers ensure training runs identically everywhere</li>
-  <li><b>Auto-scaling</b> — scale serving pods based on queue depth or latency, not just CPU</li>
-</ul>
+<p>But those numbers hide important costs. On-prem means you own capacity planning — if PetSnap's traffic doubles overnight, you can't spin up new GPUs in minutes. You own maintenance — when a GPU fails (and at scale, they do), you need spare hardware and people who know how to swap it. You own cooling — a server room full of H100s generates enormous heat. And you own the depreciation risk — the $150,000 server you buy today may be outperformed by hardware that costs half as much in 18 months.</p>
 
-<h3 id="kubeflow">Kubeflow</h3>
+<p>The break-even point that most analyses converge on: if you're consistently using GPU capacity at 40–50% utilization or higher, sustained over 3+ years, on-prem becomes cheaper. Below that, or for unpredictable workloads, cloud wins on flexibility.</p>
 
-<p><b>Kubeflow</b> is the ML-specific layer on top of Kubernetes. It bundles pipeline orchestration (Kubeflow Pipelines), hyperparameter tuning (Katib), model serving (KServe), and notebook management. The value proposition: a complete ML platform on any K8s cluster — cloud or on-prem.</p>
+<p>The pattern that works for many teams: <b>on-prem for steady-state</b> (the inference fleet that runs 24/7), <b>cloud for burst</b> (large training runs, experiments, handling traffic spikes). PetSnap might own 4 GPUs for its always-on inference service and rent cloud GPUs for monthly retraining runs. This captures the cost advantages of both without being fully committed to either.</p>
 
-<p>The catch: Kubeflow is complex. Installing, configuring, and maintaining it is a significant investment. It's best suited for teams that already have K8s expertise and need multi-cloud portability.</p>
+<!-- ═══════════════════════════════════════════ -->
+<!-- SERVERLESS INFERENCE                        -->
+<!-- ═══════════════════════════════════════════ -->
+<h2 id="serverless-inference">Serverless Inference: When You Don't Want GPUs at All</h2>
 
-<pre><code class="language-yaml"># KServe InferenceService — deploy a model on K8s
-apiVersion: serving.kserve.io/v1beta1
-kind: InferenceService
-metadata:
-  name: llama-8b-serving
-spec:
-  predictor:
-    model:
-      modelFormat:
-        name: pytorch
-      storageUri: "s3://models/llama-8b/"
-      resources:
-        limits:
-          nvidia.com/gpu: "1"    # Request 1 GPU
-        requests:
-          memory: "32Gi"
-  minReplicas: 1
-  maxReplicas: 10                # Auto-scale up to 10 replicas
-</code></pre>
+<p>There's a question that kept nagging me as I was learning all this GPU and cloud machinery: what if I don't want to manage any of it?</p>
 
-<h3 id="ray">Ray</h3>
+<p><b>Serverless ML inference</b> means you deploy a model, and the platform handles everything — provisioning GPUs when requests arrive, scaling to zero when there's no traffic, billing by the millisecond of actual compute. You never see a GPU instance. You never configure an auto-scaler. The model runs when called and sleeps otherwise.</p>
 
-<p><b>Ray</b> is a different philosophy. Where Kubeflow builds on top of K8s abstractions, Ray provides its own distributed runtime. You write Python, Ray handles distribution across a cluster. <b>Ray Train</b> orchestrates distributed training. <b>Ray Serve</b> handles model serving with request batching and multi-model composition. <b>Ray Data</b> does distributed data preprocessing.</p>
+<p>For PetSnap's early days — sporadic traffic, unpredictable usage patterns, a team of three people who'd rather work on the model than on infrastructure — serverless is compelling. AWS SageMaker Serverless Inference, Google Cloud Run with GPU support, and third-party platforms like Modal and Replicate all offer this model.</p>
 
-<p>Ray can run on K8s (via KubeRay) or standalone. Its sweet spot: teams that want distributed computing without learning K8s primitives, or teams that need to compose multiple models into a single serving pipeline.</p>
+<p>The trade-off is <b>cold start latency</b>. When no requests have come in for a while, the platform has deallocated the GPU. The next request triggers reallocation and model loading — anywhere from 5 seconds for a small model to 60+ seconds for a large one. For PetSnap, if a user uploads a photo and waits 30 seconds for a breed prediction, that's a bad experience. Serverless works when cold starts are acceptable (batch processing, internal tools, low-traffic APIs) and falls apart when consistent low latency matters.</p>
 
-<pre><code class="language-python"># Ray Serve — compose models in Python, not YAML
-from ray import serve
+<p>The other limitation: serverless platforms give you less control over the GPU type, quantization settings, batching strategy, and memory configuration. If you need to squeeze every ounce of performance from your serving setup, you'll eventually outgrow serverless and need dedicated instances with custom configurations.</p>
+
+<p>I still use serverless for prototypes and internal tools. For production-facing inference with latency requirements, dedicated GPU instances with a proper auto-scaler remain the more reliable path.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- CLUSTER MANAGEMENT                          -->
+<!-- ═══════════════════════════════════════════ -->
+<h2 id="cluster-management">Cluster Management: Kubernetes, Ray, or Managed Platforms</h2>
+
+<p>As PetSnap grows further — multiple models, multiple teams, a mix of training and inference workloads — someone has to decide how all those GPU resources get shared and orchestrated. This is the cluster management question, and it has three main answers.</p>
+
+<p><b>Managed platforms</b> (SageMaker, Vertex AI, Azure ML) are the path of least resistance. You don't manage a cluster at all — you submit jobs and deploy endpoints, and the platform handles scheduling, scaling, and GPU allocation. For PetSnap with a team of 5–15 ML engineers, this is the right starting point. The overhead of running your own cluster isn't justified until you hit specific pain points: the platform's auto-scaling doesn't match your traffic pattern, or its container constraints block your model architecture, or you need fine-grained control over GPU scheduling priorities between teams.</p>
+
+<p><b>Kubernetes</b> (K8s) is the industry standard for running your own cluster. It lets you request GPUs as a resource (like CPU or memory), schedule jobs across a pool of machines, enforce resource quotas per team, and auto-scale serving deployments based on metrics like queue depth or latency. <b>Kubeflow</b> adds ML-specific capabilities on top: pipeline orchestration, hyperparameter tuning (via Katib), and model serving (via KServe). The investment is real, though — installing, configuring, and maintaining Kubeflow requires dedicated platform engineers. It's best suited for organizations that already have Kubernetes expertise and need multi-cloud portability.</p>
+
+<p><b>Ray</b> takes a different approach. Instead of building on Kubernetes abstractions, Ray provides its own distributed runtime where you write Python and Ray handles distribution across a cluster. <b>Ray Train</b> orchestrates distributed training, <b>Ray Serve</b> handles model serving with request batching and multi-model composition, and <b>Ray Data</b> manages distributed preprocessing. Ray can run on Kubernetes (via the KubeRay operator) or on bare VMs. Its strength is composability — if PetSnap needs a pipeline where the breed classifier feeds into a health assessment model which feeds into a recommendation engine, Ray Serve lets you wire those together in Python rather than YAML.</p>
+
+<pre><code class="language-python">from ray import serve
 
 @serve.deployment(num_replicas=2, ray_actor_options={"num_gpus": 1})
-class LLMDeployment:
+class BreedClassifier:
     def __init__(self):
-        self.model = load_model("llama-8b")
+        self.model = load_model("petsnap-breed-v3")
 
     async def __call__(self, request):
-        prompt = (await request.json())["prompt"]
-        return self.model.generate(prompt, max_tokens=256)
+        image = (await request.json())["image"]
+        return self.model.predict(image)
 
-app = LLMDeployment.bind()
+# Each replica gets its own GPU. Ray handles load balancing and scaling.
+app = BreedClassifier.bind()
 serve.run(app, host="0.0.0.0", port=8000)
 </code></pre>
 
-<table>
-<thead>
-<tr><th></th><th>Kubeflow</th><th>Ray</th><th>Managed Platform (SageMaker etc.)</th></tr>
-</thead>
-<tbody>
-<tr><td><b>Runs on</b></td><td>Kubernetes only</td><td>K8s, cloud VMs, bare metal</td><td>Cloud provider only</td></tr>
-<tr><td><b>Complexity</b></td><td>High (K8s + Kubeflow)</td><td>Medium (Python-native)</td><td>Low (managed)</td></tr>
-<tr><td><b>Multi-cloud</b></td><td>Yes</td><td>Yes</td><td>No</td></tr>
-<tr><td><b>Serving</b></td><td>KServe</td><td>Ray Serve</td><td>Platform endpoints</td></tr>
-<tr><td><b>Best for</b></td><td>Large teams with K8s expertise</td><td>Python-heavy teams, model composition</td><td>Small-medium teams, speed-to-production</td></tr>
-</tbody>
-</table>
+<p>My honest assessment: start with managed platforms. Move to Ray when you need multi-model composition or have Python-heavy teams that don't want to learn Kubernetes. Move to Kubeflow/KServe when you have dedicated platform engineers and need Kubernetes-native infrastructure that spans multiple clouds or on-prem clusters.</p>
 
 <!-- ═══════════════════════════════════════════ -->
-<!-- 8. Multi-Cloud and Hybrid                   -->
+<!-- WRAP-UP                                     -->
 <!-- ═══════════════════════════════════════════ -->
-<h2 id="multi-cloud-hybrid">Multi-Cloud &amp; Hybrid</h2>
+<h2 id="wrap-up">Wrap-Up</h2>
 
-<h3 id="when-multi-cloud">When It Makes Sense</h3>
+<p>If you're still with me, thank you. I hope it was worth the detour into ops territory.</p>
 
-<p>Most teams should <i>not</i> go multi-cloud for ML. The complexity tax is enormous: different APIs, different IAM models, different networking, data gravity pulling you toward one provider. But there are legitimate reasons:</p>
+<p>We started from the bare physics of it — VRAM, compute, and bandwidth as the three constraints that determine what any GPU can do. We walked through the GPU landscape from the $0.50/hr T4 to the $12/hr H100, learned the VRAM arithmetic that drives every hardware choice, and followed PetSnap as it scaled from a single laptop GPU to multi-GPU training. We compared the three major cloud platforms and discovered that data gravity matters more than feature checklists. We learned to save 60–90% with spot instances (at the cost of checkpoint discipline), worked through the on-prem break-even math, explored serverless as an alternative to managing GPUs at all, and ended with the cluster management spectrum from managed platforms to Kubernetes to Ray.</p>
+
+<p>My hope is that the next time someone mentions GPU types or cloud pricing in a meeting, instead of nodding along and hoping no one asks a follow-up question, you'll be the person who can do the VRAM math on the back of a napkin and suggest the right GPU before anyone else has opened a pricing calculator.</p>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- RESOURCES                                   -->
+<!-- ═══════════════════════════════════════════ -->
+<h2 id="resources">Resources</h2>
+
+<p>A curated list of things I found genuinely helpful while learning this material.</p>
 
 <ul>
-  <li><b>Regulatory requirements</b> — data residency laws may require specific regions on specific clouds</li>
-  <li><b>Hardware access</b> — TPUs only exist on GCP; certain GPU types may have better availability on one provider</li>
-  <li><b>Vendor leverage</b> — large organizations negotiate better pricing with multi-cloud commitments</li>
-  <li><b>Acquisition</b> — you acquired a company on AWS and your stack is on GCP</li>
+  <li><b>NVIDIA's GPU architecture whitepapers</b> (Ampere, Hopper, Ada Lovelace) — dry reading, but the definitive source for understanding what Tensor Cores actually do. The Hopper whitepaper's section on the Transformer Engine is particularly insightful.</li>
+  <li><b>Stas Bekman's "Machine Learning Engineering" book</b> (free online) — the most practical guide to ML infrastructure I've found. The chapters on multi-GPU training and memory estimation are wildly helpful.</li>
+  <li><b>The Hugging Face documentation on FSDP and DeepSpeed</b> — best hands-on tutorial for distributed training with actual code you can run. Start here before touching the PyTorch docs.</li>
+  <li><b>cloud-gpu-benchmarks.com</b> — a community-maintained comparison of GPU pricing and performance across cloud providers. The numbers change monthly, so always check the latest.</li>
+  <li><b>Ray documentation's "Patterns" section</b> — the design patterns for multi-model serving pipelines are well-written and solve problems I didn't know I'd have until I had them.</li>
+  <li><b>"The GPU Poor" blog posts</b> by various authors — a genre of practical writing about doing ML on limited budgets. Grounding and honest about what you can accomplish without H100 clusters.</li>
 </ul>
-
-<h3 id="hybrid-pattern">The Hybrid Pattern That Works</h3>
-
-<p>Train where it's cheapest (spot GPUs on whatever provider has availability), store data where your other systems are (don't move petabytes of data between clouds), and serve where your users are (latency matters for inference).</p>
-
-<p>The portability stack that makes this feasible:</p>
-
-<pre><code class="language-bash"># Cloud-agnostic ML stack
-# Models:      ONNX format (runs anywhere)
-# Tracking:    MLflow (self-hosted, cloud-agnostic)
-# Orchestration: Airflow / Prefect (cloud-agnostic)
-# Serving:     KServe on K8s (runs on any cloud)
-# Containers:  Docker (universal packaging)
-# Config:      Hydra / OmegaConf (code-level portability)
-
-# The anti-pattern: using SageMaker Pipelines + SageMaker Feature Store +
-# SageMaker Model Monitor + SageMaker Endpoints. You're locked in.
-# Good when intentional. Painful when you need to move.
-</code></pre>
-
-<div class="callout callout-info">
-<strong>Data gravity wins.</strong> Your ML infrastructure will orbit your data. If you have 50 TB in S3, your training will be on AWS — transferring data between clouds costs $0.09/GB and takes forever. Make the cloud decision based on where your data lives. Everything else follows.
-</div>
-
-<h3 id="on-prem-gpu">On-Prem GPU Clusters</h3>
-
-<p>On-prem makes economic sense at scale. If you're consistently using 100+ GPUs, buying hardware (even amortized over 3 years with maintenance) is cheaper than cloud. NVIDIA DGX systems, Dell PowerEdge, and Supermicro GPU servers are the usual suspects. The trade-off: you own capacity planning, maintenance, cooling, and the risk that the hardware you bought today is obsolete in 18 months.</p>
-
-<p>The hybrid sweet spot: on-prem for steady-state workloads (your always-running inference fleet), cloud for burst capacity (large training runs, experiments, spike handling).</p>
-
-<!-- ═══════════════════════════════════════════ -->
-<!-- CHECKLIST                                   -->
-<!-- ═══════════════════════════════════════════ -->
-<h2>What You Should Now Be Able To Do</h2>
-
-<div class="checklist">
-  <ul>
-    <li>Estimate VRAM requirements for training and inference given a model size and precision, and pick the right GPU</li>
-    <li>Explain when to use vertical scaling (bigger/more GPUs on one node) vs. horizontal scaling (multi-node) and the communication trade-offs</li>
-    <li>Decide between FSDP and DeepSpeed ZeRO for distributed training based on your framework and scale</li>
-    <li>Compare AWS SageMaker, GCP Vertex AI, and Azure ML on their respective strengths and choose based on your existing stack</li>
-    <li>Make the managed vs. self-managed decision for training, serving, and orchestration independently — not as a blanket choice</li>
-    <li>Implement spot/preemptible training with robust checkpointing to cut training costs by 60–90%</li>
-    <li>Right-size GPU instances by profiling utilization, not guessing</li>
-    <li>Evaluate whether your team needs Kubernetes (Kubeflow/KServe) or Ray for ML orchestration, or whether managed services suffice</li>
-    <li>Design a cloud-agnostic ML stack using ONNX, MLflow, and containerized serving when portability is a requirement</li>
-    <li>Reason about data gravity and explain why multi-cloud ML is usually a bad idea unless you have a specific forcing function</li>
-  </ul>
-</div>
 
       <div class="page-nav">
         <a href="s06.html">
