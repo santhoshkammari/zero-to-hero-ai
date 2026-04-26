@@ -302,311 +302,333 @@
 
 <div class="tldr">
   <div class="tldr-label">TL;DR</div>
-  <p>Training a model means finding the parameters that minimize a loss function — and gradient descent is how you do it. You compute the slope, take a step downhill, repeat. The learning rate controls step size and is the single most important hyperparameter you'll ever tune. SGD is noisy; momentum smooths it out; Adam adapts the learning rate per-parameter and is the default for deep learning. Learning rate schedules, gradient clipping, and the distinction between sharp and flat minima round out the practical toolkit. Backpropagation is the calculus trick that makes computing gradients feasible for neural networks — we plant the seed here and go deep later.</p>
+  <p>Optimization is how a model learns — you define what "wrong" means with a loss function, then gradient descent finds the parameter values that minimize it. The learning rate is the most consequential hyperparameter you'll ever set. SGD is noisy but that noise is a feature. Momentum smooths out the chaos. Adam adapts learning rates per-parameter and is the practical default for almost everything. AdamW fixes a subtle but important bug in Adam's handling of weight decay. Learning rate schedules (warmup + cosine decay) and gradient clipping round out the modern training recipe. All of this is powered by backpropagation, the calculus trick that makes computing gradients feasible.</p>
+</div>
+
+<p>I avoided the math behind optimization for longer than I'd like to admit. Every time I saw a gradient descent equation in a paper, I'd nod knowingly and scroll past, operating on faith that PyTorch was handling it. I could call <code>optimizer.step()</code> and get results, which felt like understanding. It wasn't. Finally, the discomfort of not knowing what was actually happening under the hood when my model refused to converge — and having no intuition for <em>why</em> — grew too great. Here is that dive.</p>
+
+<p>Optimization in machine learning is the process of finding the best parameter values for a model. It was formalized long before ML existed — in operations research and numerical analysis — but the specific cocktail of stochastic gradient descent, momentum, and adaptive learning rates that powers modern deep learning came together between roughly 2012 and 2015. Today, it's the engine behind every neural network, every language model, every recommendation system that learns from data.</p>
+
+<p>Before we start, a heads-up. We're going to be building gradient descent from absolute zero, walking through optimizer internals, and getting into the weeds on learning rates and loss landscapes. You don't need to know calculus or linear algebra beforehand. We'll add the concepts we need one piece at a time, with explanation.</p>
+
+<p>This isn't a short journey, but I hope you'll be glad you came.</p>
+
+<div style="margin: 1.5em 0; padding-left: 1.5em; border-left: 3px solid var(--border);">
+  What Does "Wrong" Mean? The Loss Function<br>
+  The Foggy Landscape<br>
+  Feeling the Slope: The Gradient<br>
+  Taking a Step: The Update Rule<br>
+  How Much Data Per Step? Batch, Stochastic, Mini-batch<br>
+  The Learning Rate: One Number to Rule Them All<br>
+  Rest Stop<br>
+  Momentum: The Heavy Ball<br>
+  Nesterov: Looking Before You Leap<br>
+  Adaptive Learning Rates: AdaGrad, RMSprop, Adam<br>
+  AdamW: The One You Should Actually Use<br>
+  Learning Rate Schedules<br>
+  The Terrain Gets Weird: Saddle Points and Flat Valleys<br>
+  Gradient Clipping: Insurance Against Catastrophe<br>
+  Backpropagation Is Not Gradient Descent<br>
+  Second-Order Methods (Brief Detour)<br>
+  The Full Recipe<br>
+  Resources
 </div>
 
 <!-- ════════════════════════════════════════════════════════ -->
-<h2>The Intuition: Hiking in Fog</h2>
+<h2>What Does "Wrong" Mean? The Loss Function</h2>
 
-<p>Picture this. You're standing in thick fog on a hilly landscape. You can't see where the lowest valley is. You can't even see twenty feet ahead. But you <em>can</em> feel the slope under your boots — the ground tilts left, and downward, at about a 15-degree angle.</p>
+<p>Imagine we're building a model to predict house prices. We have one input — square footage — and one output — price. Our model is absurdly simple: multiply the square footage by some number <em>w</em> (the <strong>weight</strong>), add some number <em>b</em> (the <strong>bias</strong>), and that's our prediction.</p>
 
-<p>So you take a step in the downhill direction. Then you feel the slope again. Take another step. Keep going. Eventually, you end up in a valley. Maybe not the <em>deepest</em> valley on the whole landscape, but a valley.</p>
+<pre><code>predicted_price = w * square_footage + b</code></pre>
 
-<p>That's gradient descent. The entire idea.</p>
+<p>Right now <em>w</em> and <em>b</em> are random. Our model predicts that a 1,500 sqft house costs $47. That's wrong. But <em>how</em> wrong? We need a number that captures the wrongness. That number is the <strong>loss</strong> — a single value that says how far our predictions are from reality. A common choice is <strong>mean squared error</strong>: take the difference between each prediction and the actual price, square it (so negative errors don't cancel positive ones), and average across all houses.</p>
 
-<ul>
-  <li>The <strong>landscape</strong> is your loss function plotted over all possible parameter values.</li>
-  <li>The <strong>slope under your feet</strong> is the gradient — a vector of partial derivatives telling you which direction is steepest uphill.</li>
-  <li>The <strong>step you take</strong> goes in the <em>negative</em> gradient direction (downhill).</li>
-  <li>The <strong>step size</strong> is the learning rate.</li>
-</ul>
+<pre><code># Our tiny dataset: 3 houses
+actual_prices  = [300_000, 450_000, 200_000]
+predicted      = [47, 47, 47]       # random initial predictions
 
-<p>In math, the update rule is beautifully simple:</p>
+# Mean squared error
+errors_squared = [(300000-47)**2, (450000-47)**2, (200000-47)**2]
+loss = sum(errors_squared) / 3      # a very large number</code></pre>
 
-<pre><code># The entire algorithm in one line
-θ = θ - α * ∇L(θ)
-
-# θ = parameters (the thing we're learning)
-# α = learning rate (step size)
-# ∇L(θ) = gradient of the loss with respect to θ (the slope)</code></pre>
-
-<p>That's it. Every optimizer you'll ever use — SGD, Adam, AdaGrad, all of them — is a variation on this theme. They all compute some version of "which direction is downhill" and take some version of "a step in that direction." The differences are in how they compute the direction and how they decide the step size.</p>
+<p>The loss is enormous. Good — it should be. Our model knows nothing yet. The entire goal of optimization is to find values of <em>w</em> and <em>b</em> that make this number as small as possible. That's it. Every optimizer, every training loop, every convergence curve you've ever seen — they're all chasing a smaller loss.</p>
 
 <!-- ════════════════════════════════════════════════════════ -->
-<h2>Gradient Descent Variants</h2>
+<h2>The Foggy Landscape</h2>
 
-<p>The gradient ∇L(θ) is defined as the derivative of the loss over the <em>entire</em> dataset. But computing it over the entire dataset for every single step is expensive. This tension — accuracy of the gradient estimate vs. computational cost per step — gives rise to three variants.</p>
+<p>Here's the mental image that makes everything click. Picture the loss as a physical terrain. Every possible combination of <em>w</em> and <em>b</em> is a point on a vast landscape, and the <em>height</em> at that point is the loss. High ground means bad predictions. Valleys mean good ones. The deepest valley is the best our model can do.</p>
 
-<h3>Batch Gradient Descent</h3>
+<p>Now imagine you're standing on this landscape in thick fog. You can't see the valleys. You can't see the horizon. You can feel the slope under your boots — the ground tilts to the left and slightly downward. That's all you have.</p>
 
-<p>Compute the gradient using <strong>all N training examples</strong>, then take one step.</p>
+<p>So you take a step downhill. You feel the slope again. Take another step. Keep going. Eventually you end up in a valley. Maybe not the deepest valley on the whole landscape, but a valley. Your loss went down, and your model got better.</p>
 
-<pre><code># Batch gradient descent — one epoch
-gradient = compute_gradient(X_all, y_all, θ)  # uses ALL data
-θ = θ - α * gradient</code></pre>
-
-<p>The gradient estimate is exact (well, exact for this dataset). The path toward the minimum is smooth. But if you have 10 million training examples, you're computing a gradient over 10 million examples just to take <em>one</em> step. Then you do it again. For large datasets, this is impractical.</p>
-
-<h3>Stochastic Gradient Descent (SGD)</h3>
-
-<p>Compute the gradient using <strong>one randomly sampled example</strong>, then take one step. Repeat.</p>
-
-<pre><code># SGD — one epoch
-for i in random_permutation(range(N)):
-    gradient = compute_gradient(X[i], y[i], θ)  # ONE sample
-    θ = θ - α * gradient</code></pre>
-
-<p>The gradient estimate is noisy — a single sample is a terrible estimate of the true gradient. The path toward the minimum looks drunk. But you're taking N steps per pass through the data instead of one. And here's the surprising part: <strong>the noise is actually helpful</strong>. It helps the optimizer escape shallow local minima and saddle points. A smooth, exact gradient might settle into a mediocre valley and stay there. A noisy one bounces around enough to find better valleys.</p>
-
-<h3>Mini-batch Gradient Descent</h3>
-
-<p>The practical middle ground. Compute the gradient on a <strong>random batch of B examples</strong> (typically 32–512), then take a step.</p>
-
-<pre><code># Mini-batch GD — one epoch
-for batch_X, batch_y in random_batches(X, y, batch_size=64):
-    gradient = compute_gradient(batch_X, batch_y, θ)  # B samples
-    θ = θ - α * gradient</code></pre>
-
-<p>This is what everyone actually uses. When someone says "SGD" in a paper or codebase, they almost always mean mini-batch SGD. The batch size controls the noise-accuracy tradeoff:</p>
-
-<table>
-  <thead>
-    <tr><th>Batch Size</th><th>Gradient Quality</th><th>Steps per Epoch</th><th>GPU Utilization</th><th>Generalization</th></tr>
-  </thead>
-  <tbody>
-    <tr><td>1 (pure SGD)</td><td>Very noisy</td><td>N</td><td>Poor</td><td>Often good (noise acts as regularizer)</td></tr>
-    <tr><td>32–256</td><td>Good enough</td><td>N/B</td><td>Good</td><td>Sweet spot for most tasks</td></tr>
-    <tr><td>N (full batch)</td><td>Exact</td><td>1</td><td>May OOM</td><td>Can overfit, sharp minima</td></tr>
-  </tbody>
-</table>
-
-<p>In practice, pick the largest batch size that fits in GPU memory and gives you good generalization. For most deep learning tasks, 32–256 is the sweet spot. Very large batch sizes (thousands) can work but often require learning rate warmup and careful tuning.</p>
+<p>That's gradient descent. The entire idea. We'll keep coming back to this foggy landscape throughout the post, because it turns out the terrain is stranger than you'd expect — full of saddle points, narrow ravines, and vast flat plateaus. But the core of it is always: feel the slope, step downhill.</p>
 
 <!-- ════════════════════════════════════════════════════════ -->
-<h2>Learning Rate: The Most Important Hyperparameter</h2>
+<h2>Feeling the Slope: The Gradient</h2>
 
-<p>If you only tune one thing, tune the learning rate. Nothing else comes close.</p>
+<p>The slope under your feet has a technical name: the <strong>gradient</strong>. It's a vector — one number for each parameter — that tells you which direction is steepest <em>uphill</em>. For our house price model with two parameters (<em>w</em> and <em>b</em>), the gradient has two components: how much the loss changes when you nudge <em>w</em> a tiny bit, and how much it changes when you nudge <em>b</em> a tiny bit.</p>
 
-<p>The learning rate α controls how big each step is. Get it wrong and nothing else matters:</p>
+<p>Those individual numbers are called <strong>partial derivatives</strong>. The partial derivative of the loss with respect to <em>w</em> answers one question: "If I increase <em>w</em> by a tiny amount, does the loss go up or down, and by how much?" If the answer is "up by a lot," then we should <em>decrease</em> <em>w</em>. If "down by a little," we should increase it, gently.</p>
 
-<ul>
-  <li><strong>Too high:</strong> You overshoot the minimum. The loss oscillates wildly or explodes to infinity. Your model diverges and you get NaN losses.</li>
-  <li><strong>Too low:</strong> You creep toward the minimum painfully slowly. Training takes forever, and you might get stuck in a bad local minimum because you lack the momentum to escape.</li>
-  <li><strong>Just right:</strong> You converge quickly to a good minimum. The loss drops steadily, maybe with some healthy oscillation.</li>
-</ul>
+<p>The gradient bundles all these partial derivatives together into a single arrow pointing uphill. We want to go <em>downhill</em>, so we move in the opposite direction — the <em>negative</em> gradient.</p>
+
+<pre><code># For our 2-parameter model:
+# gradient = [∂L/∂w, ∂L/∂b]
+#
+# ∂L/∂w answers: "how does the loss change when I wiggle w?"
+# ∂L/∂b answers: "how does the loss change when I wiggle b?"
+#
+# We step in the OPPOSITE direction:
+# w_new = w - step_size * ∂L/∂w
+# b_new = b - step_size * ∂L/∂b</code></pre>
+
+<p>I'll be honest — when I first encountered partial derivatives, the notation scared me more than the concept. The concept is "wiggle one knob, see what happens to the loss." That's all a partial derivative is.</p>
+
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>Taking a Step: The Update Rule</h2>
+
+<p>With the gradient in hand, the actual update is almost anticlimactic:</p>
+
+<pre><code>θ = θ - α * ∇L(θ)
+
+# θ = all parameters (w and b in our case)
+# α = learning rate (how big a step)
+# ∇L(θ) = gradient of loss with respect to θ (the slope)</code></pre>
+
+<p>That single line is gradient descent. Every optimizer you'll ever encounter — SGD, Adam, AdaGrad, all of them — is a variation on this theme. They all compute some version of "which direction is downhill" and take some version of "a step in that direction." The differences lie in how they estimate the direction and how they decide the step size.</p>
+
+<p>Let's watch it work on our house price model. We'll simplify to one parameter — the weight <em>w</em> — and use a toy loss function where the best value is <em>w</em> = 150.</p>
 
 <pre><code>import numpy as np
 
-# Simple demo: minimize f(x) = x² (minimum at x=0)
-def gradient(x):
-    return 2 * x
+# Toy: loss = (w - 150)^2, minimum at w = 150
+def loss(w):
+    return (w - 150) ** 2
 
-# Too high — diverges
-x = 5.0
-for step in range(10):
-    x = x - 1.1 * gradient(x)
-    print(f"Step {step}: x={x:.2f}, f(x)={x**2:.2f}")
-# x explodes: 5.0 → -6.0 → 7.2 → -8.64 → ...
+def gradient(w):
+    return 2 * (w - 150)
+
+w = 0.0          # start with a terrible guess
+alpha = 0.1      # learning rate
+
+for step in range(8):
+    grad = gradient(w)
+    w = w - alpha * grad
+    print(f"Step {step}: w = {w:.1f}, loss = {loss(w):.0f}")
+
+# Step 0: w = 30.0,  loss = 14400
+# Step 1: w = 54.0,  loss = 9216
+# Step 2: w = 73.2,  loss = 5898
+# Step 3: w = 88.6,  loss = 3775
+# Step 4: w = 100.8, loss = 2416
+# ...converging toward 150</code></pre>
+
+<p>Each step, the loss drops. The gradient tells us "you're too low, go up," and we go up. As we get closer to 150, the gradient gets smaller (the slope flattens), so our steps naturally shrink. We're rolling into the valley and slowing down.</p>
+
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>How Much Data Per Step? Batch, Stochastic, Mini-batch</h2>
+
+<p>Our toy example had 3 houses. The gradient was cheap to compute. Real datasets have millions of examples. Computing the exact gradient over all of them for every single step is like surveying the entire mountainside before taking one step. Accurate, but agonizingly slow.</p>
+
+<p>This tension — accuracy of the gradient estimate versus computational cost per step — splits gradient descent into three flavors.</p>
+
+<p><strong>Batch gradient descent</strong> uses every training example to compute one gradient, then takes one step. The gradient is as accurate as it can be for this dataset. The path downhill is smooth and predictable. But with 10 million examples, you're doing 10 million calculations for a single step. Then doing it again. For large datasets, this is impractical.</p>
+
+<p><strong>Stochastic gradient descent</strong> (SGD) goes to the other extreme. Pick one training example at random, compute the gradient from that single example, take a step. The gradient estimate is terrible — one house is a pitiful representation of the whole market. The path downhill looks drunk. But you're taking N steps per pass through the data instead of one.</p>
+
+<p>And here's the part that surprised me: <strong>the noise is actually helpful</strong>. A single-sample gradient is inaccurate, yes, but that inaccuracy acts like random jostling. It kicks the optimizer out of shallow valleys and past saddle points that a clean, exact gradient would settle into contentedly. The noise is a feature, not a bug. We'll revisit this idea later when we talk about sharp and flat minima.</p>
+
+<p><strong>Mini-batch gradient descent</strong> is the practical middle ground. Grab a random batch of <em>B</em> examples (typically 32 to 512), compute the gradient from those, take a step. The estimate is much better than a single sample, the cost is manageable, and GPUs are designed to process batches efficiently. This is what everyone actually uses. When someone says "SGD" in a paper or codebase, they almost always mean mini-batch SGD with a batch size of 32 to 256.</p>
+
+<pre><code># What "training" actually looks like
+for epoch in range(num_epochs):
+    for batch_X, batch_y in random_batches(X, y, batch_size=64):
+        gradient = compute_gradient(batch_X, batch_y, θ)
+        θ = θ - α * gradient</code></pre>
+
+<p>The batch size controls a tradeoff. Larger batches give cleaner gradient estimates and use the GPU more efficiently. Smaller batches introduce more noise, which often leads to better generalization. It's one of those knobs where the right answer is "it depends," but 32 to 256 is the sweet spot for most tasks.</p>
+
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>The Learning Rate: One Number to Rule Them All</h2>
+
+<p>If you only tune one hyperparameter, tune the learning rate. Nothing else is close.</p>
+
+<p>The learning rate α controls how far you step with each update. It's the single most consequential number in your entire training configuration. Get it wrong and nothing else you do matters.</p>
+
+<p>Set it too high and you overshoot the valley entirely. The loss doesn't decrease — it oscillates wildly or explodes to infinity. Your terminal fills with <code>NaN</code>. Set it too low and you inch forward so slowly that training takes days when it should take hours, and you might never escape a mediocre valley because you lack the energy to climb over the ridge to a better one.</p>
+
+<pre><code># Too high — the optimizer overshoots and diverges
+w = 5.0
+for step in range(5):
+    w = w - 1.1 * (2 * w)  # α = 1.1
+    print(f"Step {step}: w = {w:.1f}")
+# w: 5.0 → -6.0 → 7.2 → -8.6 → 10.4   (exploding!)
 
 # Too low — barely moves
-x = 5.0
-for step in range(10):
-    x = x - 0.001 * gradient(x)
-    print(f"Step {step}: x={x:.4f}, f(x)={x**2:.6f}")
-# x crawls: 5.0 → 4.99 → 4.98 → ...
+w = 5.0
+for step in range(5):
+    w = w - 0.001 * (2 * w)  # α = 0.001
+    print(f"Step {step}: w = {w:.4f}")
+# w: 5.0 → 4.990 → 4.980 → 4.970 → 4.960  (glacial)
 
-# Just right
-x = 5.0
-for step in range(10):
-    x = x - 0.3 * gradient(x)
-    print(f"Step {step}: x={x:.4f}, f(x)={x**2:.6f}")
-# x converges: 5.0 → 2.0 → 0.8 → 0.32 → ...</code></pre>
+# Sweet spot
+w = 5.0
+for step in range(5):
+    w = w - 0.3 * (2 * w)  # α = 0.3
+    print(f"Step {step}: w = {w:.3f}")
+# w: 5.0 → 2.0 → 0.8 → 0.32 → 0.128       (converging!)</code></pre>
+
+<p>There's a bit of deep learning folklore worth knowing. Andrej Karpathy, in his code and lectures, used <code>3e-4</code> (0.0003) as a default learning rate for Adam so often that the community started calling it the "Karpathy constant." It's not magic — it's an empirically good starting point that happens to work across a surprising range of architectures. For SGD with momentum, the common starting point is around <code>0.1</code>, which you then decay over training.</p>
 
 <div class="callout callout-info">
-  <div class="callout-label">💡 Practical Tip</div>
-  <p>A good starting learning rate for Adam is <code>3e-4</code> (the "Karpathy constant"). For SGD with momentum, start around <code>0.1</code> and decay it. If your loss goes to NaN, your learning rate is too high. If your loss barely drops after thousands of steps, it's too low. The learning rate finder (train for one epoch with exponentially increasing LR, plot loss vs. LR, pick the steepest descent point) is a fast way to find a good starting value.</p>
+  <div class="callout-label">💡 The Learning Rate Finder</div>
+  <p>A practical trick: train for one epoch while exponentially increasing the learning rate from very small (1e-7) to very large (10). Plot loss versus learning rate. The loss will decrease, hit a minimum, then explode. Pick the learning rate at the steepest point of descent — roughly one order of magnitude below where the loss starts exploding. This takes minutes and saves hours of guessing.</p>
 </div>
 
 <!-- ════════════════════════════════════════════════════════ -->
-<h2>Momentum: Smoothing Out the Noise</h2>
+<h2>Rest Stop</h2>
 
-<p>Vanilla SGD has a problem. The gradient at any single mini-batch is noisy, and the loss landscape is often shaped like an elongated valley — steep in one direction, shallow in another. SGD oscillates back and forth across the steep walls while making slow progress along the valley floor. It's like trying to roll a ball down a half-pipe — it wastes energy bouncing side to side.</p>
+<p>Congratulations on making it this far. You can stop here if you want.</p>
 
-<p><strong>Momentum</strong> fixes this by keeping a running average of past gradients. Instead of stepping based only on the current gradient, you accumulate velocity:</p>
+<p>You now have a working mental model of ML optimization: there's a loss landscape defined by your parameters, gradient descent walks downhill by following the slope, the learning rate controls the step size, and mini-batch training is the practical way to do it at scale. That model is genuinely useful. You can read training logs, diagnose divergence, and understand why someone is tuning a learning rate.</p>
 
-<pre><code># SGD with Momentum
-v = 0  # velocity (same shape as θ)
-β = 0.9  # momentum coefficient (typically 0.9 or 0.99)
+<p>It doesn't tell the whole story, though. Vanilla gradient descent oscillates in narrow valleys, treats every parameter identically even when they have wildly different update needs, and uses a fixed learning rate that's never quite right for the whole training run. The optimizers that actually power modern deep learning — Adam, AdamW, schedules — were invented because people ran into exactly these limitations and got frustrated enough to fix them.</p>
+
+<p>The short version is: Adam adapts the learning rate per parameter and almost always works. There. You're 80% of the way there.</p>
+
+<p>But if the discomfort of not knowing what's underneath is nagging at you, read on.</p>
+
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>Momentum: The Heavy Ball</h2>
+
+<p>Vanilla SGD has an annoying habit. The loss landscape is often shaped like an elongated valley — steep walls on either side, gentle slope along the floor. SGD oscillates back and forth across the steep walls while making painfully slow progress along the valley floor. It's wasting most of its energy bouncing side-to-side instead of rolling forward.</p>
+
+<p>Picture a heavy ball rolling downhill. In directions where gravity consistently pulls the same way (the valley floor), the ball builds up speed — it accelerates. In directions where it keeps getting pushed back and forth (the valley walls), the pushes cancel out and the oscillations dampen.</p>
+
+<p><strong>Momentum</strong> captures this idea. Instead of stepping based only on today's gradient, you keep a running average — a <strong>velocity</strong> — that accumulates past gradients:</p>
+
+<pre><code>v = 0            # velocity, same shape as parameters
+β = 0.9          # momentum coefficient
 
 for batch_X, batch_y in batches:
     g = compute_gradient(batch_X, batch_y, θ)
-    v = β * v + g           # accumulate: 90% old velocity + new gradient
+    v = β * v + g           # 90% old velocity + new gradient
     θ = θ - α * v           # step using velocity, not raw gradient</code></pre>
 
-<p>Think of it as a heavy ball rolling downhill. In directions where the gradient keeps pointing the same way (the valley floor), velocity builds up — the ball accelerates. In directions where the gradient keeps flipping sign (the valley walls), the positive and negative contributions cancel out — the oscillations dampen. Same physics as a low-pass filter.</p>
+<p>The coefficient β is typically 0.9, which means the velocity is roughly an exponential moving average of the last 10 gradients. Consistent gradients accumulate into speed. Oscillating gradients cancel out. Same physics as a low-pass filter — it smooths the noise and lets the signal through.</p>
 
-<p>The momentum coefficient β is typically 0.9 (which means the velocity is an exponential moving average of roughly the last 10 gradients). Some people use 0.99 for smoother paths.</p>
+<p>Our heavy ball analogy will come back. It's the thread that connects momentum, Nesterov, and eventually Adam — they're all variations on "what if the ball were smarter?"</p>
 
-<h3>Nesterov Momentum</h3>
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>Nesterov: Looking Before You Leap</h2>
 
-<p>Standard momentum computes the gradient at your current position, then applies velocity. <strong>Nesterov accelerated gradient (NAG)</strong> does it in reverse: first take a step in the direction of accumulated velocity (a "lookahead"), <em>then</em> compute the gradient at that lookahead position.</p>
+<p>Standard momentum computes the gradient at your current position, then applies velocity. <strong>Nesterov accelerated gradient</strong> does it in reverse: first take a step in the direction of your accumulated velocity (a "lookahead"), <em>then</em> compute the gradient at that future position.</p>
 
-<pre><code># Nesterov Momentum
-v = 0
+<pre><code>v = 0
 β = 0.9
 
 for batch_X, batch_y in batches:
-    θ_lookahead = θ - α * β * v         # peek ahead
-    g = compute_gradient(batch_X, batch_y, θ_lookahead)  # gradient at lookahead
+    θ_lookahead = θ - α * β * v              # peek ahead
+    g = compute_gradient(batch_X, batch_y, θ_lookahead)
     v = β * v + g
     θ = θ - α * v</code></pre>
 
-<p>Why does this matter? If momentum is carrying you past the minimum, Nesterov catches the mistake sooner because it evaluates the gradient at the <em>future</em> position rather than the current one. It's a small tweak with meaningful improvements in convergence, especially for convex problems. In practice, the difference over standard momentum is modest but free — use it when available.</p>
+<p>Why does this matter? If momentum is carrying our heavy ball past the valley floor and up the other side, standard momentum doesn't notice until the ball is already climbing. Nesterov evaluates the gradient at where the ball <em>is about to be</em>, so it sees the uphill slope sooner and applies the brakes earlier. It's a small tweak — one line of code — but it tightens convergence, especially for well-behaved (convex) problems. Use it when your framework offers it; it's free.</p>
 
 <!-- ════════════════════════════════════════════════════════ -->
-<h2>Adaptive Learning Rate Methods</h2>
+<h2>Adaptive Learning Rates: AdaGrad, RMSprop, Adam</h2>
 
-<p>Here's the key insight behind all adaptive methods: <strong>different parameters need different learning rates</strong>.</p>
+<p>Here's the insight that changed everything: <strong>different parameters need different learning rates</strong>.</p>
 
-<p>Consider word embeddings. The embedding for "the" gets updated on nearly every batch. The embedding for "defenestrate" might get updated once in a thousand batches. If you use the same learning rate for both, you're either updating "the" too aggressively or "defenestrate" too conservatively. Adaptive methods solve this by maintaining a per-parameter learning rate that adjusts automatically based on the history of gradients for that parameter.</p>
+<p>Think about word embeddings. The embedding vector for "the" gets updated on nearly every batch — it appears in almost every sentence. The embedding for "defenestrate" might get updated once in a thousand batches. If you use the same learning rate for both, you're either updating "the" too aggressively or "defenestrate" too conservatively. Ideally, you'd turn down the knob for frequently-updated parameters and turn it up for rare ones. Adaptive methods do exactly this, automatically.</p>
 
-<h3>AdaGrad</h3>
-
-<p>AdaGrad tracks the sum of squared gradients for each parameter. Parameters that have received large gradients get smaller learning rates; parameters with small gradients get larger learning rates.</p>
+<p><strong>AdaGrad</strong> (2011) was the first to try. It tracks the sum of squared gradients for each parameter. Parameters that have received large gradients accumulate a large sum, which divides the learning rate down. Parameters with small, infrequent gradients keep a higher effective learning rate.</p>
 
 <pre><code># AdaGrad
-cache = 0  # sum of squared gradients (same shape as θ)
-ε = 1e-8   # small constant to avoid division by zero
+cache = 0       # sum of squared gradients, per parameter
+ε = 1e-8        # tiny constant to avoid division by zero
 
 for batch_X, batch_y in batches:
     g = compute_gradient(batch_X, batch_y, θ)
     cache = cache + g ** 2
-    θ = θ - α * g / (np.sqrt(cache) + ε)</code></pre>
+    θ = θ - α * g / (sqrt(cache) + ε)</code></pre>
 
-<p>For sparse problems (NLP, recommender systems), AdaGrad is great — rare features get amplified. But there's a fatal flaw: <code>cache</code> only grows. It never shrinks. Over time, the effective learning rate drops to near zero and learning stops entirely. For long training runs, AdaGrad dies.</p>
+<p>For sparse problems — NLP, recommender systems — AdaGrad is beautiful. Rare features get amplified. But there's a fatal flaw: that <code>cache</code> only grows. It never shrinks. Over thousands of steps, the accumulated sum gets so large that the effective learning rate drops to near zero and learning halts entirely. AdaGrad dies on long training runs.</p>
 
-<h3>RMSprop</h3>
-
-<p>Geoffrey Hinton's fix for AdaGrad's dying learning rate problem. Instead of accumulating <em>all</em> past squared gradients, use an <strong>exponential moving average</strong>:</p>
+<p><strong>RMSprop</strong> fixes this with one change: instead of accumulating <em>all</em> past squared gradients, use an <strong>exponential moving average</strong> that gradually forgets old gradients. The learning rate adapts but never decays to zero.</p>
 
 <pre><code># RMSprop
 cache = 0
-β = 0.999  # decay rate (sometimes 0.99)
-ε = 1e-8
+β = 0.999       # decay rate
 
 for batch_X, batch_y in batches:
     g = compute_gradient(batch_X, batch_y, θ)
-    cache = β * cache + (1 - β) * g ** 2   # EMA of squared gradients
-    θ = θ - α * g / (np.sqrt(cache) + ε)</code></pre>
+    cache = β * cache + (1 - β) * g ** 2    # EMA, forgets old gradients
+    θ = θ - α * g / (sqrt(cache) + ε)</code></pre>
 
-<p>The exponential moving average "forgets" old gradients, so the learning rate doesn't decay to zero. RMSprop was never published in a paper — Hinton introduced it in a Coursera lecture. It works well in practice and is the direct ancestor of Adam.</p>
+<p>RMSprop was never published in a paper. Geoffrey Hinton introduced it in a Coursera lecture in 2012, which might be the most consequential slide deck in deep learning history. It works. It became the direct ancestor of Adam.</p>
 
-<h3>Adam: The Default Optimizer</h3>
-
-<p><strong>Adam</strong> (Adaptive Moment Estimation) combines the best of momentum and RMSprop. It maintains two running averages:</p>
-
-<ul>
-  <li><strong>First moment (m)</strong> — exponential moving average of gradients (like momentum)</li>
-  <li><strong>Second moment (v)</strong> — exponential moving average of squared gradients (like RMSprop)</li>
-</ul>
+<p><strong>Adam</strong> (Adaptive Moment Estimation, 2014) puts momentum and RMSprop together. It maintains two running averages: the <strong>first moment</strong> <em>m</em> (an EMA of the gradients themselves, like momentum) and the <strong>second moment</strong> <em>v</em> (an EMA of the squared gradients, like RMSprop). Together, they give you both a smoothed gradient direction <em>and</em> a per-parameter learning rate.</p>
 
 <pre><code># Adam — the full algorithm
-m = 0       # first moment estimate
-v = 0       # second moment estimate
-β1 = 0.9    # decay rate for first moment
-β2 = 0.999  # decay rate for second moment
+m = 0          # first moment (momentum)
+v = 0          # second moment (RMSprop)
+β1 = 0.9       # decay rate for first moment
+β2 = 0.999     # decay rate for second moment
 ε = 1e-8
-t = 0       # timestep
+t = 0          # timestep
 
 for batch_X, batch_y in batches:
     t += 1
     g = compute_gradient(batch_X, batch_y, θ)
 
-    m = β1 * m + (1 - β1) * g          # update first moment (momentum)
-    v = β2 * v + (1 - β2) * g ** 2     # update second moment (RMSprop)
+    m = β1 * m + (1 - β1) * g          # momentum-style update
+    v = β2 * v + (1 - β2) * g ** 2     # RMSprop-style update
 
     m_hat = m / (1 - β1 ** t)          # bias correction
     v_hat = v / (1 - β2 ** t)          # bias correction
 
-    θ = θ - α * m_hat / (np.sqrt(v_hat) + ε)</code></pre>
+    θ = θ - α * m_hat / (sqrt(v_hat) + ε)</code></pre>
 
-<p>The bias correction terms (<code>m_hat</code> and <code>v_hat</code>) are important. Since <code>m</code> and <code>v</code> are initialized to zero, they're biased toward zero in the early steps. Dividing by <code>(1 - β^t)</code> corrects this — it's a bigger correction early on and vanishes as t grows.</p>
+<p>Those bias correction terms (<code>m_hat</code>, <code>v_hat</code>) deserve a sentence. Since <em>m</em> and <em>v</em> start at zero, they're biased toward zero in the early steps. Dividing by <code>(1 - β^t)</code> inflates them back to their true scale. It's a bigger correction early on and vanishes as <em>t</em> grows.</p>
 
-<p>Adam is the most widely used optimizer in deep learning. The default hyperparameters (<code>β1=0.9</code>, <code>β2=0.999</code>, <code>ε=1e-8</code>) work well across a huge range of problems. When in doubt, use Adam.</p>
+<p>My favorite thing about Adam is that, aside from high-level explanations like the one I gave, no one is completely certain why it works so well across such a wide range of problems. The default hyperparameters (<code>β1=0.9</code>, <code>β2=0.999</code>, <code>ε=1e-8</code>, <code>lr=3e-4</code>) work on everything from tiny classifiers to massive language models. That's unusual. Most things in ML need tuning. Adam somehow doesn't — at least not much.</p>
 
-<h3>AdamW: What You Should Actually Use</h3>
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>AdamW: The One You Should Actually Use</h2>
 
-<p>There's a subtle bug in Adam's interaction with weight decay (L2 regularization). The original Adam paper applied weight decay as part of the gradient, but Adam's adaptive scaling distorts the regularization effect. <strong>AdamW</strong> fixes this by <em>decoupling</em> the weight decay from the gradient update:</p>
+<p>There's a subtle but important bug in how Adam interacts with <strong>weight decay</strong>, a regularization technique that penalizes large parameter values to prevent overfitting. In standard Adam, weight decay is applied through the gradient — you add a term to the gradient that pushes parameters toward zero. The problem is that Adam's adaptive scaling then distorts that push. Parameters with large historical gradients get less regularization, and parameters with small historical gradients get more. The regularization becomes inconsistent and unpredictable.</p>
+
+<p>In 2019, Loshchilov and Hutter published "Decoupled Weight Decay Regularization" and the fix is almost embarrassingly elegant: apply the weight decay directly to the parameters, <em>separate</em> from the gradient update, so it's never touched by the adaptive scaling.</p>
 
 <pre><code># AdamW — decoupled weight decay
 # ... (same m, v, bias correction as Adam) ...
 
-θ = θ - α * m_hat / (np.sqrt(v_hat) + ε) - α * λ * θ
-#                                            ^^^^^^^^
-#                      weight decay applied DIRECTLY to params, not through gradient</code></pre>
+# The key difference: weight decay is DECOUPLED
+θ = θ - α * m_hat / (sqrt(v_hat) + ε) - α * λ * θ
+#                                        ^^^^^^^^^^^
+#           applied directly to params, NOT through the gradient</code></pre>
 
-<p>The difference is significant enough to matter in practice. AdamW consistently outperforms Adam with L2 regularization, particularly on larger models. <strong>Use AdamW over Adam</strong> unless you have a specific reason not to. PyTorch's <code>torch.optim.AdamW</code> and Hugging Face's defaults both use AdamW.</p>
-
-<h3>The Comparison Table</h3>
-
-<table>
-  <thead>
-    <tr>
-      <th>Optimizer</th>
-      <th>Key Idea</th>
-      <th>When to Use</th>
-      <th>Gotcha</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><strong>SGD + Momentum</strong></td>
-      <td>Velocity accumulation smooths noisy gradients</td>
-      <td>Vision models (ResNets), when you have time to tune LR schedule</td>
-      <td>Needs careful LR schedule; poor default out-of-the-box</td>
-    </tr>
-    <tr>
-      <td><strong>AdaGrad</strong></td>
-      <td>Per-parameter LR scaled by gradient history</td>
-      <td>Sparse features (NLP, recommender systems), short training runs</td>
-      <td>Learning rate monotonically decays to zero; dies on long runs</td>
-    </tr>
-    <tr>
-      <td><strong>RMSprop</strong></td>
-      <td>AdaGrad with exponential moving average (prevents dying LR)</td>
-      <td>RNNs, online learning</td>
-      <td>Never formally published; largely superseded by Adam</td>
-    </tr>
-    <tr>
-      <td><strong>Adam</strong></td>
-      <td>Momentum + RMSprop + bias correction</td>
-      <td>Default for most deep learning tasks</td>
-      <td>L2 regularization is broken — use AdamW instead</td>
-    </tr>
-    <tr>
-      <td><strong>AdamW</strong></td>
-      <td>Adam with decoupled weight decay</td>
-      <td>Transformers, LLMs, anything with weight decay</td>
-      <td>Slightly more memory than SGD (stores m and v per param)</td>
-    </tr>
-  </tbody>
-</table>
+<p>The result is consistent, predictable regularization that matches what you'd expect from weight decay in plain SGD. Empirically, AdamW generalizes better than Adam with L2 regularization across a wide range of tasks. It's the default optimizer in Hugging Face, the default in most transformer training recipes, and what you should use unless you have a specific reason not to. PyTorch ships it as <code>torch.optim.AdamW</code>.</p>
 
 <div class="callout callout-warning">
-  <div class="callout-label">⚠️ SGD vs. Adam: The Ongoing Debate</div>
-  <p>Adam converges faster and is easier to tune. SGD with a well-tuned learning rate schedule often generalizes slightly better on vision tasks. In NLP and transformers, AdamW dominates. The practical answer: start with AdamW. If you're squeezing out the last 0.3% accuracy on an image classification benchmark and you have the compute budget to tune LR schedules, try SGD with momentum + cosine annealing.</p>
+  <div class="callout-label">⚠️ SGD vs. Adam: The Debate That Won't Die</div>
+  <p>Adam converges faster and needs less tuning. SGD with a carefully crafted learning rate schedule sometimes generalizes slightly better on vision tasks (ResNets, for instance). In NLP and transformer land, AdamW dominates unchallenged. I'll be honest — the field doesn't have a clean, unified answer here. The practical advice: start with AdamW. If you're squeezing the last 0.3% accuracy on an image classification benchmark and have the compute budget to tune schedules, experiment with SGD + momentum + cosine annealing.</p>
 </div>
 
 <!-- ════════════════════════════════════════════════════════ -->
 <h2>Learning Rate Schedules</h2>
 
-<p>A fixed learning rate is almost never optimal. The intuition is simple: early in training, you're far from the minimum and need big steps to explore broadly. Late in training, you're close to the minimum and need small steps to refine without overshooting. Starting high and annealing down captures this perfectly.</p>
+<p>A fixed learning rate is almost never optimal. The intuition maps directly back to our foggy landscape: early in training, you're far from any valley and need big steps to explore broadly. Late in training, you're close to a valley floor and need small, careful steps to settle in without overshooting. A schedule that starts high and decays captures this perfectly.</p>
 
-<p><strong>Step decay:</strong> Multiply the learning rate by a factor (e.g., 0.1) at fixed epochs. Simple, effective, requires you to pick the schedule manually. Common in older vision papers: "divide LR by 10 at epochs 30, 60, 90."</p>
+<p><strong>Step decay</strong> is the oldest approach: multiply the learning rate by a factor (typically 0.1) at fixed epochs. "Divide LR by 10 at epochs 30, 60, 90" was the standard recipe in older vision papers. It works, but requires manually choosing when to drop.</p>
 
-<p><strong>Cosine annealing:</strong> Smoothly decays the LR following a cosine curve from the initial value to near zero. No discrete jumps. Works well across many tasks and is the default schedule for many modern training recipes.</p>
+<p><strong>Cosine annealing</strong> smoothly decays the learning rate following a cosine curve from the initial value to near zero. No abrupt jumps, no schedule to hand-design. It's become the default for most modern training recipes because it works well and asks nothing of you.</p>
 
-<p><strong>Warmup:</strong> Start with a very small learning rate and linearly increase it over the first few hundred or thousand steps. This stabilizes training early on when the model's parameters are random and gradients are unreliable. Almost always used with transformers. A typical recipe: linear warmup for 5–10% of training steps, then cosine decay for the rest.</p>
+<p><strong>Warmup</strong> addresses a problem at the very start of training. When parameters are freshly initialized — essentially random — the gradients are unreliable. Taking large steps based on unreliable gradients is reckless. Warmup starts with a tiny learning rate and linearly increases it over the first few hundred or thousand steps, letting the model stabilize before you open the throttle. I'm still developing my intuition for exactly <em>why</em> warmup helps as much as it does, but empirically it's essential for transformer training.</p>
+
+<p>The modern recipe combines them: linear warmup for 5–10% of total steps, then cosine decay for the rest.</p>
 
 <pre><code>import torch.optim as optim
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
@@ -618,125 +640,129 @@ warmup = LinearLR(optimizer, start_factor=0.01, total_iters=1000)
 cosine = CosineAnnealingLR(optimizer, T_max=9000, eta_min=1e-6)
 scheduler = SequentialLR(optimizer, [warmup, cosine], milestones=[1000])</code></pre>
 
-<p><strong>One-cycle policy:</strong> Ramp the LR up to a high value, then anneal it down below the starting value, all within one training run. Leslie Smith showed this can match or beat carefully tuned step schedules with zero manual scheduling decisions. PyTorch has it built in: <code>OneCycleLR</code>.</p>
+<p><strong>One-cycle policy</strong>, from Leslie Smith, takes a different approach: ramp the learning rate <em>up</em> to a high value, then anneal it down below the starting value, all within one training run. It's counterintuitive — why would you <em>increase</em> the learning rate mid-training? — but it empirically matches or beats carefully tuned step schedules, and it eliminates all the manual scheduling decisions. PyTorch ships it as <code>OneCycleLR</code>.</p>
 
 <!-- ════════════════════════════════════════════════════════ -->
-<h2>Convergence Challenges</h2>
+<h2>The Terrain Gets Weird: Saddle Points and Flat Valleys</h2>
 
-<h3>Saddle Points, Not Local Minima</h3>
+<p>Time to return to our foggy landscape, because the terrain is stranger than we first imagined.</p>
 
-<p>For years, people worried that gradient descent would get trapped in bad local minima. Turns out, in high dimensions, <strong>local minima aren't the problem — saddle points are</strong>.</p>
+<p>For years, people worried that gradient descent would get trapped in bad <strong>local minima</strong> — valleys that aren't the deepest, but where the gradient is zero so the optimizer has no reason to leave. It turns out, in high dimensions, this fear is mostly misplaced.</p>
 
-<p>A saddle point is where the gradient is zero, but it's a minimum in some directions and a maximum in others (like the center of a horse saddle or a Pringles chip). In a network with millions of parameters, for a critical point to be a true local minimum, the loss must curve <em>upward</em> in every single one of those millions of directions. That's astronomically unlikely. Almost every critical point in high-dimensional loss landscapes is a saddle point.</p>
+<p>Here's why. For a critical point (where the gradient is zero) to be a true local minimum, the loss must curve <em>upward</em> in every single direction. In a model with a million parameters, that means a million directions must all curve up simultaneously. The probability of that happening by chance is vanishingly small. Almost every critical point in a high-dimensional loss landscape is a <strong>saddle point</strong> — a minimum in some directions but a maximum in others, like the center of a horse saddle or a Pringles chip.</p>
 
-<p>The good news: SGD with momentum usually escapes saddle points because the noise in stochastic gradients provides enough perturbation to push past them. This is another reason why the "noise" in SGD is a feature, not a bug.</p>
+<p>Saddle points <em>do</em> slow down training, because the gradient near a saddle point is close to zero, so steps become tiny. But SGD's noise provides enough random perturbation to eventually nudge the optimizer off the saddle and back onto a descending path. This is another reason to appreciate the noise in stochastic gradients — it's rescue from saddle points.</p>
 
 <h3>Sharp vs. Flat Minima</h3>
 
-<p>Not all minima are equally good. A <strong>sharp minimum</strong> sits at the bottom of a narrow, steep-walled valley. A <strong>flat minimum</strong> sits in a broad, gently-sloped basin. Both have low training loss, but flat minima generalize better.</p>
+<p>Not all valleys are equally good. A <strong>sharp minimum</strong> sits at the bottom of a narrow, steep-walled crevice. A <strong>flat minimum</strong> sits in a broad, gently-sloped basin. Both achieve low training loss, but they behave very differently on new data.</p>
 
-<p>Why? A sharp minimum means tiny changes in parameters cause large changes in loss. When your training and test distributions differ even slightly (they always do), a sharp minimum's performance collapses. A flat minimum is robust — small perturbations barely change the loss.</p>
+<p>A sharp minimum is fragile. Tiny changes in the parameters cause large changes in the loss. When your training data and your real-world data differ even slightly — and they always do — a model sitting in a sharp minimum's performance collapses. A flat minimum is robust. Small perturbations barely change the loss, so the model's predictions stay reliable on data it hasn't seen.</p>
 
-<p>This connects to practical choices: large batch training tends to find sharp minima (bad generalization). Smaller batches, thanks to gradient noise, tend to find flat minima (better generalization). It's one reason why just cranking up the batch size doesn't always help.</p>
+<p>This connects to a practical observation that confused me for a while: larger batch sizes tend to find sharp minima (worse generalization), while smaller batches tend to find flat ones (better generalization). The noise from small batches acts like a constant jostling that prevents the optimizer from settling into narrow crevices — it can only rest in wide basins where the noise doesn't bounce it out. It's why cranking up the batch size for speed sometimes <em>hurts</em> your final model, even though the gradient estimate is more accurate.</p>
 
-<h3>Gradient Clipping</h3>
+<p>This area is still under active research. <strong>Sharpness-Aware Minimization</strong> (SAM), introduced in 2021, explicitly seeks flat minima by optimizing not for the lowest loss at a point, but for the lowest loss in the <em>worst-case neighborhood</em> around that point. It's shown consistent improvements, though at the cost of roughly doubling the compute per step. The theory connecting sharpness to generalization is compelling but not settled — there are researchers who argue the connection is more nuanced than the clean story I told above.</p>
 
-<p>Sometimes gradients explode. This is especially common in recurrent neural networks (RNNs) and early-stage transformer training. One bad batch produces a gradient with a norm of 10,000 instead of 1, and a single update destroys your model's learned parameters.</p>
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>Gradient Clipping: Insurance Against Catastrophe</h2>
 
-<p>The fix is embarrassingly simple: if the gradient norm exceeds a threshold, scale it down.</p>
+<p>Sometimes, despite your best efforts, the gradient explodes. A single bad batch produces a gradient with a norm of 10,000 when the usual is around 1. One update with that gradient destroys everything the model has learned. This is especially common in recurrent neural networks and early-stage transformer training, where long sequences create multiplicative chains that amplify gradients.</p>
+
+<p>The fix is embarrassingly simple: if the gradient's total magnitude exceeds a threshold, scale the whole thing down proportionally. The direction is preserved; the magnitude is capped.</p>
 
 <pre><code># Gradient clipping in PyTorch — one line
 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
-# What it does under the hood:
-# total_norm = sqrt(sum(p.grad.norm()**2 for all params))
-# if total_norm > max_norm:
-#     scale = max_norm / total_norm
-#     for p in params: p.grad *= scale</code></pre>
+# Under the hood:
+# 1. Compute total_norm = sqrt(sum(p.grad.norm()**2 for all params))
+# 2. If total_norm > max_norm:
+#        scale = max_norm / total_norm
+#        multiply every gradient by scale</code></pre>
 
-<p>Clip value of 1.0 is a safe default. Most major training codebases use gradient clipping — it's essentially free insurance against exploding gradients.</p>
-
-<!-- ════════════════════════════════════════════════════════ -->
-<h2>Connection to Backpropagation</h2>
-
-<p>Gradient descent and backpropagation are often confused with each other. They're not the same thing. They solve two different problems:</p>
-
-<ul>
-  <li><strong>Gradient descent</strong> says: "Given the gradient of the loss with respect to every parameter, update each parameter by stepping in the downhill direction." It's the <em>optimization algorithm</em>.</li>
-  <li><strong>Backpropagation</strong> says: "Here's how to <em>compute</em> that gradient efficiently for a neural network." It's the <em>calculus trick</em> — an application of the chain rule that propagates error signals backward through the network's layers.</li>
-</ul>
-
-<p>Without backpropagation, you could still do gradient descent — you'd just have to compute gradients by finite differences (perturb each parameter by ε, measure the change in loss). For a model with 100 million parameters, that means 100 million forward passes per gradient computation. Backpropagation computes the exact same gradient in <em>one</em> backward pass. That's the magic — it turns an O(n) problem into O(1) in terms of forward passes.</p>
-
-<p>We'll go deep on the mechanics of backpropagation in the deep learning chapters. For now, just remember the division of labor: gradient descent decides <em>what to do</em> with gradients. Backprop decides <em>how to compute</em> them.</p>
+<p>A clip value of 1.0 is a safe default. It's used in virtually every serious training codebase — GPT, BERT, LLaMA, you name it. Think of it as insurance: most of the time the gradients are fine and the clipping does nothing, but when a rogue gradient appears, it prevents catastrophe. The cost is a single norm computation per step. Free.</p>
 
 <!-- ════════════════════════════════════════════════════════ -->
-<h2>Second-Order Methods (Brief)</h2>
+<h2>Backpropagation Is Not Gradient Descent</h2>
 
-<p>Everything we've discussed so far is <strong>first-order</strong> — we only use the gradient (first derivative). <strong>Second-order methods</strong> also use the <em>curvature</em> (second derivative, encoded in the Hessian matrix). The Hessian tells you not just which direction is downhill, but how the slope is changing — whether you're approaching a cliff, a gentle valley, or a flat plateau.</p>
+<p>These two are confused with each other constantly, so let's draw a bright line.</p>
 
-<p><strong>Newton's method</strong> uses the full Hessian to take "perfect" steps that account for curvature. Near the minimum, it converges quadratically (extremely fast). The problem: the Hessian for a model with <em>n</em> parameters is an <em>n × n</em> matrix. For a network with 10 million parameters, that's 100 trillion entries. Not happening.</p>
+<p><strong>Gradient descent</strong> answers: "Given the gradient of the loss with respect to every parameter, how do I update the parameters?" It's the <em>optimization algorithm</em> — the stepping-downhill part.</p>
 
-<p><strong>L-BFGS</strong> (Limited-memory Broyden-Fletcher-Goldfarb-Shanno) approximates the Hessian using the last <em>k</em> gradient updates, without ever storing the full matrix. It works brilliantly for small-to-medium models. Scikit-learn's logistic regression uses L-BFGS as its default solver. For deep learning, L-BFGS is impractical because it doesn't play well with stochastic mini-batches.</p>
+<p><strong>Backpropagation</strong> answers: "How do I <em>compute</em> that gradient efficiently for a neural network?" It's the <em>calculus trick</em> — an application of the chain rule that propagates error signals backward through the layers.</p>
 
-<p>Bottom line: if you're training a model with fewer than ~100K parameters and using full-batch gradients, L-BFGS will probably converge faster than Adam. For anything larger or mini-batch-based, stick with first-order methods.</p>
+<p>Without backpropagation, you could still do gradient descent. You'd compute gradients by <strong>finite differences</strong>: nudge each parameter by a tiny amount ε, measure the change in loss, divide. For a model with 100 million parameters, that means 100 million forward passes per gradient step. Backpropagation computes the exact same gradient in <em>one</em> backward pass. That's the transformation — from O(n) forward passes to O(1). It's what makes training neural networks feasible at all.</p>
+
+<p>We'll go deep on the mechanics of backpropagation in the deep learning chapters. For now, the division of labor is the thing to remember: gradient descent decides <em>what to do</em> with gradients, backpropagation decides <em>how to compute</em> them.</p>
 
 <!-- ════════════════════════════════════════════════════════ -->
-<h2>Putting It All Together: A Practical Recipe</h2>
+<h2>Second-Order Methods (Brief Detour)</h2>
+
+<p>Everything so far has been <strong>first-order</strong> — we only used the gradient, which is the first derivative. <strong>Second-order methods</strong> additionally use the <strong>curvature</strong>, encoded in a matrix called the <strong>Hessian</strong>. The Hessian tells you not which direction is downhill, but how the slope itself is changing — whether you're approaching a cliff, a gentle valley, or a flat plateau.</p>
+
+<p>Back on our foggy landscape: first-order methods feel the tilt under your feet. Second-order methods also feel whether the ground is curving — whether your next step is going to steepen or flatten. That's strictly more information, so you'd expect better steps. And you'd be right.</p>
+
+<p><strong>Newton's method</strong> uses the full Hessian to take "perfect" steps that account for curvature. Near the minimum, it converges quadratically — dramatically faster than any first-order method. The problem is the Hessian. For a model with <em>n</em> parameters, it's an <em>n × n</em> matrix. A model with 10 million parameters produces a Hessian with 100 trillion entries. Not happening.</p>
+
+<p><strong>L-BFGS</strong> (Limited-memory BFGS) approximates the Hessian using the last <em>k</em> gradient updates without ever materializing the full matrix. It works brilliantly for small-to-medium models and is the default solver for scikit-learn's logistic regression. For deep learning, L-BFGS is impractical because it doesn't handle the noise from mini-batch gradients well.</p>
+
+<p>The practical bottom line: for models under ~100K parameters with full-batch gradients, L-BFGS will probably converge faster than Adam. For anything larger or mini-batch-based, stick with first-order methods. Most of us will never need second-order optimization, but knowing it exists and <em>why</em> it exists fills in a conceptual gap.</p>
+
+<!-- ════════════════════════════════════════════════════════ -->
+<h2>The Full Recipe</h2>
+
+<p>Everything we've built — the gradient, the learning rate, momentum, adaptive rates, schedules, clipping — comes together in a training loop that fits on a screen. This is what modern deep learning training actually looks like:</p>
 
 <pre><code>import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
-# 1. Define your model
 model = YourModel()
 
-# 2. Pick AdamW (the default for almost everything)
+# AdamW: the default for almost everything
 optimizer = optim.AdamW(
     model.parameters(),
-    lr=3e-4,           # the Karpathy constant
-    weight_decay=0.01, # mild regularization
-    betas=(0.9, 0.999) # default momentum terms
+    lr=3e-4,             # the "Karpathy constant"
+    weight_decay=0.01,   # mild, decoupled regularization
+    betas=(0.9, 0.999)   # momentum + RMSprop decay rates
 )
 
-# 3. Learning rate schedule: warmup + cosine decay
+# Schedule: warmup + cosine decay
 total_steps = len(train_loader) * num_epochs
-warmup_steps = int(0.05 * total_steps)
+warmup_steps = int(0.05 * total_steps)  # 5% warmup
 warmup = LinearLR(optimizer, start_factor=0.01, total_iters=warmup_steps)
 cosine = CosineAnnealingLR(optimizer, T_max=total_steps - warmup_steps, eta_min=1e-6)
 scheduler = SequentialLR(optimizer, [warmup, cosine], milestones=[warmup_steps])
 
-# 4. Training loop with gradient clipping
+# Training loop
 for epoch in range(num_epochs):
     for batch_X, batch_y in train_loader:
         optimizer.zero_grad()
         loss = criterion(model(batch_X), batch_y)
-        loss.backward()                                      # backprop computes gradients
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # clip
-        optimizer.step()                                     # gradient descent takes a step
-        scheduler.step()                                     # update learning rate</code></pre>
+        loss.backward()                                        # backprop: compute gradients
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)  # clip: insurance
+        optimizer.step()                                       # gradient descent: update params
+        scheduler.step()                                       # schedule: adjust learning rate</code></pre>
 
-<p>That's the entire optimization stack for modern deep learning: AdamW + warmup + cosine decay + gradient clipping. It's what GPT, BERT, Vision Transformers, and most serious training runs use. Understand each piece, and you can read any training codebase.</p>
+<p>That's the entire optimization stack. AdamW + warmup + cosine decay + gradient clipping. It's what GPT uses. It's what BERT uses. It's what Vision Transformers use. Understand each piece — and you do now — and you can read any training codebase and know exactly what's happening.</p>
 
 <!-- ════════════════════════════════════════════════════════ -->
-<h2>What You Should Now Be Able To Do</h2>
+<h2>Resources</h2>
 
-<div class="callout callout-info">
-  <div class="callout-label">✅ Checklist</div>
-  <ul>
-    <li>Explain gradient descent to a colleague using the "hiking in fog" analogy, and map each part (landscape, slope, step size) to the math</li>
-    <li>Describe the tradeoff between batch, mini-batch, and stochastic gradient descent — and know which one everyone actually uses</li>
-    <li>Diagnose a learning rate that's too high (loss explodes / NaN) vs. too low (loss barely moves) from a training curve</li>
-    <li>Explain why momentum helps (dampens oscillations, accelerates along consistent gradient directions) and what Nesterov adds</li>
-    <li>Walk through Adam's update rule and explain the role of first moment, second moment, and bias correction</li>
-    <li>Choose between SGD+momentum, Adam, and AdamW for a given task and justify your choice</li>
-    <li>Set up a learning rate schedule with warmup + cosine decay in PyTorch</li>
-    <li>Explain why saddle points (not local minima) are the real concern in high-dimensional optimization</li>
-    <li>Implement gradient clipping and explain when and why it's necessary</li>
-    <li>Articulate the difference between gradient descent (what to do with gradients) and backpropagation (how to compute them)</li>
-  </ul>
-</div>
+<p>If you're still with me, thank you. I hope it was worth it.</p>
+
+<p>We started with a model that predicted every house costs $47, defined what "wrong" means with a loss function, walked through a foggy landscape feeling for slopes, discovered that noise is a feature, watched a heavy ball teach us about momentum, traced the lineage from AdaGrad to Adam to AdamW, and learned that the terrain itself — saddle points, sharp crevices, flat basins — shapes what the optimizer finds. My hope is that the next time you see a training curve flatline or a loss explode to NaN, instead of randomly poking at hyperparameters, you'll have a mental model of what's happening under the hood and where to look first.</p>
+
+<p>A few resources that helped me build this understanding, each worth your time:</p>
+
+<ul>
+  <li><strong>Sebastian Ruder's "An overview of gradient descent optimization algorithms"</strong> — the most cited blog post in optimization, and for good reason. Comprehensive, visual, and regularly updated.</li>
+  <li><strong>The Adam paper (Kingma &amp; Ba, 2014)</strong> — unusually readable for an ML paper. The bias correction derivation is elegant.</li>
+  <li><strong>Loshchilov &amp; Hutter, "Decoupled Weight Decay Regularization" (2019)</strong> — the AdamW paper. Short, clear, and it changed how the entire field regularizes.</li>
+  <li><strong>Leslie Smith, "Super-Convergence" (2018)</strong> — the one-cycle policy paper. Counterintuitive results, beautifully demonstrated.</li>
+  <li><strong>Li et al., "Visualizing the Loss Landscape of Neural Nets" (2018)</strong> — the paper that gave us those gorgeous 3D loss landscape plots. Seeing the terrain makes the theory visceral.</li>
+  <li><strong>Andrej Karpathy, "A Recipe for Training Neural Networks" (blog post)</strong> — practical wisdom from someone who's trained a lot of neural networks. The debugging advice alone is worth the read.</li>
+</ul>
 
 
       <div class="page-nav">
