@@ -292,272 +292,399 @@
 
     <div class="content">
 
-<h1>Sequential Models &amp; PPL</h1>
+<h1>Sequential Models &amp; Probabilistic Programming Languages</h1>
 <div class="chapter-meta">
   <span class="tag">Chapter 14: Probabilistic &amp; Bayesian ML</span>
-  <span class="tag">HMMs · Kalman Filters · Probabilistic Programming</span>
+  <span class="tag">HMMs &middot; Kalman Filters &middot; Particle Filters &middot; PPLs &middot; Bayesian Neural Networks</span>
 </div>
 
-<div class="tldr">
-  <div class="tldr-label">Section Overview</div>
-  <p>This section combines Sequential Models: HMMs &amp; Kalman Filters and Probabilistic Programming into one comprehensive reference.</p>
+<!-- ═══════════ OPENING ═══════════ -->
+
+<p>I avoided sequential probabilistic models for an embarrassingly long time. Every time a colleague mentioned &ldquo;forward-backward&rdquo; or &ldquo;Kalman gain,&rdquo; I nodded along, privately hoping nobody would ask me a follow-up question. The math looked dense, the notation was intimidating, and there seemed to be a dozen variants of everything. Finally the discomfort of not knowing what&rsquo;s really happening under the hood grew too great for me. Here is that dive.</p>
+
+<p>Sequential models &mdash; Hidden Markov Models, Kalman filters, particle filters &mdash; are the classic machinery for tracking a hidden state that evolves over time from noisy observations. They powered speech recognition, GPS navigation, and robot localization long before deep learning existed. Probabilistic programming languages (PPLs) are the modern layer on top: tools that let you specify any generative model as code and have the computer figure out the inference for you. Together, these ideas form the backbone of Bayesian reasoning about things that change.</p>
+
+<p>Before we start, a heads-up. We&rsquo;re going to be talking about probability distributions, matrix operations, and Bayesian inference, but you don&rsquo;t need to know any of it beforehand. We&rsquo;ll add what we need, one piece at a time.</p>
+
+<p>This isn&rsquo;t a short journey, but I hope you&rsquo;ll be glad you came.</p>
+
+<!-- ═══════════ TABLE OF CONTENTS ═══════════ -->
+
+<div style="margin: 2rem 0; padding-left: 1.5rem; line-height: 2;">
+  The hidden state problem<br>
+  A tiny weather station<br>
+  Hidden Markov Models &mdash; the discrete case<br>
+  The forward algorithm<br>
+  The backward algorithm and smoothing<br>
+  The Viterbi algorithm<br>
+  Learning the model &mdash; Baum-Welch<br>
+  Rest stop<br>
+  Kalman filters &mdash; the continuous case<br>
+  The predict-update cycle<br>
+  When linearity breaks &mdash; EKF and UKF<br>
+  Particle filters &mdash; throwing darts at the posterior<br>
+  Probabilistic programming languages<br>
+  Writing a model in PyMC<br>
+  Stan, NumPyro, and Pyro<br>
+  Posterior predictive checks<br>
+  Model comparison &mdash; WAIC and LOO-CV<br>
+  Bayesian neural networks<br>
+  Uncertainty quantification<br>
+  Resources and credits
 </div>
 
+<!-- ═══════════ THE HIDDEN STATE PROBLEM ═══════════ -->
+<h2 id="hidden-state">The hidden state problem</h2>
 
-<!-- ═══════════ Sequential Models: HMMs &amp; Kalman Filters ═══════════ -->
-<h2>Sequential Models: HMMs &amp; Kalman Filters</h2>
+<p>Here is a situation that comes up constantly in the real world: there&rsquo;s something you care about, but you can&rsquo;t observe it directly. You can only see noisy, imperfect reflections of it.</p>
 
-<div class="tldr">
-  <div class="tldr-label">TL;DR</div>
-  <p>Hidden Markov Models and Kalman Filters are the two classic approaches to sequential Bayesian inference &mdash; tracking a hidden state that evolves over time from noisy observations. HMMs handle discrete hidden states; Kalman Filters handle continuous Gaussian states. Both use the same predict-update cycle that is the heartbeat of Bayesian thinking. They built speech recognition and GPS navigation before deep learning existed.</p>
-</div>
+<p>A doctor can&rsquo;t see the disease directly &mdash; only symptoms. A self-driving car can&rsquo;t see its exact position &mdash; only GPS readings that jitter by a few meters. A stock trader can&rsquo;t see the &ldquo;regime&rdquo; the market is in &mdash; only price movements that could mean anything.</p>
 
-<p>Both HMMs and Kalman Filters solve the same fundamental problem: you can&rsquo;t observe the true state of the world directly. You only see noisy measurements. You know (approximately) how the world evolves over time. How do you infer the hidden state? The answer is recursive Bayesian estimation: predict forward using the dynamics model, then correct using the observation. Prior &rarr; posterior, over and over.</p>
+<p>The thing you care about is the <strong>hidden state</strong>. The thing you can measure is the <strong>observation</strong>. And the question is always the same: given the observations, what can we say about the hidden state?</p>
 
-<!-- ═══════════════════════════════════════════════ -->
-<h2 id="hmms">Hidden Markov Models</h3>
+<p>The answer, it turns out, is a loop. Predict what you think the state will be next. Observe what actually happens. Correct your prediction. Repeat. That loop &mdash; predict, observe, correct &mdash; is the heartbeat of every sequential model we&rsquo;ll build in this section. It&rsquo;s Bayes&rsquo; rule applied over and over, one time step at a time.</p>
 
-<p>An HMM has discrete hidden states that transition according to a probability matrix, and each state emits an observation. Formally:</p>
-<ul>
-  <li><strong>Hidden states</strong> z<sub>t</sub> &isin; {1, ..., K} with transition matrix A: A<sub>ij</sub> = P(z<sub>t</sub>=j | z<sub>t-1</sub>=i)</li>
-  <li><strong>Observations</strong> x<sub>t</sub> emitted from each state with emission probability B: P(x<sub>t</sub> | z<sub>t</sub>)</li>
-  <li><strong>Initial distribution</strong> &pi;: P(z<sub>1</sub>)</li>
-</ul>
+<!-- ═══════════ A TINY WEATHER STATION ═══════════ -->
+<h2 id="weather-station">A tiny weather station</h2>
 
-<p>Three fundamental problems:</p>
+<p>Let&rsquo;s make this concrete with a toy example we&rsquo;ll keep coming back to throughout the entire section.</p>
 
-<p><strong>1. Evaluation (Forward algorithm):</strong> What is P(observations | model)? Useful for model comparison. The forward algorithm computes this in O(TK&sup2;) by maintaining forward probabilities &alpha;<sub>t</sub>(j) = P(x<sub>1:t</sub>, z<sub>t</sub>=j).</p>
+<p>Imagine you run a small ice cream shop in a town where the weather forecast is unreliable. You know the weather affects your sales: sunny days mean more cones, rainy days mean fewer. But you don&rsquo;t have a window &mdash; you work in the back kitchen. All you see is how many cones you sold each day. From that sales number, you want to infer what the weather was.</p>
 
-<p><strong>2. Decoding (Viterbi algorithm):</strong> What is the most likely sequence of hidden states? Uses dynamic programming to find argmax P(z<sub>1:T</sub> | x<sub>1:T</sub>). This is the algorithm behind POS tagging and gene finding.</p>
+<p>We&rsquo;ll start absurdly small. The weather has two possible states: <strong>Sunny</strong> and <strong>Rainy</strong>. Each day, you observe one of three sales levels: <strong>Low</strong> (0&ndash;10 cones), <strong>Medium</strong> (11&ndash;25 cones), or <strong>High</strong> (26+ cones). That&rsquo;s it. Two hidden states, three possible observations.</p>
 
-<p><strong>3. Learning (Baum-Welch / EM):</strong> Estimate the model parameters (A, B, &pi;) from data. This is EM applied to HMMs: E-step computes expected state occupancies (forward-backward), M-step updates parameters.</p>
+<p>We also know a few things about how weather works in this town. If today is sunny, there&rsquo;s a 70% chance tomorrow will be sunny too, and a 30% chance it&rsquo;ll rain. If today is rainy, there&rsquo;s a 60% chance tomorrow will still be rainy, and a 40% chance the sun comes out. These are <strong>transition probabilities</strong> &mdash; the odds of moving from one hidden state to another.</p>
+
+<p>And we know how weather affects sales. On sunny days, there&rsquo;s a 60% chance of high sales, 30% medium, and 10% low. On rainy days, it&rsquo;s flipped: 10% high, 30% medium, 60% low. These are <strong>emission probabilities</strong> &mdash; the odds of seeing a particular observation given the hidden state.</p>
+
+<p>This tiny setup &mdash; two states, three observations, a transition matrix, and an emission matrix &mdash; is all we need to build our first sequential model. Keep it in mind. We&rsquo;ll use it to walk through every algorithm that follows.</p>
+
+<!-- ═══════════ HIDDEN MARKOV MODELS ═══════════ -->
+<h2 id="hmms">Hidden Markov Models &mdash; the discrete case</h2>
+
+<p>Our ice cream shop setup has a formal name: a <strong>Hidden Markov Model</strong>, or HMM. The &ldquo;Markov&rdquo; part means the hidden state tomorrow depends only on the hidden state today &mdash; not on last week, not on last month. The weather tomorrow is a function of today&rsquo;s weather alone. That&rsquo;s the <strong>Markov property</strong>: the future is independent of the past, given the present. The &ldquo;hidden&rdquo; part means we never see the state directly.</p>
+
+<p>An HMM has three ingredients. First, a set of hidden states &mdash; in our case, Sunny and Rainy. Second, a <strong>transition matrix</strong> A, where A<sub>ij</sub> is the probability of moving from state i to state j. Third, an <strong>emission matrix</strong> B, where B<sub>ij</sub> is the probability of observing output j when in state i. There&rsquo;s also an <strong>initial distribution</strong> &pi; that tells us what state we think the system starts in.</p>
+
+<p>For our weather station:</p>
+
+<pre><code class="language-text">Transition matrix A:          Emission matrix B:
+           Sunny  Rainy              Low   Med   High
+  Sunny  [ 0.7    0.3  ]    Sunny  [ 0.1   0.3   0.6  ]
+  Rainy  [ 0.4    0.6  ]    Rainy  [ 0.6   0.3   0.1  ]
+
+Initial distribution π:  Sunny = 0.5, Rainy = 0.5
+</code></pre>
+
+<p>Now suppose we observe three days of sales: <strong>High, Medium, Low</strong>. What was the weather? That&rsquo;s the question HMMs are built to answer, and there are three distinct ways to answer it.</p>
+
+<!-- ═══════════ FORWARD ALGORITHM ═══════════ -->
+<h2 id="forward">The forward algorithm</h2>
+
+<p>The first question we might ask is: given our model, how likely is this particular observation sequence? How probable is it that we&rsquo;d see High, Medium, Low from this specific weather model? This is the <strong>evaluation problem</strong>, and it&rsquo;s solved by the <strong>forward algorithm</strong>.</p>
+
+<p>The intuition is that we sweep through time left to right, accumulating evidence. At each time step, we ask: what&rsquo;s the probability of being in each hidden state, given everything we&rsquo;ve observed so far?</p>
+
+<p>Let&rsquo;s trace through it by hand with our three-day sequence: High, Medium, Low.</p>
+
+<p><strong>Day 1: We observe High.</strong> We start with our initial distribution (50/50) and multiply by the emission probability of High from each state. Sunny gives 0.5 &times; 0.6 = 0.30. Rainy gives 0.5 &times; 0.1 = 0.05. So after day 1, Sunny is looking much more likely. These values &mdash; 0.30 for Sunny, 0.05 for Rainy &mdash; are our <strong>forward probabilities</strong> &alpha;<sub>1</sub>.</p>
+
+<p><strong>Day 2: We observe Medium.</strong> For each state today, we consider every state from yesterday, multiply the forward probability by the transition probability, sum them up, and multiply by today&rsquo;s emission probability. For Sunny today: (0.30 &times; 0.7 + 0.05 &times; 0.4) &times; 0.3 = 0.069. For Rainy today: (0.30 &times; 0.3 + 0.05 &times; 0.6) &times; 0.3 = 0.036. Sunny is still ahead, but the gap is narrowing.</p>
+
+<p><strong>Day 3: We observe Low.</strong> Same procedure. Sunny today: (0.069 &times; 0.7 + 0.036 &times; 0.4) &times; 0.1 = 0.006. Rainy today: (0.069 &times; 0.3 + 0.036 &times; 0.6) &times; 0.6 = 0.025. Now Rainy is dominant. The low sales shifted the balance.</p>
+
+<p>The total probability of the observation sequence is the sum of the final forward probabilities: 0.006 + 0.025 = 0.031. That&rsquo;s how likely it is to see High, Medium, Low from our weather model.</p>
+
+<p>The beauty of the forward algorithm is that it runs in O(T &times; K&sup2;) time, where T is the sequence length and K is the number of hidden states. Without it, we&rsquo;d have to enumerate every possible state sequence &mdash; K<sup>T</sup> of them &mdash; which blows up fast.</p>
+
+<!-- ═══════════ BACKWARD ALGORITHM ═══════════ -->
+<h2 id="backward">The backward algorithm and smoothing</h2>
+
+<p>The forward algorithm tells us about the past: what&rsquo;s the probability of being in each state given everything we&rsquo;ve seen <em>up to now</em>? But what if we have the complete sequence and want to ask about a state in the middle? The forward algorithm alone can&rsquo;t use future observations to refine past estimates.</p>
+
+<p>That&rsquo;s where the <strong>backward algorithm</strong> comes in. It sweeps right to left, computing the probability of seeing the <em>remaining</em> observations given each possible state at the current time. Think of it as information flowing backward from the future.</p>
+
+<p>When we multiply the forward and backward probabilities together and normalize, we get the <strong>smoothed</strong> posterior: the probability of being in each state at each time step, given the <em>entire</em> observation sequence. This is called <strong>forward-backward smoothing</strong>, and it&rsquo;s the workhorse of HMM inference.</p>
+
+<p>I&rsquo;ll be honest &mdash; the first time I saw this, it felt like a magic trick. Information from the past meets information from the future, and where they overlap, that&rsquo;s your best guess. Another way to think about it: the forward pass is like reading a mystery novel from the beginning, and the backward pass is like reading from the end. Combining them gives you the full picture that neither direction alone can provide.</p>
+
+<!-- ═══════════ VITERBI ALGORITHM ═══════════ -->
+<h2 id="viterbi">The Viterbi algorithm</h2>
+
+<p>The forward-backward algorithm tells us the probability of each state at each time step independently. But sometimes we want something different: the single most likely <em>sequence</em> of states that explains all our observations. That&rsquo;s the <strong>decoding problem</strong>, and the <strong>Viterbi algorithm</strong> solves it.</p>
+
+<p>The subtle but important distinction: the most likely state at each time step (from forward-backward) might not form the most likely <em>sequence</em>. Imagine a situation where state A is the most probable at time 2 and state B is the most probable at time 3, but the transition from A to B has zero probability. The individual best states can be globally inconsistent. Viterbi finds the globally best path.</p>
+
+<p>Viterbi is dynamic programming, very similar to the forward algorithm, but with one change: instead of summing over all previous states, we take the <em>maximum</em>. At each time step, for each state, we remember which previous state gave us the highest probability path to get here. Then at the end, we trace back from the winning final state to recover the best path.</p>
+
+<p>Let&rsquo;s trace through our weather example with the same observations: High, Medium, Low.</p>
+
+<p><strong>Day 1 (High):</strong> Sunny: 0.5 &times; 0.6 = 0.30. Rainy: 0.5 &times; 0.1 = 0.05. Best predecessor: none (it&rsquo;s day 1).</p>
+
+<p><strong>Day 2 (Medium):</strong> Sunny: max(0.30 &times; 0.7, 0.05 &times; 0.4) &times; 0.3 = max(0.21, 0.02) &times; 0.3 = 0.063. Best predecessor: Sunny. Rainy: max(0.30 &times; 0.3, 0.05 &times; 0.6) &times; 0.3 = max(0.09, 0.03) &times; 0.3 = 0.027. Best predecessor: Sunny.</p>
+
+<p><strong>Day 3 (Low):</strong> Sunny: max(0.063 &times; 0.7, 0.027 &times; 0.4) &times; 0.1 = 0.0044. Best predecessor: Sunny. Rainy: max(0.063 &times; 0.3, 0.027 &times; 0.6) &times; 0.6 = max(0.019, 0.016) &times; 0.6 = 0.011. Best predecessor: Sunny.</p>
+
+<p><strong>Trace back:</strong> Day 3 winner is Rainy (0.011 &gt; 0.0044). Its best predecessor at day 2 was Sunny. Sunny&rsquo;s best predecessor at day 1 was Sunny. So the most likely weather sequence was: <strong>Sunny &rarr; Sunny &rarr; Rainy</strong>.</p>
+
+<p>That makes intuitive sense. High sales on day 1 suggest sun, medium sales on day 2 could go either way but Sunny-to-Sunny is a strong transition, and low sales on day 3 finally flip us to Rainy.</p>
+
+<p>This is the algorithm that powered speech recognition for decades &mdash; figuring out the most likely word sequence given a stream of audio features. It&rsquo;s also behind gene finding in bioinformatics, where the hidden states are &ldquo;coding region&rdquo; and &ldquo;non-coding region&rdquo; of DNA.</p>
+
+<!-- ═══════════ BAUM-WELCH ═══════════ -->
+<h2 id="baum-welch">Learning the model &mdash; Baum-Welch</h2>
+
+<p>So far we&rsquo;ve assumed we know the transition and emission matrices. In practice, we rarely do. We have a pile of observation sequences and need to <em>learn</em> the model parameters. This is the <strong>learning problem</strong>, and it&rsquo;s solved by the <strong>Baum-Welch algorithm</strong>, which is the Expectation-Maximization (EM) algorithm applied specifically to HMMs.</p>
+
+<p>The idea: start with random guesses for A, B, and &pi;. Run forward-backward to estimate which states the system was probably in at each time step (E-step). Use those estimates to update the transition and emission probabilities (M-step). Repeat until the parameters stop changing.</p>
+
+<p>Each iteration is guaranteed to increase (or at least not decrease) the likelihood of the observed data. But like all EM algorithms, it can get stuck in local optima, so in practice you run it multiple times from different starting points and keep the best result.</p>
 
 <pre><code class="language-python">from hmmlearn import hmm
 import numpy as np
 
-# Fit an HMM to sequential data (e.g., stock market regimes)
 np.random.seed(42)
 
-# Simulated daily returns from 2 hidden regimes
-# Regime 0: low volatility, slight positive drift
-# Regime 1: high volatility, negative drift
-model = hmm.GaussianHMM(n_components=2, covariance_type="full", n_iter=100)
-model.startprob_ = np.array([0.6, 0.4])
-model.transmat_ = np.array([[0.95, 0.05], [0.10, 0.90]])
-model.means_ = np.array([[0.05], [-0.02]])
-model.covars_ = np.array([[[0.01]], [[0.05]]])
+# Our ice cream shop: 2 hidden weather states, 3 observation levels
+true_model = hmm.CategoricalHMM(n_components=2, n_iter=100)
+true_model.startprob_ = np.array([0.5, 0.5])
+true_model.transmat_ = np.array([[0.7, 0.3],
+                                  [0.4, 0.6]])
+true_model.emissionprob_ = np.array([[0.1, 0.3, 0.6],   # Sunny
+                                      [0.6, 0.3, 0.1]])  # Rainy
 
-X, states = model.sample(500)
+# Generate 500 days of observations
+observations, true_states = true_model.sample(500)
 
-# Fit a NEW model to the observed returns (pretend we don't know the params)
-learned = hmm.GaussianHMM(n_components=2, covariance_type="full",
-                           n_iter=200, random_state=42)
-learned.fit(X)
+# Now pretend we only see the observations.
+# Learn the model from scratch.
+learned = hmm.CategoricalHMM(n_components=2, n_iter=200, random_state=42)
+learned.fit(observations)
 
-# Decode: infer the most likely regime at each time step
-predicted_states = learned.predict(X)
-accuracy = np.mean(predicted_states == states)
-print(f"State recovery accuracy: {accuracy:.1%}")
-print(f"Learned transition matrix:\n{learned.transmat_.round(3)}")
+print("True transition matrix:")
+print(true_model.transmat_.round(2))
+print("\nLearned transition matrix:")
+print(learned.transmat_.round(2))
+
+# Decode: what weather sequence best explains the sales?
+predicted_states = learned.predict(observations)
+accuracy = np.mean(predicted_states == true_states)
+print(f"\nState recovery accuracy: {accuracy:.1%}")
 </code></pre>
 
-<p><strong>Heritage:</strong> HMMs powered speech recognition from the 1970s through the 2010s (before end-to-end deep learning). They remain the standard approach for gene finding in bioinformatics, and they&rsquo;re still used in finance for regime detection.</p>
+<p>That last block does something remarkable. We gave the model 500 days of sales numbers &mdash; nothing about the weather &mdash; and it recovered the transition structure almost exactly. The state labels might be swapped (Baum-Welch doesn&rsquo;t know which state is &ldquo;Sunny&rdquo;), but the structure is there.</p>
 
-<!-- ═══════════════════════════════════════════════ -->
-<h2 id="kalman-filters">Kalman Filters</h3>
+<!-- ═══════════ REST STOP ═══════════ -->
 
-<p>Where HMMs handle discrete hidden states, Kalman Filters handle <em>continuous</em> Gaussian states with linear dynamics. The model:</p>
+<div class="callout">
+<p><strong>Rest stop.</strong> If you&rsquo;ve made it this far, congratulations. You now have a working mental model of Hidden Markov Models: a system with hidden states that transition over time, observable outputs that depend on those states, and three algorithms &mdash; forward (evaluation), Viterbi (decoding), and Baum-Welch (learning) &mdash; that let you do useful things with the model.</p>
 
-<pre><code class="language-text">State evolution:    z_t = F z_{t-1} + w_t,    w_t ~ N(0, Q)
-Observation:        x_t = H z_t + v_t,         v_t ~ N(0, R)
-</code></pre>
+<p>This is a legitimately useful place to stop. HMMs are still widely used for regime detection in finance, sequence labeling in NLP, and gene finding in bioinformatics. If you can describe the three HMM problems and their algorithms, you&rsquo;re ahead of most practitioners.</p>
 
-<p>The predict-update cycle:</p>
-<ol>
-  <li><strong>Predict:</strong> Use the dynamics model to propagate the state forward. The uncertainty grows.</li>
-  <li><strong>Update:</strong> Incorporate the new observation. The uncertainty shrinks. The <em>Kalman gain</em> determines how much to trust the prediction vs. the measurement.</li>
-</ol>
+<p>But there&rsquo;s a limitation that might be nagging at you. HMMs only handle <em>discrete</em> hidden states. Our weather was either Sunny or Rainy &mdash; nothing in between. What if the hidden state is a continuous quantity, like the true position of a drone or the actual temperature of an engine? We need a different tool for that. And what if even that tool is too restrictive &mdash; what if the dynamics are nonlinear, or the noise isn&rsquo;t Gaussian? Then we need yet another approach.</p>
 
-<p>The Kalman Filter is the optimal estimator for linear-Gaussian systems. Every step is a closed-form Bayesian update &mdash; the posterior at time t becomes the prior for time t+1.</p>
+<p>If the discomfort of not knowing what&rsquo;s underneath is nagging at you, read on.</p>
+</div>
+
+<!-- ═══════════ KALMAN FILTERS ═══════════ -->
+<h2 id="kalman">Kalman filters &mdash; the continuous case</h2>
+
+<p>HMMs assume the hidden state jumps between a fixed set of categories. Kalman filters solve the same predict-observe-correct problem, but for <em>continuous</em> states. Instead of &ldquo;Sunny or Rainy,&rdquo; the hidden state is a number &mdash; or a vector of numbers &mdash; like the position and velocity of a moving object.</p>
+
+<p>Let&rsquo;s adapt our ice cream scenario. Instead of discrete weather states, imagine the hidden state is the actual <strong>temperature</strong> outside &mdash; a continuous number. You still can&rsquo;t see it from the kitchen, but temperature directly influences how many cones you sell. Your sales count is a noisy measurement of the temperature. And temperature evolves smoothly: today&rsquo;s temperature is roughly yesterday&rsquo;s temperature plus a bit of random variation.</p>
+
+<p>The Kalman filter makes two specific assumptions that let it solve this problem in closed form. First, the dynamics are <strong>linear</strong>: the state at time t is a linear function of the state at time t-1, plus Gaussian noise. Second, the observations are <strong>linear</strong> functions of the state, again plus Gaussian noise. Under these assumptions, the posterior over the hidden state is always a Gaussian, and the update formulas are exact.</p>
+
+<!-- ═══════════ PREDICT-UPDATE ═══════════ -->
+<h2 id="predict-update">The predict-update cycle</h2>
+
+<p>The Kalman filter operates in two alternating steps, and I find it helpful to think of them as breathing. Inhale: predict. Exhale: update.</p>
+
+<p><strong>Predict:</strong> Before seeing the new observation, push your current estimate forward using the dynamics model. &ldquo;If temperature was 22&deg;C yesterday and tends to drift slowly, I predict about 22&deg;C today.&rdquo; But your uncertainty <em>grows</em> during prediction &mdash; the world had a chance to do something unexpected. Think of it as a Gaussian bell curve getting wider.</p>
+
+<p><strong>Update:</strong> Now you observe today&rsquo;s ice cream sales. They suggest 25&deg;C. But the sales are noisy. The update step blends your prediction with the measurement, weighted by how confident you are in each. If your prediction is very certain, you mostly trust it. If the measurement is very precise, you mostly trust that. The blending factor is called the <strong>Kalman gain</strong>.</p>
+
+<p>The Kalman gain, K, is a number between 0 and 1 (in the 1D case). When K is near 1, you trust the measurement more than the prediction &mdash; your model is uncertain. When K is near 0, you trust the prediction more &mdash; the measurement is noisy. It&rsquo;s a trust knob that the filter automatically adjusts at every time step based on the relative uncertainties.</p>
+
+<p>After the update, your uncertainty <em>shrinks</em>. The bell curve gets narrower. Then the whole thing repeats. Predict (uncertainty grows), update (uncertainty shrinks), predict, update. That rhythm &mdash; that breathing &mdash; is the same predict-observe-correct loop we saw in HMMs, but now in the continuous domain.</p>
 
 <pre><code class="language-python">import numpy as np
 
 class KalmanFilter1D:
-    """Minimal 1D Kalman filter for intuition."""
-    def __init__(self, F=1.0, H=1.0, Q=0.1, R=1.0, x0=0.0, P0=1.0):
-        self.F, self.H, self.Q, self.R = F, H, Q, R
-        self.x = x0  # state estimate
-        self.P = P0  # state uncertainty
+    def __init__(self, process_noise=0.1, measurement_noise=1.0,
+                 initial_estimate=0.0, initial_uncertainty=1.0):
+        self.Q = process_noise       # how much the state drifts each step
+        self.R = measurement_noise   # how noisy the sensor is
+        self.x = initial_estimate    # our best guess of the state
+        self.P = initial_uncertainty # how uncertain we are about x
 
     def predict(self):
-        self.x = self.F * self.x
-        self.P = self.F * self.P * self.F + self.Q
+        # State doesn't change (random walk), but uncertainty grows
+        self.P = self.P + self.Q
 
-    def update(self, z):
-        K = self.P * self.H / (self.H * self.P * self.H + self.R)  # Kalman gain
-        self.x = self.x + K * (z - self.H * self.x)
-        self.P = (1 - K * self.H) * self.P
-        return self.x, self.P
+    def update(self, measurement):
+        # Kalman gain: how much to trust the measurement
+        K = self.P / (self.P + self.R)
 
-# Track a noisy 1D position
+        # Blend prediction with measurement
+        self.x = self.x + K * (measurement - self.x)
+
+        # Uncertainty shrinks after seeing data
+        self.P = (1 - K) * self.P
+
+        return self.x, self.P, K
+
+# Simulate: true temperature drifts, we measure noisily
 np.random.seed(42)
-true_positions = np.cumsum(np.random.randn(50) * 0.3)  # random walk
-measurements = true_positions + np.random.randn(50) * 1.0  # noisy observations
+true_temps = 20 + np.cumsum(np.random.randn(30) * 0.5)
+measurements = true_temps + np.random.randn(30) * 3.0
 
-kf = KalmanFilter1D(Q=0.1, R=1.0)
+kf = KalmanFilter1D(process_noise=0.25, measurement_noise=9.0)
 estimates = []
 for z in measurements:
     kf.predict()
-    est, _ = kf.update(z)
+    est, unc, gain = kf.update(z)
     estimates.append(est)
 
-mse_raw = np.mean((measurements - true_positions)**2)
-mse_filtered = np.mean((np.array(estimates) - true_positions)**2)
-print(f"Raw measurement MSE: {mse_raw:.3f}")
-print(f"Kalman filtered MSE: {mse_filtered:.3f}")
-# Kalman filter significantly reduces noise
+mse_raw = np.mean((measurements - true_temps)**2)
+mse_filtered = np.mean((np.array(estimates) - true_temps)**2)
+print(f"Raw measurement MSE:   {mse_raw:.2f}")
+print(f"Kalman filtered MSE:   {mse_filtered:.2f}")
+print(f"Noise reduction:       {(1 - mse_filtered/mse_raw)*100:.0f}%")
 </code></pre>
 
-<!-- ═══════════════════════════════════════════════ -->
-<h2 id="extensions">Extensions for Nonlinear Systems</h3>
+<p>The Kalman filter typically cuts the measurement error dramatically. It&rsquo;s not doing anything mysterious &mdash; it&rsquo;s exploiting the fact that the true state changes slowly, so each new measurement can be averaged against the accumulated history. What&rsquo;s remarkable is that it does this <em>optimally</em> for the linear-Gaussian case. You cannot build a better estimator under those assumptions. Rudolf Kalman proved this in 1960, and it&rsquo;s still one of the most widely deployed algorithms in all of engineering.</p>
 
-<p>The standard Kalman Filter only works for linear dynamics. Real systems are rarely linear. Two extensions:</p>
+<!-- ═══════════ NONLINEAR EXTENSIONS ═══════════ -->
+<h2 id="nonlinear">When linearity breaks &mdash; EKF and UKF</h2>
 
-<p><strong>Extended Kalman Filter (EKF):</strong> Linearize the dynamics at each step using a first-order Taylor expansion. Simple but can diverge if the nonlinearity is strong. Still widely used in GPS and inertial navigation.</p>
+<p>The standard Kalman filter is beautiful, but it has a serious limitation: it requires linear dynamics. Real systems are rarely linear. A rocket&rsquo;s trajectory involves trigonometry. A robot arm&rsquo;s kinematics involve nonlinear joint angles. Our ice cream sales might have a nonlinear relationship with temperature &mdash; above 35&deg;C, people stay indoors and sales drop.</p>
 
-<p><strong>Unscented Kalman Filter (UKF):</strong> Propagate a set of carefully chosen &ldquo;sigma points&rdquo; through the nonlinear function, then recover the Gaussian approximation. No Jacobians needed, more accurate than EKF for strongly nonlinear systems.</p>
+<p>Two extensions address this, each with a different philosophy.</p>
 
-<p>For highly nonlinear systems, <strong>particle filters</strong> (sequential Monte Carlo) represent the posterior as a set of weighted samples. No Gaussian assumption at all, but computationally expensive.</p>
+<p>The <strong>Extended Kalman Filter (EKF)</strong> takes the brute-force approach: linearize the nonlinear dynamics at each time step using a first-order Taylor expansion. It computes the Jacobian (the matrix of partial derivatives) of the dynamics function and the observation function, and then runs the standard Kalman equations on the linearized versions. This works well when the nonlinearity is mild &mdash; a gentle curve that looks roughly straight over the range of uncertainty. It&rsquo;s still the workhorse for GPS and inertial navigation. But if the nonlinearity is strong, the linearization can be a poor approximation, and the filter can diverge.</p>
 
-<!-- ═══════════════════════════════════════════════ -->
-<h2 id="where-they-live">Where They Live Today</h3>
+<p>The <strong>Unscented Kalman Filter (UKF)</strong> takes a cleverer approach. Instead of linearizing the function, it picks a small set of carefully chosen sample points &mdash; called <strong>sigma points</strong> &mdash; and pushes them through the actual nonlinear function. Then it recovers a Gaussian approximation from the transformed points. No Jacobians needed. The insight is beautiful: it&rsquo;s easier to approximate a Gaussian distribution than to approximate an arbitrary nonlinear function. The UKF is more accurate than the EKF for strongly nonlinear systems, and it&rsquo;s only slightly more expensive to compute.</p>
 
-<ul>
-  <li><strong>Robotics:</strong> Kalman filters for sensor fusion (combining GPS, IMU, lidar). Particle filters for robot localization (SLAM).</li>
-  <li><strong>Finance:</strong> HMMs for regime detection (bull/bear markets). Kalman filters for estimating unobserved factors.</li>
-  <li><strong>NLP (historical):</strong> HMMs for POS tagging, named entity recognition. Replaced by CRFs, then LSTMs, then Transformers &mdash; but the conceptual framework persists.</li>
-  <li><strong>Signal processing:</strong> Kalman filters are everywhere in communications, radar, and control systems.</li>
-</ul>
+<p>I&rsquo;m still developing my intuition for exactly when EKF fails and UKF saves the day, but the rule of thumb I&rsquo;ve found most useful: if you can compute Jacobians and the nonlinearity is gentle, EKF is fine. If Jacobians are painful or the nonlinearity is strong, reach for UKF. If even UKF struggles, you need particle filters.</p>
 
-<div class="callout"><strong>The Bayesian thread:</strong> Both HMMs and Kalman Filters are recursive Bayesian estimators. Prior (predict) &rarr; likelihood (observe) &rarr; posterior (update) &rarr; becomes prior for next step. If you understand this loop, you understand the core of all sequential inference.</div>
+<!-- ═══════════ PARTICLE FILTERS ═══════════ -->
+<h2 id="particle-filters">Particle filters &mdash; throwing darts at the posterior</h2>
 
-<!-- ═══════════════════════════════════════════════ -->
-<h3>What You Should Now Be Able To Do</h3>
-<ul>
-  <li>Describe the three fundamental HMM problems (evaluation, decoding, learning) and their algorithms</li>
-  <li>Implement or use an HMM for regime detection or sequence labeling</li>
-  <li>Explain the Kalman Filter predict-update cycle and the role of the Kalman gain</li>
-  <li>Know when to use EKF vs. UKF vs. particle filters based on system nonlinearity</li>
-  <li>Connect HMMs and Kalman Filters to the general recursive Bayesian estimation framework</li>
-</ul>
-<!-- ═══════════ Probabilistic Programming ═══════════ -->
-<h2>Probabilistic Programming</h2>
+<p>Both the Kalman filter and its extensions make one crucial assumption: the posterior is Gaussian. That&rsquo;s fine when it&rsquo;s roughly bell-shaped. But what about posteriors with multiple peaks? What if a robot is lost in a building and there are three corridors that all look the same &mdash; the posterior over its location has three modes? A Gaussian can&rsquo;t represent that.</p>
 
-<div class="tldr">
-  <div class="tldr-label">TL;DR</div>
-  <p>Probabilistic programming languages (PPLs) let you write your model as code and automatically handle inference. You specify the generative story &mdash; priors, likelihood, data &mdash; and the PPL figures out the posterior. PyMC for ease, Stan for rigor, NumPyro for speed. This is how you <em>actually do</em> Bayesian inference without hand-deriving anything.</p>
+<p><strong>Particle filters</strong>, also called <strong>sequential Monte Carlo</strong> methods, abandon the Gaussian assumption entirely. Instead of tracking the posterior as a mean and covariance, they represent it as a cloud of weighted samples &mdash; <strong>particles</strong> &mdash; scattered across the state space.</p>
+
+<p>The analogy I find most useful: imagine you&rsquo;re trying to find a cat in a dark warehouse. You can&rsquo;t see anything, but you have a microphone. You scatter 1,000 imaginary copies of the cat across the warehouse &mdash; those are your particles. When you hear a meow, you check which particles are near where the sound seems to come from. Those particles get higher weights. Low-weight particles are probably in the wrong spot. Then you <strong>resample</strong>: draw a new set of 1,000 particles, but biased toward the high-weight ones. Some well-placed particles get duplicated; badly-placed ones disappear. Then each particle takes a random step (the dynamics). Then you hear another meow and repeat.</p>
+
+<p>Over time, the particles converge on the cat&rsquo;s true location, even if there were initially multiple plausible spots. The posterior can be multimodal, heavy-tailed, whatever. The particles don&rsquo;t care.</p>
+
+<p>The cost is computation. You need a lot of particles &mdash; hundreds or thousands &mdash; and the number grows badly with the dimensionality of the state. In high dimensions, most of the particles end up in low-probability regions, and you need exponentially more to cover the space. This is the <strong>curse of dimensionality</strong> applied to particle filters, and it&rsquo;s the reason they&rsquo;re mainly used for low-dimensional problems: robot localization (2D or 3D position), tracking a few objects, or estimating a handful of parameters.</p>
+
+<pre><code class="language-python">import numpy as np
+
+def particle_filter_1d(measurements, n_particles=1000,
+                       process_noise=0.5, measurement_noise=3.0):
+    # Initialize particles uniformly around a rough guess
+    particles = np.random.randn(n_particles) * 5 + 20
+    weights = np.ones(n_particles) / n_particles
+    estimates = []
+
+    for z in measurements:
+        # Predict: each particle takes a random step
+        particles += np.random.randn(n_particles) * process_noise
+
+        # Update: weight each particle by how well it
+        # explains the measurement
+        likelihood = np.exp(-0.5 * ((z - particles) / measurement_noise)**2)
+        weights = likelihood / likelihood.sum()
+
+        # Estimate: weighted average of particles
+        estimates.append(np.average(particles, weights=weights))
+
+        # Resample: duplicate likely particles, drop unlikely ones
+        indices = np.random.choice(n_particles, size=n_particles,
+                                   replace=True, p=weights)
+        particles = particles[indices]
+        weights = np.ones(n_particles) / n_particles
+
+    return np.array(estimates)
+
+np.random.seed(42)
+true_temps = 20 + np.cumsum(np.random.randn(30) * 0.5)
+noisy_measurements = true_temps + np.random.randn(30) * 3.0
+
+pf_estimates = particle_filter_1d(noisy_measurements)
+mse = np.mean((pf_estimates - true_temps)**2)
+print(f"Particle filter MSE: {mse:.2f}")
+</code></pre>
+
+<p>That particle filter does the same job as the Kalman filter above, but without assuming anything about the shape of the posterior. For this linear-Gaussian problem, the Kalman filter will actually win &mdash; it&rsquo;s exact, while the particle filter is an approximation. The particle filter&rsquo;s advantage appears when the Kalman filter&rsquo;s assumptions break down.</p>
+
+<div class="callout">
+<p><strong>The family tree:</strong> HMMs, Kalman filters, and particle filters are all doing the same thing: recursive Bayesian estimation. Prior (predict) &rarr; likelihood (observe) &rarr; posterior (update) &rarr; becomes prior for next step. HMMs do it with discrete states and exact enumeration. Kalman does it with continuous states and Gaussian math. Particles do it with samples and no assumptions. Same loop, different representations.</p>
 </div>
 
-<p>Everything in the previous sections required either conjugate models (limiting) or hand-implementing samplers (painful). Probabilistic programming changes the game: you describe your model declaratively, and the framework handles inference automatically. It&rsquo;s the difference between writing SQL and building a database from scratch.</p>
+<!-- ═══════════ PPLs ═══════════ -->
+<h2 id="ppls">Probabilistic programming languages</h2>
 
-<!-- ═══════════════════════════════════════════════ -->
-<h2 id="the-idea">The Core Idea</h3>
+<p>Everything we&rsquo;ve covered so far required either hand-implementing the algorithms (tedious) or using specialized libraries for each model type (HMM library for HMMs, Kalman library for Kalman filters). What if you want a model that&rsquo;s a bit of both? Or a model that doesn&rsquo;t fit neatly into any of these categories?</p>
 
-<p>A probabilistic program is a generative model written in code. You write the forward story: &ldquo;first sample the parameters from their priors, then generate data from the likelihood.&rdquo; The PPL <em>inverts</em> this: given the observed data, it computes (or approximates) the posterior over parameters.</p>
+<p>This is where <strong>probabilistic programming languages</strong> (PPLs) change the game. A PPL lets you write your model as code &mdash; you describe the generative story of how the data was produced &mdash; and the PPL <em>automatically</em> figures out how to do inference. You specify the forward story: &ldquo;first draw the parameters from their priors, then generate observations from the likelihood.&rdquo; The PPL inverts this: given the observed data, it computes the posterior over parameters.</p>
 
-<pre><code class="language-text">1. Define priors:     θ ~ P(θ)
-2. Define likelihood:  y ~ P(y | θ, X)
-3. Condition on data:  observe y = y_observed
-4. PPL runs inference: samples from P(θ | y_observed)
-</code></pre>
+<p>I think of it like this. Building an HMM from scratch is like building a custom engine for a specific car. Using a PPL is like having a factory that can build any engine from a blueprint. You hand it the blueprint (your model specification), and it handles the manufacturing (inference).</p>
 
-<p>You get posterior samples, predictive distributions, model comparison &mdash; all from a few lines of model specification.</p>
+<p>The four main PPLs in the Python ecosystem each have a different personality.</p>
 
-<!-- ═══════════════════════════════════════════════ -->
-<h2 id="pymc">PyMC &mdash; The Python-Native Choice</h3>
+<!-- ═══════════ PyMC ═══════════ -->
+<h2 id="pymc">Writing a model in PyMC</h2>
 
-<p>PyMC (v5+) is pure Python, built on PyTensor (formerly Aesara/Theano). It uses NUTS by default for MCMC and supports ADVI for variational inference. Great documentation, active community, and the most accessible entry point for Bayesian modeling.</p>
+<p><strong>PyMC</strong> (version 5+) is the most accessible entry point. It&rsquo;s pure Python, built on PyTensor, and uses the NUTS sampler by default &mdash; a sophisticated variant of Hamiltonian Monte Carlo that automatically tunes itself. It has excellent documentation, a large community, and tight integration with ArviZ for diagnostics and visualization.</p>
+
+<p>Let&rsquo;s go back to our ice cream shop, but now with a twist. Instead of a fixed HMM, we want to estimate how temperature affects sales, accounting for uncertainty. We observe daily ice cream sales and daily (noisy) temperature readings. We believe sales depend linearly on temperature, but we don&rsquo;t know the slope or intercept. We want the full posterior distribution over those parameters &mdash; not point estimates, but distributions that capture our uncertainty.</p>
 
 <pre><code class="language-python">import pymc as pm
 import numpy as np
 import arviz as az
 
-# Complete A/B test analysis in PyMC
-# Scenario: two landing page variants, measure conversion rates
 np.random.seed(42)
-visitors_A, conversions_A = 1000, 120
-visitors_B, conversions_B = 1000, 145
 
-with pm.Model() as ab_model:
-    # Priors: uninformative Beta(1,1) = Uniform on [0,1]
-    p_A = pm.Beta('p_A', alpha=1, beta=1)
-    p_B = pm.Beta('p_B', alpha=1, beta=1)
+# Simulate: temperature drives sales, but both are noisy
+n_days = 100
+true_temp = 15 + np.random.randn(n_days) * 5
+true_sales = 10 + 2.5 * true_temp + np.random.randn(n_days) * 8
 
-    # Likelihood: observed conversions
-    obs_A = pm.Binomial('obs_A', n=visitors_A, p=p_A, observed=conversions_A)
-    obs_B = pm.Binomial('obs_B', n=visitors_B, p=p_B, observed=conversions_B)
+with pm.Model() as ice_cream_model:
+    # Priors: what we believe before seeing data
+    intercept = pm.Normal('intercept', mu=0, sigma=20)
+    slope = pm.Normal('slope', mu=0, sigma=5)
+    noise = pm.HalfNormal('noise', sigma=10)
 
-    # Derived quantities
-    delta = pm.Deterministic('delta', p_B - p_A)
-    relative_lift = pm.Deterministic('relative_lift', (p_B - p_A) / p_A)
+    # Likelihood: how data is generated
+    expected_sales = intercept + slope * true_temp
+    sales = pm.Normal('sales', mu=expected_sales, sigma=noise,
+                      observed=true_sales)
 
-    # Sample
-    trace = pm.sample(3000, tune=1000, random_seed=42, cores=2)
+    # Let PyMC figure out the posterior
+    trace = pm.sample(2000, tune=1000, random_seed=42, cores=2)
 
-# Results
-summary = az.summary(trace, var_names=['p_A', 'p_B', 'delta', 'relative_lift'])
+summary = az.summary(trace, var_names=['intercept', 'slope', 'noise'])
 print(summary)
-
-# The money question: P(B is better than A)
-p_b_wins = (trace.posterior['delta'] > 0).mean().values
-print(f"\nP(B > A) = {p_b_wins:.3f}")
-
-# Practical decision: is the lift meaningful?
-p_meaningful = (trace.posterior['relative_lift'] > 0.05).mean().values
-print(f"P(lift > 5%) = {p_meaningful:.3f}")
+print(f"\nTrue intercept: 10, True slope: 2.5, True noise: 8")
 </code></pre>
 
-<div class="callout"><strong>Why this beats frequentist A/B testing:</strong> No p-values. No sample size calculations. No peeking penalties. You can check results at any time and make direct probability statements: &ldquo;There is an 87% chance B is better.&rdquo; The business team understands this immediately.</div>
+<p>Three things to notice. We wrote the forward story &mdash; priors, then likelihood &mdash; in about ten lines. We never mentioned MCMC, proposal distributions, or acceptance ratios. And the posterior summary gives us not a single number but a full distribution for each parameter, with credible intervals and convergence diagnostics. That&rsquo;s the power of a PPL: you think about the model, and the framework thinks about the inference.</p>
 
-<!-- ═══════════════════════════════════════════════ -->
-<h2 id="stan">Stan &mdash; The Gold Standard</h3>
+<!-- ═══════════ STAN, NUMPYRO, PYRO ═══════════ -->
+<h2 id="other-ppls">Stan, NumPyro, and Pyro</h2>
 
-<p>Stan compiles your model to C++ and runs highly optimized HMC/NUTS. It&rsquo;s the most battle-tested sampler, with the best diagnostics and the most publications behind it. The trade-off: you write models in Stan&rsquo;s own language (not Python), and the compilation step takes seconds to minutes.</p>
+<p><strong>Stan</strong> is the gold standard for production Bayesian inference. It compiles your model to C++ and runs a highly optimized NUTS sampler. The diagnostics are the best in the business. The trade-off: you write models in Stan&rsquo;s own language, not Python, and compilation takes seconds to minutes. Use Stan when PyMC&rsquo;s sampler struggles on complex geometries, or when publishing in a statistics journal &mdash; Stan is the de facto standard there.</p>
 
-<pre><code class="language-python"># Stan model (saved as ab_test.stan)
-# data {
-#   int<lower=0> n_A;
-#   int<lower=0> y_A;
-#   int<lower=0> n_B;
-#   int<lower=0> y_B;
-# }
-# parameters {
-#   real<lower=0, upper=1> p_A;
-#   real<lower=0, upper=1> p_B;
-# }
-# model {
-#   p_A ~ beta(1, 1);
-#   p_B ~ beta(1, 1);
-#   y_A ~ binomial(n_A, p_A);
-#   y_B ~ binomial(n_B, p_B);
-# }
-# generated quantities {
-#   real delta = p_B - p_A;
-# }
+<p><strong>NumPyro</strong> is built on JAX and JIT-compiles your model to run NUTS on GPU. For large datasets or models with many parameters, NumPyro can be 10&ndash;100x faster than PyMC. The syntax is similar to PyMC but uses JAX&rsquo;s functional style. Use NumPyro when you need speed or plan to integrate with JAX-based deep learning.</p>
 
-# Python interface via CmdStanPy:
-# import cmdstanpy
-# model = cmdstanpy.CmdStanModel(stan_file='ab_test.stan')
-# fit = model.sample(data={'n_A': 1000, 'y_A': 120, 'n_B': 1000, 'y_B': 145})
-# print(fit.summary())
-</code></pre>
+<p><strong>Pyro</strong> is built on PyTorch and designed for deep probabilistic models. It excels at stochastic variational inference and integrates naturally with PyTorch neural networks. Use Pyro when your model involves neural networks with Bayesian components, or when you need the full flexibility of PyTorch&rsquo;s autograd.</p>
 
-<p>Use Stan when PyMC&rsquo;s sampler struggles (complex geometries, funnel-shaped posteriors), when you need maximum performance, or when publishing in a stats journal (Stan is the de facto standard).</p>
-
-<!-- ═══════════════════════════════════════════════ -->
-<h2 id="numpyro">NumPyro &mdash; Speed on GPU</h3>
-
-<p>NumPyro is built on JAX. It JIT-compiles your model and runs NUTS on GPU. For large datasets or models with many parameters, NumPyro can be 10-100x faster than PyMC. The syntax is similar to PyMC but uses JAX&rsquo;s functional style.</p>
+<p>Here&rsquo;s the same ice cream model in NumPyro, to show the flavor difference:</p>
 
 <pre><code class="language-python">import numpyro
 import numpyro.distributions as dist
@@ -565,60 +692,118 @@ from numpyro.infer import MCMC, NUTS
 import jax.numpy as jnp
 import jax.random as random
 
-def ab_model(visitors_A, conversions_A, visitors_B, conversions_B):
-    p_A = numpyro.sample('p_A', dist.Beta(1, 1))
-    p_B = numpyro.sample('p_B', dist.Beta(1, 1))
-    numpyro.sample('obs_A', dist.Binomial(visitors_A, p_A), obs=conversions_A)
-    numpyro.sample('obs_B', dist.Binomial(visitors_B, p_B), obs=conversions_B)
-    numpyro.deterministic('delta', p_B - p_A)
+def ice_cream_model(temperature, observed_sales=None):
+    intercept = numpyro.sample('intercept', dist.Normal(0, 20))
+    slope = numpyro.sample('slope', dist.Normal(0, 5))
+    noise = numpyro.sample('noise', dist.HalfNormal(10))
+    expected = intercept + slope * temperature
+    numpyro.sample('sales', dist.Normal(expected, noise),
+                   obs=observed_sales)
 
-kernel = NUTS(ab_model)
-mcmc = MCMC(kernel, num_warmup=1000, num_samples=3000)
-mcmc.run(random.PRNGKey(42), 1000, 120, 1000, 145)
+kernel = NUTS(ice_cream_model)
+mcmc = MCMC(kernel, num_warmup=1000, num_samples=2000)
+mcmc.run(random.PRNGKey(42), temperature=jnp.array(true_temp),
+         observed_sales=jnp.array(true_sales))
 mcmc.print_summary()
 </code></pre>
 
-<!-- ═══════════════════════════════════════════════ -->
-<h2 id="choosing-a-ppl">Choosing a PPL</h3>
+<p>The model specification reads almost identically. The main difference is the functional style &mdash; the model is a plain Python function, not a context manager. Under the hood, NumPyro is compiling to XLA and can leverage GPUs. For our 100-day toy example the difference doesn&rsquo;t matter, but when you have millions of data points or hundreds of parameters, it matters a lot.</p>
 
-<table>
-  <thead>
-    <tr><th>Criterion</th><th>PyMC</th><th>Stan</th><th>NumPyro</th></tr>
-  </thead>
-  <tbody>
-    <tr><td>Language</td><td>Python</td><td>Stan DSL + Python/R wrapper</td><td>Python (JAX)</td></tr>
-    <tr><td>Default sampler</td><td>NUTS (PyTensor)</td><td>NUTS (C++)</td><td>NUTS (JAX)</td></tr>
-    <tr><td>GPU support</td><td>Limited</td><td>No</td><td>Yes (JAX)</td></tr>
-    <tr><td>VI support</td><td>ADVI, normalizing flows</td><td>ADVI, Pathfinder</td><td>SVI, autoguides</td></tr>
-    <tr><td>Ease of use</td><td>Highest</td><td>Moderate (own language)</td><td>Moderate (JAX style)</td></tr>
-    <tr><td>Speed</td><td>Good</td><td>Excellent</td><td>Excellent (GPU)</td></tr>
-    <tr><td>Community</td><td>Large</td><td>Large (academic)</td><td>Growing</td></tr>
-    <tr><td>Best for</td><td>Getting started, prototyping</td><td>Complex models, publications</td><td>Speed, GPU, deep learning integration</td></tr>
-  </tbody>
-</table>
+<p>My advice: start with PyMC. It has the gentlest learning curve and covers 80% of use cases. Move to Stan when you hit edge cases. Move to NumPyro when you need speed. Move to Pyro when you need deep learning integration.</p>
 
-<p><strong>Start with PyMC.</strong> It has the gentlest learning curve and covers 80% of use cases. Move to Stan when you hit edge cases or need publication-quality diagnostics. Move to NumPyro when you need speed or JAX integration.</p>
+<!-- ═══════════ POSTERIOR PREDICTIVE CHECKS ═══════════ -->
+<h2 id="ppc">Posterior predictive checks</h2>
 
-<!-- ═══════════════════════════════════════════════ -->
-<h2 id="ppl-vs-classic">When PPL vs. scipy/sklearn</h3>
+<p>You&rsquo;ve specified a model and sampled the posterior. How do you know if the model is any good? This is where <strong>posterior predictive checks</strong> come in, and I&rsquo;ll be honest &mdash; this idea was a genuine revelation for me the first time I encountered it.</p>
 
-<p>PPLs shine when you need full posterior uncertainty, hierarchical structure, custom likelihoods, or missing data handling. They&rsquo;re overkill when:</p>
+<p>The idea: take the posterior samples of your parameters and use them to generate <em>fake data</em> from the model. Then compare the fake data to your real data. If the model is capturing the data-generating process well, the fake data should look like the real data. If there are systematic differences &mdash; the fake data is too symmetric, or doesn&rsquo;t have enough extreme values, or has the wrong correlation structure &mdash; your model is missing something important.</p>
+
+<p>Back to our ice cream shop. We fit the linear model above. Now we draw, say, 500 sets of simulated sales data from the posterior. Each set uses different parameter values drawn from the posterior. We overlay these simulated distributions on the actual observed sales. If the observed data lives comfortably inside the simulated cloud, the model is plausible. If the observed data is an outlier from the simulated cloud, something is wrong.</p>
+
+<pre><code class="language-python">with ice_cream_model:
+    ppc = pm.sample_posterior_predictive(trace, random_seed=42)
+
+# ArviZ makes this visual comparison easy
+az.plot_ppc(az.from_pymc3(trace=trace,
+            posterior_predictive=ppc))
+</code></pre>
+
+<p>Posterior predictive checks are not a pass/fail test. They&rsquo;re a diagnostic conversation. All models are wrong &mdash; the question is whether the model is wrong in ways that matter for your specific use case. A model that gets the mean right but misses heavy tails might be fine for estimating average sales but terrible for inventory planning.</p>
+
+<!-- ═══════════ MODEL COMPARISON ═══════════ -->
+<h2 id="model-comparison">Model comparison &mdash; WAIC and LOO-CV</h2>
+
+<p>Posterior predictive checks tell you if one model is reasonable. But what if you have two reasonable models and want to pick the better one? You need a way to compare their predictive performance.</p>
+
+<p>The frequentist approach would be something like AIC or BIC. The Bayesian equivalents are <strong>WAIC</strong> (Widely Applicable Information Criterion) and <strong>LOO-CV</strong> (Leave-One-Out Cross-Validation). Both estimate how well the model will predict <em>new</em> data, not the data it was trained on.</p>
+
+<p><strong>WAIC</strong> computes the expected log pointwise predictive density &mdash; a measure of how well each observation is predicted by the model &mdash; and penalizes for complexity using the variance of the log-likelihood across posterior samples. Higher variance means the model is more sensitive to exactly which parameter values you use, which is a sign of overfitting.</p>
+
+<p><strong>LOO-CV</strong> takes a more direct approach: for each data point, it asks how well the model predicts that point when it wasn&rsquo;t used for fitting. In principle this requires refitting the model N times (once for each left-out observation), which would be impossibly slow. In practice, it uses a clever importance sampling trick called <strong>Pareto Smoothed Importance Sampling (PSIS)</strong> that approximates the leave-one-out posteriors from a single fit. When the approximation is good (the Pareto k diagnostic is below 0.7), you get reliable LOO-CV estimates for free.</p>
+
+<pre><code class="language-python">import arviz as az
+
+# Compare two models: linear vs quadratic temperature effect
+# (Assume we've fit both and have their traces)
+comparison = az.compare({
+    'linear': trace_linear,
+    'quadratic': trace_quadratic
+}, ic='loo')
+print(comparison)
+</code></pre>
+
+<p>LOO-CV is generally preferred over WAIC because it&rsquo;s more robust to model misspecification and has better diagnostics (the Pareto k values tell you when the approximation breaks down). The ArviZ library computes both from a single set of posterior samples, so there&rsquo;s little reason not to use LOO as the default.</p>
+
+<p>One thing that tripped me up early: lower WAIC and LOO (or equivalently, higher ELPD) means better predictive performance. The sign convention is confusing because some packages report the information criterion (lower is better) and others report the expected log predictive density (higher is better). Always check which one you&rsquo;re looking at.</p>
+
+<!-- ═══════════ BAYESIAN NEURAL NETWORKS ═══════════ -->
+<h2 id="bnn">Bayesian neural networks</h2>
+
+<p>A standard neural network has fixed weights after training. It makes a prediction, and that prediction is a single number (or a single probability). It doesn&rsquo;t tell you how confident it is.</p>
+
+<p>A <strong>Bayesian neural network</strong> (BNN) puts probability distributions over the weights instead of point values. Instead of one set of weights, you have a posterior distribution over all possible weight configurations, given the training data. When you make a prediction, you sample many sets of weights, run the input through each, and look at how much the predictions vary. High variation means high uncertainty.</p>
+
+<p>Return to our ice cream shop one more time. A standard neural network predicting sales from temperature would give you a single number: &ldquo;42 cones.&rdquo; A Bayesian neural network would give you: &ldquo;42 &plusmn; 12 cones, and by the way, at 45&deg;C the uncertainty balloons because we&rsquo;ve never seen data that hot.&rdquo;</p>
+
+<p>This matters enormously in high-stakes domains. A medical diagnosis model that says &ldquo;90% probability of benign&rdquo; is very different from one that says &ldquo;90% probability of benign, but my uncertainty is huge because this looks nothing like my training data.&rdquo; The first gives you a number. The second gives you a number <em>and</em> tells you whether to trust it.</p>
+
+<p>In practice, full BNNs are expensive &mdash; maintaining and sampling from distributions over millions of weights is computationally brutal. Several approximations exist. <strong>MC Dropout</strong> is the cheapest: keep dropout active at prediction time, run the input through the network multiple times, and treat the variation as uncertainty. It&rsquo;s not a true posterior, but it works surprisingly well as a practical approximation. <strong>Variational inference</strong> (via Pyro or NumPyro) is more principled: it fits a variational distribution to the posterior over weights. <strong>Deep ensembles</strong> &mdash; training multiple independent networks and looking at their disagreement &mdash; are technically not Bayesian, but they provide excellent uncertainty estimates in practice.</p>
+
+<!-- ═══════════ UNCERTAINTY QUANTIFICATION ═══════════ -->
+<h2 id="uncertainty">Uncertainty quantification</h2>
+
+<p>Bayesian neural networks bring us to the broader topic of <strong>uncertainty quantification</strong>, which is arguably the single most important practical contribution of Bayesian methods to machine learning.</p>
+
+<p>There are two fundamentally different kinds of uncertainty, and confusing them leads to bad decisions.</p>
+
+<p><strong>Aleatoric uncertainty</strong> is noise inherent in the data. Even with a perfect model and infinite training data, you can&rsquo;t predict exactly how many ice cream cones you&rsquo;ll sell tomorrow. The weather has a random component. Customer behavior is stochastic. This uncertainty is <strong>irreducible</strong> &mdash; no amount of data collection will eliminate it. A well-calibrated model should report it honestly.</p>
+
+<p><strong>Epistemic uncertainty</strong> is uncertainty from lack of knowledge. If you&rsquo;ve only ever observed sales on days between 10&deg;C and 30&deg;C, your model has no idea what happens at 40&deg;C. This uncertainty is <strong>reducible</strong> &mdash; collect data at 40&deg;C and it goes away. Epistemic uncertainty is what Bayesian methods capture through the posterior distribution: the spread of the posterior is widest in regions where data is sparse.</p>
+
+<p>A well-calibrated uncertainty system reports both. It says: &ldquo;For tomorrow at 20&deg;C, I predict 42 &plusmn; 8 cones (mostly aleatoric noise), but for next week at 38&deg;C, I predict 55 &plusmn; 25 cones (mostly epistemic uncertainty because I&rsquo;ve never seen that temperature).&rdquo;</p>
+
+<p>In production systems, epistemic uncertainty is the more actionable one. High epistemic uncertainty means the model is extrapolating &mdash; it&rsquo;s making stuff up. That&rsquo;s when you should fall back to a simpler model, flag the prediction for human review, or collect more data in that region.</p>
+
+<p>My favorite thing about this distinction is that, aside from high-level explanations like the one above, no one is completely certain how to <em>perfectly</em> disentangle the two in all situations. Active research is still figuring out the best decomposition methods. But even an approximate decomposition is enormously more useful than no uncertainty at all.</p>
+
+<!-- ═══════════ WRAP-UP ═══════════ -->
+
+<p>If you&rsquo;re still with me, thank you. I hope it was worth it.</p>
+
+<p>We started with a windowless ice cream shop, trying to guess the weather from sales numbers. That led us to Hidden Markov Models and the forward, backward, and Viterbi algorithms. We moved to continuous states with Kalman filters and the predict-update cycle. When those assumptions broke, we scattered particles across the state space. Then we stepped up to probabilistic programming languages that let us write any model we can imagine and have the computer handle the inference. And we ended with the question that matters most in production: how uncertain is the model, and should we trust it?</p>
+
+<p>My hope is that the next time you encounter a problem involving hidden states, noisy observations, or uncertain predictions &mdash; instead of reaching for a black-box neural network and hoping for the best &mdash; you&rsquo;ll consider whether a Bayesian approach might give you not only an answer, but also an honest assessment of how much that answer is worth.</p>
+
+<!-- ═══════════ RESOURCES ═══════════ -->
+<h2 id="resources">Resources and credits</h2>
+
 <ul>
-  <li>A simple <code>scipy.stats</code> conjugate update suffices (Beta-Binomial A/B test)</li>
-  <li>You just need a point estimate with regularization (<code>sklearn.linear_model.Ridge</code>)</li>
-  <li>Your model is a standard classification/regression problem with lots of data</li>
-</ul>
-
-<p>Rule of thumb: if you find yourself wanting to add structure that sklearn doesn&rsquo;t support (group-level effects, non-standard likelihoods, domain constraints as priors), it&rsquo;s PPL time.</p>
-
-<!-- ═══════════════════════════════════════════════ -->
-<h3>What You Should Now Be Able To Do</h3>
-<ul>
-  <li>Write a complete Bayesian model in PyMC and run MCMC inference</li>
-  <li>Implement a Bayesian A/B test that gives direct probability statements</li>
-  <li>Choose between PyMC, Stan, and NumPyro based on your requirements</li>
-  <li>Know when a PPL adds value vs. when scipy/sklearn is sufficient</li>
-  <li>Interpret posterior summaries (mean, HDI, R&#x302;, ESS) from PPL output</li>
+  <li><strong>Rabiner (1989), &ldquo;A Tutorial on Hidden Markov Models&rdquo;</strong> &mdash; The O.G. HMM tutorial. Dense but comprehensive. If you read one paper on HMMs, make it this one.</li>
+  <li><strong>Kalman (1960), &ldquo;A New Approach to Linear Filtering and Prediction Problems&rdquo;</strong> &mdash; The paper that launched a thousand applications. Remarkably readable for a 1960 paper.</li>
+  <li><strong>Doucet, de Freitas, &amp; Gordon (2001), &ldquo;Sequential Monte Carlo Methods in Practice&rdquo;</strong> &mdash; The definitive reference on particle filters. More textbook than tutorial, but wildly thorough.</li>
+  <li><strong>McElreath, &ldquo;Statistical Rethinking&rdquo; (2nd ed.)</strong> &mdash; The best introduction to Bayesian modeling with PPLs. Conversational, opinionated, and unforgettable. Chapters 6&ndash;7 cover model comparison beautifully.</li>
+  <li><strong>PyMC documentation &amp; examples gallery</strong> &mdash; Insightful, well-maintained, and the fastest way to go from &ldquo;I want to try Bayesian modeling&rdquo; to &ldquo;I have a working model.&rdquo;</li>
+  <li><strong>Gal (2016), &ldquo;Uncertainty in Deep Learning&rdquo; (PhD thesis)</strong> &mdash; The foundational work on MC Dropout as approximate Bayesian inference. Made BNNs practical for the rest of us.</li>
 </ul>
 
       <div class="page-nav">
