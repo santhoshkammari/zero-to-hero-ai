@@ -293,171 +293,248 @@
 <h1>Support Vector Machines</h1>
 <div class="chapter-meta">
   <span class="tag">Chapter 5: Supervised Learning</span>
-  <span class="tag">Margins · Kernels · Interview classic</span>
+  <span class="tag">Margins · Kernels · The Dual · Interview Depth</span>
 </div>
 
-<!-- ════════════════════════════════════════════ -->
+<!-- ═══════════════════ OPENING ═══════════════════ -->
 
-<h2>Finding the Widest Street Between Classes</h2>
+<p>I avoided diving into Support Vector Machines for longer than I'd like to admit. Every time I saw the words "Lagrangian dual" or "Mercer's theorem" in a textbook, I'd quietly close the tab and go back to fitting random forests. SVMs felt like the kind of algorithm that existed mostly so interviewers could watch you sweat. Finally, the discomfort of not understanding what's actually happening under the hood grew too great for me. Here is that dive.</p>
 
-<p>Picture two groups of points on a flat surface — red and blue — and you need to draw a line separating them. There are infinitely many lines that could work. Which one should you pick?</p>
+<p>Support Vector Machines were introduced by Vladimir Vapnik and Corinna Cortes in their 1995 paper "Support-Vector Networks." For over a decade — from the late 1990s through the early 2010s — they were the dominant machine learning algorithm, winning competitions in text classification, handwriting recognition, and bioinformatics. They were dethroned by deep learning's rise, but they never disappeared. They're still the right tool in certain situations, and the ideas behind them — margin maximization, the kernel trick, structural risk minimization — show up everywhere in modern ML.</p>
 
-<p>SVM's answer: <strong>the line that maximizes the margin</strong> — the distance between the decision boundary and the nearest data points from each class. Think of it as drawing the widest possible street between the two neighborhoods. The wider the street, the more confident you are that new points falling on either side are correctly classified.</p>
+<p>Before we start, a heads-up. We're going to work through some optimization math and touch on Lagrange multipliers, but you don't need to know any of it beforehand. We'll add what we need, one piece at a time.</p>
 
-<p>Those nearest data points — the ones sitting right on the edge of the street — are called <strong>support vectors</strong>. Here's the critical insight: <em>only the support vectors determine the boundary</em>. You could throw away every other training example and the decision boundary wouldn't change. This makes SVMs surprisingly memory-efficient — the model only needs to remember a handful of critical points, not the entire dataset.</p>
+<p>This isn't a short journey, but I hope you'll be glad you came.</p>
 
-<p>In higher dimensions, the "line" becomes a <strong>hyperplane</strong> — a flat (n-1)-dimensional surface cutting through n-dimensional space. The math generalizes perfectly; the intuition stays the same.</p>
+<!-- ═══════════════════ TOC ═══════════════════ -->
 
-<!-- ════════════════════════════════════════════ -->
+<div class="toc" style="margin: 2rem 0; padding-left: 1.5rem; line-height: 2;">
+  The line-drawing problem<br>
+  Margin and support vectors<br>
+  The math behind the widest road<br>
+  When the road gets messy — soft margin and C<br>
+  Hinge loss — the loss function hiding inside SVMs<br>
+  Rest stop<br>
+  When lines aren't enough — the kernel trick<br>
+  The RBF kernel and infinite dimensions<br>
+  Gamma — the spotlight knob<br>
+  C and gamma together<br>
+  Why the dual form matters<br>
+  Practical matters — scaling, multi-class, probabilities<br>
+  SVMs for regression<br>
+  When SVMs still win today<br>
+  SVM in code<br>
+  Wrap-up
+</div>
 
-<h2>Hard Margin vs. Soft Margin</h2>
+<!-- ═══════════════════ THE LINE-DRAWING PROBLEM ═══════════════════ -->
 
-<p>The clean "widest street" story assumes the data is perfectly linearly separable. Real data almost never is. You've got noise, outliers, and genuine overlap between classes.</p>
+<h2>The Line-Drawing Problem</h2>
 
-<p><strong>Hard margin SVM</strong> insists on zero misclassifications. If the data isn't linearly separable, the optimization simply fails — no solution exists. Even when data <em>is</em> separable, a single outlier can dramatically narrow the margin, making the model fragile.</p>
+<p>Imagine you're building an email spam classifier. You've extracted two features from each email — say, the frequency of the word "free" and the frequency of exclamation marks. You plot six emails on a flat surface: three spam (red dots) and three legitimate (blue dots). They separate cleanly — all the red dots cluster in one region, all the blue dots in another.</p>
 
-<p><strong>Soft margin SVM</strong> (what you actually use in practice) introduces slack variables that allow some points to violate the margin or even land on the wrong side. The trade-off is controlled by the <strong>C parameter</strong>:</p>
+<p>Now you need to draw a line between them. A line that says: everything on this side is spam, everything on that side is not.</p>
 
-<ul>
-  <li><strong>High C</strong> — "I really don't want misclassifications." The model pays a heavy penalty for violations, resulting in a narrow margin that hugs the training data tightly. More complex boundary, lower bias, higher variance.</li>
-  <li><strong>Low C</strong> — "Some violations are fine if I get a wider margin." The model tolerates errors in exchange for a simpler, more generalizable boundary. Higher bias, lower variance.</li>
-</ul>
+<p>The trouble is, there are infinitely many lines that could work. You could tilt the line a little left. Shift it a bit up. Angle it slightly steeper. Every one of them classifies these six emails perfectly. So which line should you pick?</p>
 
-<p>C is your <strong>bias-variance knob</strong>. It plays the same role as the regularization strength λ in ridge regression — just inverted. High C is like low regularization (complex model); low C is like high regularization (simple model). This is a guaranteed interview question, so burn it into memory.</p>
+<p>A naive approach might say "any line that works is fine." But think about what happens when a new email arrives — one you haven't seen before. If your line is squeezed right up against the red dots, a new email that's even slightly unusual might land on the wrong side. You want breathing room. You want the line that gives you the most confidence that new, unseen emails will be classified correctly.</p>
 
-<!-- ════════════════════════════════════════════ -->
+<p>That instinct — wanting breathing room — is the entire foundation of SVMs.</p>
 
-<h2>The Kernel Trick — The Key Insight</h2>
+<!-- ═══════════════════ MARGIN AND SUPPORT VECTORS ═══════════════════ -->
 
-<p>Here's where SVMs get genuinely clever. What if your data isn't linearly separable in its original space? A circle of blue points surrounded by a ring of red points — no line will ever work.</p>
+<h2>Margin and Support Vectors</h2>
 
-<p>The classic solution: <strong>map the data to a higher-dimensional space</strong> where it becomes linearly separable. If you add a feature z = x² + y², those concentric circles in 2D suddenly separate with a flat plane in 3D. The math always works — given enough dimensions, any finite dataset becomes linearly separable.</p>
+<p>Picture the separating line as a road running between two neighborhoods. On one side of the road: spam emails. On the other side: legitimate emails. The <strong>margin</strong> is the width of that road — the distance between the decision boundary and the nearest data points from each class.</p>
 
-<p>The problem? Computing coordinates in that high-dimensional space can be astronomically expensive. If your kernel maps to a million dimensions, you'd need to compute and store million-dimensional vectors for every data point.</p>
+<p>SVMs pick the road that is as wide as possible. The widest road. That's the whole idea.</p>
 
-<p>The <strong>kernel trick</strong> sidesteps this entirely. SVM's optimization only ever needs <em>dot products</em> between data points — it never needs the actual coordinates. A kernel function K(x₁, x₂) computes the dot product in the high-dimensional space <em>directly from the original coordinates</em>, without ever performing the mapping. You get all the power of the high-dimensional space at a fraction of the cost.</p>
+<p>The data points sitting right on the edge of the road — the closest ones to the boundary from each side — are called <strong>support vectors</strong>. And here's the insight that makes SVMs special: only those edge-of-the-road points determine where the boundary goes. Every other data point is irrelevant. You could delete them, move them around, add thousands more — as long as the support vectors don't change, the decision boundary stays exactly the same.</p>
 
-<p>This isn't just an optimization hack — it's mathematically beautiful. The kernel function implicitly defines the feature space, and for some kernels, that implicit space is <em>infinite-dimensional</em>. You're performing linear classification in a space with infinitely many features, and it's computationally tractable.</p>
+<p>I'll be honest — when I first heard this, I didn't believe it. How can a handful of points determine a boundary that generalizes to all future data? But it makes geometric sense. The widest road between two groups is determined entirely by the points that constrain the road's width. The points in the interior of each neighborhood are too far away to matter.</p>
 
-<h3>Common Kernels</h3>
+<p>In two dimensions, our boundary is a line. In three dimensions, it's a flat plane. In higher dimensions, it's a <strong>hyperplane</strong> — an (n−1)-dimensional flat surface cutting through n-dimensional space. The word sounds intimidating, but the intuition is identical: find the widest road between the classes.</p>
 
-<table>
-  <thead>
-    <tr><th>Kernel</th><th>Implicit space</th><th>When to use</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><strong>Linear</strong><br><code>K(x,y) = x·y</code></td>
-      <td>Original space (no mapping)</td>
-      <td>Linearly separable data. High-dimensional sparse data like text (TF-IDF vectors). When n_features &gt; n_samples.</td>
-    </tr>
-    <tr>
-      <td><strong>RBF (Gaussian)</strong><br><code>K(x,y) = exp(-γ‖x-y‖²)</code></td>
-      <td>Infinite dimensions</td>
-      <td>The default choice. Most versatile. Works for most non-linear problems when you don't know what else to try.</td>
-    </tr>
-    <tr>
-      <td><strong>Polynomial</strong><br><code>K(x,y) = (γ·x·y + r)^d</code></td>
-      <td>All polynomial terms up to degree d</td>
-      <td>When you suspect interaction features matter. Degree 2 or 3 is typical — higher degrees overfit and are numerically unstable.</td>
-    </tr>
-  </tbody>
-</table>
+<!-- ═══════════════════ THE MATH BEHIND THE WIDEST ROAD ═══════════════════ -->
 
-<p>If you're unsure, start with RBF. If your features are sparse and high-dimensional (like text), use linear. You'll rarely need polynomial in practice.</p>
+<h2>The Math Behind the Widest Road</h2>
 
-<!-- ════════════════════════════════════════════ -->
+<p>Time to see what the optimizer is actually doing. Our hyperplane is defined by a weight vector <strong>w</strong> and a bias term <strong>b</strong>. For any point <strong>x</strong>, the decision function is w·x + b. Points on one side give a positive value, points on the other side give a negative value, and points exactly on the hyperplane give zero.</p>
 
-<h2>RBF Kernel Parameters: C and Gamma Together</h2>
+<p>The distance from any point x_i to the hyperplane turns out to be |w·x_i + b| / ‖w‖. That denominator — ‖w‖, the length of the weight vector — is crucial. It means the same hyperplane can be described by many different (w, b) pairs. Scaling both w and b by the same constant gives an identical hyperplane but changes the raw scores. This is the difference between <strong>functional margin</strong> (the raw score y_i(w·x_i + b), which depends on scale) and <strong>geometric margin</strong> (the actual distance y_i(w·x_i + b) / ‖w‖, which doesn't).</p>
 
-<p>With the RBF kernel, you have two knobs that jointly control the model's complexity:</p>
+<p>To remove the scale ambiguity, we adopt a convention: we scale w and b so that the support vectors — the closest points — have a functional margin of exactly 1. That is, y_i(w·x_i + b) = 1 for the support vectors. With this convention, the geometric margin — the actual width of our road — becomes 2/‖w‖.</p>
 
-<p><strong>gamma (γ)</strong> controls the "reach" of each training example's influence:</p>
-<ul>
-  <li><strong>High gamma</strong> — each point only influences its immediate neighborhood. The decision boundary can twist and curve around individual points. Think of it as each support vector casting a narrow spotlight. Complex boundary → overfitting risk.</li>
-  <li><strong>Low gamma</strong> — each point influences a wide area. The boundary becomes smooth and gentle. Each support vector casts a flood light. Simple boundary → underfitting risk.</li>
-</ul>
+<p>Maximizing 2/‖w‖ is the same as minimizing ‖w‖, which is the same as minimizing ½‖w‖². So the SVM optimization problem in its <strong>primal form</strong> is: minimize ½‖w‖² subject to y_i(w·x_i + b) ≥ 1 for every training point. That's it. Minimize the length of the weight vector, subject to the constraint that every point is on the correct side of the margin.</p>
 
-<p><strong>C and gamma interact</strong> — and this is where people get tripped up. High C + high gamma = a model that desperately tries to classify every training point correctly with an extremely flexible boundary. This is overfitting city. Low C + low gamma = a very smooth, very tolerant model that might underfit.</p>
+<p>The ½ is there to make the derivative cleaner. Nothing deep about it.</p>
 
-<p>The practical approach: <strong>grid search over both simultaneously</strong>. A typical grid:</p>
+<!-- ═══════════════════ SOFT MARGIN ═══════════════════ -->
 
-<pre><code># The classic SVM grid search
-C_range = [0.01, 0.1, 1, 10, 100, 1000]
+<h2>When the Road Gets Messy — Soft Margin and C</h2>
+
+<p>Our widest-road story assumed the data separates cleanly. Go back to our email classifier and imagine what real data looks like. Some legitimate emails contain the word "free." Some spam emails are written with professional restraint. The red and blue dots overlap. No line can separate them perfectly.</p>
+
+<p>A <strong>hard margin SVM</strong> insists on zero violations — every single point must be on the correct side of the margin. If the data isn't linearly separable, the optimization has no solution. And even when the data is separable, a single noisy data point — one spam email that looks suspiciously professional — can squeeze the road down to almost nothing, making the model fragile.</p>
+
+<p>The fix is the <strong>soft margin SVM</strong>. We introduce <strong>slack variables</strong> (ξ_i) that allow some points to violate the margin or even land on the wrong side. The optimization becomes: minimize ½‖w‖² + C × Σξ_i, subject to y_i(w·x_i + b) ≥ 1 − ξ_i and ξ_i ≥ 0.</p>
+
+<p>The <strong>C parameter</strong> controls this trade-off. Think of C as a strictness dial.</p>
+
+<p>Crank C high, and the optimizer pays a heavy penalty for every violation. It will do anything to classify training points correctly, even if that means a very narrow road that contorts around outliers. High C means low bias, high variance — the model memorizes the training data. Crank C toward zero, and the optimizer cares more about road width than correctness. It will tolerate misclassifications to get a wider, smoother road. Low C means high bias, low variance — the model generalizes but might miss patterns.</p>
+
+<p>I still get tripped up by the fact that C is <em>inverted</em> from the regularization strength λ you see in ridge or lasso regression. In ridge, high λ means more regularization (simpler model). In SVMs, high C means <em>less</em> regularization (more complex model). They're conceptually doing the same thing — balancing fit versus simplicity — but the knob turns in the opposite direction. If this confuses you too, you're in good company.</p>
+
+<!-- ═══════════════════ HINGE LOSS ═══════════════════ -->
+
+<h2>Hinge Loss — The Loss Function Hiding Inside SVMs</h2>
+
+<p>There's a different way to look at the soft margin SVM that connects it to the rest of machine learning. Rewrite the optimization as: minimize ½‖w‖² + C × Σ max(0, 1 − y_i(w·x_i + b)).</p>
+
+<p>That max(0, 1 − y_i f(x_i)) term is the <strong>hinge loss</strong>. It's zero when a point is correctly classified with margin ≥ 1 (it's safely beyond the road's edge). It grows linearly as the point drifts into the margin or crosses to the wrong side. The name "hinge" comes from its shape — flat at zero, then a straight ramp, with a sharp bend where they meet.</p>
+
+<p>Viewed this way, the soft margin SVM is doing something familiar: minimizing a loss function (hinge loss) plus a regularization term (½‖w‖², which is L2 regularization). This is the exact same structure as logistic regression with L2 regularization — the only difference is the loss function. Logistic regression uses log-loss, which decays smoothly. Hinge loss has that sharp cutoff at zero: once a point is far enough on the correct side, the SVM stops caring about it entirely. That's why SVMs produce sparse solutions — most points contribute zero loss, and only the support vectors matter.</p>
+
+<p>This connection is worth internalizing. SVMs aren't some alien formulation. They're a linear model with a particular loss function and L2 regularization. The magic isn't in the loss — it's in the kernel trick, which we'll get to shortly.</p>
+
+<!-- ═══════════════════ REST STOP ═══════════════════ -->
+
+<h2>Rest Stop</h2>
+
+<p>Congratulations on making it this far. You can stop here if you want.</p>
+
+<p>You now have a solid mental model of linear SVMs: find the widest road between two classes, allow some violations controlled by C, and the resulting optimization is equivalent to hinge loss plus L2 regularization. The support vectors — the points sitting on the margin — are the only ones that matter.</p>
+
+<p>That's enough to answer most interview questions about SVMs. The short version of what comes next is: the kernel trick lets SVMs handle non-linear data by implicitly working in a higher-dimensional space, and the dual formulation is what makes that trick possible. There. You're about 60% of the way to the full picture.</p>
+
+<p>But if the discomfort of not knowing how the kernel trick actually works is nagging at you, read on.</p>
+
+<!-- ═══════════════════ KERNEL TRICK ═══════════════════ -->
+
+<h2>When Lines Aren't Enough — The Kernel Trick</h2>
+
+<p>Back to our email classifier. Suppose the spam pattern isn't about having a high frequency of "free" or a high count of exclamation marks individually. Instead, it's about a specific <em>combination</em> — emails where both features fall in a particular range. On our 2D plot, the spam emails form a cluster in the middle, completely surrounded by legitimate emails. No line can separate them. No hyperplane in the original feature space will work.</p>
+
+<p>The classic response: project the data into a higher-dimensional space where it <em>does</em> become linearly separable. If we add a third feature — say, z = x² + y² — those concentric clusters in 2D lift apart in 3D, and a flat plane can now separate them. The mathematical guarantee is reassuring: given enough dimensions, any finite dataset becomes linearly separable. This is known as Cover's theorem.</p>
+
+<p>The problem with this approach is cost. The mapping function φ might take our 2-dimensional data into a space with hundreds, thousands, or even millions of dimensions. Computing φ(x) for every data point, storing those high-dimensional vectors, and computing dot products between them — it all becomes brutally expensive.</p>
+
+<p>Here's where the trick comes in. Look at the SVM optimization problem carefully (we'll see the dual form soon), and you'll notice something remarkable: <em>the data points only ever appear as dot products with each other</em>. The optimizer never needs the actual coordinates of the data in the high-dimensional space. It only needs the dot product φ(x_i) · φ(x_j) for various pairs of points.</p>
+
+<p>A <strong>kernel function</strong> K(x_i, x_j) computes that high-dimensional dot product directly from the original low-dimensional coordinates, without ever performing the mapping φ. You get the result of working in the high-dimensional space without paying the cost of actually going there.</p>
+
+<p>Think of it like this. Imagine you want to know the distance between two cities. The expensive approach: drive to each city, record its GPS coordinates in some global reference frame, then compute the Euclidean distance. The kernel trick approach: look up the driving distance between them directly, without ever computing their absolute coordinates. The answer comes from the relationship between the two points, not their individual positions in some absolute space.</p>
+
+<p>This analogy will come back when we discuss the dual form.</p>
+
+<!-- ═══════════════════ RBF KERNEL ═══════════════════ -->
+
+<h2>The RBF Kernel and Infinite Dimensions</h2>
+
+<p>The most commonly used kernel is the <strong>RBF (Radial Basis Function)</strong> kernel, also called the Gaussian kernel: K(x, y) = exp(−γ‖x − y‖²). It computes a similarity score between two points that depends only on the distance between them — close points get a score near 1, distant points get a score near 0.</p>
+
+<p>What makes RBF mind-bending is the feature space it implicitly maps to. If you expand the exponential as a Taylor series, each term of that infinite series corresponds to a dimension in the feature space. The RBF kernel's implied feature space is <em>literally infinite-dimensional</em>. You're doing linear classification in a space with infinitely many features, and the computation takes O(d) time, where d is your original number of features.</p>
+
+<p>My favorite thing about the RBF kernel is that, aside from high-level explanations like the one above, no one has completely satisfying intuition for <em>why</em> it works so well across such a wide range of problems. It's a universal kernel — it can approximate any continuous function — and in practice it tends to be the right first choice when you don't know the structure of your data.</p>
+
+<p>There's a mathematical guarantee behind all of this called <strong>Mercer's theorem</strong>. It says: any continuous, symmetric, positive semi-definite function can be decomposed as an inner product in some feature space. If a kernel satisfies Mercer's condition, you can trust that it corresponds to a legitimate feature space, even if you can't write down that space explicitly.</p>
+
+<p>The other common kernels are the <strong>linear kernel</strong> (K(x, y) = x·y, which is no mapping at all — useful for sparse, high-dimensional data like TF-IDF text features) and the <strong>polynomial kernel</strong> (K(x, y) = (γ·x·y + r)^d, which maps to all polynomial interaction terms up to degree d). In practice, you'll reach for RBF most of the time, linear for text, and polynomial rarely.</p>
+
+<!-- ═══════════════════ GAMMA ═══════════════════ -->
+
+<h2>Gamma — The Spotlight Knob</h2>
+
+<p>The γ parameter in the RBF kernel controls how far each training point's influence reaches. Think of every support vector as a lamp sitting on the decision landscape. Gamma controls whether that lamp is a narrow spotlight or a broad floodlight.</p>
+
+<p>High gamma means a narrow spotlight. Each support vector only affects points in its immediate neighborhood. The decision boundary can twist and contort to wrap around individual points, creating complex, fragmented regions. This is the path to overfitting.</p>
+
+<p>Low gamma means a broad floodlight. Each support vector casts a gentle glow over a large area. The boundary becomes smooth and sweeping — it can't capture fine details. This is the path to underfitting.</p>
+
+<p>Mathematically, γ = 1/(2σ²) where σ is the bandwidth of the Gaussian. High gamma is a tight Gaussian — it drops off fast. Low gamma is a wide Gaussian — it maintains influence over a large radius. The default in scikit-learn (gamma='scale') sets γ = 1/(n_features × Var(X)), which is a reasonable starting point that adapts to your data's spread.</p>
+
+<!-- ═══════════════════ C AND GAMMA TOGETHER ═══════════════════ -->
+
+<h2>C and Gamma Together</h2>
+
+<p>C and gamma are the two knobs you tune with the RBF kernel, and they interact in ways that trip people up.</p>
+
+<p>High C + high gamma: the model insists on classifying every training point correctly (high C) using a boundary that can twist around individual points (high gamma). This is overfitting territory — the model memorizes the training set, including its noise.</p>
+
+<p>Low C + low gamma: the model is tolerant of errors (low C) and uses a smooth, sweeping boundary (low gamma). This might underfit — the model is too gentle to capture the real pattern.</p>
+
+<p>The sweet spot is somewhere in between, and the only reliable way to find it is a <strong>grid search</strong> over both parameters simultaneously with cross-validation. Use logarithmic scales — the optimal values can differ by orders of magnitude.</p>
+
+<pre><code>C_range = [0.01, 0.1, 1, 10, 100, 1000]
 gamma_range = [0.0001, 0.001, 0.01, 0.1, 1, 10]
-# That's 36 combinations — completely manageable with cross-validation</code></pre>
+# 36 combinations. With 5-fold CV, that's 180 fits.
+# Scikit-learn handles this in seconds for moderate datasets.</code></pre>
 
-<p>Use logarithmic scales. The optimal values often span several orders of magnitude, so linear grids waste your time testing values in a narrow range.</p>
+<p>Don't try to tune these by hand. The interaction between them is non-linear and non-intuitive. Trust the grid search.</p>
 
-<!-- ════════════════════════════════════════════ -->
+<!-- ═══════════════════ DUAL FORM ═══════════════════ -->
 
-<h2>SVMs for Regression (SVR)</h2>
+<h2>Why the Dual Form Matters</h2>
 
-<p>SVMs can do regression too, though it's less common. Support Vector Regression (SVR) uses an <strong>epsilon-insensitive loss</strong>: errors smaller than ε are completely ignored. The model only cares about points that fall outside the ε-tube around the prediction.</p>
+<p>I've been saving this because the dual formulation is what makes the kernel trick possible, and understanding <em>why</em> data appears only as dot products requires seeing the dual.</p>
 
-<p>Think of it as fitting a tube of width 2ε around the data. Points inside the tube contribute zero loss — the model treats them as "close enough." Only the points outside the tube (the support vectors, again) shape the regression function.</p>
+<p>The primal form says: minimize ½‖w‖² subject to constraints involving w, b, and the data. To solve constrained optimization problems like this, we introduce <strong>Lagrange multipliers</strong> — one α_i for each training point — and construct the Lagrangian. Taking derivatives with respect to w and b and setting them to zero gives us two key relationships: w = Σ α_i y_i x_i (the weight vector is a linear combination of the training points) and Σ α_i y_i = 0 (the multipliers balance across classes).</p>
 
-<p>SVR shares the same kernel trick advantages as SVC, but in practice, gradient boosted trees and neural networks handle most regression tasks better. You'll encounter SVR more in textbooks and interviews than in production code.</p>
+<p>Substituting these back yields the <strong>dual form</strong>: maximize Σα_i − ½ΣΣ α_i α_j y_i y_j (x_i · x_j), subject to α_i ≥ 0 and Σ α_i y_i = 0.</p>
 
-<!-- ════════════════════════════════════════════ -->
+<p>Look at where the data appears: only in the dot product x_i · x_j. That's the entire reason the kernel trick works. We can replace every x_i · x_j with K(x_i, x_j), and the optimizer has no idea it's now working in a higher-dimensional space. It's still solving the same kind of quadratic program, but the dot products it's using correspond to an implicit mapping that could be infinite-dimensional.</p>
 
-<h2>Strengths and Limitations</h2>
+<p>I'll be honest — the full Lagrangian derivation is something I still have to re-derive each time. I don't keep it in my head. What I <em>do</em> keep is the punchline: the dual form makes the data appear only as dot products, and that's what lets us swap in kernels. That's the one insight worth remembering.</p>
 
-<table>
-  <thead>
-    <tr><th>Strengths</th><th>Limitations</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>Effective in high-dimensional spaces, even when dimensions &gt; samples</td>
-      <td><strong>Slow on large datasets</strong> — training is O(n²) to O(n³). 100k samples is painful; 1M is impractical</td>
-    </tr>
-    <tr>
-      <td>Memory-efficient: only stores support vectors, not entire dataset</td>
-      <td><strong>Feature scaling is mandatory</strong> — SVMs compute distances, so unscaled features with large ranges will dominate. Always standardize first.</td>
-    </tr>
-    <tr>
-      <td>The kernel trick is mathematically elegant and genuinely powerful</td>
-      <td>Doesn't output probabilities natively. <code>probability=True</code> in sklearn uses Platt scaling — it's a post-hoc calibration, not native confidence</td>
-    </tr>
-    <tr>
-      <td>Works well with clear margins and medium-sized datasets</td>
-      <td>Choosing the right kernel and tuning C/gamma requires careful cross-validation</td>
-    </tr>
-    <tr>
-      <td>Robust to overfitting in high-dimensional space (with proper regularization)</td>
-      <td>Not interpretable — the decision boundary in kernel space is a black box</td>
-    </tr>
-  </tbody>
-</table>
+<p>One more thing the dual tells us. The <strong>KKT (Karush-Kuhn-Tucker) complementary slackness condition</strong> says: α_i × [y_i(w·x_i + b) − 1] = 0. This means either α_i = 0 (the point is beyond the margin and doesn't influence the boundary) or y_i(w·x_i + b) = 1 (the point sits on the margin and <em>is</em> a support vector). That's the mathematical confirmation of what we said earlier: only the support vectors matter.</p>
 
-<!-- ════════════════════════════════════════════ -->
+<!-- ═══════════════════ PRACTICAL MATTERS ═══════════════════ -->
 
-<h2>When to Use SVMs Today</h2>
+<h2>Practical Matters — Scaling, Multi-Class, Probabilities</h2>
 
-<p>Let's be honest: SVMs have largely been overtaken by gradient boosted trees (for tabular data) and neural networks (for everything else). But they still earn their keep in specific scenarios:</p>
+<p><strong>Feature scaling is mandatory.</strong> SVMs compute distances and dot products. If one feature ranges from 0 to 1 and another from 0 to 1,000,000, the second feature will dominate the dot product entirely. The model effectively ignores the first feature. Always standardize (zero mean, unit variance) or min-max scale before fitting an SVM. And do it inside a pipeline so you don't leak test set statistics into training.</p>
 
-<ul>
-  <li><strong>Text classification</strong> — A linear SVM on TF-IDF features is still one of the best approaches for document classification when you don't have GPU resources or enough data for transformers. It's fast, effective, and embarrassingly simple.</li>
-  <li><strong>Small datasets with clear margins</strong> — When you have hundreds to low thousands of samples, SVMs can outperform tree ensembles because the margin-maximizing objective provides strong regularization.</li>
-  <li><strong>High-dimensional, low-sample data</strong> — Genomics, spectroscopy, and other domains where you have more features than samples. SVMs handle this gracefully.</li>
-  <li><strong>Interviews</strong> — SVMs test your understanding of margins, kernels, the bias-variance tradeoff, and the mathematics of optimization. Know them cold.</li>
-</ul>
+<p><strong>Multi-class classification.</strong> SVMs are inherently binary classifiers. To handle multiple classes, scikit-learn's SVC uses <strong>one-vs-one (OvO)</strong> by default: for k classes, it trains k(k−1)/2 binary classifiers, one for each pair of classes, and predicts by majority vote. The alternative is <strong>one-vs-rest (OvR)</strong>: k classifiers, each separating one class from all the others. OvO trains more models but each on less data; OvR trains fewer models but each faces class imbalance. For most problems, OvO works well — it's what scikit-learn gives you out of the box.</p>
 
-<p>For most other problems — especially anything with more than ~50k samples — reach for LightGBM or XGBoost instead. They're faster, easier to tune, handle mixed feature types, and generally more accurate.</p>
+<p><strong>Probability estimates.</strong> SVMs don't natively output probabilities. When you set <code>probability=True</code> in scikit-learn, it uses <strong>Platt scaling</strong> — a post-hoc calibration that fits a sigmoid to the SVM's decision scores using internal cross-validation. The output is P(y=1|f) = 1/(1 + exp(Af + B)), where A and B are fit on held-out data. It works reasonably well, but it's slower (extra CV loop), and the probabilities are less reliable than what you'd get from a natively probabilistic model like logistic regression. Use it when you need probabilities, but know what you're getting.</p>
 
-<!-- ════════════════════════════════════════════ -->
+<!-- ═══════════════════ SVR ═══════════════════ -->
+
+<h2>SVMs for Regression</h2>
+
+<p>SVMs can do regression too. <strong>Support Vector Regression (SVR)</strong> uses an <strong>epsilon-insensitive loss</strong>: errors smaller than ε contribute zero loss. The model fits a tube of width 2ε around the data, and only points outside the tube — the support vectors — shape the regression function. Points inside the tube are "close enough" and ignored.</p>
+
+<p>The same kernel trick applies, so SVR can fit non-linear functions. But in practice, gradient boosted trees handle most regression tasks faster and with less tuning. You'll encounter SVR more in textbooks and interview questions than in production code.</p>
+
+<!-- ═══════════════════ WHEN SVMs WIN ═══════════════════ -->
+
+<h2>When SVMs Still Win Today</h2>
+
+<p>SVMs were the king of machine learning for over a decade. That reign ended when deep learning demonstrated that learning features end-to-end from raw data beats hand-crafting features and running an SVM on top. But SVMs didn't disappear. They retreated to the niches where their strengths are hardest to replicate.</p>
+
+<p><strong>Text classification.</strong> A linear SVM on TF-IDF features remains one of the best approaches for document classification when you don't have the data or GPU budget for transformers. The data is naturally sparse and high-dimensional — exactly the regime where SVMs excel. In many benchmark comparisons, linear SVM matches or beats more complex approaches on small to medium text corpora.</p>
+
+<p><strong>High-dimensional, low-sample data.</strong> Genomics, spectroscopy, medical imaging features — domains where you have thousands of features but only hundreds of samples. The margin-maximization objective provides strong implicit regularization that prevents overfitting even when features vastly outnumber samples.</p>
+
+<p><strong>Small datasets with clear structure.</strong> When you have hundreds to low thousands of labeled examples, SVMs can outperform tree ensembles because the geometric margin gives them a better inductive bias for clean, structured data. No bootstrap aggregation needed — the margin does the regularization work.</p>
+
+<p><strong>Embedded systems and latency-sensitive applications.</strong> A trained SVM stores only the support vectors. Inference is a handful of kernel evaluations — fast, deterministic, and lightweight. No GPU required.</p>
+
+<p>For anything with more than about 50,000 samples, the training time becomes painful (SVM training is O(n²) to O(n³), using the SMO algorithm under the hood). For tabular data at scale, reach for LightGBM or XGBoost. For images, text, or audio, deep learning dominates. But in those niches — small data, high dimensions, no GPU — SVMs are still a serious contender.</p>
+
+<!-- ═══════════════════ CODE ═══════════════════ -->
 
 <h2>SVM in Code</h2>
 
-<p>The standard pattern: always scale features, always use a pipeline so the scaler is fitted on training data only.</p>
+<p>The pattern that matters: scaler inside the pipeline, grid search over C and gamma on log scales, cross-validation to select the best combination.</p>
 
 <pre><code>from sklearn.svm import SVC
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import GridSearchCV
 
-# Pipeline: scale first, then SVM — never scale outside the pipeline
+# The scaler MUST be inside the pipeline.
+# Scaling outside leaks test set statistics into training.
 svm_pipe = make_pipeline(
     StandardScaler(),
     SVC(kernel="rbf")
@@ -470,25 +547,23 @@ param_grid = {
 
 search = GridSearchCV(svm_pipe, param_grid, cv=5, scoring="accuracy", n_jobs=-1)
 search.fit(X_train, y_train)
+
 print(f"Best params: {search.best_params_}")
 print(f"Test accuracy: {search.score(X_test, y_test):.4f}")</code></pre>
 
-<p>Note the scaler inside the pipeline — this prevents data leakage. If you scale before splitting, your test set statistics leak into the training process. It's a subtle bug that inflates your scores.</p>
+<p>That <code>"scale"</code> in the gamma grid is scikit-learn's default: γ = 1/(n_features × Var(X)). It adapts to the data's spread and is a good anchor point. The numeric values in the grid explore outward from there.</p>
 
-<!-- ════════════════════════════════════════════ -->
+<p>For text classification, swap RBF for linear and use <code>LinearSVC</code> (faster for high-dimensional sparse data). For probability outputs, add <code>probability=True</code> to <code>SVC</code>, but know it slows training due to internal cross-validation for Platt scaling.</p>
 
-<h2>What You Should Now Be Able To Do</h2>
+<!-- ═══════════════════ WRAP-UP ═══════════════════ -->
 
-<ul>
-  <li>☑ Explain SVMs as maximum-margin classifiers and why only the support vectors determine the decision boundary</li>
-  <li>☑ Distinguish hard margin (no violations, requires linear separability) from soft margin (slack variables, controlled by C)</li>
-  <li>☑ Describe C as the bias-variance knob: high C → narrow margin, low bias, high variance; low C → wide margin, high bias, low variance</li>
-  <li>☑ Explain the kernel trick: computing dot products in high-dimensional space without explicitly mapping the data there</li>
-  <li>☑ Choose between linear, RBF, and polynomial kernels based on the problem characteristics</li>
-  <li>☑ Explain how gamma and C interact for the RBF kernel and why you grid-search both on a log scale</li>
-  <li>☑ Write an SVM pipeline with proper feature scaling inside the pipeline to prevent data leakage</li>
-  <li>☑ Know when SVMs still make sense today (text classification, small datasets, high-dimensional data) and when to use alternatives instead</li>
-</ul>
+<h2>Wrap-Up</h2>
+
+<p>If you're still with me, thank you. I hope it was worth it.</p>
+
+<p>We started with the simplest possible question — which line best separates two groups of points — and discovered that the answer is the one that maximizes the margin. We introduced slack variables when the data got messy, saw how the hinge loss connects SVMs to the broader world of regularized loss minimization, and then made the leap to non-linear classification through the kernel trick. The dual formulation showed us why kernels work: the data appears only as dot products, so we can swap in any valid kernel and implicitly work in spaces we could never explicitly compute in. We finished with the practical reality of tuning C and gamma, and where SVMs still earn their keep in a world dominated by gradient boosted trees and deep learning.</p>
+
+<p>My hope is that the next time you see SVMs in an interview question, or encounter a small high-dimensional dataset where the usual tools feel like overkill, instead of reaching for the most complex model you can find, you'll reach for an SVM — knowing exactly what it's doing under the hood, why the margin matters, and how the kernel trick turns a simple linear classifier into something genuinely powerful.</p>
 
       <div class="page-nav">
         <a class="prev" href="s06.html">
