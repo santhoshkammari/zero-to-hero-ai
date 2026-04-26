@@ -297,435 +297,449 @@
 <div class="chapter-meta">
   <span class="tag">Chapter 17: Learning Theory &amp; Advanced ML</span>
   <span class="tag">Section 2</span>
-  <span class="tag">7 major topics</span>
 </div>
 
-<div class="tldr">
-  <div class="tldr-label">TL;DR</div>
-  <p>Most ML assumes you collect all the data first, then train. Online learning flips that — you learn one example at a time, updating as you go. Multi-armed bandits take it further: you don't just predict, you <em>act</em>, and your actions affect what data you see next. The core tension is exploration vs. exploitation. Epsilon-greedy is the simplest fix, UCB is the principled fix, and Thompson Sampling is the Bayesian fix that often wins in practice. These aren't academic curiosities — they power A/B testing, ad placement, and recommendation systems at every major tech company.</p>
+<p>I avoided online learning for an embarrassingly long time. Every time it came up in a paper or a system design discussion, I'd nod along, quietly thinking "that's for the theory crowd." I understood batch ML perfectly well — collect data, train, evaluate, deploy. That loop made sense. But the idea of learning from a <em>stream</em>, one example at a time, with no do-overs? That felt like trying to build a house while someone keeps handing you bricks and you can't go back to fix the foundation. Finally the discomfort of not understanding what powers every ad system, every recommendation engine, every adaptive A/B test grew too loud. Here is that dive.</p>
+
+<p>Online learning is a framework where a model receives examples one at a time and updates after each one. It was formalized in the 1950s with the Perceptron and matured through the work of Littlestone, Vovk, and others in the 1990s. Multi-armed bandits, a special case where you only see the outcome of the action you chose, date back to a 1933 paper by Thompson and were given their modern theoretical foundation by Robbins in 1952. Today, these ideas are the beating heart of production systems at Google, Netflix, Spotify, and every major ad platform.</p>
+
+<p>Before we start, a heads-up. We're going to be building up from basic prediction loops to Bayesian posterior sampling, touching on confidence bounds, importance weighting, and linear algebra along the way. You don't need to know any of it beforehand. We'll add the concepts we need one at a time, with explanation.</p>
+
+<p>This isn't a short journey, but I hope you'll be glad you came.</p>
+
+<div style="margin:1.5em 0; padding-left:1.5em; border-left:3px solid var(--accent, #666); line-height:1.9">
+  The Prediction Game<br>
+  &nbsp;&nbsp;Regret: Keeping Score Against Hindsight<br>
+  &nbsp;&nbsp;The Perceptron: Where Online Learning Began<br>
+  &nbsp;&nbsp;Online Gradient Descent<br>
+  &nbsp;&nbsp;Prediction with Expert Advice<br>
+  Rest Stop<br>
+  The Bandit Problem: When You Can't See the Road Not Taken<br>
+  &nbsp;&nbsp;Epsilon-Greedy: The Coin-Flip Approach<br>
+  &nbsp;&nbsp;UCB: Optimism as a Strategy<br>
+  &nbsp;&nbsp;Thompson Sampling: Let Uncertainty Do the Thinking<br>
+  &nbsp;&nbsp;Adversarial Bandits and EXP3<br>
+  Contextual Bandits: Because People Are Different<br>
+  &nbsp;&nbsp;LinUCB and the Yahoo Story<br>
+  Online Convex Optimization: The Unifying Framework<br>
+  Where All of This Lives in the Real World<br>
+  Wrap-Up<br>
+  Resources
 </div>
 
-<h2>Online Learning: One Example at a Time</h2>
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2>The Prediction Game</h2>
 
-<p>Here's the standard ML story you've been told a hundred times: collect a dataset, split it, train on the training set, evaluate on the test set, deploy. Nice and tidy. But what if your data arrives as a never-ending stream? What if storing everything is impractical? What if the distribution is shifting under your feet?</p>
+<p>Let's start with a scenario we'll carry through this entire journey. Imagine you run a small coffee shop. Every morning, you have to decide which single daily special to feature on the chalkboard before any customers walk in. You pick one, the day plays out, and at the end you see how many people ordered it. Tomorrow, you pick again.</p>
 
-<p>That's online learning. The protocol is brutally simple:</p>
+<p>You have five candidates: a lavender latte, a cold brew float, a matcha espresso, a caramel cortado, and a chai affogato. You have no historical data. You have no focus groups. You have a chalkboard and one shot per day.</p>
 
-<ol>
-  <li>Receive an example x<sub>t</sub></li>
-  <li>Make a prediction ŷ<sub>t</sub></li>
-  <li>Observe the true label y<sub>t</sub></li>
-  <li>Update your model</li>
-  <li>Repeat forever</li>
-</ol>
+<p>This is the essence of online learning. Not "collect data, then train." Instead: predict, observe, update, repeat. One round at a time. No second passes. No reshuffling. The world hands you a situation, you make a call, you see what happens, you adjust.</p>
 
-<p>No second passes through the data. No reshuffling. You see each example exactly once and you have to deal with it <em>right now</em>. Stock price prediction, spam filtering on incoming email, ad click prediction — these are all naturally online problems.</p>
+<p>In a more formal version, the game works like this. Each morning (round <em>t</em>), you see some information about the day — maybe the weather forecast, the day of the week. You make a prediction or a choice. The world reveals the outcome. You update whatever strategy you've been using. Then round <em>t + 1</em> begins.</p>
 
-<h3>Regret: The Online Scorecard</h3>
+<p>The striking thing about this setup is that there's no assumption about where the data comes from. It doesn't need to be "independent and identically distributed." The weather could be adversarial. Customer preferences could shift week to week. The framework doesn't care. It works anyway. That's what makes it powerful, and that's what makes it different from the batch ML you're used to.</p>
 
-<p>In batch learning, you measure accuracy or loss on a held-out test set. In online learning, the question is different: <em>how much worse did I do compared to the best strategy I could have picked in hindsight?</em></p>
+<!-- ─────────────────────────────────────────────────────── -->
+<h2>Regret: Keeping Score Against Hindsight</h2>
 
-<p>That's <strong>regret</strong>:</p>
+<p>In batch ML, we measure how good a model is with accuracy, or loss on a test set. In online learning, the question is more interesting: <em>how much worse did I do, over all T rounds, compared to the best fixed strategy I could have chosen if I'd had a crystal ball?</em></p>
 
-<p style="text-align:center"><em>Regret(T) = Σ<sub>t=1..T</sub> loss(ŷ<sub>t</sub>, y<sub>t</sub>) − min<sub>f∈F</sub> Σ<sub>t=1..T</sub> loss(f(x<sub>t</sub>), y<sub>t</sub>)</em></p>
+<p>This quantity has a name. It's called <strong>regret</strong>.</p>
 
-<p>Your cumulative loss minus the cumulative loss of the single best fixed predictor from your hypothesis class, computed with full knowledge of all T examples. You're not competing against an oracle that changes strategy each round — just the single best fixed strategy in hindsight.</p>
+<p>Back to our coffee shop. Suppose after 100 days, your total daily-special sales add up to 620 cups. But if you'd featured the cold brew float every single day — which turns out to have been the best choice — you would have sold 780 cups. Your regret is 780 − 620 = 160 cups. That's the price you paid for not knowing in advance which special was best, and for the days you spent experimenting.</p>
 
-<p>A good online algorithm achieves <strong>sublinear regret</strong>: Regret(T) = o(T). That means the average regret per round goes to zero. You're converging to the best fixed strategy even though you never had the data all at once.</p>
+<p>More precisely, regret is your cumulative loss minus the cumulative loss of the single best fixed predictor from your hypothesis class, computed with the luxury of seeing all T rounds laid out. You're not competing against some magical oracle that changes its strategy each round. You're competing against the single best unchanging strategy — the one that, in hindsight, would have been the best overall.</p>
 
-<div class="callout callout-info">
-  <div class="callout-label">Batch vs Online: The Key Shift</div>
-  <p>Batch learning optimizes a loss function on a fixed dataset. Online learning makes sequential decisions and measures regret against the best fixed strategy in hindsight. The adversary can be <em>anything</em> — there's no i.i.d. assumption required. That's why online learning theory works even when the world is adversarial.</p>
-</div>
+<p>A good online algorithm achieves <strong>sublinear regret</strong> — the regret grows slower than the number of rounds. If regret is O(√T), that means after 10,000 rounds, your average per-round regret is proportional to 1/√10000 = 1/100. It's shrinking. You're converging to the performance of the best fixed strategy, even though you never had all the data at once.</p>
 
-<h3>Online Gradient Descent</h3>
+<p>I'll be honest — when I first encountered regret as a metric, it felt weirdly defeatist. You're measuring how much you <em>lost</em>? But it's actually more nuanced than accuracy. Accuracy tells you how often you were right. Regret tells you how quickly you figured out how to be right. In a streaming world, the speed of learning is what matters.</p>
 
-<p>The workhorse of online learning is <strong>Online Gradient Descent (OGD)</strong>. It's exactly what it sounds like: SGD but for real.</p>
+<!-- ─────────────────────────────────────────────────────── -->
+<h2>The Perceptron: Where Online Learning Began</h2>
+
+<p>The Perceptron algorithm, published by Rosenblatt in 1958, is the oldest online learning algorithm most people have heard of. It makes predictions one data point at a time, and it only updates when it makes a mistake.</p>
+
+<p>Here's the setup. Suppose each morning, based on the weather forecast (represented as a vector of numbers — temperature, humidity, chance of rain), you're trying to predict whether it'll be a "hot drinks" day or a "cold drinks" day. You maintain a weight vector <em>w</em> that encodes your current belief about which weather features matter.</p>
+
+<p>When a new forecast <em>x</em> arrives, you compute <em>w · x</em> (the dot product). If it's positive, you predict "hot drinks." If it's negative, "cold drinks." If you're right, you do nothing. If you're wrong, you nudge the weights: add <em>x</em> if you should have predicted positive, subtract it if you should have predicted negative.</p>
 
 <pre><code class="language-python">import numpy as np
 
-def online_gradient_descent(stream, lr=0.01, d=10):
-    """Online gradient descent for linear regression."""
+def perceptron_online(stream):
+    w = None
+    mistakes = 0
+
+    for x, y in stream:  # y is +1 or -1
+        if w is None:
+            w = np.zeros(len(x))
+
+        prediction = 1 if w @ x >= 0 else -1
+
+        if prediction != y:
+            w += y * x    # nudge toward correct side
+            mistakes += 1
+
+    return w, mistakes</code></pre>
+
+<p>That's the entire algorithm. No learning rate to tune. No loss function to differentiate. Just: when you're wrong, adjust.</p>
+
+<p>Now, the remarkable result. If the data is <strong>linearly separable</strong> — meaning some perfect weight vector <em>w*</em> exists that classifies everything correctly with a margin γ (every point is at least γ away from the decision boundary) — then the Perceptron will make at most (R/γ)² mistakes, where R is the maximum length of any data point.</p>
+
+<p>This is the <strong>Perceptron Convergence Theorem</strong>, and it's worth sitting with for a moment. The mistake bound is (R/γ)². Think of it like stepping toward a finish line. Each mistake pushes the weights closer to the correct solution. If the margin γ is large — meaning the classes are well-separated — each mistake makes a big stride forward. If the data points are small (R is small), you can't overshoot. Big strides, short track, fewer steps needed.</p>
+
+<p>The reason this matters for our story is that the Perceptron was the first algorithm to come with a guarantee about online performance. It doesn't matter what order the data arrives in. It doesn't matter if someone is adversarially choosing the hardest example to show you next. The bound holds regardless. That idea — guarantees without distributional assumptions — is the philosophical core of online learning.</p>
+
+<p>But the Perceptron only works for linearly separable data. What about when no perfect separator exists? What about when we're doing regression, not classification? We need something more general.</p>
+
+<!-- ─────────────────────────────────────────────────────── -->
+<h2>Online Gradient Descent</h2>
+
+<p>The workhorse of online learning is <strong>Online Gradient Descent</strong> (OGD). It looks a lot like the stochastic gradient descent you already know, but the framing is different. In SGD, you're trying to minimize a fixed loss function over a fixed dataset, and you use random samples to approximate the gradient. In OGD, the loss functions can change every round. There's no fixed dataset. You're playing the prediction game, and each round brings a new loss.</p>
+
+<p>Let's apply this to our coffee shop. Suppose instead of picking a single special, you're setting prices for all five drinks. Each morning you choose a price vector <em>w</em>. Customers arrive, and at the end of the day you see how much revenue you lost compared to the optimal pricing. That loss is <em>f<sub>t</sub>(w)</em>, and it can be different every day because customer behavior shifts.</p>
+
+<p>OGD says: after each day, take one gradient step against today's loss.</p>
+
+<pre><code class="language-python">import numpy as np
+
+def online_gradient_descent(stream, d, lr_fn=None):
+    """OGD for online convex optimization.
+    stream yields (loss_fn, gradient_fn) pairs each round."""
     w = np.zeros(d)
-    cumulative_loss = 0.0
+    total_loss = 0.0
 
-    for t, (x, y) in enumerate(stream, 1):
-        # Predict
-        y_hat = w @ x
+    for t, (loss_fn, grad_fn) in enumerate(stream, 1):
+        # suffer today's loss
+        total_loss += loss_fn(w)
 
-        # Suffer loss
-        loss = 0.5 * (y_hat - y) ** 2
-        cumulative_loss += loss
+        # step size shrinks over time
+        lr = lr_fn(t) if lr_fn else 1.0 / np.sqrt(t)
 
-        # Update
-        gradient = (y_hat - y) * x
-        w -= lr * gradient
+        # update using today's gradient
+        w = w - lr * grad_fn(w)
 
-        if t % 1000 == 0:
-            print(f"Step {t}: avg loss = {cumulative_loss / t:.4f}")
+    return w, total_loss</code></pre>
 
-    return w</code></pre>
+<p>With a learning rate of η<sub>t</sub> = 1/√t, OGD achieves O(√T) regret for convex losses. That's the best you can do without stronger assumptions. If the losses happen to be <strong>strongly convex</strong> — they curve sharply, like a bowl rather than a flat plate — you can get O(log T) regret, which is dramatically better. After 10,000 rounds, √T = 100 while log T ≈ 9. That's the difference between "pretty close to optimal" and "nearly indistinguishable from optimal."</p>
 
-<p>With a learning rate of η = 1/√T, OGD achieves O(√T) regret for convex losses — the best you can do without stronger assumptions. With strongly convex losses you can get O(log T) regret, which is dramatically better. The Perceptron algorithm from the 1950s? It's online gradient descent on the hinge loss. You've been doing online learning longer than you thought.</p>
+<p>Here's a connection that surprised me when I first learned it: the Perceptron is OGD applied to the hinge loss. The "only update on mistakes" behavior? That's what happens when the gradient of the hinge loss is zero for correctly classified points. The Perceptron isn't some separate invention. It's a special case of the same framework. We've been doing online learning since the 1950s and didn't always know it.</p>
 
-<h2>The Multi-Armed Bandit Problem</h2>
+<!-- ─────────────────────────────────────────────────────── -->
+<h2>Prediction with Expert Advice</h2>
 
-<p>Now let's make things more interesting. In online learning, you see the true answer after each prediction. In bandits, you only see the reward for the action you <em>actually took</em>. The road not traveled stays mysterious.</p>
+<p>There's another flavor of online learning that's worth understanding before we move on. Instead of maintaining a single model, imagine you have access to N "experts" — they could be different models, different heuristics, different weather forecasters — and each round, every expert gives you their prediction. You have to combine those predictions into one, then see the truth.</p>
 
-<p>The name comes from a gambler facing a row of slot machines (one-armed bandits). Each machine has a different unknown payout distribution. You have a fixed budget of pulls. Which machines do you play?</p>
+<p>Back to the coffee shop. Suppose you have three advisors: your barista (who thinks cold drinks always win), a regular customer (who insists seasonal specials are the way to go), and an algorithm you found on the internet. Each morning, they all tell you which special to feature. You want to learn which advisor to trust, and you want to learn fast.</p>
 
-<p>Pull the machine that's paid out the most so far? You might miss a better one you haven't tried enough. Try every machine equally? You're wasting pulls on machines you already know are bad. This is the <strong>exploration vs. exploitation tradeoff</strong> — arguably the most fundamental tension in decision-making under uncertainty.</p>
+<p>The <strong>Weighted Majority Algorithm</strong> (Littlestone and Warmuth, 1994) does exactly this. Start by giving every expert equal weight. Each round, predict based on a weighted vote. After seeing the outcome, multiply the weight of every expert who was wrong by (1 − η), where η is a small learning rate. Correct experts keep their weight. Over time, bad experts fade away.</p>
 
-<p>Formally: you have K arms. At each round t, you choose arm a<sub>t</sub> and receive reward r<sub>t</sub> drawn from that arm's (unknown) reward distribution. Your goal is to maximize total reward, which is equivalent to minimizing regret against always pulling the best arm:</p>
+<p>The guarantee: if the best expert makes M mistakes, the Weighted Majority algorithm makes at most roughly 2(1 + η)M + (2 ln N)/η mistakes. With the right choice of η, this becomes about M + O(√(M ln N)). You're not much worse than the best expert, and you didn't need to know in advance which one that was.</p>
 
-<p style="text-align:center"><em>Regret(T) = T · μ* − Σ<sub>t=1..T</sub> μ<sub>a<sub>t</sub></sub></em></p>
+<p>The randomized version of this idea — the <strong>Hedge algorithm</strong> (also called Exponential Weights) — is one of the most beautiful results in all of learning theory. Instead of taking a hard vote, you sample an expert proportionally to their weight. The regret bound sharpens to O(√(T ln N)). That logarithmic dependence on N means you can have a million experts and the cost of not knowing which one is best grows only as ln(1,000,000) ≈ 14. Fourteen rounds of extra regret, no matter how many experts you're juggling.</p>
 
-<p>where μ* is the mean reward of the best arm and μ<sub>a<sub>t</sub></sub> is the mean reward of the arm you chose. Every time you pull a suboptimal arm, you pay a gap of Δ<sub>a</sub> = μ* − μ<sub>a</sub>.</p>
+<p>I'm still developing my intuition for why the exponential weighting works so well. The rough idea is that multiplicative updates amplify small differences between experts faster than additive updates would. An expert who's slightly worse gets its weight halved exponentially fast, while one who's slightly better keeps accumulating influence. The exponential function is doing the heavy lifting — it's the same mathematical trick that shows up later in EXP3 for adversarial bandits.</p>
 
-<div class="callout callout-danger">
-  <div class="callout-label">Bandits ≠ Online Learning</div>
-  <p>In online learning, you observe the loss for <em>all</em> actions (full information). In bandits, you only observe the reward for the action you chose (partial information). This makes bandits fundamentally harder — you can't just compute the gradient. The Lai-Robbins lower bound proves that even the best algorithm must incur Ω(log T) regret, because you <em>have</em> to explore.</p>
-</div>
+<p>But there's a limitation to all of this. In the prediction-with-expert-advice framework, and in OGD, you see the full outcome after each round. You find out what would have happened for <em>every</em> possible action, not just the one you took. That's called <strong>full information feedback</strong>. In many real problems, you don't get that luxury.</p>
 
-<h2>Epsilon-Greedy: The "Just Wing It" Strategy</h2>
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2>Rest Stop</h2>
 
-<p>The simplest bandit algorithm. With probability (1 − ε) pick the arm with the highest estimated mean reward. With probability ε pick an arm uniformly at random.</p>
+<p>Congratulations on making it this far. You can stop here if you want.</p>
+
+<p>You now have a working mental model of online learning: predictions arrive one at a time, you're scored by regret against the best fixed strategy in hindsight, and algorithms like OGD and Exponential Weights can achieve sublinear regret — meaning you converge to optimal even without seeing all the data up front. You know the Perceptron convergence theorem, and you know that the expert-advice framework lets you track the best among many strategies with only logarithmic overhead.</p>
+
+<p>That's a genuine, useful understanding. It's how spam filters adapt, how real-time bidding systems adjust prices, and how streaming prediction systems work.</p>
+
+<p>But here's what we haven't confronted: what happens when you <em>can't</em> see the full outcome? When you pick the lavender latte as today's special but never find out how the cold brew float would have done? That's the bandit problem, and it's where the exploration-exploitation tradeoff — the most fundamental tension in decision-making under uncertainty — lives.</p>
+
+<p>If the discomfort of not knowing what's underneath is nagging at you, read on.</p>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2>The Bandit Problem: When You Can't See the Road Not Taken</h2>
+
+<p>Here's the shift. In online learning, you pick an action and then the environment reveals the loss for <em>all</em> actions — you see the full picture, even for choices you didn't make. In the <strong>multi-armed bandit</strong> problem, you only see the reward for the action you actually took. Everything else stays hidden.</p>
+
+<p>The name comes from a gambler standing in front of a row of slot machines — each with one arm, hence "one-armed bandits." Each machine has a different (unknown) probability of paying out. You have a finite number of coins. Which machines do you play?</p>
+
+<p>Our coffee shop version: you pick one daily special each morning. At the end of the day, you know how many cups sold. But you have no idea what would have happened if you'd chosen a different special. The lavender latte sold 12 cups today — great? Terrible? You can't know, because you didn't try the alternatives.</p>
+
+<p>This is <strong>partial information feedback</strong>, or <strong>bandit feedback</strong>, and it makes the problem fundamentally harder. In full-information online learning, you can compute gradients. You can evaluate every strategy after each round. With bandit feedback, you're flying partly blind.</p>
+
+<p>The central tension is immediate: should you keep featuring the special that's been selling well (<strong>exploit</strong>), or should you try a different one to gather information that might lead to even better sales (<strong>explore</strong>)? Exploit too much and you might miss the real winner. Explore too much and you waste days on specials you already suspect are mediocre.</p>
+
+<p>This is the <strong>exploration-exploitation tradeoff</strong>. I'd argue it's the single most important idea in decision theory. It shows up everywhere — in how you decide which restaurants to try, how venture capitalists allocate funds, how drug companies design clinical trials, and how every major tech company chooses which ads to show you.</p>
+
+<p>Formally, you have K arms. At each round <em>t</em>, you pull arm <em>a<sub>t</sub></em> and receive a random reward from that arm's distribution. Bandit regret compares your total reward against what you'd have earned pulling the best arm every round: Regret(T) = T · μ* − Σ μ<sub>a<sub>t</sub></sub>, where μ* is the mean of the best arm. The Lai-Robbins lower bound (1985) proves that even the best possible algorithm must incur at least Ω(log T) regret — exploration is unavoidable, and no cleverness can eliminate it entirely.</p>
+
+<p>The question isn't whether to explore. It's <em>how</em>.</p>
+
+<!-- ─────────────────────────────────────────────────────── -->
+<h2>Epsilon-Greedy: The Coin-Flip Approach</h2>
+
+<p>The most obvious strategy. Each round, flip a (biased) coin. With probability (1 − ε), pick whichever special has the highest average sales so far. With probability ε, pick one at random.</p>
+
+<p>Let's watch it play out at our coffee shop. Say ε = 0.1. Most days — 90% of them — you feature whatever's been selling best. But one day in ten, you randomly try something else. Maybe that random day reveals the chai affogato is a sleeper hit. Maybe it confirms the matcha espresso is still mediocre. Either way, you're gathering information.</p>
 
 <pre><code class="language-python">import numpy as np
 
 class EpsilonGreedy:
     def __init__(self, n_arms, epsilon=0.1):
-        self.n_arms = n_arms
         self.epsilon = epsilon
-        self.counts = np.zeros(n_arms)      # pulls per arm
-        self.values = np.zeros(n_arms)      # estimated mean reward
-
-    def select_arm(self):
-        if np.random.random() < self.epsilon:
-            return np.random.randint(self.n_arms)  # explore
-        return np.argmax(self.values)              # exploit
-
-    def update(self, arm, reward):
-        self.counts[arm] += 1
-        n = self.counts[arm]
-        # Incremental mean update
-        self.values[arm] += (reward - self.values[arm]) / n</code></pre>
-
-<p>It works. Honestly, it works surprisingly well for how dumb it is. But there's a problem: ε is fixed. After 10,000 rounds, when you're pretty sure arm 3 is the best, you're still exploring 10% of the time. That's wasted reward.</p>
-
-<h3>Decaying Epsilon</h3>
-
-<p>The fix is obvious: explore less over time. A common schedule is ε<sub>t</sub> = min(1, C/(d² · t)) where C is a constant and d is the number of arms. Or simply ε<sub>t</sub> = 1/t. In practice, people often use ε<sub>t</sub> = ε₀ / (1 + t/τ) where τ controls the decay speed.</p>
-
-<p>Decaying epsilon-greedy can achieve O(log T) regret with the right schedule. The catch: "the right schedule" depends on the reward gaps Δ<sub>a</sub> that you don't know in advance. So you're tuning a hyperparameter in a setting where the whole point was to avoid needing full information. Feels a bit circular, doesn't it?</p>
-
-<h2>UCB: Optimism in the Face of Uncertainty</h2>
-
-<p>Here's a more principled idea. Instead of exploring randomly, explore <em>strategically</em>. For each arm, maintain both an estimate of its mean reward and a measure of your uncertainty. Then pick the arm with the highest <strong>upper confidence bound</strong> — the arm that <em>could</em> be the best given your uncertainty.</p>
-
-<p>The UCB1 formula:</p>
-
-<p style="text-align:center"><em>a<sub>t</sub> = argmax<sub>a</sub> [ μ̂<sub>a</sub> + √(2 ln t / N<sub>a</sub>) ]</em></p>
-
-<p>where μ̂<sub>a</sub> is the empirical mean reward of arm a, t is the current round, and N<sub>a</sub> is how many times you've pulled arm a.</p>
-
-<p>The intuition is elegant. The first term is exploitation — pick arms with high estimated reward. The second term is exploration — it's large when N<sub>a</sub> is small (you haven't tried this arm much) and shrinks as you gather data. Arms you've barely tried get a big confidence bonus. Arms you've pulled a thousand times — you know what they are, no bonus needed.</p>
-
-<pre><code class="language-python">import numpy as np
-
-class UCB1:
-    def __init__(self, n_arms):
-        self.n_arms = n_arms
         self.counts = np.zeros(n_arms)
         self.values = np.zeros(n_arms)
 
     def select_arm(self):
-        # Pull each arm once first
-        for arm in range(self.n_arms):
-            if self.counts[arm] == 0:
-                return arm
-
-        total = np.sum(self.counts)
-        ucb_values = self.values + np.sqrt(2 * np.log(total) / self.counts)
-        return np.argmax(ucb_values)
+        if np.random.random() < self.epsilon:
+            return np.random.randint(len(self.counts))
+        return np.argmax(self.values)
 
     def update(self, arm, reward):
         self.counts[arm] += 1
-        n = self.counts[arm]
-        self.values[arm] += (reward - self.values[arm]) / n</code></pre>
+        # incremental mean: new_mean = old_mean + (reward - old_mean) / n
+        self.values[arm] += (reward - self.values[arm]) / self.counts[arm]</code></pre>
 
-<p>UCB1 achieves O(log T) regret — matching the Lai-Robbins lower bound up to constant factors. No hyperparameters to tune. No random exploration. The algorithm figures out on its own how much to explore and when to stop. That's the beauty of it.</p>
+<p>That incremental mean update is worth pausing on. Instead of storing all past rewards and recomputing the average, we fold each new observation into the running average with one line. The algebra works out because (reward − old_mean) / n is the exact correction needed. It's the same trick used in Welford's algorithm for online variance computation.</p>
 
-<div class="callout callout-info">
-  <div class="callout-label">The UCB Principle Beyond Bandits</div>
-  <p>"Optimism in the face of uncertainty" shows up everywhere in ML. It's the same principle behind MCTS in AlphaGo (UCT = UCB applied to trees), optimistic initialization in RL, and even some active learning strategies. When you don't know something, assume it might be great — then go find out.</p>
-</div>
+<p>Epsilon-greedy works. It works surprisingly well for how unsophisticated it is. But there's an obvious problem: ε is fixed. After 5,000 days — years of running your coffee shop — when you're extremely confident the cold brew float is the winner, you're <em>still</em> wasting 10% of your days on random experiments. That's 500 days of lost sales, not because you needed the information, but because the algorithm doesn't know when to stop exploring.</p>
 
-<h2>Thompson Sampling: Let the Posterior Decide</h2>
+<p>You can decay ε over time — ε<sub>t</sub> = 1/t, or ε₀/(1 + t/τ) for some constant τ. With the right decay schedule, regret improves to O(log T). The catch: "the right schedule" depends on the gaps between arms, which you don't know. You're tuning a hyperparameter in a setting where the whole point was to avoid needing information you don't have. That circularity motivated people to look for something better.</p>
 
-<p>Thompson Sampling (1933 — yes, it's <em>that</em> old) takes a Bayesian approach. For each arm, maintain a posterior distribution over its reward parameter. At each round, <em>sample</em> from each arm's posterior and pull the arm whose sample is highest.</p>
+<!-- ─────────────────────────────────────────────────────── -->
+<h2>UCB: Optimism as a Strategy</h2>
 
-<p>For Bernoulli rewards (click / no click), this is beautifully simple. Each arm's reward rate follows a Beta distribution:</p>
+<p>Instead of exploring randomly, what if you explored <em>strategically</em>? What if you always picked the option that <em>could</em> be the best, given what you know and what you don't?</p>
 
-<ol>
-  <li>Start with Beta(1, 1) prior for each arm (uniform — you know nothing)</li>
-  <li>Sample θ̂<sub>a</sub> ~ Beta(α<sub>a</sub>, β<sub>a</sub>) for each arm</li>
-  <li>Pull arm a* = argmax θ̂<sub>a</sub></li>
-  <li>Observe reward r ∈ {0, 1}</li>
-  <li>Update: α<sub>a*</sub> += r, β<sub>a*</sub> += (1 − r)</li>
-</ol>
+<p>That's the idea behind <strong>Upper Confidence Bound</strong> (UCB). For each arm, compute two things: your best estimate of its average reward, and a bonus that represents your uncertainty. Pick the arm where the sum is highest.</p>
 
-<p>That's it. The posterior naturally balances exploration and exploitation. An arm with few pulls has a wide posterior — its samples will be high sometimes, triggering exploration. An arm with many pulls and low reward has a tight, low posterior — it almost never gets selected. No confidence bounds, no epsilon, no tuning.</p>
+<p>Back to the coffee shop. The cold brew float has an average of 15 cups/day over 200 days — you're quite confident in that number. The chai affogato averaged 14 cups/day, but you've only tried it 5 times. That average could be way off. UCB says: give the chai affogato a big uncertainty bonus because you barely know anything about it. Maybe it's actually a 20-cup-per-day blockbuster hiding behind a noisy 5-day sample.</p>
 
-<pre><code class="language-python">import numpy as np
+<p>The UCB1 formula makes this precise:</p>
 
-class ThompsonSampling:
+<p style="text-align:center"><em>Pick arm a that maximizes: μ̂<sub>a</sub> + √(2 ln t / N<sub>a</sub>)</em></p>
+
+<p>The first term, μ̂<sub>a</sub>, is the empirical mean — exploitation. The second term, √(2 ln t / N<sub>a</sub>), is the confidence bonus — exploration. When N<sub>a</sub> is small (you've barely tried this arm), the bonus is large. When N<sub>a</sub> is large, the bonus shrinks toward zero. The ln t in the numerator ensures that even well-explored arms eventually get revisited, but at a decreasing rate.</p>
+
+<pre><code class="language-python">class UCB1:
     def __init__(self, n_arms):
-        self.n_arms = n_arms
-        self.alpha = np.ones(n_arms)   # successes + 1
-        self.beta = np.ones(n_arms)    # failures + 1
+        self.counts = np.zeros(n_arms)
+        self.values = np.zeros(n_arms)
 
     def select_arm(self):
-        # Sample from each arm's posterior
+        n_arms = len(self.counts)
+        for a in range(n_arms):
+            if self.counts[a] == 0:
+                return a  # try each arm at least once
+
+        t = np.sum(self.counts)
+        bonuses = np.sqrt(2 * np.log(t) / self.counts)
+        return np.argmax(self.values + bonuses)
+
+    def update(self, arm, reward):
+        self.counts[arm] += 1
+        self.values[arm] += (reward - self.values[arm]) / self.counts[arm]</code></pre>
+
+<p>UCB1 achieves O(log T) regret, matching the Lai-Robbins lower bound up to constants. No hyperparameters. No random coin flips. The algorithm figures out on its own how much to explore and when to stop. That phrase — <strong>"optimism in the face of uncertainty"</strong> — is one of the most powerful ideas in decision-making. When you don't know something, assume it might be wonderful, and then go find out. If it turns out to be wonderful, great. If it turns out to be mediocre, the uncertainty bonus shrinks and you stop wasting time on it.</p>
+
+<p>This same principle appears all over ML. The UCT algorithm used in AlphaGo's Monte Carlo Tree Search is UCB applied to game trees. Bayesian optimization uses a similar acquisition function (the Upper Confidence Bound variant). Optimistic initialization in reinforcement learning is the same philosophy. The idea is portable.</p>
+
+<p>But UCB has a quirk. It explores all uncertain arms with roughly equal enthusiasm. If you have 1,000 arms and 990 of them are clearly terrible after a few pulls, UCB still gives each one an uncertainty bonus that forces occasional revisits. It's principled, but not always efficient. That brings us to the algorithm that often beats it in practice.</p>
+
+<!-- ─────────────────────────────────────────────────────── -->
+<h2>Thompson Sampling: Let Uncertainty Do the Thinking</h2>
+
+<p>Thompson Sampling was proposed in 1933. Yes, 1933 — by William R. Thompson, a statistician working on clinical trials. It was then mostly forgotten for about 80 years, rediscovered by the tech industry in the 2010s, and is now the default bandit algorithm at most major tech companies. The gap between invention and adoption is one of the wilder stories in applied statistics.</p>
+
+<p>The idea is Bayesian. For each arm, maintain a probability distribution — a <strong>posterior</strong> — over what you believe the arm's true reward rate might be. Each round, <em>sample</em> a value from each arm's posterior. Pull the arm whose sample is highest.</p>
+
+<p>Let's make this concrete with our coffee shop. Suppose the reward for each special is binary: a customer either orders it (1) or doesn't (0). After observing successes and failures for each special, you maintain a <strong>Beta distribution</strong> for each one. The Beta distribution is the natural posterior for binary data — it's parameterized by α (number of successes + 1) and β (number of failures + 1).</p>
+
+<p>On day one, every special has Beta(1, 1) — a completely flat distribution. You have no idea what any of them will do. So when you sample from each posterior, the samples are wild and spread out. Any special could win. That's pure exploration.</p>
+
+<p>After 50 days, suppose the cold brew float has had 40 orders and 10 non-orders: Beta(41, 11). That posterior is tight and centered around 0.78. The chai affogato has had 3 orders and 2 non-orders: Beta(4, 3). That posterior is wide, centered around 0.57, but it could plausibly be as high as 0.85 or as low as 0.25. On any given sampling round, the chai might draw 0.82 from its wide posterior and beat the cold brew's sampled 0.76. That triggers exploration — you try the chai again. But most of the time, the cold brew's tight, high posterior wins the sampling, and you exploit.</p>
+
+<pre><code class="language-python">class ThompsonSampling:
+    def __init__(self, n_arms):
+        self.alpha = np.ones(n_arms)  # successes + 1
+        self.beta = np.ones(n_arms)   # failures + 1
+
+    def select_arm(self):
         samples = np.random.beta(self.alpha, self.beta)
         return np.argmax(samples)
 
     def update(self, arm, reward):
-        # Conjugate update for Bernoulli likelihood
         self.alpha[arm] += reward
-        self.beta[arm] += 1 - reward
+        self.beta[arm] += 1 - reward</code></pre>
 
-# --- Simulate: 5 arms with different click-through rates ---
-np.random.seed(42)
-true_rates = [0.02, 0.05, 0.03, 0.08, 0.04]
-n_rounds = 10000
-ts = ThompsonSampling(n_arms=5)
+<p>That's the entire algorithm. Five lines of logic. The posterior does all the work — it naturally balances exploration and exploitation. An arm with few observations has a wide posterior, so its samples sometimes swing high, triggering exploration. An arm with many observations and low reward has a tight posterior near zero — it almost never wins the sampling contest. No confidence bounds. No epsilon. No tuning.</p>
 
-rewards = []
-for t in range(n_rounds):
-    arm = ts.select_arm()
-    reward = np.random.binomial(1, true_rates[arm])
-    ts.update(arm, reward)
-    rewards.append(reward)
+<p>Thompson Sampling achieves O(log T) regret, matching the Lai-Robbins lower bound. But the reason practitioners love it goes beyond the theory. UCB explores all uncertain arms with similar intensity. Thompson concentrates exploration on arms that are <em>plausibly near-optimal</em>. If two arms have similar estimated rewards, Thompson will naturally sample between them. If one arm is clearly inferior, its posterior quickly becomes tight and low, and Thompson stops wasting pulls on it. When you have thousands of arms — common in ad serving — this efficiency difference is enormous.</p>
 
-# After 10k rounds, Thompson mostly exploits the best arm (0.08)
-print(f"Estimated rates: {ts.alpha / (ts.alpha + ts.beta)}")
-print(f"Pull counts:     {ts.alpha + ts.beta - 2}")
-print(f"Average reward:  {np.mean(rewards):.4f}")
-# Best possible average: 0.08</code></pre>
+<p>My favorite thing about Thompson Sampling is that, aside from high-level explanations like the one I gave, no one is completely certain why it works <em>so well</em> empirically. The theoretical analysis showing it matches the Lai-Robbins bound only came in 2012 (Agrawal and Goyal), nearly 80 years after the algorithm was proposed. For most of that time, people who used it were running on faith and experimental results. The theory finally caught up, but practitioners had already figured out it was the right tool.</p>
 
-<p>Thompson Sampling achieves the Lai-Robbins lower bound asymptotically. In practice, it often outperforms UCB because the posterior does a better job of allocating exploration where it matters. If two arms are close in performance, Thompson samples between them naturally. If one arm is clearly worse, the posterior becomes tight and it stops wasting pulls quickly.</p>
+<p>For continuous rewards (say, average revenue per customer rather than just click/no-click), you swap the Beta posterior for a Gaussian. Track the sample mean and variance for each arm, and sample from a Normal distribution with the appropriate posterior uncertainty:</p>
 
-<div class="callout callout-info">
-  <div class="callout-label">Why Thompson Sampling Wins in Practice</div>
-  <p>UCB explores all uncertain arms equally. Thompson Sampling concentrates exploration on arms that are likely to be near-optimal. When you have many arms and most are clearly bad, Thompson converges faster. It also handles non-stationary environments more gracefully — just use a sliding-window posterior instead of accumulating all history.</p>
-</div>
-
-<h3>Thompson Sampling for Gaussian Rewards</h3>
-
-<p>For continuous rewards (revenue, time-on-page), use a Normal-Inverse-Gamma posterior, or the simpler approximation: track the mean and variance of each arm, then sample from a Normal distribution. With enough data, this works well:</p>
-
-<pre><code class="language-python">class ThompsonSamplingGaussian:
+<pre><code class="language-python">class ThompsonGaussian:
     def __init__(self, n_arms):
-        self.n_arms = n_arms
         self.counts = np.zeros(n_arms)
         self.means = np.zeros(n_arms)
-        self.sq_diffs = np.zeros(n_arms)  # for online variance
+        self.sum_sq = np.zeros(n_arms)  # Welford's running variance
 
     def select_arm(self):
-        samples = np.zeros(self.n_arms)
-        for a in range(self.n_arms):
+        samples = np.zeros(len(self.counts))
+        for a in range(len(self.counts)):
             if self.counts[a] < 2:
-                return a  # not enough data yet
-            variance = self.sq_diffs[a] / (self.counts[a] - 1)
-            # Sample from posterior: mean ± uncertainty
+                return a  # need at least 2 observations for variance
+            var = self.sum_sq[a] / (self.counts[a] - 1)
+            # posterior uncertainty shrinks as 1/sqrt(n)
             samples[a] = np.random.normal(
-                self.means[a],
-                np.sqrt(variance / self.counts[a])
-            )
+                self.means[a], np.sqrt(var / self.counts[a]))
         return np.argmax(samples)
 
     def update(self, arm, reward):
         self.counts[arm] += 1
-        n = self.counts[arm]
-        old_mean = self.means[arm]
-        self.means[arm] += (reward - old_mean) / n
-        # Welford's online variance
-        self.sq_diffs[arm] += (reward - old_mean) * (reward - self.means[arm])</code></pre>
+        old = self.means[arm]
+        self.means[arm] += (reward - old) / self.counts[arm]
+        self.sum_sq[arm] += (reward - old) * (reward - self.means[arm])</code></pre>
 
-<h2>Comparing Bandit Strategies</h2>
+<!-- ─────────────────────────────────────────────────────── -->
+<h2>Adversarial Bandits and EXP3</h2>
 
-<table>
-  <thead>
-    <tr><th>Strategy</th><th>Regret</th><th>Hyperparameters</th><th>Best For</th></tr>
-  </thead>
-  <tbody>
-    <tr><td>ε-Greedy</td><td>O(T) fixed ε, O(log T) decaying</td><td>ε (or decay schedule)</td><td>Simplicity, quick prototyping</td></tr>
-    <tr><td>UCB1</td><td>O(log T)</td><td>None</td><td>Adversarial settings, guaranteed bounds</td></tr>
-    <tr><td>Thompson Sampling</td><td>O(log T)</td><td>Prior choice</td><td>Best empirical performance, many arms</td></tr>
-    <tr><td>EXP3</td><td>O(√(T K log K))</td><td>Learning rate</td><td>Adversarial rewards (non-stochastic)</td></tr>
-  </tbody>
-</table>
+<p>Everything so far assumed the rewards are <strong>stochastic</strong> — each arm has a fixed (unknown) distribution, and the rewards are drawn from it independently. But what if the environment is adversarial? What if someone is actively trying to make your algorithm look bad — changing the rewards each round to maximize your regret?</p>
 
-<h2>Contextual Bandits: When Context Matters</h2>
+<p>In our coffee shop analogy, this is like a competitor across the street who watches your chalkboard each morning and then runs a promotion on whatever special you chose, stealing your customers. Or, less dramatically, it captures settings where rewards are non-stationary in unpredictable ways — seasonal shifts, viral trends, supply chain disruptions.</p>
 
-<p>Plain bandits assume every user, every moment is the same. But a 25-year-old browsing from a phone at midnight has different preferences than a 60-year-old on a desktop at 9 AM. <strong>Contextual bandits</strong> extend the framework: at each round, you observe a context vector x<sub>t</sub> (user features, time of day, device) and must choose an action whose expected reward depends on that context.</p>
+<p>For adversarial bandits, we need <strong>EXP3</strong> — Exponential-weight algorithm for Exploration and Exploitation (Auer et al., 2002). The key challenge: with bandit feedback, you only see the reward for the arm you pulled. You need to somehow estimate rewards for arms you <em>didn't</em> pull, without actually observing them. EXP3 solves this with a trick called <strong>importance-weighted estimation</strong>.</p>
 
-<p>This is exactly what happens in recommendation systems. The "arms" are items to show (articles, ads, products). The context is user features. The reward is a click, purchase, or engagement signal.</p>
+<p>The idea works like this. Maintain a weight for each arm. Convert weights to probabilities (with some mixing for guaranteed exploration). Sample an arm according to those probabilities. Observe the reward. Now here's the trick: construct an estimated reward for the chosen arm by dividing the observed reward by the probability of having chosen it. If you chose arm <em>a</em> with probability p<sub>a</sub> and saw reward <em>r</em>, the estimate is <em>r / p<sub>a</sub></em>. Why? Because you only see this arm with probability p<sub>a</sub>, so the estimate needs to be inflated to compensate. In expectation, this estimate is unbiased — it equals the true reward on average.</p>
 
-<h3>LinUCB</h3>
-
-<p>The most influential contextual bandit algorithm is <strong>LinUCB</strong> (Li et al., 2010, used at Yahoo for news recommendation). It assumes the expected reward of arm a given context x is linear: E[r|x, a] = θ<sub>a</sub><sup>T</sup>x.</p>
-
-<p>For each arm, maintain a ridge regression estimate of θ<sub>a</sub> and its confidence set. Then pick the arm with the highest UCB in context:</p>
-
-<pre><code class="language-python">import numpy as np
-
-class LinUCB:
-    def __init__(self, n_arms, d, alpha=1.0):
+<pre><code class="language-python">class EXP3:
+    def __init__(self, n_arms, gamma=0.1):
         self.n_arms = n_arms
-        self.alpha = alpha  # exploration parameter
-        # Per-arm parameters
-        self.A = [np.eye(d) for _ in range(n_arms)]       # d×d
-        self.b = [np.zeros(d) for _ in range(n_arms)]     # d×1
+        self.gamma = gamma
+        self.weights = np.ones(n_arms)
 
-    def select_arm(self, context):
-        ucb_values = np.zeros(self.n_arms)
-        for a in range(self.n_arms):
-            A_inv = np.linalg.inv(self.A[a])
-            theta_hat = A_inv @ self.b[a]
-            # UCB = predicted reward + exploration bonus
-            ucb_values[a] = (
-                theta_hat @ context
-                + self.alpha * np.sqrt(context @ A_inv @ context)
-            )
-        return np.argmax(ucb_values)
-
-    def update(self, arm, context, reward):
-        self.A[arm] += np.outer(context, context)
-        self.b[arm] += reward * context</code></pre>
-
-<p>The exploration bonus √(x<sup>T</sup>A<sup>−1</sup>x) is large when the context is in a direction the model hasn't seen much data for. It's the multi-dimensional version of the 1/√N<sub>a</sub> term in UCB1. When contexts are diverse and high-dimensional, LinUCB is significantly better than ignoring context.</p>
-
-<h3>From Contextual Bandits to RL</h3>
-
-<p>Contextual bandits sit neatly between supervised learning and full reinforcement learning:</p>
-
-<table>
-  <thead>
-    <tr><th>Setting</th><th>Feedback</th><th>Actions Affect Future?</th><th>Example</th></tr>
-  </thead>
-  <tbody>
-    <tr><td>Supervised learning</td><td>Full labels</td><td>No</td><td>Image classification</td></tr>
-    <tr><td>Online learning</td><td>Full labels, streaming</td><td>No</td><td>Spam filtering</td></tr>
-    <tr><td>Multi-armed bandits</td><td>Reward for chosen action only</td><td>No</td><td>A/B testing</td></tr>
-    <tr><td>Contextual bandits</td><td>Reward for chosen action + context</td><td>No</td><td>Ad selection</td></tr>
-    <tr><td>Reinforcement learning</td><td>Reward for chosen action + context</td><td><strong>Yes</strong></td><td>Game playing, robotics</td></tr>
-  </tbody>
-</table>
-
-<p>The key jump to RL is that your actions change the state — showing a user a video affects what they want to watch next. In contextual bandits, each round is independent. That simplification is what makes bandits tractable and practical.</p>
-
-<h2>Real-World Applications</h2>
-
-<h3>A/B Testing: Why Bandits Beat Fixed Splits</h3>
-
-<p>Traditional A/B testing: split traffic 50/50 between variant A and variant B, wait two weeks, compute a p-value. Done.</p>
-
-<p>The problem? During those two weeks, half your users are seeing the <em>worse</em> variant. If variant B is clearly better after day 3, you're still forcing 50% of traffic to the loser for 11 more days. That's a lot of lost revenue, engagement, or whatever metric you care about.</p>
-
-<p>Bandit-based testing uses Thompson Sampling (or UCB) to gradually shift traffic toward the winning variant <em>while the test is running</em>. Early on, traffic is roughly 50/50. As evidence accumulates, the better variant gets more traffic. By the end, you're sending 90%+ to the winner and still collecting enough data on the loser to confirm your conclusion.</p>
-
-<pre><code class="language-python">def bandit_ab_test(variants, n_visitors=10000):
-    """Bandit-based A/B test with Thompson Sampling."""
-    n = len(variants)
-    ts = ThompsonSampling(n_arms=n)
-
-    results = {v: {"shown": 0, "converted": 0} for v in variants}
-    variant_names = list(variants.keys())
-
-    for _ in range(n_visitors):
-        arm = ts.select_arm()
-        name = variant_names[arm]
-        true_rate = variants[name]
-
-        converted = np.random.binomial(1, true_rate)
-        ts.update(arm, converted)
-
-        results[name]["shown"] += 1
-        results[name]["converted"] += converted
-
-    for name, data in results.items():
-        rate = data["converted"] / max(data["shown"], 1)
-        print(f"{name}: {data['shown']:>5} shown, "
-              f"{rate:.3f} conv rate (true: {variants[name]:.3f})")
-
-# Variant B is 20% better — bandit allocates traffic accordingly
-bandit_ab_test({
-    "control":   0.050,
-    "variant_b":  0.060,
-    "variant_c":  0.045,
-})</code></pre>
-
-<div class="callout callout-danger">
-  <div class="callout-label">The Statistical Validity Trap</div>
-  <p>Bandit algorithms minimize regret, but they do <em>not</em> give you a valid p-value out of the box. Because the sampling is adaptive (you're sending more traffic to the winner), standard frequentist confidence intervals are invalid. If you need statistical guarantees, use "always-valid" confidence sequences or mix bandit allocation with proper sequential testing. Google, Netflix, and Microsoft all use hybrid approaches.</p>
-</div>
-
-<h3>Recommendation Systems</h3>
-
-<p>Every time you open Netflix, Spotify, or YouTube, a contextual bandit (or something close to it) is deciding what to show you. The arms are content items, the context is your profile + session features, and the reward is engagement.</p>
-
-<p>Why not just use a supervised model? Because supervised learning requires labeled examples, and the labels are generated by your <em>current</em> recommendation system. If your system never shows jazz to rock fans, you'll never know that some rock fans actually love jazz. This is the <strong>feedback loop problem</strong> — supervised models can't escape local optima because they only learn from what they already serve. Bandits, by construction, explore.</p>
-
-<h3>Ad Placement</h3>
-
-<p>Online advertising is the canonical bandit application. Each ad impression is a bandit round: the context is the user + page content, the arms are candidate ads, and the reward is a click (or purchase). The advertiser wants to maximize click-through rate while still discovering which creatives work best for which audiences. Thompson Sampling is the industry standard here — it handles the large action space (thousands of ads) and non-stationarity (ad fatigue, seasonal trends) better than UCB.</p>
-
-<h3>Clinical Trials</h3>
-
-<p>Perhaps the most impactful application: adaptive clinical trials. Traditional trials assign patients equally to treatment and placebo groups. Bandit-based trials (like the response-adaptive randomization used during COVID vaccine trials) shift more patients toward the treatment that's performing better, reducing the number of patients receiving inferior treatment while still gathering statistically valid evidence.</p>
-
-<h2>Practical Tips</h2>
-
-<p><strong>Start with Thompson Sampling.</strong> Unless you have a specific reason to use something else, Thompson is the default choice in industry. It's simple to implement, naturally handles many arms, and its Bayesian nature makes it easy to incorporate prior knowledge.</p>
-
-<p><strong>Batched updates are fine.</strong> In practice, you don't update after every single observation. Updating in batches of 100 or 1,000 barely affects regret and is much more practical for production systems where the reward signal is delayed (did the user buy something three days after clicking?).</p>
-
-<p><strong>Beware non-stationarity.</strong> All the regret bounds assume rewards are stationary. In reality, user preferences shift, ad creatives fatigue, and seasonal effects dominate. Use a sliding window or exponential discounting on your reward estimates:</p>
-
-<pre><code class="language-python">class SlidingWindowThompson:
-    def __init__(self, n_arms, window_size=1000):
-        self.n_arms = n_arms
-        self.window = window_size
-        self.history = []  # (arm, reward) pairs
+    def _probabilities(self):
+        total = np.sum(self.weights)
+        # mix exponential weights with uniform exploration
+        return (1 - self.gamma) * (self.weights / total) \
+               + self.gamma / self.n_arms
 
     def select_arm(self):
-        recent = self.history[-self.window:]
-        alpha = np.ones(self.n_arms)
-        beta = np.ones(self.n_arms)
-        for arm, reward in recent:
-            alpha[arm] += reward
-            beta[arm] += 1 - reward
-        return np.argmax(np.random.beta(alpha, beta))
+        probs = self._probabilities()
+        return np.random.choice(self.n_arms, p=probs)
 
     def update(self, arm, reward):
-        self.history.append((arm, reward))</code></pre>
+        probs = self._probabilities()
+        # importance-weighted reward estimate
+        estimated_reward = reward / probs[arm]
+        # exponential weight update
+        self.weights[arm] *= np.exp(
+            self.gamma * estimated_reward / self.n_arms)</code></pre>
 
-<p><strong>Cold-start with priors.</strong> If you're launching a new ad variant or product, you don't start from total ignorance. Use historical data from similar items to set informative priors. A new ad by an advertiser whose ads typically get 3% CTR? Start with Beta(3, 97) instead of Beta(1, 1).</p>
+<p>EXP3 achieves O(√(TK ln K)) regret in the adversarial setting, where K is the number of arms. That's worse than the O(log T) of UCB or Thompson in the stochastic setting — but the stochastic algorithms can fail catastrophically when rewards are adversarial. EXP3 gives you a guarantee that holds no matter what the environment does.</p>
 
-<h2>What You Should Now Be Able To Do</h2>
+<p>The importance weighting is the part that took me the longest to develop intuition for. The division by p<sub>a</sub> seems like it could blow up — what if p<sub>a</sub> is tiny? It can, and that's why the variance of the estimates is high. The γ/K floor on each probability keeps things from going completely off the rails, but the price is noisier updates. That's the fundamental cost of adversarial robustness: you trade tight estimates for guarantees that hold in the worst case.</p>
 
-<ul>
-  <li>Explain the difference between batch learning, online learning, and bandit settings — and when each applies</li>
-  <li>Define regret and explain why sublinear regret means your algorithm is converging</li>
-  <li>Implement epsilon-greedy, UCB1, and Thompson Sampling from scratch</li>
-  <li>Explain <em>why</em> Thompson Sampling often outperforms UCB in practice (posterior-guided exploration)</li>
-  <li>Describe LinUCB and how contextual bandits extend the basic framework with user/item features</li>
-  <li>Articulate why bandit-based A/B testing reduces regret compared to fixed traffic splits — and the statistical caveats</li>
-  <li>Choose the right bandit strategy for a given application (ads, recommendations, clinical trials)</li>
-  <li>Handle non-stationarity using sliding windows or discounting in a real system</li>
-</ul>
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2>Contextual Bandits: Because People Are Different</h2>
+
+<p>Everything we've built so far treats every round as identical. Pull an arm, get a reward from that arm's distribution. But in the real world, context matters. A lavender latte might sell well on rainy Mondays to the morning commuter crowd, and terribly on sunny Friday afternoons to college students. The optimal action depends on <em>who</em> is walking through the door and <em>when</em>.</p>
+
+<p><strong>Contextual bandits</strong> formalize this. Each round, you observe a feature vector <em>x<sub>t</sub></em> — the context — before choosing an action. The expected reward depends on both the action and the context. You still only see the reward for the action you chose.</p>
+
+<p>This is the exact setup for recommendation systems. The arms are items to show (news articles, ads, products). The context is everything you know about the user (demographics, session features, time of day, device). The reward is engagement — a click, a purchase, time spent. You want to learn a <em>policy</em> — a function from context to action — that maximizes expected reward.</p>
+
+<!-- ─────────────────────────────────────────────────────── -->
+<h2>LinUCB and the Yahoo Story</h2>
+
+<p>The most influential contextual bandit algorithm is <strong>LinUCB</strong>, published by Li et al. in 2010, developed and deployed at Yahoo for personalized news article recommendation. The model behind it is disarmingly clean: assume the expected reward for arm <em>a</em> given context <em>x</em> is linear. That is, E[reward | x, a] = θ<sub>a</sub><sup>T</sup>x, where θ<sub>a</sub> is an unknown weight vector specific to each arm.</p>
+
+<p>For each arm, LinUCB maintains a ridge regression estimate of θ<sub>a</sub> along with a confidence ellipsoid — a multi-dimensional version of the confidence interval. Given context <em>x</em>, the predicted reward plus an exploration bonus gives the UCB:</p>
+
+<p style="text-align:center"><em>UCB<sub>a</sub>(x) = θ̂<sub>a</sub><sup>T</sup>x + α √(x<sup>T</sup> A<sub>a</sub><sup>−1</sup> x)</em></p>
+
+<p>The first term is the predicted reward — exploitation. The second term, √(x<sup>T</sup> A<sub>a</sub><sup>−1</sup> x), measures how unfamiliar this context is to arm <em>a</em>. If the current user has features that arm <em>a</em> has rarely seen before, the bonus is large and LinUCB explores. If the context is well-covered by past data, the bonus is small and LinUCB exploits.</p>
+
+<pre><code class="language-python">class LinUCB:
+    def __init__(self, n_arms, d, alpha=1.0):
+        self.alpha = alpha
+        # per-arm: A is d×d, b is d-vector
+        self.A = [np.eye(d) for _ in range(n_arms)]
+        self.b = [np.zeros(d) for _ in range(n_arms)]
+
+    def select_arm(self, x):
+        ucbs = np.zeros(len(self.A))
+        for a in range(len(self.A)):
+            A_inv = np.linalg.inv(self.A[a])
+            theta = A_inv @ self.b[a]
+            ucbs[a] = theta @ x + self.alpha * np.sqrt(x @ A_inv @ x)
+        return np.argmax(ucbs)
+
+    def update(self, arm, x, reward):
+        self.A[arm] += np.outer(x, x)   # tighten confidence ellipsoid
+        self.b[arm] += reward * x         # update reward signal</code></pre>
+
+<p>The A<sub>a</sub> matrix accumulates the outer products of contexts seen by arm <em>a</em>. Its inverse represents the uncertainty — directions in feature space where little data has been collected. The update np.outer(x, x) tightens the ellipsoid in the direction of the observed context. Over time, as more data accumulates, the exploration bonuses shrink and LinUCB converges to the best linear policy.</p>
+
+<p>The Yahoo deployment was the landmark that made the industry take contextual bandits seriously. The system served personalized news articles to millions of users on the Yahoo front page, and the bandit approach significantly outperformed both random selection and a fixed supervised model. The key insight: a supervised model trained on historical click data suffers from <strong>feedback loops</strong>. If the old system never showed sports articles to users over 60, the supervised model learns "users over 60 don't click sports articles" — but that's because it never gave them the chance. LinUCB, by exploring, discovers these hidden preferences.</p>
+
+<p>I still occasionally get tripped up by the difference between contextual bandits and full reinforcement learning, so let me be explicit. In contextual bandits, each round is independent — your action today doesn't change what context you see tomorrow. In RL, actions change the state. Recommending a video changes what the user wants to watch next. Contextual bandits ignore that sequential dependency, which is a real limitation but also what makes them tractable enough for production deployment at web scale.</p>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2>Online Convex Optimization: The Unifying Framework</h2>
+
+<p>There's a theoretical framework that ties together nearly everything we've discussed. <strong>Online Convex Optimization</strong> (OCO) is the general game: each round, you choose a point from a convex set, an adversary reveals a convex loss function, you incur that loss. The goal: minimize regret against the best fixed point in hindsight.</p>
+
+<p>OGD is one algorithm for this game. But there's a more elegant, unifying approach: <strong>Follow the Regularized Leader</strong> (FTRL). At each round, choose the point that minimizes the sum of all past losses plus a regularization term:</p>
+
+<p style="text-align:center"><em>w<sub>t</sub> = argmin<sub>w</sub> [ Σ<sub>s=1..t-1</sub> f<sub>s</sub>(w) + R(w) ]</em></p>
+
+<p>Without the regularizer, this would be <strong>Follow the Leader</strong> (FTL) — always play whatever would have been best so far. FTL sounds reasonable but can oscillate wildly. If today's best answer is the opposite of yesterday's, FTL whiplashes back and forth. The regularizer penalizes large deviations, smoothing the trajectory.</p>
+
+<p>Here's what makes FTRL beautiful: different regularizers give you different algorithms. L2 regularization (R(w) = ||w||²/2η) recovers Online Gradient Descent. Negative entropy regularization (R(w) = Σ w<sub>i</sub> ln w<sub>i</sub>) gives you the Exponential Weights / Hedge algorithm. It's the same template, with the regularizer acting as a knob that controls the geometry of the update.</p>
+
+<p>Google's ad serving system uses a variant called FTRL-Proximal, which adds L1 regularization for sparsity. When you have billions of features (most of which are irrelevant for any given ad), L1 regularization drives irrelevant weights to exactly zero, keeping the model tractable. The paper describing this (McMahan et al., 2013, "Ad Click Prediction: a View from the Trenches") is one of the most cited papers in applied ML, and it's fundamentally an online learning algorithm.</p>
+
+<p>The OCO framework also gives a clean way to state the regret bounds we've been collecting. For convex losses: O(√T). For strongly convex losses: O(log T). For exp-concave losses: O(d log T) where d is the dimension. These bounds hold against adversarial loss sequences — no distributional assumptions needed. That's the power of the framework.</p>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2>Where All of This Lives in the Real World</h2>
+
+<p>Let's bring it all back from theory to practice.</p>
+
+<p><strong>A/B testing.</strong> Traditional A/B testing splits traffic 50/50, waits two weeks, then computes a p-value. During those two weeks, half your users see the worse variant. If variant B is clearly superior after day 3, you're still forcing 50% of traffic to the loser for 11 more days. Bandit-based testing — typically Thompson Sampling — gradually shifts traffic toward the winning variant while the experiment is running. Early on, it's roughly 50/50. As evidence accumulates, it becomes 90/10. Less wasted exposure, faster convergence. Google, Netflix, and Microsoft all use variants of this. One critical caveat: because the sampling is adaptive, standard frequentist confidence intervals become invalid. You need "always-valid" confidence sequences or careful sequential testing on top of the bandit allocation.</p>
+
+<p><strong>Ad placement.</strong> Every ad impression is a bandit round. The context is the user profile plus page content. The arms are candidate ads. The reward is a click or a purchase. The system needs to maximize click-through rate while still discovering which creatives work for which audiences. This is the canonical contextual bandit application, and Thompson Sampling is the industry standard. Netflix uses a similar approach for choosing which thumbnail to show for each title — the same movie gets different artwork depending on who's looking at the catalog.</p>
+
+<p><strong>Recommendation systems.</strong> When you open Spotify or YouTube, a contextual bandit (or something close) decides what to surface. The reason bandits beat pure supervised models here is the feedback loop problem. A supervised model trained on historical data only learns about items the old system chose to show. If the old system never showed jazz to rock fans, the supervised model concludes rock fans don't like jazz — not because it's true, but because it never ran the experiment. Bandits, by construction, explore past the edges of what's already known.</p>
+
+<p><strong>Clinical trials.</strong> Adaptive clinical trials use bandit algorithms to shift more patients toward the treatment arm that's performing better. The response-adaptive randomization used during COVID-19 vaccine trials is an example. Compared to fixed equal randomization, this approach can reduce the number of patients receiving inferior treatment while maintaining statistical validity. The ethical argument is hard to ignore: if you have evidence mid-trial that treatment A works better than treatment B, is it ethical to keep assigning half the patients to B?</p>
+
+<p><strong>Hyperparameter tuning.</strong> Bayesian optimization for hyperparameter search is, at its core, a bandit problem with continuous arms. Each "arm" is a hyperparameter configuration, the reward is validation performance, and Gaussian process UCB or Thompson Sampling guides which configuration to try next. Tools like Optuna and BoTorch are bandit algorithms wearing a different hat.</p>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2>Wrap-Up</h2>
+
+<p>If you're still with me, thank you. I hope it was worth it.</p>
+
+<p>We started with a simple coffee shop and a chalkboard, trying to figure out which daily special to offer without any historical data. From that seed, we built up the online learning framework — predictions one at a time, scored by regret against the best fixed strategy in hindsight. We saw how the Perceptron, the oldest neural network, is fundamentally an online algorithm. We traced Online Gradient Descent and Exponential Weights. Then we confronted the bandit problem — what happens when you can't see the road not taken — and worked through three strategies for navigating it: epsilon-greedy (the coin flip), UCB (the optimist), and Thompson Sampling (the Bayesian). We handled adversarial settings with EXP3, added context with LinUCB, and unified everything under Online Convex Optimization and FTRL.</p>
+
+<p>My hope is that the next time you encounter a system that adapts in real time — whether it's an A/B test that shifts traffic, a news feed that personalizes in the moment, or an ad system that learns which creative to show — instead of treating it as a black box, you'll recognize the prediction game underneath. You'll see the regret it's trying to minimize, the exploration-exploitation tradeoff it's navigating, and the posterior distributions (or confidence bounds, or exponential weights) doing the heavy lifting. You'll have a pretty darn good mental model of what's going on under the hood.</p>
+
+<h2>Resources</h2>
+
+<p><strong>"Prediction, Learning, and Games"</strong> by Cesa-Bianchi and Lugosi — the definitive textbook on online learning. Dense but deeply rewarding. If you're going to read one book on this topic, this is the one.</p>
+
+<p><strong>"A Tutorial on Thompson Sampling"</strong> by Russo et al. (2018) — the clearest exposition of Thompson Sampling I've found, with practical guidance that goes well beyond the theory. Covers Gaussian bandits, contextual bandits, and real deployment considerations.</p>
+
+<p><strong>"Introduction to Online Convex Optimization"</strong> by Elad Hazan — freely available online. Beautifully written, covers the OCO framework and FTRL in a way that makes the math feel like storytelling. Wildly helpful for building intuition about regret bounds.</p>
+
+<p><strong>"A Contextual-Bandit Approach to Personalized News Article Recommendation"</strong> by Li et al. (2010) — the LinUCB paper that changed how the industry thinks about recommendations. The O.G. paper for contextual bandits in production.</p>
+
+<p><strong>"Ad Click Prediction: a View from the Trenches"</strong> by McMahan et al. (2013, Google) — the paper that introduced FTRL-Proximal to the world. Insightful and practical, full of lessons from deploying online learning at massive scale.</p>
+
+<p><strong>"Bandit Algorithms"</strong> by Lattimore and Szepesvári — a modern, comprehensive treatment. The first few chapters alone are an unforgettable introduction to the exploration-exploitation tradeoff.</p>
 
       <div class="page-nav">
         <a href="s01.html">
