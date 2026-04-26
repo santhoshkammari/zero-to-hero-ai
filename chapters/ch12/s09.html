@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Pre-training Objectives — Zero to Hero AI</title>
+  <title>Agentic AI &mdash; Zero to Hero AI</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="../../css/style.css">
@@ -298,1036 +298,948 @@
 <h1>Agentic AI</h1>
 <div class="chapter-meta">
   <span class="tag">Chapter 12: Large Language Models</span>
-  <span class="tag">10 subtopics</span>
+  <span class="tag">14 subtopics</span>
 </div>
 
-<div class="tldr">
-  <div class="tldr-label">TL;DR</div>
-  <p>LLMs alone answer questions. Agents take actions. An agent is an LLM wired into a perceive-reason-act loop with tool access and memory. Function calling lets models output structured JSON that your code dispatches to real tools. The ReAct pattern interleaves reasoning and action. Planning strategies range from one-step-at-a-time (ReAct) to full upfront plans (Plan-and-Execute) to self-correcting loops (Reflexion). Memory systems give agents persistence beyond the context window. Multi-agent architectures let specialized agents collaborate on complex tasks. Frameworks like LangGraph, CrewAI, and AutoGen accelerate development, but production reliability remains the hard problem &mdash; agents compound errors across tool calls, and every loop iteration costs tokens. This section covers the architecture, patterns, code, and the sharp edges you&rsquo;ll hit when you move from chatbot to autonomous agent.</p>
-</div>
+<p>I avoided this topic for months. Not because I didn&rsquo;t find it interesting &mdash; I did, painfully so &mdash; but because the space was moving so fast that anything I wrote on Monday felt obsolete by Thursday. Every week brought a new framework, a new benchmark, a new claim that agents had &ldquo;solved&rdquo; some task. I kept waiting for things to settle. They haven&rsquo;t. But I&rsquo;ve realized something: the <em>patterns</em> have stabilized even as the implementations churn. The way we wire an LLM to tools, the way we structure planning loops, the way we manage memory &mdash; those ideas are converging. So that&rsquo;s what we&rsquo;re going to build here. Not a tour of this week&rsquo;s hottest framework, but the architectural bones underneath all of them.</p>
+
+<p>Here is what this post covers: we start with a single LLM call and ask why it&rsquo;s not enough. We give it tools. We give it a thinking loop. We give it memory. We give it colleagues. By the end, you&rsquo;ll understand how an autonomous agent is built from the ground up, what goes wrong in practice, and how to measure whether any of it works.</p>
+
+<p><strong>Before we start:</strong> this post assumes you&rsquo;re comfortable with LLM basics &mdash; you know what a prompt is, what tokens are, and roughly what happens when you call an API like OpenAI&rsquo;s or Anthropic&rsquo;s. If you&rsquo;ve done any prompt engineering, you&rsquo;re in good shape. If not, the earlier sections on prompt engineering and LLM families will give you what you need.</p>
+
+<p>We&rsquo;re going to build something together. A <strong>trip planning assistant</strong>. It starts tiny &mdash; a single tool that can look up the weather for one city &mdash; and by the end of this post, it grows into a multi-tool, multi-agent vacation planner that books flights, finds restaurants, and argues with itself about whether you can afford that beachfront hotel. Every new concept we learn gets wired into this running example, so the abstractions stay grounded in something real.</p>
+
+<p>Let&rsquo;s go.</p>
+
+<h3>What We&rsquo;ll Cover</h3>
+
+<p style="margin-left: 1.5em;">
+  The Perceive-Reason-Act Loop<br>
+  Tool Use &amp; Function Calling<br>
+  The ReAct Pattern<br>
+  Planning &amp; Task Decomposition<br>
+  Memory Systems<br>
+  <em>Rest Stop &mdash; Single-Agent Architecture</em><br>
+  Multi-Agent Systems<br>
+  Agent Frameworks in Practice<br>
+  Code Generation Agents<br>
+  Self-Reflection &amp; Critique<br>
+  Safety &amp; Sandboxing<br>
+  Evaluating Agents<br>
+  Wrap-Up<br>
+  Resources
+</p>
+
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  PART 1 — WHY AGENTS                                              -->
+<!--  THE PERCEIVE-REASON-ACT LOOP                                      -->
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 
-<h2>Why Agents</h2>
+<h2>The Perceive-Reason-Act Loop</h2>
 
-<p>Here&rsquo;s the difference in one sentence: a chatbot <em>tells</em> you what to do, an agent <em>does</em> it.</p>
+<p>Imagine you hire a summer intern. Brilliant kid &mdash; top of their class, knows a staggering amount of trivia, can write beautifully, can reason about complex problems. You sit them at a desk and say: &ldquo;Plan me a vacation to Lisbon next month.&rdquo; The intern thinks hard, then writes you a lovely three-page essay about the best neighborhoods in Lisbon, typical weather in June, estimated costs, and restaurant recommendations. Impressive. But none of those prices are current. The weather is a guess from training data two years old. And they didn&rsquo;t actually <em>book</em> anything.</p>
 
-<p>Ask an LLM &ldquo;what&rsquo;s the current price of AAPL?&rdquo; and it&rsquo;ll give you a stale number from its training data, or honestly say it doesn&rsquo;t know. Ask an <em>agent</em> the same question, and it calls a stock API, parses the response, and gives you the live price. The LLM is the same. The difference is the loop around it.</p>
+<p>That intern is your LLM. Brilliant at reasoning. Terrible at doing things in the real world.</p>
 
-<pre><code># Plain LLM: gives you advice
-response = llm("How do I find rows with null emails in the users table?")
-# → "You can run: SELECT * FROM users WHERE email IS NULL;"
+<p>Now imagine you hand that same intern a phone, a browser, and a company credit card. You say: &ldquo;Plan me a vacation to Lisbon. Actually book the flights and hotel. Check the real weather forecast. Find restaurants with reservations available.&rdquo; Now the intern can <em>perceive</em> (check the weather API, search for flights), <em>reason</em> (decide which options are best given your budget and dates), and <em>act</em> (make the bookings). Same brain, wildly different capability.</p>
 
-# Agent: actually does it
-response = agent("Find rows with null emails in the users table")
-# → Thinks: "I need to query the database"
-# → Calls: execute_sql("SELECT * FROM users WHERE email IS NULL;")
-# → Observes: 47 rows returned
-# → Responds: "Found 47 users with null emails. Here are the first 10..."</code></pre>
+<p>That&rsquo;s the difference between a chatbot and an agent. The chatbot <em>tells</em> you what to do. The agent <em>does</em> it.</p>
 
-<p>The formula is simple:</p>
+<p>Every agent, regardless of framework, runs the same fundamental loop:</p>
 
-<pre><code>Agent = LLM + Tools + Planning Loop</code></pre>
+<pre><code># The universal agent loop (pseudocode)
+while not done:
+    observation = perceive(environment)   # read new info
+    thought     = reason(observation)     # LLM decides what to do
+    result      = act(thought)            # execute a tool or respond
+    environment.update(result)            # world changes</code></pre>
 
-<p>The LLM provides reasoning. Tools provide capability &mdash; search, code execution, API calls, database access. The planning loop is the glue: it decides when to think, when to act, and when to stop. Without tools, the LLM is stuck in its own head. Without the planning loop, tool access is just a fancier API wrapper. You need all three.</p>
+<p>The <strong>perceive</strong> step is where the agent takes in new information: a user message, the result of a tool call, an error from a failed API request. The <strong>reason</strong> step is the LLM doing what it does best &mdash; understanding context and deciding on a next action. The <strong>act</strong> step is where something actually happens in the world: an API is called, code is executed, a file is written, a message is sent.</p>
 
-<div class="info-box">
-  <strong>Why now?</strong> Agents aren&rsquo;t a new idea &mdash; early attempts go back to AutoGPT in 2023. What changed is model capability. GPT-4-class models are reliable enough at function calling and multi-step reasoning that agents now <em>actually work</em> often enough to be useful in production. The jump from &ldquo;works 30% of the time&rdquo; to &ldquo;works 85% of the time&rdquo; is the difference between a demo and a product.
-</div>
+<p>A plain LLM call is one pass through this loop with no tools available in the &ldquo;act&rdquo; step. The model perceives your prompt, reasons about it, and acts by generating text. That&rsquo;s it. One shot. An agent runs this loop multiple times, accumulating observations and refining its plan. The loop is what makes it agentic.</p>
 
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  PART 2 — CORE AGENT ARCHITECTURE                                  -->
-<!-- ═══════════════════════════════════════════════════════════════════ -->
+<p>Let me make this concrete with our trip planner. Right now, it has no tools. Someone asks: &ldquo;What&rsquo;s the weather in Lisbon next week?&rdquo;</p>
 
-<h2>Core Agent Architecture</h2>
+<pre><code># No tools: the LLM guesses
+User: What's the weather in Lisbon next week?
+Assistant: Lisbon typically has warm, sunny weather in summer,
+           with temperatures around 25-30°C. However, I don't
+           have access to real-time weather data.</code></pre>
 
-<p>Every agent, no matter the framework, follows the same fundamental loop: <strong>perceive &rarr; reason &rarr; act</strong>. The LLM is the &ldquo;brain,&rdquo; tools are the &ldquo;hands.&rdquo;</p>
+<p>Honest, but useless for trip planning. The model <em>knows</em> it can&rsquo;t help. It doesn&rsquo;t have hands. Let&rsquo;s give it some.</p>
 
-<pre><code># The universal agent loop
-#
-#   ┌──────────────────────────────────────────┐
-#   │              SYSTEM PROMPT               │
-#   │  "You are an agent with these tools..."  │
-#   └──────────────┬───────────────────────────┘
-#                  │
-#                  ▼
-#   ┌──────────────────────────┐
-#   │   PERCEIVE               │ ◄── user input, tool results,
-#   │   (read current state)   │     environment observations
-#   └──────────┬───────────────┘
-#              │
-#              ▼
-#   ┌──────────────────────────┐
-#   │   REASON                 │ ◄── LLM processes context,
-#   │   (think about action)   │     decides what to do next
-#   └──────────┬───────────────┘
-#              │
-#              ▼
-#   ┌──────────────────────────┐
-#   │   ACT                    │ ◄── call a tool, or respond
-#   │   (execute decision)     │     to the user
-#   └──────────┬───────────────┘
-#              │
-#              ▼
-#         Done? ──No──► back to PERCEIVE
-#           │
-#          Yes
-#           │
-#           ▼
-#     Return final answer</code></pre>
-
-<p>The key components that make this loop work:</p>
-
-<p><strong>System prompt.</strong> This is the agent&rsquo;s identity and instruction set. It defines what tools are available, how to use them, what the agent should and shouldn&rsquo;t do, and the format for tool calls. A well-written system prompt is the difference between an agent that reliably completes tasks and one that flails around randomly calling tools.</p>
-
-<p><strong>Tool definitions.</strong> Structured descriptions of each tool &mdash; name, parameters with types, description of what it does. The LLM uses these to decide <em>which</em> tool to call and <em>how</em> to call it. Poor tool descriptions lead to poor tool selection.</p>
-
-<p><strong>Memory.</strong> At minimum, the conversation history. In more sophisticated agents, this includes a working scratchpad for the current task and long-term storage of past interactions. We&rsquo;ll go deep on memory systems later.</p>
-
-<p><strong>Planning strategy.</strong> How the agent decides what to do next. Does it plan the entire task upfront? Take it one step at a time? Reflect on failures? This is where most of the design variation lives.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  PART 3 — TOOL USE & FUNCTION CALLING                             -->
+<!--  TOOL USE & FUNCTION CALLING                                       -->
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 
 <h2>Tool Use &amp; Function Calling</h2>
 
-<p>Function calling is the mechanism that turns an LLM from a text generator into an agent. Instead of outputting natural language, the model outputs <strong>structured JSON</strong> specifying which function to call and with what arguments. Your application code then executes that function and feeds the result back to the model.</p>
+<p>Here is the first idea that confused me when I encountered it, and I want to save you that confusion: the LLM does not actually <em>call</em> functions. It outputs structured text &mdash; specifically, JSON &mdash; that <em>describes</em> which function it wants to call and with what arguments. Then <em>your code</em> on the server reads that JSON, calls the real function, and feeds the result back to the model. The model never touches your code, your database, or the internet. It writes a wish list; you fulfil it.</p>
 
-<p>The flow looks like this:</p>
+<p>Think of it like our intern analogy again. The intern can&rsquo;t actually make phone calls on your behalf. But they can write you a note that says: &ldquo;Please call the weather service and ask about Lisbon, June 15-22.&rdquo; You make the call, get the answer, and hand the note back. The intern reads the answer and continues planning.</p>
 
-<pre><code># Function calling flow
-#
-# 1. You send: message + tool definitions
-#    ┌─────────────────────────────────┐
-#    │  messages: "What's the weather   │
-#    │            in Tokyo?"            │
-#    │  tools: [get_weather, ...]       │
-#    └──────────────┬──────────────────┘
-#                   │
-#                   ▼
-# 2. Model responds with a tool call (NOT natural language)
-#    ┌─────────────────────────────────┐
-#    │  tool_call:                      │
-#    │    name: "get_weather"           │
-#    │    arguments: {"city": "Tokyo"}  │
-#    └──────────────┬──────────────────┘
-#                   │
-# 3. YOUR CODE executes the function
-#                   │
-#                   ▼
-# 4. You send the result back to the model
-#    ┌─────────────────────────────────┐
-#    │  tool_result: {"temp": 22,       │
-#    │    "condition": "partly cloudy"} │
-#    └──────────────┬──────────────────┘
-#                   │
-#                   ▼
-# 5. Model generates final natural language response
-#    "It's currently 22°C and partly cloudy in Tokyo."</code></pre>
+<p>Here&rsquo;s how function calling works in practice. You define your tools as JSON schemas and pass them alongside the user&rsquo;s message:</p>
 
-<h3>OpenAI Function Calling Format</h3>
-
-<p>OpenAI pioneered the function calling API. You define tools as JSON schemas, and the model decides when and how to invoke them:</p>
-
-<pre><code>import openai
-
+<pre><code># Step 1: Define tools as JSON schemas
 tools = [
     {
         "type": "function",
         "function": {
-            "name": "get_stock_price",
-            "description": "Get the current stock price for a given ticker symbol",
+            "name": "get_weather",
+            "description": "Get the weather forecast for a city on specific dates",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "ticker": {
+                    "city": {
                         "type": "string",
-                        "description": "Stock ticker symbol, e.g. 'AAPL', 'GOOGL'"
+                        "description": "City name, e.g. 'Lisbon'"
+                    },
+                    "start_date": {
+                        "type": "string",
+                        "description": "Start date in YYYY-MM-DD format"
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": "End date in YYYY-MM-DD format"
                     }
                 },
-                "required": ["ticker"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "execute_sql",
-            "description": "Execute a read-only SQL query against the database",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "SQL SELECT query to execute"
-                    }
-                },
-                "required": ["query"]
+                "required": ["city", "start_date", "end_date"]
             }
         }
     }
 ]
 
+# Step 2: Send the user message WITH the tool definitions
 response = openai.chat.completions.create(
     model="gpt-4o",
-    messages=[{"role": "user", "content": "What's AAPL's stock price?"}],
-    tools=tools,
-    tool_choice="auto"  # let the model decide whether to call a tool
-)
+    messages=[{"role": "user", "content": "What's the weather in Lisbon June 15-22?"}],
+    tools=tools
+)</code></pre>
 
-# Check if the model wants to call a function
-message = response.choices[0].message
-if message.tool_calls:
-    tool_call = message.tool_calls[0]
-    print(f"Function: {tool_call.function.name}")
-    print(f"Args: {tool_call.function.arguments}")
-    # → Function: get_stock_price
-    # → Args: {"ticker": "AAPL"}</code></pre>
+<p>The model doesn&rsquo;t respond with a text answer. Instead, it responds with a <strong>tool call</strong> &mdash; a structured JSON object saying &ldquo;I want to call <code>get_weather</code> with these arguments&rdquo;:</p>
 
-<h3>Anthropic Tool Use Format</h3>
-
-<p>Anthropic&rsquo;s format is conceptually identical but structurally different. Tools are defined at the top level of the request, and results come back as <code>tool_use</code> content blocks:</p>
-
-<pre><code>import anthropic
-
-client = anthropic.Anthropic()
-
-response = client.messages.create(
-    model="claude-sonnet-4-20250514",
-    max_tokens=1024,
-    tools=[
-        {
-            "name": "get_stock_price",
-            "description": "Get the current stock price for a ticker symbol",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "ticker": {
-                        "type": "string",
-                        "description": "Stock ticker symbol"
-                    }
-                },
-                "required": ["ticker"]
-            }
-        }
-    ],
-    messages=[{"role": "user", "content": "What's AAPL trading at?"}]
-)
-
-# Response contains a tool_use content block
-for block in response.content:
-    if block.type == "tool_use":
-        print(f"Tool: {block.name}")      # → get_stock_price
-        print(f"Input: {block.input}")     # → {"ticker": "AAPL"}
-        print(f"Call ID: {block.id}")      # → toolu_abc123 (use this in result)</code></pre>
-
-<h3>Complete Tool-Calling Loop</h3>
-
-<p>Here&rsquo;s the full loop &mdash; send a message, execute the tool call, return the result, get the final answer:</p>
-
-<pre><code>import openai
-import json
-
-client = openai.OpenAI()
-
-# Define tools
-tools = [{
+<pre><code># Step 3: The model's response contains a tool call, not text
+# response.choices[0].message.tool_calls[0] looks like:
+{
+    "id": "call_abc123",
     "type": "function",
     "function": {
         "name": "get_weather",
-        "description": "Get current weather for a city",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "city": {"type": "string", "description": "City name"},
-                "units": {"type": "string", "enum": ["celsius", "fahrenheit"],
-                          "description": "Temperature units"}
-            },
-            "required": ["city"]
-        }
+        "arguments": "{\"city\": \"Lisbon\", \"start_date\": \"2025-06-15\", \"end_date\": \"2025-06-22\"}"
     }
-}]
+}</code></pre>
 
-# Actual function implementation
-def get_weather(city: str, units: str = "celsius") -> dict:
-    # In production, call a real weather API
-    return {"city": city, "temp": 22, "units": units, "condition": "sunny"}
+<p>Now here is the crucial part that I want to make very explicit. <em>Your</em> code receives this JSON. <em>Your</em> code parses the function name and arguments. <em>Your</em> code actually calls the weather API. The LLM did nothing but write structured text.</p>
 
-# Map function names to implementations
-available_functions = {"get_weather": get_weather}
+<pre><code># Step 4: YOUR code dispatches the function call
+import json
 
-# Step 1: Send user message with tools
-messages = [{"role": "user", "content": "What's the weather in Paris?"}]
-response = client.chat.completions.create(
-    model="gpt-4o", messages=messages, tools=tools
+tool_call = response.choices[0].message.tool_calls[0]
+func_name = tool_call.function.name
+func_args = json.loads(tool_call.function.arguments)
+
+# You execute the real function
+if func_name == "get_weather":
+    weather_result = get_weather(**func_args)
+    # Returns: {"temp_high": 28, "temp_low": 18, "condition": "sunny",
+    #           "precipitation_chance": 5}
+
+# Step 5: Feed the result back to the model
+messages = [
+    {"role": "user", "content": "What's the weather in Lisbon June 15-22?"},
+    response.choices[0].message,  # the assistant's tool call
+    {
+        "role": "tool",
+        "tool_call_id": tool_call.id,
+        "content": json.dumps(weather_result)
+    }
+]
+
+# Step 6: Model now generates a final answer using the real data
+final_response = openai.chat.completions.create(
+    model="gpt-4o",
+    messages=messages,
+    tools=tools
 )
-assistant_msg = response.choices[0].message
-messages.append(assistant_msg)
+# "Lisbon will be sunny June 15-22 with highs around 28°C and
+#  lows around 18°C. Only a 5% chance of rain. Great beach weather!"</code></pre>
 
-# Step 2: If model made tool calls, execute them
-if assistant_msg.tool_calls:
-    for tool_call in assistant_msg.tool_calls:
-        func_name = tool_call.function.name
-        func_args = json.loads(tool_call.function.arguments)
+<p>That&rsquo;s the full round trip. User asks a question. Model decides it needs a tool. Model outputs JSON describing the call. Your code executes it. Result goes back to the model. Model generates a human-readable answer grounded in real data.</p>
 
-        # Execute the function
-        result = available_functions[func_name](**func_args)
+<p>I want to be honest: when I first saw this pattern, my reaction was &ldquo;wait, that&rsquo;s it?&rdquo; I expected some deep magic &mdash; some special neural pathway for tool use. There isn&rsquo;t one. The model was fine-tuned to output valid JSON in a specific format when given tool schemas. That&rsquo;s the entire trick. The engineering is in the loop around the model, not in the model itself.</p>
 
-        # Append the tool result to conversation
-        messages.append({
-            "role": "tool",
-            "tool_call_id": tool_call.id,
-            "content": json.dumps(result)
-        })
-
-    # Step 3: Get final response with tool results in context
-    final_response = client.chat.completions.create(
-        model="gpt-4o", messages=messages, tools=tools
-    )
-    print(final_response.choices[0].message.content)
-    # → "It's currently 22°C and sunny in Paris!"</code></pre>
-
-<h3>Parallel Function Calling</h3>
-
-<p>Models can request multiple tool calls in a single response. If a user asks &ldquo;compare weather in Tokyo and London,&rdquo; the model will emit <em>two</em> <code>get_weather</code> calls simultaneously. Your code should execute them in parallel:</p>
-
-<pre><code>import asyncio, json
-
-async def execute_tool_calls(tool_calls, available_functions):
-    """Execute multiple tool calls concurrently."""
-    async def run_one(tc):
-        func = available_functions[tc.function.name]
-        args = json.loads(tc.function.arguments)
-        result = await asyncio.to_thread(func, **args)  # run sync func in thread
-        return {
-            "role": "tool",
-            "tool_call_id": tc.id,
-            "content": json.dumps(result)
-        }
-    return await asyncio.gather(*[run_one(tc) for tc in tool_calls])</code></pre>
-
-<h3>The Trust Boundary</h3>
-
-<p>Not all tools are created equal. Some are safe to auto-execute; others need a human in the loop.</p>
-
-<table>
-  <thead>
-    <tr>
-      <th>Risk Level</th>
-      <th>Examples</th>
-      <th>Policy</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><strong>Read-only</strong></td>
-      <td>Search, weather lookup, database SELECT</td>
-      <td>Auto-execute freely</td>
-    </tr>
-    <tr>
-      <td><strong>Limited write</strong></td>
-      <td>Create draft email, add calendar event</td>
-      <td>Auto-execute with logging</td>
-    </tr>
-    <tr>
-      <td><strong>Significant write</strong></td>
-      <td>Send email, make purchase, database INSERT/UPDATE</td>
-      <td>Require human approval</td>
-    </tr>
-    <tr>
-      <td><strong>Dangerous</strong></td>
-      <td>Delete records, execute arbitrary code, transfer funds</td>
-      <td>Strict approval + confirmation</td>
-    </tr>
-  </tbody>
-</table>
-
-<div class="warning-box">
-  <strong>Never auto-execute destructive tools.</strong> An agent with unrestricted access to <code>execute_sql</code> can and will run <code>DROP TABLE</code> if it hallucinates that as the right action. Always enforce tool-level permissions. Read-only tools should be genuinely read-only at the infrastructure level, not just at the prompt level. Prompt-level restrictions are suggestions; code-level restrictions are guarantees.
+<div class="info-box">
+  <strong>A kitchen analogy.</strong> Think of the LLM as a chef. The chef reads the order (user message), looks at the menu of available ingredients and kitchen tools (tool schemas), and writes a prep ticket: &ldquo;I need 200g of diced onions&rdquo; (the JSON tool call). The sous-chef (your code) does the actual chopping, hands the bowl back, and the chef continues cooking. The chef never touches the knife. The chef&rsquo;s genius is knowing <em>what</em> to ask for and <em>when</em>.
 </div>
 
+<p>Now let&rsquo;s give our trip planner a second tool: flight search.</p>
+
+<pre><code>tools = [
+    { ... get_weather ... },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_flights",
+            "description": "Search for flights between two cities on a given date",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "origin": {"type": "string", "description": "Departure city"},
+                    "destination": {"type": "string", "description": "Arrival city"},
+                    "date": {"type": "string", "description": "Date in YYYY-MM-DD"},
+                    "max_price": {"type": "number", "description": "Max price in USD"}
+                },
+                "required": ["origin", "destination", "date"]
+            }
+        }
+    }
+]</code></pre>
+
+<p>With two tools available, something interesting happens. When the user says &ldquo;Plan me a trip to Lisbon from New York, June 15-22, budget $2000,&rdquo; the model has to <em>decide</em> which tool to call first. And once it gets the first result, it needs to decide whether to call another tool or respond. This decision-making &mdash; this interleaving of thinking and acting &mdash; is what leads us to the next pattern.</p>
+
+<p>But there&rsquo;s a problem. A single function-call round trip is enough for simple questions. For complex requests, the model needs to call tools <em>multiple times</em>, examining each result before deciding what to do next. It needs to <em>think out loud</em>. It needs a pattern.</p>
+
+
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  PART 4 — THE ReAct PATTERN                                        -->
+<!--  THE REACT PATTERN                                                  -->
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 
 <h2>The ReAct Pattern</h2>
 
-<p>ReAct (Reasoning + Acting) is the most widely used agent pattern, and for good reason: it&rsquo;s simple, effective, and easy to debug. The idea is that the model alternates between <strong>thinking</strong> (reasoning in natural language) and <strong>acting</strong> (calling tools), with each observation feeding into the next thought.</p>
+<p>In 2023, Yao et al. published a paper called &ldquo;ReAct: Synergizing Reasoning and Acting in Language Models.&rdquo; The core idea is disarmingly simple: let the model <strong>think out loud</strong> before each action. Instead of going straight from observation to tool call, the model writes an explicit <strong>Thought</strong> explaining its reasoning, then specifies an <strong>Action</strong>, then receives an <strong>Observation</strong> (the result). This Thought-Action-Observation cycle repeats until the model decides it has enough information to answer.</p>
 
-<pre><code># ReAct trace example:
-#
-# User: "How many employees joined after the company's last funding round?"
-#
-# Thought 1: I need to find when the last funding round was, then count
-#            employees who joined after that date. Let me check the
-#            funding_rounds table first.
-#
-# Action 1:  execute_sql("SELECT MAX(date) FROM funding_rounds")
-# Observation 1: 2024-03-15
-#
-# Thought 2: Last funding was March 15, 2024. Now I need to count
-#            employees with a start_date after that.
-#
-# Action 2:  execute_sql("SELECT COUNT(*) FROM employees
-#                         WHERE start_date > '2024-03-15'")
-# Observation 2: 23
-#
-# Thought 3: 23 employees joined after the last funding round. I have
-#            the answer.
-#
-# Final Answer: 23 employees joined after the company's last funding
-#               round (March 15, 2024).</code></pre>
+<p>I resisted this idea for a while. &ldquo;Why does the model need to think out loud?&rdquo; I thought. &ldquo;It&rsquo;s already reasoning internally.&rdquo; But the internal reasoning of an LLM is opaque &mdash; it happens in hidden states we can&rsquo;t inspect. When you force the model to write down its reasoning as literal text tokens, two things happen. First, the reasoning gets better because each thought token conditions the generation of subsequent tokens. Second, <em>you</em> get a trace you can debug, log, and audit. That second point turns out to matter enormously in production.</p>
 
-<p>Why does this work? Two reasons. First, forcing the model to write out its reasoning before each action reduces errors &mdash; it&rsquo;s chain-of-thought prompting applied to action selection. Second, each observation grounds the model in reality. It&rsquo;s not hallucinating a database schema; it&rsquo;s reading real results.</p>
+<p>Here is what a ReAct trace looks like for our trip planner. The user says: &ldquo;Plan a 7-day trip to Lisbon from NYC in June, budget $2000.&rdquo;</p>
 
-<h3>Simple ReAct Implementation</h3>
+<pre><code>Thought: The user wants a trip to Lisbon from NYC in June with a $2000 budget.
+         I need to figure out: (1) weather, (2) flight costs, (3) whether the
+         budget is realistic. Let me start with flights since that's the
+         biggest expense.
 
-<pre><code>import openai, json
+Action: search_flights(origin="New York", destination="Lisbon",
+                       date="2025-06-15", max_price=800)
 
-client = openai.OpenAI()
+Observation: Found 3 flights. Cheapest: TAP Portugal, $487 round trip.
+             Mid-range: United, $612. Premium: Delta, $789.
 
-SYSTEM_PROMPT = """You are a helpful agent with access to tools.
+Thought: Great, the cheapest flight is $487 round trip. That leaves about
+         $1513 for 7 nights of accommodation, food, and activities. Let me
+         check the weather to know what kind of activities to recommend.
 
-For each step, you MUST follow this format:
-Thought: [your reasoning about what to do next]
-Action: [tool call]
+Action: get_weather(city="Lisbon", start_date="2025-06-15",
+                    end_date="2025-06-22")
 
-After receiving tool results, reason about them before taking the next action.
-When you have enough information, provide your final answer."""
+Observation: Sunny, highs 27-30°C, lows 17-19°C, precipitation 5%.
 
-def react_loop(user_query: str, tools: list, available_functions: dict,
-               max_steps: int = 10) -> str:
-    """Execute a ReAct loop until the agent produces a final answer."""
+Thought: Perfect weather for outdoor activities and beaches. With $1513
+         remaining after flights, that's about $216/day for hotel and
+         expenses. That's reasonable for Lisbon. I have enough information
+         to give a solid recommendation.
+
+Action: respond_to_user(...)
+
+Final Answer: "Here's your Lisbon trip plan! Flights: TAP Portugal at $487
+round trip departing June 15. Weather: gorgeous — sunny skies, 27-30°C.
+Budget breakdown: $487 flights, ~$700 hotel (7 nights at ~$100/night in
+Alfama or Baixa), ~$350 food, ~$463 for activities and transport..."</code></pre>
+
+<p>Notice the rhythm. Thought, Action, Observation. Thought, Action, Observation. Each thought explicitly reasons about what the agent knows so far and what it needs next. Each action is a concrete tool call. Each observation provides new data that feeds the next thought. The model is having a conversation with the world, one careful step at a time.</p>
+
+<p>Let me show you the code that implements this loop. It&rsquo;s shorter than you might expect:</p>
+
+<pre><code>def react_agent(user_query, tools, max_steps=10):
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": """You are a trip planning assistant.
+Think step-by-step. For each step, write a Thought explaining your
+reasoning, then call a tool if needed. When you have enough information,
+respond to the user directly."""},
         {"role": "user", "content": user_query}
     ]
 
     for step in range(max_steps):
-        response = client.chat.completions.create(
+        response = openai.chat.completions.create(
             model="gpt-4o",
             messages=messages,
-            tools=tools,
-            tool_choice="auto"
+            tools=tools
         )
 
-        assistant_msg = response.choices[0].message
-        messages.append(assistant_msg)
+        msg = response.choices[0].message
+        messages.append(msg)
 
-        # If no tool calls, the agent is done reasoning → return answer
-        if not assistant_msg.tool_calls:
-            return assistant_msg.content
+        # If the model wants to call tools
+        if msg.tool_calls:
+            for tool_call in msg.tool_calls:
+                func_name = tool_call.function.name
+                func_args = json.loads(tool_call.function.arguments)
 
-        # Execute each tool call
-        for tool_call in assistant_msg.tool_calls:
-            func_name = tool_call.function.name
-            func_args = json.loads(tool_call.function.arguments)
+                # Execute the real function
+                result = execute_tool(func_name, func_args)
 
-            print(f"  Step {step+1}: {func_name}({func_args})")
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": json.dumps(result)
+                })
+        else:
+            # No tool calls means the model is done — return the answer
+            return msg.content
 
-            try:
-                result = available_functions[func_name](**func_args)
-                result_str = json.dumps(result)
-            except Exception as e:
-                result_str = json.dumps({"error": str(e)})
+    return "Agent exceeded maximum steps without completing the task."</code></pre>
 
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "content": result_str
-            })
+<p>That <code>max_steps=10</code> parameter is doing more work than it looks. Without it, a confused agent could loop forever, burning tokens and money. I learned this the hard way when an early prototype got stuck in a loop trying to find a &ldquo;direct flight from Omaha to Reykjavik&rdquo; that didn&rsquo;t exist, calling the search API over and over with slightly different date permutations. Seventeen API calls and $0.80 in tokens later, I added the guard.</p>
 
-    return "Agent reached maximum steps without a final answer."</code></pre>
+<p>The ReAct pattern is beautiful for tasks where each step depends on the previous result. Check the weather, then decide on activities. Search for flights, then adjust the budget. But it has a limitation that becomes apparent on complex tasks: it&rsquo;s <em>myopic</em>. The model only decides one step at a time. It doesn&rsquo;t lay out the full plan upfront, which means it can wander, double back, or miss things entirely. For our simple trip planner, that&rsquo;s fine. For a complex multi-day research task, we need something more structured.</p>
 
-<div class="info-box">
-  <strong>The <code>max_steps</code> guard is non-negotiable.</strong> Without it, an agent stuck in a loop will keep calling tools forever &mdash; burning tokens and money. Always set a maximum iteration count, and consider adding a token budget limit too. In production, 5&ndash;15 steps covers most tasks. If an agent consistently needs more, the task may be better decomposed into sub-tasks.
-</div>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  PART 5 — PLANNING STRATEGIES                                      -->
+<!--  PLANNING & TASK DECOMPOSITION                                     -->
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 
-<h2>Planning Strategies</h2>
+<h2>Planning &amp; Task Decomposition</h2>
 
-<p>How should an agent decide what to do? There&rsquo;s no single answer. Different tasks call for different planning strategies.</p>
+<p>The single hardest problem in agentic AI is not tool calling or memory. It&rsquo;s planning. I&rsquo;ve spent more time debugging agent plans than any other component. A model that calls the wrong tool once can recover. A model that starts with a bad plan will confidently execute a series of perfectly-formed but fundamentally misguided steps, arriving at a detailed, well-formatted, completely wrong answer.</p>
 
-<h3>Plan-and-Execute</h3>
+<p>There are three main approaches to planning, and they sit on a spectrum from reactive to deliberate.</p>
 
-<p>Make a full plan upfront, then execute each step. A &ldquo;planner&rdquo; LLM call creates the plan, then an &ldquo;executor&rdquo; handles each step, potentially re-planning if something goes wrong.</p>
+<h3>ReAct: One Step at a Time</h3>
 
-<pre><code># Plan-and-Execute flow:
-#
-# User: "Create a report on Q3 sales by region"
-#
-# PLANNING PHASE (one LLM call):
-#   Plan:
-#     1. Query total Q3 sales grouped by region
-#     2. Query Q2 sales for comparison
-#     3. Calculate quarter-over-quarter growth
-#     4. Generate summary with key findings
-#     5. Format as markdown report
-#
-# EXECUTION PHASE (one step at a time):
-#   Execute step 1 → observe result → execute step 2 → ...
-#   If step fails → re-plan remaining steps</code></pre>
+<p>We already covered this. The model doesn&rsquo;t plan ahead. It thinks about the immediate next action, takes it, observes the result, and decides the next step. It&rsquo;s greedy &mdash; in the algorithmic sense. Good for short tasks (2-5 steps). Gets lost on longer ones because there&rsquo;s no global view of what&rsquo;s been done and what remains.</p>
 
-<h3>ReAct (One Step at a Time)</h3>
+<h3>Plan-and-Execute: Think First, Do Second</h3>
 
-<p>No upfront plan. The agent decides the next action based on everything it&rsquo;s seen so far. More flexible, better for tasks where you don&rsquo;t know what you&rsquo;ll find.</p>
+<p>The alternative is to make the plan explicit. Before calling any tools, the model writes out a complete plan &mdash; a numbered list of steps. Then a separate execution phase works through the plan step by step, potentially revising it as new information comes in.</p>
 
-<h3>Reflexion</h3>
+<p>Back to our kitchen analogy: a ReAct chef starts cooking immediately, deciding each step as they go. A Plan-and-Execute chef reads the full recipe first, gathers all ingredients, then starts cooking. The second chef is slower to start but less likely to realize halfway through that they forgot to buy eggs.</p>
 
-<p>Try, fail, reflect on <em>why</em> you failed, then retry with the lesson learned. This adds a self-critique step that dramatically improves performance on tasks where the first attempt often isn&rsquo;t perfect.</p>
+<p>Here is what Plan-and-Execute looks like for our trip planner:</p>
 
-<pre><code># Reflexion flow:
-#
-# Attempt 1:
-#   Agent tries to solve the task → produces result
-#   Evaluator checks result → FAIL (wrong output)
-#
-# Reflection:
-#   "I failed because I used the wrong column name.
-#    The table has 'revenue' not 'sales'. I should check
-#    the schema first next time."
-#
-# Attempt 2:
-#   Agent retries WITH the reflection in context
-#   → checks schema first → uses correct column → SUCCESS</code></pre>
+<pre><code># Phase 1: Planning (LLM generates the plan)
+User: "Plan a 7-day trip to Lisbon from NYC, June 15-22, budget $2000.
+       I love seafood and history."
 
-<h3>When to Use Which</h3>
+Plan:
+  1. Search for round-trip flights NYC → Lisbon, June 15-22
+  2. Get weather forecast for Lisbon, June 15-22
+  3. Search for hotels in Lisbon, 7 nights, budget ~$100/night
+  4. Find top-rated seafood restaurants in Lisbon
+  5. Find historical sites and museums in Lisbon
+  6. Estimate daily budget (transport, food, activities)
+  7. Compile everything into a day-by-day itinerary
 
-<table>
-  <thead>
-    <tr>
-      <th>Strategy</th>
-      <th>Best For</th>
-      <th>Weakness</th>
-      <th>Steps Visibility</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><strong>ReAct</strong></td>
-      <td>Exploratory tasks, unknown structure, Q&amp;A</td>
-      <td>Can lose track of long-term goal</td>
-      <td>One step ahead</td>
-    </tr>
-    <tr>
-      <td><strong>Plan-and-Execute</strong></td>
-      <td>Well-defined multi-step tasks, reports, pipelines</td>
-      <td>Upfront plan can be wrong; replanning adds latency</td>
-      <td>Full plan upfront</td>
-    </tr>
-    <tr>
-      <td><strong>Reflexion</strong></td>
-      <td>Code generation, tasks with verifiable output</td>
-      <td>Expensive (multiple full attempts); needs evaluator</td>
-      <td>Full attempt + retry</td>
-    </tr>
-    <tr>
-      <td><strong>ReAct + Plan</strong></td>
-      <td>Complex tasks needing both structure and flexibility</td>
-      <td>Higher implementation complexity</td>
-      <td>Plan, but flexible execution</td>
-    </tr>
-  </tbody>
-</table>
+# Phase 2: Execution (work through each step)
+Executing step 1... search_flights("NYC", "Lisbon", "2025-06-15") → $487
+Executing step 2... get_weather("Lisbon", "2025-06-15", "2025-06-22") → sunny, 28°C
+Executing step 3... search_hotels("Lisbon", "2025-06-15", 7, 100) → Hotel Alfama $89/night
+...
 
-<div class="info-box">
-  <strong>Start with ReAct.</strong> It&rsquo;s the simplest to implement, the easiest to debug (just read the trace), and handles 80% of agent tasks well enough. Move to Plan-and-Execute when your agents keep losing track of multi-step goals. Add Reflexion when you have a way to verify outputs and the task is hard enough that first attempts regularly fail.
-</div>
+# Phase 3: Synthesis (combine results into final answer)
+Final itinerary: [detailed day-by-day plan]</code></pre>
+
+<p>The advantage is clarity. You can log the plan, show it to the user for approval, and track progress against it. The disadvantage is rigidity. What if step 1 reveals flights cost $1500 and the entire plan needs restructuring? A rigid planner will keep executing steps 2-7 as if nothing happened. A good Plan-and-Execute system includes a <strong>replanning</strong> step: after each execution, check whether the plan still makes sense given what you&rsquo;ve learned.</p>
+
+<h3>Reflexion: Learn from Mistakes</h3>
+
+<p>The third approach is the most ambitious. <strong>Reflexion</strong> (Shinn et al., 2023) adds a self-critique loop. The agent attempts a task, evaluates its own output, identifies what went wrong, and tries again with the benefit of that reflection. It&rsquo;s inspired by how humans actually learn: try, fail, think about why you failed, try again differently.</p>
+
+<pre><code># Reflexion loop (simplified)
+for attempt in range(max_attempts):
+    result = agent.execute(task)
+    evaluation = agent.evaluate(result, task)
+
+    if evaluation.success:
+        return result
+
+    # Self-reflection: what went wrong?
+    reflection = agent.reflect(task, result, evaluation)
+    # e.g., "I booked a hotel outside the city center because I didn't
+    #         check the distance to the historical district. Next time,
+    #         I should filter hotels by proximity to Alfama."
+
+    agent.memory.add(reflection)  # remember for next attempt</code></pre>
+
+<p>Reflexion is powerful but expensive. Each retry costs a full execution pass. For our trip planner, it might mean planning the entire trip, realizing the budget doesn&rsquo;t work, reflecting on why (&ldquo;I should have checked flight prices before allocating the hotel budget&rdquo;), and replanning from scratch. Three attempts means three times the API calls and tokens.</p>
+
+<p>Here is a practical way to think about when to use which pattern:</p>
+
+<p><strong>ReAct</strong> works when tasks are short (under 5 steps), each step has low cost, and the model needs to adapt quickly to new information. Good for: answering a question that requires 1-3 tool calls, real-time chat with tool access.</p>
+
+<p><strong>Plan-and-Execute</strong> works when tasks are complex (5-15 steps), the user benefits from seeing the plan upfront, and steps are somewhat predictable. Good for: trip planning, report generation, multi-step research.</p>
+
+<p><strong>Reflexion</strong> works when there&rsquo;s a clear success criterion the agent can evaluate, retries are acceptable, and the task is hard enough that the first attempt often fails. Good for: code generation, math problems, any task with a verifiable answer.</p>
+
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  PART 6 — MEMORY SYSTEMS                                           -->
+<!--  MEMORY SYSTEMS                                                     -->
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 
 <h2>Memory Systems</h2>
 
-<p>An agent without memory forgets everything between turns. That&rsquo;s fine for single-shot tasks, but real-world agents need to remember context, learn from past interactions, and track progress on long tasks. Memory in agentic systems typically splits into three types:</p>
+<p>Here is an embarrassing confession. The first agent I built worked beautifully for about four exchanges. Then it started repeating itself, forgot the user&rsquo;s budget, and recommended a hotel in Barcelona when we were planning a trip to Lisbon. The problem was memory &mdash; or rather, the lack of it. I had been naively stuffing everything into the conversation history, and after a dozen tool calls the context window was full of JSON noise and the model had lost the plot.</p>
 
-<h3>Short-Term Memory: The Context Window</h3>
+<p>Memory is where the intern analogy gets really useful. Think about what a real intern has access to:</p>
 
-<p>This is the conversation history &mdash; every message, tool call, and tool result that fits within the model&rsquo;s context window. It&rsquo;s &ldquo;free&rdquo; in the sense that you don&rsquo;t need any extra infrastructure, but it&rsquo;s bounded. A 128k-token context window sounds huge until an agent has made 15 tool calls, each returning a few thousand tokens of database results.</p>
+<p>They have a <strong>desk</strong> with limited space &mdash; that&rsquo;s the <strong>context window</strong>. Only so many papers fit. This is <strong>short-term memory</strong>: the current conversation, the last few tool results, the immediate task. For current models, this is typically 128K tokens, which sounds like a lot until you start packing in tool results. A single API response from a flight search might be 2,000 tokens. Ten tool calls and you&rsquo;ve eaten 20,000 tokens of context with raw data.</p>
 
-<h3>Working Memory: The Scratchpad</h3>
+<p>They have a <strong>notepad</strong> where they jot down key findings and running calculations &mdash; that&rsquo;s the <strong>scratchpad</strong> or <strong>working memory</strong>. It&rsquo;s a condensed summary: &ldquo;Cheapest flight: $487 TAP. Weather: sunny 28°C. Remaining budget: $1513.&rdquo; Instead of keeping all the raw tool outputs in context, you can periodically summarize them into a scratchpad that takes a fraction of the tokens.</p>
 
-<p>A dedicated space for the agent to track its current task state. Think of it like a notepad the agent writes to and reads from. Common implementations use a special &ldquo;memory&rdquo; tool or a system message that gets updated:</p>
+<pre><code># Working memory: a scratchpad maintained by the agent
+scratchpad = """
+## Trip Planning Progress
+- Destination: Lisbon, June 15-22
+- Budget: $2000
+- Flights: TAP Portugal $487 RT (BOOKED)
+- Weather: Sunny, 27-30°C, low rain chance
+- Hotel: Searching... budget ~$100/night
+- Remaining budget: $1513
+- User preferences: seafood, history
+"""</code></pre>
 
-<pre><code># Working memory as a tool
-working_memory_tool = {
-    "type": "function",
-    "function": {
-        "name": "update_scratchpad",
-        "description": "Save important findings or intermediate results. "
-                       "Use this to remember key facts across many steps.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "key": {"type": "string", "description": "Label for this note"},
-                "value": {"type": "string", "description": "The information to save"}
-            },
-            "required": ["key", "value"]
-        }
-    }
-}
+<p>They have a <strong>filing cabinet</strong> (or access to the company&rsquo;s shared drive) where past projects live &mdash; that&rsquo;s <strong>long-term memory</strong>, typically implemented as a <strong>vector database</strong>. When the agent needs to recall something from a previous conversation or a large knowledge base, it performs a similarity search. &ldquo;What did this user prefer on their last trip?&rdquo; triggers a vector lookup that retrieves the relevant past context.</p>
 
-# The scratchpad contents get injected into the system prompt
-scratchpad = {}
+<pre><code># Long-term memory: vector DB retrieval
+def retrieve_user_preferences(user_id, query):
+    # Embed the query
+    query_embedding = embed(query)
 
-def update_scratchpad(key: str, value: str) -> str:
-    scratchpad[key] = value
-    return f"Saved: {key}"
+    # Search the vector DB for relevant past interactions
+    results = vector_db.search(
+        collection="user_memories",
+        query_vector=query_embedding,
+        filter={"user_id": user_id},
+        top_k=5
+    )
 
-def build_system_prompt():
-    base = "You are a helpful agent..."
-    if scratchpad:
-        notes = "\n".join(f"- {k}: {v}" for k, v in scratchpad.items())
-        base += f"\n\nYour working notes:\n{notes}"
-    return base</code></pre>
+    return results
+    # Returns things like:
+    # "User prefers window seats"
+    # "User is allergic to shellfish (contradicts seafood preference — clarify!)"
+    # "Last trip was Rome, enjoyed walking tours"</code></pre>
 
-<h3>Long-Term Memory: Retrieval-Augmented</h3>
+<p>And finally, there&rsquo;s <strong>episodic memory</strong>: specific memories of past experiences. &ldquo;Last time I tried to book through this API, it was down on weekends&rdquo; or &ldquo;The user got frustrated when I gave too many options &mdash; limit to three choices.&rdquo; Episodic memory is what Reflexion creates: memories born from specific successes and failures that guide future behavior.</p>
 
-<p>For agents that operate across sessions &mdash; remember a user&rsquo;s preferences, learn from past successes and failures, recall facts from weeks-old conversations &mdash; you need a persistent memory store. The standard approach is a vector database:</p>
+<p>The art of agent memory design is knowing what to put where. Raw tool outputs go into short-term memory and get summarized into the scratchpad. Key facts and user preferences go into long-term storage. Lessons learned from failures go into episodic memory. And every few steps, you garbage-collect: remove stale data from the context, keep only what the model needs for the current step.</p>
 
-<pre><code># Long-term memory with vector search
-#
-# STORING memories:
-#   1. Agent completes a task or learns something important
-#   2. Create a text summary of the memory
-#   3. Embed it with an embedding model
-#   4. Store embedding + text + metadata in vector DB
-#
-# RETRIEVING memories:
-#   1. New user query arrives
-#   2. Embed the query
-#   3. Vector search for similar past memories
-#   4. Inject top-k results into the agent's context
-#
-# ┌─────────────┐    embed    ┌──────────────┐
-# │ "User prefers│ ─────────► │ Vector DB    │
-# │  metric units│            │ (ChromaDB,   │
-# │  for weather"│            │  Pinecone,   │
-# └─────────────┘            │  Weaviate)   │
-#                             └──────┬───────┘
-#                                    │ similarity search
-#                                    ▼
-#                             ┌──────────────┐
-#                             │ Top-k matches│
-#                             │ injected into│
-#                             │ agent context│
-#                             └──────────────┘</code></pre>
+<pre><code># Memory management in practice
+def manage_memory(messages, scratchpad, step_count):
+    if step_count % 5 == 0:
+        # Every 5 steps, compress old tool results
+        summary = llm("Summarize these tool results into key facts: "
+                      + format_recent_tools(messages))
+        scratchpad.update(summary)
 
-<h3>The Memory Challenge</h3>
+        # Remove verbose tool outputs from message history
+        messages = compress_messages(messages, keep_last=3)
 
-<p>Memory in agents is an unsolved problem. Context windows are finite. Summarization loses detail. Vector search can miss relevant memories or retrieve irrelevant ones. And every token of memory you inject is a token you can&rsquo;t use for reasoning.</p>
+    # Always inject the scratchpad into the system prompt
+    messages[0]["content"] += f"\n\nCurrent progress:\n{scratchpad}"
 
-<table>
-  <thead>
-    <tr>
-      <th>Memory Type</th>
-      <th>Persistence</th>
-      <th>Capacity</th>
-      <th>Retrieval</th>
-      <th>Limitation</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><strong>Short-term</strong> (context)</td>
-      <td>Single session</td>
-      <td>128k tokens (model-dependent)</td>
-      <td>Always available</td>
-      <td>Finite, expensive per token</td>
-    </tr>
-    <tr>
-      <td><strong>Working</strong> (scratchpad)</td>
-      <td>Single task</td>
-      <td>A few KB</td>
-      <td>Always available</td>
-      <td>Eats into context window</td>
-    </tr>
-    <tr>
-      <td><strong>Long-term</strong> (vector DB)</td>
-      <td>Persistent</td>
-      <td>Unlimited</td>
-      <td>Requires search query</td>
-      <td>Retrieval quality varies</td>
-    </tr>
-  </tbody>
-</table>
+    return messages</code></pre>
 
-<div class="info-box">
-  <strong>Practical tip:</strong> Most production agents work fine with just short-term memory (conversation context) plus a simple scratchpad. Long-term memory is powerful but adds significant complexity &mdash; embedding pipelines, vector DB ops, retrieval tuning. Add it when you have a clear use case (e.g., a personal assistant that needs to remember user preferences across sessions), not as a default.
-</div>
+<p>I cannot overstate how much difference good memory management makes. The same model, with the same tools, will produce dramatically better results when its context window contains a clean scratchpad of key facts instead of a wall of raw JSON from six different API calls. It&rsquo;s the difference between our intern working at a clean desk with organized notes versus drowning in a pile of unsorted printouts.</p>
+
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  PART 7 — MULTI-AGENT SYSTEMS                                      -->
+<!--  REST STOP                                                          -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+
+<h2>Rest Stop: Single-Agent Architecture</h2>
+
+<div class="info-box">
+  <strong>You can stop here.</strong> If you&rsquo;re building a tool-using assistant &mdash; a chatbot that can look up information, call APIs, and answer questions grounded in real data &mdash; you now have everything you need. The perceive-reason-act loop, function calling, ReAct for multi-step reasoning, a planning strategy, and memory management. That covers the vast majority of agentic applications in production today. The mental model is: <strong>LLM + tools + a while-loop with a max-step guard + a scratchpad = a useful agent.</strong> What follows is what you need when a single agent isn&rsquo;t enough.
+</div>
+
+<p>Take a breath. Let&rsquo;s recap where we are with a snapshot of our trip planner. It&rsquo;s a single agent with two tools (weather and flights), a ReAct loop for step-by-step reasoning, and a scratchpad that tracks progress. It can handle straightforward trip queries reasonably well. But when we asked it to plan a complex two-week multi-city tour &mdash; Lisbon, then Porto, then a day trip to Sintra, with restaurant reservations and museum tickets &mdash; it started to struggle. Too many tools, too many steps, too much context. It&rsquo;s like asking one intern to do the work of an entire travel agency.</p>
+
+<p>So let&rsquo;s give it colleagues.</p>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  MULTI-AGENT SYSTEMS                                                -->
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 
 <h2>Multi-Agent Systems</h2>
 
-<p>Sometimes one agent isn&rsquo;t enough. Complex tasks benefit from multiple specialized agents working together, each with its own tools, system prompt, and expertise. Think of it like a team: you wouldn&rsquo;t ask one person to be the researcher, writer, reviewer, and publisher all at once.</p>
+<p>I&rsquo;ll be honest: when I first heard &ldquo;multi-agent systems,&rdquo; my reaction was skepticism. It sounded like over-engineering. Why use three LLM calls when one could work? But after watching a single agent collapse under the weight of a complex planning task &mdash; juggling flights, hotels, restaurants, weather, budget constraints, and user preferences all at once &mdash; I understood. The same reason companies have teams instead of one person doing everything applies to agents.</p>
 
-<h3>Supervisor Pattern</h3>
+<p>Back to the kitchen. A single chef (our LLM) handling one dish at a time works fine for a dinner party. But a restaurant kitchen has a <strong>brigade system</strong>: an executive chef directing the operation, a saucier for sauces, a poissonnier for fish, a pâtissier for desserts. Each specialist is excellent at their narrow domain. The executive chef coordinates. That&rsquo;s multi-agent architecture.</p>
 
-<p>One &ldquo;manager&rdquo; agent receives the user&rsquo;s request, breaks it into subtasks, and delegates to specialized worker agents. The supervisor decides which worker to call, how to combine results, and when the task is complete.</p>
+<p>There are three dominant patterns for connecting multiple agents, and each one maps to a real organizational structure.</p>
 
-<pre><code># Supervisor pattern
-#
-#                  ┌──────────────┐
-#     User ──────► │  Supervisor  │ ◄── decides who to call
-#                  └──┬───┬───┬──┘
-#                     │   │   │
-#            ┌────────┘   │   └────────┐
-#            ▼            ▼            ▼
-#     ┌────────────┐ ┌─────────┐ ┌──────────┐
-#     │ Researcher │ │ Analyst │ │  Writer  │
-#     │ (search,   │ │ (SQL,   │ │ (format, │
-#     │  browse)   │ │  calc)  │ │  draft)  │
-#     └────────────┘ └─────────┘ └──────────┘</code></pre>
+<h3>The Supervisor Pattern (One Boss Delegates)</h3>
 
-<h3>Debate Pattern</h3>
+<p>One agent acts as the manager. It receives the user&rsquo;s request, breaks it into subtasks, and delegates each subtask to a specialist agent. The specialist agents each have their own tool set and system prompt. They complete their work and report back to the supervisor, who synthesizes the results.</p>
 
-<p>Multiple agents tackle the same problem independently, then &ldquo;debate&rdquo; their solutions. Useful for tasks where you want high confidence &mdash; if three agents independently reach the same conclusion, it&rsquo;s probably right.</p>
+<pre><code># Supervisor pattern for our trip planner
+class TripPlannerSupervisor:
+    def __init__(self):
+        self.flight_agent = Agent(
+            name="FlightAgent",
+            tools=[search_flights, compare_airlines],
+            system_prompt="You are a flight search specialist..."
+        )
+        self.hotel_agent = Agent(
+            name="HotelAgent",
+            tools=[search_hotels, check_reviews],
+            system_prompt="You are an accommodation specialist..."
+        )
+        self.activity_agent = Agent(
+            name="ActivityAgent",
+            tools=[search_restaurants, find_attractions, check_tickets],
+            system_prompt="You are a local activities specialist..."
+        )
+        self.supervisor = Agent(
+            name="Supervisor",
+            tools=[delegate_to_agent],
+            system_prompt="""You are a trip planning supervisor.
+Break the user's request into subtasks and delegate to:
+- FlightAgent for flights
+- HotelAgent for accommodation
+- ActivityAgent for restaurants and attractions
+Synthesize their results into a cohesive plan."""
+        )
 
-<h3>Assembly Line (Sequential Pipeline)</h3>
+    def plan_trip(self, user_request):
+        return self.supervisor.run(user_request)</code></pre>
 
-<p>Each agent handles one stage, passing its output to the next. Like a manufacturing pipeline: researcher &rarr; drafter &rarr; reviewer &rarr; editor. Each stage is focused and well-defined.</p>
+<p>The supervisor pattern is the most common in production. It&rsquo;s predictable, easy to debug (you can inspect each specialist&rsquo;s output independently), and fails gracefully (if the hotel agent errors, the flight results are still good).</p>
+
+<h3>The Debate Pattern (Agents Argue)</h3>
+
+<p>Multiple agents look at the same problem from different perspectives and argue until they converge. This is powerful for decisions where there&rsquo;s no single right answer. For our trip planner, imagine a &ldquo;Budget Agent&rdquo; that prioritizes saving money and a &ldquo;Luxury Agent&rdquo; that prioritizes experience. They debate each choice:</p>
+
+<pre><code># Debate pattern (simplified)
+budget_agent_says = "The hostel in Alfama is $35/night and has great reviews."
+luxury_agent_says = "A boutique hotel in Chiado at $120/night puts you walking
+                     distance from everything. The time saved on transit is
+                     worth the extra cost."
+budget_agent_replies = "At $120/night for 7 nights, that's $840 just for the
+                        hotel — 42% of the total budget. The hostel leaves
+                        more for experiences."
+
+# A judge agent or the supervisor decides
+judge_says = "Given the user's preference for history and walking tours,
+              the Chiado location is worth the premium. Recommend Chiado
+              but offer the hostel as a budget alternative."</code></pre>
+
+<p>The debate pattern produces more nuanced outputs but costs significantly more in tokens (every exchange is an LLM call). Use it when the quality of the decision matters more than the cost of deliberation.</p>
+
+<h3>The Assembly Line Pattern (Sequential Handoff)</h3>
+
+<p>Agents are arranged in a pipeline. The output of one becomes the input of the next, like an assembly line in a factory. For our trip planner: a Research Agent gathers raw data, a Planning Agent structures it into an itinerary, a Budget Agent verifies costs and adjusts, and a Writing Agent formats the final recommendation.</p>
 
 <pre><code># Assembly line pattern
-#
-# User input
-#     │
-#     ▼
-# ┌───────────────┐   ┌───────────────┐   ┌───────────────┐
-# │  Researcher   │──►│    Drafter    │──►│   Reviewer    │──► Final output
-# │  (gathers     │   │  (writes      │   │  (critiques,  │
-# │   facts)      │   │   content)    │   │   improves)   │
-# └───────────────┘   └───────────────┘   └───────────────┘</code></pre>
+raw_data = research_agent.run("Gather flight, hotel, weather data for Lisbon trip")
+structured_plan = planning_agent.run(f"Create day-by-day itinerary from: {raw_data}")
+verified_plan = budget_agent.run(f"Verify budget and adjust: {structured_plan}")
+final_output = writing_agent.run(f"Format this into a polished plan: {verified_plan}")</code></pre>
 
-<h3>When Multi-Agent Helps vs. Single Agent</h3>
+<p>The assembly line is conceptually the cleanest but also the most fragile. Each handoff is a potential point of information loss. If the research agent forgets to include the user&rsquo;s seafood preference, no downstream agent can recover that information. In practice, you need to pass the original user request alongside each handoff, not only the previous agent&rsquo;s output.</p>
 
-<table>
-  <thead>
-    <tr>
-      <th>Use Multi-Agent When</th>
-      <th>Stick to Single Agent When</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>Task requires diverse specialized skills</td>
-      <td>Task is straightforward, even if multi-step</td>
-    </tr>
-    <tr>
-      <td>You need checks and balances (reviewer, critic)</td>
-      <td>Speed matters more than quality</td>
-    </tr>
-    <tr>
-      <td>Different stages need different tools/models</td>
-      <td>Context sharing between stages is critical</td>
-    </tr>
-    <tr>
-      <td>You want parallelizable subtasks</td>
-      <td>You want simpler debugging and lower cost</td>
-    </tr>
-  </tbody>
-</table>
+<p>So when is multi-agent worth the added complexity? I use a rough heuristic: if a single agent needs more than 6-8 tools, or if the task naturally decomposes into independent subtasks that can run in parallel, multi-agent starts to pay off. For anything simpler, a single agent with good tools and memory will outperform a poorly-designed multi-agent system every time.</p>
 
-<div class="warning-box">
-  <strong>Multi-agent complexity is real.</strong> Every agent hop adds latency, cost, and potential points of failure. A supervisor that delegates to three workers makes at least four LLM calls <em>minimum</em>. Inter-agent communication is lossy &mdash; summaries lose detail. Start with a single well-prompted agent. Only go multi-agent when you&rsquo;ve hit a wall that can&rsquo;t be solved by better prompting or tool design.
-</div>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  PART 8 — AGENT FRAMEWORKS                                         -->
+<!--  AGENT FRAMEWORKS                                                   -->
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 
-<h2>Agent Frameworks</h2>
+<h2>Agent Frameworks in Practice</h2>
 
-<p>You <em>can</em> build agents from scratch &mdash; the ReAct loop above is maybe 40 lines of code. But as you add memory, multi-agent coordination, error recovery, streaming, and observability, framework support helps. Here&rsquo;s the landscape:</p>
+<p>I have a confession that might be unpopular: I built my first three agents without any framework at all. Raw API calls, a while loop, and a dictionary for state. And it worked. I mention this because the framework landscape is so crowded and so loud that it&rsquo;s easy to believe you <em>need</em> a framework to build agents. You don&rsquo;t. But frameworks genuinely help once your agents get complex enough, particularly for managing state, handling errors, and orchestrating multi-agent flows.</p>
 
-<table>
-  <thead>
-    <tr>
-      <th>Framework</th>
-      <th>Best For</th>
-      <th>Complexity</th>
-      <th>Maturity</th>
-      <th>Key Feature</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><strong>LangGraph</strong></td>
-      <td>Complex stateful agents, custom workflows</td>
-      <td>High</td>
-      <td>Mature</td>
-      <td>Graph-based workflows with state machines</td>
-    </tr>
-    <tr>
-      <td><strong>LangChain</strong></td>
-      <td>Rapid prototyping, RAG chains</td>
-      <td>Medium</td>
-      <td>Mature</td>
-      <td>Extensive integrations ecosystem</td>
-    </tr>
-    <tr>
-      <td><strong>CrewAI</strong></td>
-      <td>Multi-agent role-based collaboration</td>
-      <td>Low</td>
-      <td>Growing</td>
-      <td>Role/goal/backstory per agent</td>
-    </tr>
-    <tr>
-      <td><strong>AutoGen</strong> (Microsoft)</td>
-      <td>Multi-agent conversations, research</td>
-      <td>Medium</td>
-      <td>Growing</td>
-      <td>Flexible conversation patterns</td>
-    </tr>
-    <tr>
-      <td><strong>OpenAI Assistants API</strong></td>
-      <td>Simple tool-using agents, managed hosting</td>
-      <td>Low</td>
-      <td>Mature</td>
-      <td>Managed threads, retrieval, code interpreter</td>
-    </tr>
-    <tr>
-      <td><strong>Smolagents</strong> (HuggingFace)</td>
-      <td>Lightweight agents, open-source models</td>
-      <td>Low</td>
-      <td>Early</td>
-      <td>Minimal abstraction, code agents</td>
-    </tr>
-  </tbody>
-</table>
+<p>Here is an honest comparison of the three frameworks I&rsquo;ve actually used in production-adjacent work.</p>
 
-<div class="info-box">
-  <strong>The honest take.</strong> If your agent is simple (single model, few tools, ReAct loop), build it yourself &mdash; it&rsquo;s 50&ndash;100 lines and you understand every line. Use LangGraph when you need complex control flow (branching, cycles, human-in-the-loop gates). Use CrewAI when you want multi-agent with minimal code. Use the OpenAI Assistants API when you want zero infrastructure and are already on OpenAI. The framework choice matters less than your tool definitions and system prompt quality.
-</div>
+<h3>LangGraph</h3>
+
+<p><strong>LangGraph</strong> is from the LangChain team. It models agent workflows as <strong>graphs</strong> &mdash; nodes are processing steps (LLM calls, tool executions, conditional checks) and edges define the flow between them. It excels at complex, stateful workflows where the agent might loop, branch, or need human approval at certain steps.</p>
+
+<pre><code># LangGraph: agent as a state machine
+from langgraph.graph import StateGraph, END
+
+workflow = StateGraph(TripPlannerState)
+
+# Define nodes
+workflow.add_node("research", research_node)
+workflow.add_node("plan", planning_node)
+workflow.add_node("verify_budget", budget_node)
+workflow.add_node("human_review", human_review_node)
+
+# Define edges (flow)
+workflow.add_edge("research", "plan")
+workflow.add_edge("plan", "verify_budget")
+workflow.add_conditional_edges(
+    "verify_budget",
+    budget_check,  # function that returns "approved" or "over_budget"
+    {"approved": "human_review", "over_budget": "plan"}  # loop back if over budget
+)
+workflow.add_edge("human_review", END)
+
+app = workflow.compile()</code></pre>
+
+<p>LangGraph&rsquo;s strength is explicitness. The graph is the architecture diagram. You can visualize it, reason about loops, and add checkpoints for persistence. Its weakness is verbosity &mdash; a simple ReAct agent takes more code in LangGraph than a raw while loop.</p>
+
+<h3>CrewAI</h3>
+
+<p><strong>CrewAI</strong> is designed around the multi-agent metaphor. You define &ldquo;agents&rdquo; with roles, &ldquo;tasks&rdquo; they perform, and a &ldquo;crew&rdquo; that orchestrates them. It&rsquo;s the most intuitive framework if you think in terms of teams.</p>
+
+<pre><code># CrewAI: agents as team members
+from crewai import Agent, Task, Crew
+
+flight_researcher = Agent(
+    role="Flight Researcher",
+    goal="Find the best flights within budget",
+    tools=[search_flights_tool],
+    verbose=True
+)
+
+itinerary_planner = Agent(
+    role="Itinerary Planner",
+    goal="Create a detailed day-by-day vacation plan",
+    tools=[search_attractions_tool, get_weather_tool],
+    verbose=True
+)
+
+# Define tasks
+research_task = Task(
+    description="Find round-trip flights NYC to Lisbon, June 15-22, under $600",
+    agent=flight_researcher
+)
+
+planning_task = Task(
+    description="Create a 7-day Lisbon itinerary for a seafood and history lover",
+    agent=itinerary_planner,
+    context=[research_task]  # gets the output of research_task
+)
+
+# Run the crew
+crew = Crew(agents=[flight_researcher, itinerary_planner],
+            tasks=[research_task, planning_task])
+result = crew.kickoff()</code></pre>
+
+<p>CrewAI is fast to prototype with. Define roles, give them tools, describe tasks in natural language, run. It&rsquo;s less flexible than LangGraph for complex conditional workflows, but for straightforward multi-agent pipelines, it&rsquo;s hard to beat for speed of development.</p>
+
+<h3>AutoGen</h3>
+
+<p><strong>AutoGen</strong> (from Microsoft) is built around <strong>conversations between agents</strong>. Agents are chat participants that talk to each other. A &ldquo;GroupChat&rdquo; manages turn-taking. This makes it the natural choice for the debate pattern, or any workflow where agents need back-and-forth dialogue.</p>
+
+<pre><code># AutoGen: agents as chat participants
+from autogen import AssistantAgent, UserProxyAgent, GroupChat
+
+flight_agent = AssistantAgent(
+    name="FlightExpert",
+    system_message="You are a flight booking expert...",
+    llm_config=llm_config
+)
+
+budget_agent = AssistantAgent(
+    name="BudgetAdvisor",
+    system_message="You scrutinize travel plans for cost efficiency...",
+    llm_config=llm_config
+)
+
+user_proxy = UserProxyAgent(
+    name="TripPlanner",
+    human_input_mode="NEVER",
+    code_execution_config={"work_dir": "planning"}
+)
+
+group_chat = GroupChat(
+    agents=[user_proxy, flight_agent, budget_agent],
+    messages=[],
+    max_round=12
+)</code></pre>
+
+<p>The trade-off with all three: LangGraph gives you the most control and is best for production state machines. CrewAI gives you the fastest prototype and is best for multi-agent pipelines. AutoGen gives you the most natural multi-agent communication and is best for debate-style workflows. None of them is the &ldquo;right&rdquo; choice &mdash; they&rsquo;re different tools for different shapes of problems.</p>
+
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  PART 9 — PRODUCTION & RELIABILITY                                 -->
+<!--  CODE GENERATION AGENTS                                             -->
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 
-<h2>Production &amp; Reliability</h2>
+<h2>Code Generation Agents</h2>
 
-<p>Here&rsquo;s the uncomfortable truth about agents in production: they fail more than simple LLM calls. A lot more. And the failure modes are different &mdash; instead of a wrong answer, you get an agent stuck in a loop, or calling the wrong tool, or hallucinating an API that doesn&rsquo;t exist.</p>
+<p>If tool-using agents are the general case, code generation agents are the most spectacular specific case. They don&rsquo;t call pre-defined functions &mdash; they <em>write the functions</em>. They read codebases, understand issues, write patches, and run tests. The first time I watched an agent open a GitHub issue, navigate a codebase, write a fix, run the test suite, discover its fix broke something else, fix <em>that</em>, and submit a pull request &mdash; all without human intervention &mdash; I had to sit down for a minute.</p>
 
-<h3>The Compounding Error Problem</h3>
+<p><strong>SWE-agent</strong> (Princeton, 2024) was one of the first systems to demonstrate this systematically. It gives an LLM access to a shell, a code editor, and a test runner, then points it at GitHub issues and says &ldquo;fix this.&rdquo; The architecture is a ReAct loop with specialized tools for code navigation (search files, open file, scroll, edit) and code execution (run tests, run linter).</p>
 
-<p>Every step in an agent&rsquo;s execution is a potential failure point. If each step has a 95% success rate (which is <em>good</em> for LLMs), a 10-step agent has a <strong>0.95<sup>10</sup> = 60% success rate</strong>. That&rsquo;s the math that makes agent reliability hard.</p>
+<p>The workflow looks like this:</p>
 
-<pre><code># Compounding error rates
-#
-# Steps    95% per step    90% per step    99% per step
-# ─────    ────────────    ────────────    ────────────
-#    3        85.7%           72.9%           97.0%
-#    5        77.4%           59.0%           95.1%
-#   10        59.9%           34.9%           90.4%
-#   15        46.3%           20.6%           86.0%
-#   20        35.8%           12.2%           81.8%
-#
-# Takeaway: make each step as reliable as possible, and
-# minimize the number of steps needed.</code></pre>
+<pre><code># Simplified SWE-agent workflow
+1. Agent reads the GitHub issue description
+2. Thought: "This is a bug in the date parsing module. Let me find the
+             relevant file."
+3. Action: search_codebase("date parsing")
+4. Observation: Found src/utils/date_parser.py (3 matches)
+5. Thought: "Let me open that file and look at the parsing logic."
+6. Action: open_file("src/utils/date_parser.py")
+7. Observation: [file contents shown]
+8. Thought: "Line 47 uses strptime with format '%Y-%m-%d' but the input
+             dates are in DD/MM/YYYY format. That's the bug."
+9. Action: edit_file("src/utils/date_parser.py", line=47,
+           old="strptime(date_str, '%Y-%m-%d')",
+           new="strptime(date_str, '%d/%m/%Y')")
+10. Action: run_tests()
+11. Observation: 47 passed, 1 failed — test_american_dates now fails
+12. Thought: "My fix broke American date format support. I need to detect
+              the format first..."
+13. [continues iterating...]</code></pre>
 
-<h3>Cost Management</h3>
+<p>Notice step 11. The agent&rsquo;s first fix introduced a regression. This happens constantly with code agents, and it&rsquo;s why the test-running step is so critical. Without automated tests, the agent has no way to know if its fix works. The agent&rsquo;s ability is bounded by the quality of the test suite it has access to.</p>
 
-<p>Agent loops are expensive. Each iteration makes at least one LLM call (often with a large context), and tool results add tokens. A complex agent task can easily consume 50k&ndash;100k tokens &mdash; that&rsquo;s $0.50&ndash;$2.00 per task with GPT-4o. Multiply by thousands of users and the bill gets real.</p>
+<p><strong>Devin</strong> (Cognition Labs, 2024) took this further, adding a full development environment: browser, terminal, code editor, and the ability to look up documentation, install packages, and debug interactively. It operates more like a junior developer than a code completion tool &mdash; it takes high-level tasks (&ldquo;add dark mode to the settings page&rdquo;) and works through them end-to-end.</p>
 
-<pre><code># Cost control strategies:
-#
-# 1. Max step limits (hard stop after N iterations)
-# 2. Token budgets (track cumulative usage, stop if exceeded)
-# 3. Model cascading (use cheaper model for simple steps)
-# 4. Caching (same tool call with same args → cached result)
-# 5. Prompt compression (summarize long tool results before
-#    feeding back to the model)
+<p>The key insight behind all code agents is that code is <em>verifiable</em>. Unlike a trip plan or a written report, code can be tested. Does it compile? Do the tests pass? Does it produce the right output? This tight feedback loop &mdash; write code, run it, see if it works, fix it if not &mdash; maps perfectly onto the ReAct + Reflexion pattern. It&rsquo;s why code generation is the area where agents have improved fastest.</p>
 
-class BudgetedAgent:
-    def __init__(self, max_steps=10, max_tokens=50_000):
-        self.max_steps = max_steps
-        self.max_tokens = max_tokens
-        self.total_tokens = 0
 
-    def run_step(self, messages, tools):
-        if self.total_tokens >= self.max_tokens:
-            return "Budget exceeded. Returning best answer so far."
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  SELF-REFLECTION & CRITIQUE                                         -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
 
-        response = client.chat.completions.create(
-            model="gpt-4o", messages=messages, tools=tools
-        )
-        self.total_tokens += response.usage.total_tokens
-        return response</code></pre>
+<h2>Self-Reflection &amp; Critique</h2>
 
-<h3>Sandboxing</h3>
+<p>I want to zoom in on the Reflexion pattern because it represents something genuinely new: an LLM that gets better at a task <em>within a single session</em> without any weight updates. No fine-tuning. No gradient descent. The model improves purely through natural language self-critique stored in its context.</p>
 
-<p>Agents that execute code or run shell commands need strict isolation. A code-executing agent should run in a sandboxed environment &mdash; a Docker container, a Firecracker microVM, or at minimum a restricted subprocess. Never give an agent direct access to your production database or filesystem.</p>
+<p>The paper by Shinn et al. (2023) calls this <strong>verbal reinforcement learning</strong>. Instead of updating neural network weights based on a reward signal (as in traditional RL), the agent writes a natural-language reflection on what went wrong and adds it to its prompt for the next attempt. The &ldquo;weights&rdquo; being updated are just words in the context window.</p>
+
+<p>Here is what this looks like concretely. Our trip planner attempts to plan a trip, and the result is evaluated:</p>
+
+<pre><code># Attempt 1
+Plan: Fly to Lisbon June 15, hotel in Belem, seafood at Time Out Market...
+Evaluation: Budget exceeded by $340. Hotel in Belem is far from historical
+            center. No museum or walking tour recommendations despite user
+            requesting history focus.
+
+# Self-reflection (generated by the LLM)
+Reflection: "I made three mistakes: (1) I chose the hotel before checking
+the total budget — I should calculate flight + hotel first and work backward
+to get the activities budget. (2) I picked Belem for the hotel because it
+has famous attractions, but it's not the best base for exploring the
+historical center — Alfama or Baixa would be better. (3) I completely
+forgot the user's interest in history and focused only on food. I need to
+re-read the original request more carefully."
+
+# Attempt 2 (reflection added to context)
+Plan: [now budget-aware, hotel in Alfama, includes Castelo de São Jorge,
+       National Tile Museum, walking tour of Alfama, plus seafood at
+       Cervejaria Ramiro]
+Evaluation: Within budget. Excellent location. Addresses all user preferences.
+Success!</code></pre>
+
+<p>The beautiful thing is that the reflection in attempt 1 genuinely improves attempt 2. The model reads its own critique and adjusts. No magic &mdash; it&rsquo;s in-context learning, which we already know LLMs are good at. Reflexion formalizes it into a loop.</p>
+
+<p>But there is a subtle trap I fell into. The model can write a reflection that <em>sounds</em> insightful but doesn&rsquo;t actually address the root cause. &ldquo;I should have been more careful&rdquo; is a useless reflection. &ldquo;I should calculate total fixed costs (flights + hotel) before allocating the activities budget&rdquo; is useful because it specifies a concrete behavioral change. When implementing Reflexion, prompt the model to produce <em>actionable</em> reflections, not vague self-criticism.</p>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  SAFETY & SANDBOXING                                                -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+
+<h2>Safety &amp; Sandboxing</h2>
+
+<p>Let me tell you a story that still makes me nervous. During early testing of a code agent, I gave it access to a shell and asked it to clean up some temporary files. It ran <code>rm -rf</code> on a directory that it hallucinated was temp but was actually a subdirectory of the project. Nothing critical was lost (version control saved us), but the agent had deleted production configuration files with complete confidence. It even wrote in its reasoning trace: &ldquo;These look like auto-generated files, safe to remove.&rdquo;</p>
+
+<p>Agents are dangerous in a way that plain LLMs are not. A plain LLM can generate harmful text, but it can&rsquo;t <em>do</em> anything. An agent with tools can delete files, send emails, make API calls, spend money, and modify databases. The autonomy that makes agents useful is the same autonomy that makes them risky.</p>
+
+<p>Here are the safety layers that I&rsquo;ve found essential in practice:</p>
+
+<h3>Sandboxed Execution</h3>
+
+<p>Every tool call should run in a sandbox. Code execution happens in a Docker container, not on the host machine. File access is restricted to a specific directory. Network access is limited to approved domains. The agent cannot reach your production database, your cloud credentials, or your email.</p>
+
+<pre><code># Sandboxing tool execution
+def execute_tool_safely(func_name, func_args):
+    # Allowlist of safe functions
+    ALLOWED_TOOLS = {"get_weather", "search_flights", "search_hotels"}
+
+    if func_name not in ALLOWED_TOOLS:
+        return {"error": f"Tool '{func_name}' is not allowed"}
+
+    # Rate limiting
+    if rate_limiter.is_exceeded(func_name):
+        return {"error": "Rate limit exceeded for this tool"}
+
+    # Budget guard
+    if token_budget.remaining() < 1000:
+        return {"error": "Token budget exhausted"}
+
+    # Execute in sandbox
+    result = sandbox.run(func_name, func_args, timeout=30)
+    return result</code></pre>
 
 <h3>Human-in-the-Loop</h3>
 
-<p>For high-stakes actions, insert approval gates into the agent loop. The agent proposes an action, a human reviews and approves (or rejects with feedback), and execution continues.</p>
+<p>For high-stakes actions, require human approval before execution. The agent proposes an action, a human reviews it, and only then does it execute. This is the difference between the &ldquo;tool-using assistant&rdquo; and &ldquo;fully autonomous&rdquo; columns in the autonomy spectrum. Most production agents today sit in the &ldquo;tool-using assistant&rdquo; column: they propose, humans approve.</p>
 
 <pre><code># Human-in-the-loop gate
-REQUIRES_APPROVAL = {"send_email", "delete_record", "make_purchase",
-                     "deploy_code", "modify_permissions"}
+def act_with_approval(action, requires_approval=False):
+    if requires_approval or action.cost > COST_THRESHOLD:
+        print(f"Agent wants to: {action.description}")
+        print(f"Estimated cost: ${action.cost}")
+        approval = input("Approve? (y/n): ")
+        if approval != "y":
+            return {"status": "rejected", "reason": "Human declined"}
 
-def execute_with_approval(tool_call, available_functions):
-    func_name = tool_call.function.name
+    return execute_action(action)</code></pre>
 
-    if func_name in REQUIRES_APPROVAL:
-        print(f"\n⚠️  Agent wants to: {func_name}")
-        print(f"   Args: {tool_call.function.arguments}")
-        approval = input("   Approve? (y/n): ")
-        if approval.lower() != 'y':
-            return {"status": "rejected", "reason": "Human denied this action"}
+<h3>Token and Cost Budgets</h3>
 
-    return available_functions[func_name](
-        **json.loads(tool_call.function.arguments)
-    )</code></pre>
+<p>An agent in a loop can consume unlimited tokens if you let it. Set hard budgets. Every tool call costs tokens (the request and the response). Every LLM reasoning step costs tokens. A five-step agent might cost $0.10. A confused agent in a loop can cost $5 before you notice. I set three limits: max steps (how many loop iterations), max tokens (total token consumption), and max cost (dollar ceiling).</p>
 
-<h3>Monitoring &amp; Observability</h3>
+<h3>Comprehensive Logging</h3>
 
-<p>In production, you need to see everything an agent does. Log every tool call, every tool result, every reasoning step. Track success rates per tool, per task type, per agent configuration. When an agent fails, the trace should tell you exactly where and why.</p>
-
-<pre><code># Essential agent metrics to track:
-#
-# Per-task metrics:
-#   - Total steps taken
-#   - Total tokens consumed
-#   - Total cost
-#   - Task success / failure
-#   - Time to completion
-#   - Tools called (with args and results)
-#
-# Aggregate metrics:
-#   - Success rate by task type
-#   - Average steps per task
-#   - Average cost per task
-#   - Most common failure modes
-#   - Tool reliability rates
-#   - Median loop iterations before answer
-#
-# Tools: LangSmith, Arize Phoenix, Braintrust, custom logging</code></pre>
-
-<div class="warning-box">
-  <strong>Agent observability isn&rsquo;t optional.</strong> Without traces, debugging a failing agent is like debugging a distributed system with no logs. You won&rsquo;t know if the failure was a bad LLM response, a bad tool result, or a bad tool choice. Instrument from day one. Tools like LangSmith and Arize Phoenix give you trace visualization out of the box. At minimum, log the full message history for every failed task.
-</div>
-
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  PART 10 — AGENT BENCHMARKS                                        -->
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-
-<h2>Agent Benchmarks</h2>
-
-<p>How do you know if your agent is good? Vibes aren&rsquo;t enough. The field has developed several benchmarks that test agents on real-world tasks:</p>
-
-<table>
-  <thead>
-    <tr>
-      <th>Benchmark</th>
-      <th>Domain</th>
-      <th>What It Tests</th>
-      <th>Top Scores (2024)</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><strong>SWE-bench</strong></td>
-      <td>Software engineering</td>
-      <td>Can the agent resolve real GitHub issues?</td>
-      <td>~50% (verified subset)</td>
-    </tr>
-    <tr>
-      <td><strong>WebArena</strong></td>
-      <td>Web browsing</td>
-      <td>Complete tasks on real websites (shopping, forums)</td>
-      <td>~35%</td>
-    </tr>
-    <tr>
-      <td><strong>GAIA</strong></td>
-      <td>General assistant</td>
-      <td>Multi-step tasks requiring web search, reasoning, tools</td>
-      <td>~55% (Level 1)</td>
-    </tr>
-    <tr>
-      <td><strong>HumanEval</strong> (agent)</td>
-      <td>Code generation</td>
-      <td>Write code that passes test cases, with tool use</td>
-      <td>~90%+</td>
-    </tr>
-    <tr>
-      <td><strong>ToolBench</strong></td>
-      <td>Tool use</td>
-      <td>Select and use correct tools from large toolsets</td>
-      <td>Varies by toolset</td>
-    </tr>
-  </tbody>
-</table>
-
-<h3>The Autonomy-Reliability Tradeoff</h3>
-
-<p>There&rsquo;s a fundamental tension in agent design: the more autonomy you give an agent, the more it can do &mdash; but also the more it can get wrong. This isn&rsquo;t a problem to solve; it&rsquo;s a tradeoff to manage.</p>
-
-<pre><code># The autonomy-reliability spectrum
-#
-# ◄──── Less Autonomy                    More Autonomy ────►
-# ◄──── Higher Reliability          Lower Reliability ────►
-#
-# ┌──────────┬──────────────┬──────────────┬───────────────┐
-# │ Copilot  │ Tool-using   │ Autonomous   │ Fully         │
-# │ mode     │ assistant    │ agent        │ autonomous    │
-# ├──────────┼──────────────┼──────────────┼───────────────┤
-# │ Suggests │ Calls tools  │ Plans and    │ Operates      │
-# │ actions, │ with human   │ executes     │ independently │
-# │ human    │ approval for │ multi-step   │ for hours,    │
-# │ executes │ writes       │ tasks with   │ manages own   │
-# │          │              │ some guardrails│ errors       │
-# ├──────────┼──────────────┼──────────────┼───────────────┤
-# │ ~99%     │ ~95%         │ ~80%         │ ~50-60%       │
-# │ reliable │ reliable     │ reliable     │ reliable      │
-# └──────────┴──────────────┴──────────────┴───────────────┘
-#
-# Most production systems today sit in the middle two columns.
-# The right column is where research is headed.</code></pre>
+<p>Log everything. Every thought, every tool call, every observation, every token count. When an agent goes wrong &mdash; and it will &mdash; the trace is your only way to understand what happened. This is where the ReAct pattern pays dividends: those explicit Thought steps aren&rsquo;t overhead, they&rsquo;re your debugging lifeline.</p>
 
 <div class="info-box">
-  <strong>Benchmark reality check.</strong> Agent benchmarks are still young and somewhat noisy. SWE-bench scores vary depending on the subset, evaluation harness, and whether you count &ldquo;assisted&rdquo; vs. fully autonomous resolution. Use benchmarks to track progress and compare approaches, but validate on <em>your</em> tasks. A model that scores 50% on SWE-bench might score 90% on your specific workflow &mdash; or 10%.
+  <strong>The autonomy-reliability tradeoff.</strong> The more autonomy you give an agent, the less reliable it becomes. A copilot that suggests code for a human to review is maybe 99% safe &mdash; the human is the safety net. A fully autonomous agent operating for hours without oversight might be 50-60% reliable on complex tasks. Most production systems today wisely sit in the middle: autonomous for low-risk actions (searching, summarizing), human-approved for high-risk actions (spending money, modifying data, sending communications).
 </div>
 
+
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  CHECKLIST                                                         -->
+<!--  EVALUATING AGENTS                                                  -->
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 
-<h2>What You Should Now Be Able To Do</h2>
+<h2>Evaluating Agents</h2>
 
-<div class="checklist">
-  <ul>
-    <li><strong>Explain why agents exist</strong> &mdash; the difference between an LLM that suggests actions and an agent that executes them, and the three components (LLM + tools + planning loop)</li>
-    <li><strong>Describe the core agent architecture</strong> &mdash; perceive-reason-act loop, system prompt, tool definitions, memory, and planning strategy</li>
-    <li><strong>Implement function calling</strong> with both OpenAI and Anthropic APIs, including defining tool schemas, handling tool call responses, and returning results</li>
-    <li><strong>Build a ReAct agent loop</strong> from scratch &mdash; interleaving reasoning and tool calls with a max-step guard and error handling</li>
-    <li><strong>Compare planning strategies</strong> (ReAct, Plan-and-Execute, Reflexion) and select the right one for a given task type</li>
-    <li><strong>Design agent memory</strong> using short-term context, working scratchpad, and long-term vector retrieval, knowing when each is appropriate</li>
-    <li><strong>Choose a multi-agent pattern</strong> (supervisor, debate, assembly line) and articulate when multi-agent is worth the added complexity</li>
-    <li><strong>Evaluate agent frameworks</strong> (LangGraph, CrewAI, AutoGen, OpenAI Assistants) and pick one based on project requirements</li>
-    <li><strong>Harden an agent for production</strong> &mdash; implement token budgets, human-in-the-loop gates, sandboxed execution, and comprehensive trace logging</li>
-    <li><strong>Reason about agent reliability</strong> &mdash; calculate compounding error rates, understand the autonomy-reliability tradeoff, and use benchmarks (SWE-bench, GAIA) to evaluate performance</li>
-  </ul>
-</div>
+<p>How do you know if your agent is any good? This question tormented me for weeks. With a classifier, you compute accuracy. With a language model, you compute perplexity. But an agent does multiple things across multiple steps, and &ldquo;correct&rdquo; is much harder to define. Did it complete the task? Did it complete it efficiently? Did it avoid errors along the way? Did the final output actually help the user?</p>
 
+<p>Let me start with the mathematical reality that keeps agent builders up at night: <strong>compounding errors</strong>.</p>
+
+<p>Suppose your agent is 95% reliable at each individual step. That sounds great. But a 5-step task means the overall probability of success is 0.95 &times; 0.95 &times; 0.95 &times; 0.95 &times; 0.95 = 0.77. A 10-step task drops to 0.60. A 20-step task: 0.36. This is the fundamental challenge of agentic systems. Each step is individually reliable, but errors compound multiplicatively across steps.</p>
+
+<pre><code># Compounding error rates
+import numpy as np
+
+per_step_accuracy = 0.95
+for n_steps in [1, 3, 5, 10, 15, 20]:
+    overall = per_step_accuracy ** n_steps
+    print(f"{n_steps:2d} steps: {overall:.1%} overall accuracy")
+
+#  1 steps: 95.0% overall accuracy
+#  3 steps: 85.7% overall accuracy
+#  5 steps: 77.4% overall accuracy
+# 10 steps: 59.9% overall accuracy
+# 15 steps: 46.3% overall accuracy
+# 20 steps: 35.8% overall accuracy</code></pre>
+
+<p>This is why Reflexion and self-correction matter so much. If the agent can detect and recover from errors, the effective per-step accuracy goes up. If the agent has good tests (for code) or verification tools (for data), it can catch mistakes before they cascade. The math changes from <em>p<sup>n</sup></em> to something more favorable when you add error recovery.</p>
+
+<h3>SWE-bench</h3>
+
+<p><strong>SWE-bench</strong> is the most widely cited benchmark for code agents. It consists of real GitHub issues from popular Python repositories (Django, Flask, scikit-learn, etc.) paired with the human-written pull requests that resolved them. The agent gets the issue description and the codebase, and must produce a patch that makes the failing tests pass.</p>
+
+<p>SWE-bench has been a remarkable forcing function for progress. In early 2024, the best systems resolved about 20% of issues. By mid-2025, top models are resolving roughly 70-80% of the &ldquo;Verified&rdquo; subset (a curated, cleaner version of the benchmark). That&rsquo;s an extraordinary rate of improvement. But the numbers need context: SWE-bench Verified is an easier subset, the issues are well-specified, and the test suites are provided. Real-world code tasks are messier.</p>
+
+<h3>GAIA</h3>
+
+<p><strong>GAIA</strong> (General AI Assistants) is a benchmark for general-purpose agents. Tasks range from &ldquo;What was the population of the city where Einstein was born, in the year he published special relativity?&rdquo; (requires multi-step lookup) to complex multi-tool challenges. GAIA measures an agent&rsquo;s ability to reason, use tools, and synthesize information across multiple sources.</p>
+
+<p>Multi-model combinations and sophisticated agent architectures have pushed GAIA scores above 90% on some subsets, though harder levels remain challenging. GAIA is particularly useful because it tests the full agent stack: reasoning, tool use, multi-step planning, and information synthesis.</p>
+
+<h3>Evaluating Your Own Agents</h3>
+
+<p>Benchmarks are useful for comparing approaches, but ultimately you need to evaluate on <em>your</em> tasks. For our trip planner, I built a simple evaluation suite:</p>
+
+<pre><code># Custom evaluation for the trip planner
+test_cases = [
+    {
+        "query": "Plan a weekend trip to Lisbon from NYC, budget $1500",
+        "checks": [
+            ("mentions_flight", lambda r: "flight" in r.lower()),
+            ("within_budget", lambda r: extract_total(r) <= 1500),
+            ("includes_hotel", lambda r: "hotel" in r.lower()),
+            ("includes_weather", lambda r: any(w in r.lower()
+                                   for w in ["sunny", "rain", "temperature", "°"])),
+        ]
+    },
+    # ... more test cases
+]
+
+def evaluate_agent(agent, test_cases):
+    results = []
+    for case in test_cases:
+        response = agent.run(case["query"])
+        checks_passed = sum(1 for name, check in case["checks"]
+                           if check(response))
+        results.append({
+            "query": case["query"],
+            "pass_rate": checks_passed / len(case["checks"]),
+            "steps_taken": agent.step_count,
+            "tokens_used": agent.token_count
+        })
+    return results</code></pre>
+
+<p>I track three dimensions: <strong>correctness</strong> (did it complete the task?), <strong>efficiency</strong> (how many steps and tokens?), and <strong>safety</strong> (did it stay within bounds?). A perfect agent that takes 20 steps and costs $2 per query isn&rsquo;t necessarily better than a good-enough agent that takes 4 steps and costs $0.05.</p>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  WRAP-UP                                                            -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+
+<h2>Wrap-Up</h2>
+
+<p>Thank you for sticking with me through this. We&rsquo;ve covered a lot of ground, and I want to trace the path we took because it mirrors the actual architecture of the systems we built.</p>
+
+<p>We started with a frustrated LLM &mdash; brilliant at reasoning, but unable to interact with the world. We gave it tools through function calling: the model outputs JSON, our code executes it, and the result feeds back. That single idea &mdash; LLM as decision-maker, code as executor &mdash; is the foundation of everything else.</p>
+
+<p>We gave it a thinking loop &mdash; ReAct &mdash; so it could interleave reasoning and action across multiple steps. We explored how different planning strategies (Plan-and-Execute, Reflexion) trade off between reactivity and deliberation. We gave it memory &mdash; a scratchpad for working state, a vector database for long-term recall, and episodic memory for learning from past mistakes.</p>
+
+<p>We paused to note that this single-agent architecture is enough for most production use cases. Then we kept going.</p>
+
+<p>We gave it colleagues &mdash; multi-agent systems where specialists handle different parts of a complex task, coordinated by a supervisor, debating in a group chat, or passing work down an assembly line. We looked at the frameworks that make this manageable in code (LangGraph, CrewAI, AutoGen), and at the spectacular special case of code generation agents that write and test their own patches.</p>
+
+<p>We confronted the hard parts: safety (agents can do real damage), the compounding error problem (95% per step still means 77% over five steps), and the difficulty of evaluation (benchmarks help, but you have to evaluate on your own tasks).</p>
+
+<p>Our trip planner grew from a single weather lookup to a multi-agent vacation planner. Like any good intern that&rsquo;s been on the job for a while, it got more capable as we gave it more tools, more structure, and more guardrails. The intern analogy held throughout: how much autonomy you give depends on how much you trust, and trust is built through observation, logging, and incremental delegation.</p>
+
+<p>I still feel like this space is early. Every month brings meaningful improvements in model reliability, tool-use accuracy, and planning capability. The patterns we covered &mdash; perceive-reason-act, ReAct, memory management, multi-agent coordination &mdash; will evolve in implementation but I believe the core ideas are durable. Agents are how LLMs become useful in the real world, and understanding their architecture from the ground up is one of the most valuable investments you can make right now.</p>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  RESOURCES                                                          -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+
+<h2>Resources</h2>
+
+<p><strong>The papers that matter most:</strong></p>
+
+<p><em>ReAct: Synergizing Reasoning and Acting in Language Models</em> (Yao et al., 2023) &mdash; The paper that formalized Thought-Action-Observation loops. Short, readable, and foundational. If you read one paper from this list, make it this one.</p>
+
+<p><em>Reflexion: Language Agents with Verbal Reinforcement Learning</em> (Shinn et al., 2023) &mdash; Self-critique for agents. The idea that natural-language reflection can substitute for gradient-based learning is provocative and surprisingly effective.</p>
+
+<p><em>SWE-agent: Agent-Computer Interfaces for Software Engineering</em> (Yang et al., 2024) &mdash; How to build a coding agent from scratch. The details about the agent-computer interface design are more valuable than the benchmark results.</p>
+
+<p><em>Toolformer: Language Models Can Teach Themselves to Use Tools</em> (Schick et al., 2023) &mdash; An earlier paper showing that LLMs can learn to insert API calls into their own text generation. Important conceptual precursor to modern function calling.</p>
+
+<p><strong>Practical guides:</strong></p>
+
+<p><em>Building Effective Agents</em> by Anthropic &mdash; A practical blog post from the Anthropic team with concrete patterns and anti-patterns for production agents. Refreshingly honest about failure modes.</p>
+
+<p><em>LangGraph documentation</em> (langchain-ai.github.io/langgraph) &mdash; The best documentation of any agent framework I&rsquo;ve used. The tutorials build complexity gradually and the conceptual guides explain <em>why</em>, not only <em>how</em>.</p>
+
+<p><em>OpenAI Function Calling Guide</em> (platform.openai.com/docs) &mdash; The definitive reference for the function calling API that most agents build on. Clear examples, good edge case coverage.</p>
+
+<p><strong>Benchmarks to watch:</strong></p>
+
+<p><em>SWE-bench</em> (swebench.com) &mdash; The standard benchmark for code agents. Track the leaderboard to see where the field stands. Pay attention to the &ldquo;Verified&rdquo; vs. full benchmark distinction.</p>
+
+<p><em>GAIA</em> (huggingface.co/gaia-benchmark) &mdash; The best benchmark for general-purpose agent capability. Multi-level difficulty lets you see where systems break down.</p>
+
+<p><strong>Frameworks to try (start with whichever matches your mental model):</strong></p>
+
+<p><em>LangGraph</em> &mdash; if you think in graphs and state machines.<br>
+<em>CrewAI</em> &mdash; if you think in teams and roles.<br>
+<em>AutoGen</em> &mdash; if you think in conversations.<br>
+<em>Or none</em> &mdash; a while loop and an API key will take you surprisingly far.</p>
 
 
       <div class="page-nav">
         <a class="prev" href="s08.html">
-          <span class="label">← Previous</span>
+          <span class="label">&larr; Previous</span>
           <span class="link-title">LLM Production &mdash; Serving &amp; Inference</span>
         </a>
         <a class="next" href="s10.html">
-          <span class="label">Next →</span>
+          <span class="label">Next &rarr;</span>
           <span class="link-title">LLM Evaluation</span>
         </a>
       </div>
@@ -1337,4 +1249,3 @@ def execute_with_approval(tool_call, available_functions):
 
   <script src="../../js/app.js"></script>
 </body>
-</html>
