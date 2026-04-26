@@ -295,71 +295,114 @@
 <h1>Nice to Know</h1>
 <div class="chapter-meta">
   <span class="tag">Chapter 3: Data Fundamentals</span>
-  <span class="tag">8 topics</span>
+  <span class="tag">10 topics</span>
 </div>
 
-<p>These are things you'll encounter in the wild but don't need to master right now. Recognize them on sight, know when they matter, and look them up when you need them.</p>
+<p>I'll be honest — I put off learning most of these topics for an embarrassing amount of time. They felt like "infrastructure stuff" or "compliance stuff," not real ML work. Then I shipped a model trained on the wrong dataset version, spent a full day debugging a feature mismatch between training and serving, and nearly panicked when a customer invoked their right to erasure on data that was already baked into model weights. Each of these topics exists because someone, somewhere, got burned badly enough to build a tool or a framework or a law around it.</p>
+
+<p>You don't need to master any of these right now. But when they show up — and they will — you'll want to recognize them on sight, know why they exist, and have a rough sense of when they matter. That's what this section is for.</p>
 
 <h2>The Topics</h2>
 
-<h3>DVC (Data Version Control)</h3>
+<h3>Data Leakage — The Silent Killer</h3>
 
-<p>Git tracks code, DVC tracks data. It stores content hashes in small <code>.dvc</code> pointer files (committed to Git) while actual data lives in S3/GCS/Azure. Switch dataset versions like switching Git branches: <code>git checkout v2 && dvc pull</code>.</p>
+<p>Data leakage is probably the single most dangerous thing that can happen in a machine learning pipeline, and the reason it's dangerous is that everything looks great until deployment. Your validation metrics are stellar. Your cross-validation scores are impressive. Then you push to production and the model performs like it's guessing randomly. What happened? Information from the future, or from the test set, or from the target itself leaked into your training features.</p>
 
-<pre><code>$ dvc init
-$ dvc add data/training_images/     # creates .dvc pointer file
-$ dvc remote add -d store s3://my-bucket/dvc-store
-$ dvc push                           # uploads data to S3</code></pre>
+<p>There are three flavors of leakage that trip up even experienced engineers. <strong>Target leakage</strong> happens when a feature is derived from the target variable — like including an "account_closed" flag when predicting churn. The model doesn't learn to predict churn; it learns to read a flag that only exists after the event already happened. <strong>Temporal leakage</strong> happens when you randomly split time-series data instead of splitting chronologically. The model gets to peek at tomorrow's data to predict today. <strong>Group leakage</strong> happens when the same entity (a patient, a user, a device) appears in both training and test sets. The model memorizes entity-specific quirks rather than learning generalizable patterns.</p>
 
-<p>Use it when: you need reproducible experiments and your datasets are too large for Git. Most teams skip it until they've been burned by "which data did model v2.3 train on?"</p>
+<p>The fix isn't complicated, but it requires discipline. Chronological splits for anything time-related. <code>GroupKFold</code> when entities repeat. Fitting scalers and encoders only on training data — never the full dataset. And a healthy suspicion toward any metric that looks too good to be true. I still occasionally catch myself computing a rolling mean across the entire dataset before splitting. Old habits die hard.</p>
 
-<h3>MLflow Data Tracking</h3>
+<h3>Imbalanced Datasets — When 99% Accuracy Means Nothing</h3>
 
-<p>MLflow logs datasets alongside experiment runs — which data version, which hyperparameters, which metrics. Not as rigorous as DVC for version control, but integrates naturally if you're already using MLflow for experiment tracking.</p>
+<p>Imagine a fraud detection model that predicts "not fraud" for every single transaction. If only 0.5% of transactions are fraudulent, that model scores 99.5% accuracy. It's also completely useless.</p>
 
-<pre><code>import mlflow
-mlflow.log_input(mlflow.data.from_pandas(df, name="training_v3"))</code></pre>
+<p>This is the imbalanced dataset problem, and it comes up constantly in production ML: fraud detection, medical diagnosis, rare event prediction, manufacturing defect classification. The question everyone asks is: should I resample or adjust weights?</p>
 
-<h3>Feature Stores</h3>
+<p>There are two mainstream approaches. <strong>Class weights</strong> tell the model to penalize misclassifications of the minority class more heavily during training. Most frameworks support this with a single parameter — <code>class_weight='balanced'</code> in scikit-learn, <code>scale_pos_weight</code> in XGBoost. No data modification, no pipeline complexity, low overfitting risk. <strong>SMOTE</strong> (Synthetic Minority Over-sampling Technique) generates synthetic minority samples by interpolating between existing ones. More involved, higher risk of overfitting, and the synthetic points might not reflect reality.</p>
 
-<p>A feature store (Feast, Tecton, Hopsworks) serves precomputed features consistently across training and inference. Without one, training computes features in a batch job while inference recomputes them in real-time — and the two implementations inevitably diverge. Feature stores solve the train/serve skew problem at the feature level.</p>
+<p>In production, class weights are almost always the first thing teams reach for. SMOTE is a second resort when weights alone don't cut it. One hard rule: if you use SMOTE, apply it only to the training set. Never to validation or test. And regardless of which approach you choose, throw accuracy out the window. Precision, recall, F1, and AUC-ROC are the metrics that actually tell you something useful when classes are skewed.</p>
 
-<p>When you need it: when your company has multiple models sharing the same features, or when training/serving feature parity is a real pain point. Most teams don't need one until they have 5+ models in production.</p>
+<h3>DVC — Version Control for Data</h3>
 
-<h3>Delta Lake and Lakehouse</h3>
+<p>Git tracks code beautifully. But try committing a 40GB image dataset and Git will politely refuse, or silently destroy your repository's performance. That's where <strong>DVC</strong> (Data Version Control) comes in. It stores content hashes in small <code>.dvc</code> pointer files — those get committed to Git — while the actual data lives in remote storage like S3, GCS, or Azure Blob.</p>
 
-<p>Delta Lake adds ACID transactions and time travel to data lakes (Parquet files on S3). You can query data as it existed at any point in time: <code>df = spark.read.format("delta").option("timestampAsOf", "2024-01-15").load(path)</code>. The "lakehouse" pattern combines the flexibility of a data lake with warehouse-like reliability.</p>
+<p>The workflow looks like this: you run <code>dvc add data/training_images/</code>, which creates a pointer file. You commit that pointer to Git. You push the actual data to remote storage with <code>dvc push</code>. Now switching dataset versions is as natural as switching Git branches — <code>git checkout v2 && dvc pull</code> and you've got the exact data that model v2 was trained on.</p>
 
-<h3>GDPR / CCPA / HIPAA — What ML Engineers Need to Know</h3>
+<p>Most teams skip DVC until they've been burned by the question "which data did model v2.3 train on?" and nobody can answer it confidently. That's usually the moment DVC gets adopted. The adjacent tool worth knowing about is <strong>MLflow</strong>'s data tracking, which logs dataset references alongside experiment runs. Less rigorous than DVC for version control proper, but integrates smoothly if you're already tracking experiments with MLflow.</p>
 
-<p><strong>GDPR</strong> (EU) — right to erasure means users can request deletion of their data. If that data trained your model, the model's weights may still encode it. This spawned "machine unlearning" research. <strong>CCPA</strong> (California) — similar rights, broader definition of "sale" that can include sharing with model providers. <strong>HIPAA</strong> (US healthcare) — de-identification requires removing 18 specific identifiers (Safe Harbor) or statistical certification.</p>
+<h3>Feature Stores — Solving Train/Serve Skew</h3>
 
-<p>Practical impact: <strong>data minimization</strong> (collect only what you need), <strong>purpose limitation</strong> (fraud model can't be repurposed for marketing without new consent), and <strong>data lineage</strong> (track which records went into which training runs).</p>
+<p>Here's a problem that doesn't seem like a problem until it costs you weeks of debugging. During training, you compute features in a batch job — maybe a Spark pipeline that calculates rolling averages, user activity counts, time-since-last-event. During inference, you recompute those same features in real-time, in a completely different codebase. And the two implementations, inevitably, slowly, silently diverge. A slightly different windowing logic here, a different null-handling strategy there. Your model's production performance degrades, and nobody can figure out why.</p>
 
-<h3>Differential Privacy</h3>
+<p>A <strong>feature store</strong> (Feast, Tecton, Hopsworks) solves this by serving precomputed features consistently to both training and inference. Compute once, serve everywhere. The same feature vector that went into your training row is the same one your model sees at prediction time.</p>
 
-<p>Adds calibrated noise to queries or gradients to provide mathematical guarantees that individual records can't be extracted. The tradeoff: more privacy = more noise = less model accuracy. Used in production at Apple and Google for aggregate statistics. For ML training, <strong>DP-SGD</strong> clips per-sample gradients and adds noise — works but typically costs 5-15% accuracy.</p>
+<p>When do you need one? Honestly, most teams don't — not until they have five or more models in production sharing overlapping features, or when train/serve parity becomes a genuine pain point. If you're a small team with one or two models, a well-tested Python module that both your training pipeline and serving endpoint import is often enough. Feature stores are a scaling solution, not a starting solution.</p>
 
-<h3>Synthetic Data Generation</h3>
+<h3>Synthetic Data — Manufacturing What You Can't Collect</h3>
 
-<p>Generate fake but statistically plausible data when real data is scarce, expensive, or privacy-sensitive. Tools: <strong>Faker</strong> for realistic names/addresses, <strong>SDV</strong> (Synthetic Data Vault) for tabular data, <strong>GANs/diffusion models</strong> for images. The risk: synthetic data only captures patterns you already know about — it can't surprise you with real-world edge cases.</p>
+<p>Sometimes real data is scarce, expensive to label, or legally untouchable. Medical records you can't share. Financial transactions too sensitive to export. A new product category with no historical data at all. Synthetic data generation tries to solve this by creating fake-but-statistically-plausible data.</p>
+
+<p>The tooling landscape has gotten genuinely useful. <strong>Faker</strong> generates realistic names, addresses, phone numbers — good for populating test databases. For statistically faithful tabular data, <strong>SDV</strong> (Synthetic Data Vault) offers models like <strong>CTGAN</strong> and <strong>GaussianCopula</strong> that learn the joint distributions and correlations of your real data, then sample new rows that preserve those patterns. For images, GANs and diffusion models have been doing this for years.</p>
+
+<p>But here's the fundamental limitation that's easy to forget: synthetic data can only capture patterns that already exist in your real data. It can't invent edge cases you haven't seen. It can't generate the weird outlier that crashes your pipeline on a Tuesday morning. Synthetic data is a mirror, not a crystal ball. I've seen teams over-rely on it and then be blindsided by production data that looked nothing like what the generator produced.</p>
+
+<h3>Tabular Data Augmentation — Why It's Harder Than Images</h3>
+
+<p>With images, augmentation is intuitive. Flip horizontally, rotate 15 degrees, adjust brightness — the augmented image is still a valid image. With tabular data, there's no such free lunch. You can't "rotate" a row of features. Each column has its own semantics, its own scale, its own relationship to every other column.</p>
+
+<p>Still, a few techniques have earned their keep. <strong>Mixup</strong> takes two training samples and creates a new one by interpolating both the features and the label — if sample A has label 0.0 and sample B has label 1.0, the mixed sample might have label 0.3 with features that are 70% A and 30% B. This promotes smoother decision boundaries and helps with generalization. The catch: you cannot mix categorical features arithmetically. What's 70% "red" and 30% "blue"? Exactly. For categoricals, you pick one or encode them first.</p>
+
+<p><strong>Feature noise</strong> (also called jittering) adds small Gaussian noise to continuous features — basically perturbing each value slightly to create a "nearby" sample. Keep the noise proportional to each feature's natural variance, or you'll generate physically impossible data points. <strong>Row dropout</strong> randomly masks some features to zero, simulating missing data and forcing the model to be robust to incomplete inputs.</p>
+
+<p>None of these are as powerful as image augmentation. But when data is scarce and you've already tried everything else, they can squeeze out a few more points of performance. Always validate on untouched real data to make sure the augmentation actually helps.</p>
+
+<h3>Delta Lake and the Lakehouse Pattern</h3>
+
+<p><strong>Delta Lake</strong> adds ACID transactions and time travel to data lakes — which are typically Parquet files sitting on S3 with no guarantees about consistency or versioning. With Delta Lake, you can query your data as it existed at any point in time: <code>df = spark.read.format("delta").option("timestampAsOf", "2024-01-15").load(path)</code>. Failed writes don't corrupt your data. Concurrent reads and writes don't step on each other.</p>
+
+<p>The <strong>lakehouse</strong> pattern combines the flexibility of a data lake (store anything, any format, cheaply) with the reliability of a data warehouse (transactions, schema enforcement, query optimization). It's become the default architecture for organizations that outgrow simple Parquet-on-S3 but don't want to pay warehouse prices for everything. If you hear someone mention "medallion architecture" — bronze, silver, gold layers — that's lakehouse vocabulary.</p>
+
+<h3>Privacy Regulations — GDPR, CCPA, HIPAA</h3>
+
+<p>As an ML engineer, you probably didn't get into this field to read legal documents. But these three acronyms will find you eventually, and it's better to understand what they mean for your pipelines than to learn the hard way.</p>
+
+<p><strong>GDPR</strong> (EU) established the right to erasure — users can demand their data be deleted. If that data already trained your model, the weights might still encode it. This uncomfortable reality spawned an entire research field called <strong>machine unlearning</strong>: techniques to "remove" a training example's influence from model weights without retraining from scratch. It's still an active area of research, not a solved problem.</p>
+
+<p><strong>CCPA</strong> (California) grants similar rights with a broader definition of "sale" that can include sharing data with model providers. <strong>HIPAA</strong> (US healthcare) requires de-identification by removing 18 specific identifiers under the Safe Harbor method, or getting a statistician to certify that re-identification risk is sufficiently low.</p>
+
+<p>The practical impact on your daily work boils down to three principles: <strong>data minimization</strong> — collect only what your model actually needs, not everything you can get your hands on. <strong>Purpose limitation</strong> — a fraud detection model's training data can't be quietly repurposed for marketing without fresh consent. And <strong>data lineage</strong> — you need to track which records went into which training runs, because when someone exercises their right to erasure, you need to know which models are affected.</p>
+
+<h3>Differential Privacy — The Privacy/Utility Tradeoff</h3>
+
+<p>Differential privacy provides mathematical guarantees that no individual record can be extracted from query results or model outputs. The mechanism is elegant in principle: add carefully calibrated noise so that the presence or absence of any single record doesn't meaningfully change the output. Apple uses it for keyboard statistics. Google uses it for Chrome browsing data.</p>
+
+<p>For ML training, the implementation is called <strong>DP-SGD</strong> — differentially private stochastic gradient descent. It clips per-sample gradients (so no single example can dominate the update) and adds noise. It works. But it costs you. Typical accuracy degradation is 5-15%, which is a lot when you're fighting for every percentage point. The tradeoff is real and unavoidable: more privacy guarantees mean more noise, which means less model accuracy. There's an active research community trying to tighten this gap, but it's still very much a frontier.</p>
 
 <h3>Data Catalogs and Contracts</h3>
 
-<p>A <strong>data catalog</strong> (DataHub, Amundsen) makes datasets discoverable — searchable metadata so you don't reinvent features someone already computed. A <strong>data contract</strong> is a formal agreement between data producer and consumer about schema, freshness, and quality guarantees. Both become essential once your organization has 50+ datasets and multiple ML teams.</p>
+<p>Once an organization has 50+ datasets and multiple ML teams, a predictable problem emerges: nobody knows what data already exists. Team A spends two weeks building a feature that Team B computed six months ago. Team C's model breaks silently because an upstream table changed its schema without warning.</p>
+
+<p>A <strong>data catalog</strong> (DataHub, Amundsen, OpenMetadata) makes datasets discoverable — searchable metadata with lineage graphs, ownership information, and documentation. Think of it as a search engine for your company's data.</p>
+
+<p>A <strong>data contract</strong> is a formal, machine-readable agreement between a data producer and consumer about schema, freshness, and quality guarantees. Tools like <strong>Great Expectations</strong> and <strong>Pandera</strong> let you encode these contracts as validation rules that run automatically. When an upstream schema changes, the contract fails loudly instead of letting corrupted data flow silently into your training pipeline. In a <strong>data mesh</strong> architecture, where domain teams own their own data products, contracts are what make the whole thing work.</p>
+
+<p>You won't need either of these on a small team. But when you start hearing complaints like "where does this feature come from?" or "why did our model performance drop last Tuesday?" — that's when catalogs and contracts start to matter.</p>
 
 <div class="callout callout-info">
-  <div class="callout-label">The Point of This Section</div>
-  <p>You don't need to master any of these right now. When you encounter DVC in a colleague's workflow, or your company starts discussing feature stores, or a compliance officer mentions GDPR — you'll know what they're talking about. That recognition is the goal.</p>
+  <div class="callout-label">Why This Section Exists</div>
+  <p>None of these topics are ones you need to master today. But every one of them has, at some point, derailed a production ML system or torpedoed an interview. When a colleague mentions DVC, or a compliance officer asks about GDPR, or an interviewer probes for data leakage — you'll know what they're talking about. More importantly, you'll know why it matters. That recognition, and the instinct to dig deeper when the moment comes, is the whole point.</p>
 </div>
 
 <h2 class="section-title">What You Should Now Be Able To Do</h2>
 <ul>
-  <li>Explain what DVC does and when a team would adopt it</li>
-  <li>Describe the train/serve skew problem that feature stores solve</li>
-  <li>Name the three key GDPR principles that affect ML pipelines</li>
-  <li>Explain the privacy/utility tradeoff in differential privacy</li>
-  <li>Know when synthetic data is useful and its fundamental limitation</li>
+  <li>Name the three types of data leakage and explain why each is dangerous</li>
+  <li>Explain when class weights are preferred over SMOTE for imbalanced datasets</li>
+  <li>Describe what DVC does and the problem it solves in reproducible experiments</li>
+  <li>Articulate the train/serve skew problem that feature stores address</li>
+  <li>Explain the fundamental limitation of synthetic data generation</li>
+  <li>Name the three GDPR principles that directly affect ML pipelines</li>
+  <li>Describe the privacy/utility tradeoff in differential privacy and what DP-SGD costs in practice</li>
+  <li>Know when data catalogs and contracts become necessary for an organization</li>
 </ul>
 
 
