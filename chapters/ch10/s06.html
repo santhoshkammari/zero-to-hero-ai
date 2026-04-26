@@ -296,237 +296,270 @@
 <h1>Interpretability &amp; Efficient Architectures</h1>
 <div class="chapter-meta">
   <span class="tag">Chapter 10: Sequence Models &amp; Attention</span>
-  <span class="tag">What models learn · Flash Attention · KV cache · Making it scale</span>
+  <span class="tag">Peeking inside transformers · The quadratic wall · FlashAttention · KV cache · Speculative decoding</span>
 </div>
 
-<div class="tldr">
-  <div class="tldr-label">TL;DR</div>
-  <p>Two things you need to know exist but don't need to master yet. <strong>Interpretability:</strong> we can peek inside transformers — visualize attention weights, probe what layers encode, even reverse-engineer circuits — but the tools are young and the conclusions are fragile. <strong>Efficient architectures:</strong> standard attention is O(n²) in sequence length, which breaks at long contexts. Flash Attention (exact, memory-efficient) is the dominant fix in practice. Sparse attention, linear attention, and KV cache tricks handle the rest. Most modern LLMs stack several of these together.</p>
+<!-- ────────────────────────────────────────── OPENING ────────────────────────────────────────── -->
+
+<p>I avoided looking inside transformers for longer than I care to admit. I'd train a model, watch the loss go down, see the outputs get better, and think: good enough. But "good enough" has a shelf life. One day someone asked me <em>why</em> my model kept attending to punctuation marks in a sentiment task, and I had nothing. Another day I tried feeding it a 20-page document and watched my GPU memory explode. The discomfort of not understanding what was happening inside — or how to make it scale — finally grew too great. Here is that dive.</p>
+
+<p>This section covers two separate but intertwined questions about sequence models, particularly transformers. First: <em>what</em> did the model learn, and can we peek inside without breaking it? That's interpretability. Second: standard self-attention scales quadratically with sequence length, which means it falls apart for long documents. That's the efficiency problem. Both questions became urgent as transformers went from research curiosities to production workhorses.</p>
+
+<p>Before we start, a heads-up. We'll be getting into GPU memory hierarchies, matrix multiplication tricks, and some linear algebra. You don't need any of that beforehand. We'll add what we need, one piece at a time.</p>
+
+<p>This isn't a short journey, but I hope you'll be glad you came.</p>
+
+<!-- ────────────────────── TABLE OF CONTENTS ────────────────────── -->
+
+<div class="callout callout-info" style="background:transparent;border-left:3px solid var(--accent);">
+  <div class="callout-label">What We'll Cover</div>
+  <p style="margin:0;line-height:1.9;">
+    Attention heatmaps and why they lie<br>
+    Probing classifiers — an MRI for neural networks<br>
+    BERTology and the layer-by-layer map<br>
+    Mechanistic interpretability — induction heads and superposition<br>
+    Rest stop<br>
+    The quadratic wall<br>
+    Sparse attention — Longformer, BigBird, and friends<br>
+    Linear attention and the kernel trick<br>
+    FlashAttention — the trick that actually won<br>
+    The KV cache and why it dominates inference memory<br>
+    Multi-query and grouped-query attention<br>
+    Speculative decoding — two models, one answer<br>
+    Wrap-up
+  </p>
 </div>
 
-<h2>Part 1: What Is the Model Actually Doing?</h2>
+<!-- ────────────────────── RUNNING EXAMPLE SETUP ────────────────────── -->
 
-<p>You've trained a transformer. It works. But <em>why</em> does it work? What did it learn? Interpretability research tries to answer that, and it ranges from "easy to try, easy to misread" to "cutting-edge research that might eventually let us audit AI systems." Here's the landscape.</p>
+<p>Let's ground all of this in a concrete scenario. Imagine we're building a customer support chatbot for a small online bookstore. The chatbot reads a customer's message — "I ordered <em>The Great Gatsby</em> last Tuesday and it still hasn't arrived" — and needs to generate a helpful reply. Our model is a small transformer with 4 layers, 4 attention heads per layer, and a vocabulary of 10,000 tokens. We'll keep coming back to this bookstore bot as we peel back layers of both interpretability and efficiency.</p>
 
-<h2>Attention Visualization</h2>
+<!-- ────────────────────── PART 1: INTERPRETABILITY ────────────────────── -->
 
-<p>The most obvious thing to try: plot the attention weights. Each attention head produces an n×n matrix showing how much each token "looks at" every other token. You can visualize this as a heatmap or a set of arcs connecting tokens. When translating "the cat sat on the mat," you might see the decoder's attention lighting up on "cat" when generating "chat." Intuitive. Satisfying. And dangerously easy to over-interpret.</p>
+<h2>Attention Heatmaps and Why They Lie</h2>
 
-<div class="callout callout-warning">
-  <div class="callout-label">Attention ≠ Explanation</div>
-  <p>There's a famous debate here. Jain &amp; Wallace (2019) showed that attention weights often don't correlate with gradient-based importance measures, and you can find completely different attention distributions that produce the same predictions. Wiegreffe &amp; Pinter (2019) pushed back with nuance. The consensus: attention weights tell you <em>where</em> the model routed information, not <em>what</em> information mattered for the output. They're a useful debugging signal, not a faithful explanation. Treat them like X-rays, not like proofs.</p>
-</div>
+<p>The first thing everyone tries — myself included — is plotting the attention weights. Each attention head produces a matrix where the value in row <em>i</em>, column <em>j</em> tells us how much token <em>i</em> "looked at" token <em>j</em> when computing its output. You can draw this as a heatmap, and the results look intoxicating.</p>
 
-<h2>Probing Classifiers</h2>
+<p>For our bookstore bot, imagine feeding in the sentence "The book arrived damaged." We pull out the attention matrix from head 2 of layer 3. It's a 5×5 grid (one row and column per token). When we visualize it, we see that the token "damaged" strongly attends to "book." Satisfying. We feel like we've understood something.</p>
 
-<p>Probing answers a more precise question: <em>what information is encoded in the model's internal representations?</em> The recipe is simple:</p>
+<p>Here's the problem: we haven't. In 2019, Jain and Wallace ran an experiment that shook the interpretability community. They showed you could find <em>completely different</em> attention distributions — ones that looked nothing like the original — that produced the exact same model predictions. If two different "explanations" lead to the same answer, neither one is really an explanation. Wiegreffe and Pinter pushed back later that year with important nuance, but the consensus settled somewhere uncomfortable: attention weights show you <em>where</em> information was routed, not <em>what</em> information mattered for the final decision.</p>
 
-<ul>
-  <li>Freeze the model — don't change any weights</li>
-  <li>Extract hidden states from a specific layer for your dataset</li>
-  <li>Train a small, simple classifier (usually linear) on those hidden states to predict some linguistic property</li>
-  <li>If the probe succeeds, that information is <em>accessible</em> in that layer's representations</li>
-</ul>
+<p>I'll be honest — this tripped me up for a while. I wanted attention heatmaps to be the X-ray that shows you the broken bone. They're more like a traffic map that shows which roads had cars on them. Useful for debugging routing, but it doesn't tell you <em>why</em> someone drove to that particular destination.</p>
 
-<p>Researchers have used this to map out what different layers encode. Typical findings: early layers capture surface features (word identity, POS tags), middle layers capture syntax (dependency relations, constituent structure), and later layers capture semantics (coreference, sentiment, entity types). It's like an MRI for neural networks — you can see which brain regions light up for different tasks.</p>
+<p>So if heatmaps can't tell us what the model actually learned, what can?</p>
+
+<!-- ────────────────────── PROBING CLASSIFIERS ────────────────────── -->
+
+<h2>Probing Classifiers — An MRI for Neural Networks</h2>
+
+<p>Here's a sharper question: does a specific layer of our bookstore bot "know" the part of speech of each token? Does it know which tokens refer to people versus products? Does it understand sentence structure? <strong>Probing classifiers</strong> are the tool built to answer these questions.</p>
+
+<p>The idea is elegant. We freeze the model — not a single weight changes. Then we extract the hidden state vectors from a particular layer for a bunch of labeled examples. Finally, we train a tiny classifier — typically a linear one, meaning it can only draw straight-line decision boundaries — on those hidden states to predict some property. If a linear classifier can predict part-of-speech tags from layer 2's hidden states with 95% accuracy, that information must be sitting there in an accessible form.</p>
+
+<p>Let's walk through this with our bookstore bot. We have the sentence "I ordered The Great Gatsby last Tuesday." After running it through the model, layer 1 produces a hidden state vector for each token — seven vectors, each maybe 256 dimensions. We collect thousands of such sentences with part-of-speech labels. Then we train a linear classifier: given a 256-dimensional vector, predict whether the token is a noun, verb, adjective, or something else. If this trivial classifier hits high accuracy, the model's first layer has already separated tokens by their grammatical role.</p>
+
+<p>Researchers have done this systematically, layer by layer, for BERT and similar models. The pattern is remarkably consistent. Early layers — layers 1 and 2 — capture surface features: word identity, part-of-speech tags, morphology. Middle layers — around layers 4 through 8 in a 12-layer BERT — capture syntax: dependency relations, phrase structure, whether two tokens are in the same clause. Later layers capture semantics: coreference (knowing "it" refers to "the book"), sentiment, and entity types.</p>
+
+<p>Think of it like the layers of a medical imaging pipeline. The early layers are like the raw pixel detector — they see edges and shapes. The middle layers assemble those into anatomical structures. The later layers are the radiologist reading the image and saying "this is abnormal."</p>
+
+<p>There's a catch, though. If you make your probe too powerful — say, a deep neural network instead of a linear classifier — it might <em>learn</em> the property from scratch rather than <em>detecting</em> it in the hidden states. A sufficiently complex probe can extract patterns from random noise. That defeats the whole purpose. The discipline of keeping probes simple is what makes this technique meaningful. If a linear classifier can find it, the representation must be doing real work.</p>
+
+<p>Probing tells us <em>what</em> information lives in each layer. What it doesn't tell us is <em>how</em> the model uses that information — which specific heads and neurons work together to produce a prediction. For that, we need something more invasive.</p>
+
+<!-- ────────────────────── BERTOLOGY ────────────────────── -->
+
+<h2>BERTology — The Layer-by-Layer Map</h2>
+
+<p>The probing results I described above didn't come from one paper. They came from hundreds. The field got so prolific that Rogers, Kovaleva, and Rumshisky published a survey in 2020 called "A Primer in BERTology" that synthesized the findings. The name stuck: <strong>BERTology</strong> is the study of what BERT-like models learn and how they organize that knowledge.</p>
+
+<p>A few findings stand out. First, not all attention heads matter equally. You can prune (remove) a large fraction of heads with minimal impact on performance. Some heads are specialists — one might focus on direct objects, another on punctuation, another on coreference. Second, the knowledge is distributed: no single neuron or head is solely responsible for any linguistic feature. It's a property of the collective. Third, representations evolve as they move through layers. A word's embedding at layer 1 looks nothing like its embedding at layer 12. The model progressively refines from surface to syntax to semantics.</p>
+
+<p>For our bookstore bot, this means something concrete. If the bot is failing at understanding that "it" in "I returned it yesterday" refers to the book, the problem likely lives in the later layers. If it's confused about word boundaries in a misspelled query, the issue is probably in the early layers. BERTology gives us a rough map of where to look.</p>
+
+<p>But BERTology is still observational. We're looking at the map, not the terrain. Can we go deeper — can we reverse-engineer the actual computations?</p>
+
+<!-- ────────────────────── MECHANISTIC INTERPRETABILITY ────────────────────── -->
+
+<h2>Mechanistic Interpretability — Reverse-Engineering the Circuits</h2>
+
+<p>This is where things get genuinely ambitious. <strong>Mechanistic interpretability</strong> tries to identify the specific computations that individual neurons, attention heads, and combinations of components perform. Not "this layer knows syntax" but "these two attention heads, working together, implement a copy-paste operation."</p>
+
+<p>The most famous discovery is the <strong>induction head</strong>. To understand what an induction head does, let's go back to our bookstore bot. Suppose earlier in the conversation, the customer wrote "I'm looking for Harry Potter." Now, later in the same conversation, the customer writes "I need another Harry —". An induction head is a pair of attention heads that work together to complete this pattern: one head scans backward for a previous occurrence of the current token ("Harry"), and the second head copies what came after it last time ("Potter"). It's a pattern-matching circuit baked into the weights.</p>
+
+<p>Researchers at Anthropic and elsewhere have shown that induction heads emerge at a specific point during training — there's almost a phase transition where the model's ability to learn from context suddenly improves, and that improvement coincides with the formation of these heads. This is one of the cleanest examples of a neural network developing an identifiable algorithm through training.</p>
+
+<p>The second major discovery is <strong>superposition</strong>. I'll be honest — this one took me several readings to internalize. The intuition is this: a model with, say, 256 neurons per layer doesn't store 256 concepts. It stores <em>far more</em> than 256 concepts by encoding them as overlapping, nearly-orthogonal directions in that 256-dimensional space. One neuron might respond to both "academic writing" and "the color blue" — not because those concepts are related, but because the model learned to pack them into the same space efficiently. It's a compression trick, and it's why looking at individual neurons in isolation gives you confusing results.</p>
+
+<p>Anthropic's more recent work uses <strong>sparse autoencoders</strong> and a technique called <strong>dictionary learning</strong> to disentangle these superimposed features. They've been able to isolate specific concepts — like the "Golden Gate Bridge" concept — as individual features in Claude's activations and then manipulate them. It's extraordinary and a little unsettling.</p>
+
+<p>I'm still developing my intuition for why superposition works so well. The high-level explanation — "there are more concepts than neurons, so the model compresses" — is satisfying in the way a one-sentence summary of a novel is satisfying. The full picture involves interesting geometry about how many nearly-orthogonal vectors you can pack into a space, and the field is actively working through the details.</p>
+
+<p>Mechanistic interpretability is the particle physics of deep learning. The findings are striking, potentially critical for AI safety and model auditing. But the work is painstaking, often manual, and hasn't yet scaled to the largest production models. If you're a practitioner, know that these tools exist and are improving fast. If you're asked about them in an interview, know the two key concepts — induction heads and superposition — and why they matter for understanding in-context learning.</p>
+
+<!-- ────────────────────── REST STOP ────────────────────── -->
 
 <div class="callout callout-info">
-  <div class="callout-label">The Probing Caveat</div>
-  <p>If your probe is too powerful (say, a deep MLP instead of a linear classifier), it might <em>learn</em> the property rather than <em>detect</em> it. A sufficiently complex probe can extract patterns from random noise. Keep probes simple — the whole point is that if a <em>linear</em> classifier can find the information, it must be represented in a fairly accessible way.</p>
+  <div class="callout-label">Rest Stop 🛑</div>
+  <p>Congratulations on making it this far. You can stop here if you want.</p>
+  <p>You now have a mental model of the interpretability toolkit: attention heatmaps show routing but not reasoning, probing classifiers reveal what information each layer stores, BERTology maps the progression from surface features to semantics, and mechanistic interpretability is beginning to reverse-engineer specific circuits like induction heads.</p>
+  <p>That's a solid foundation. It won't tell you the full story — interpretability is a young field and the tools are still fragile. But if someone asks you "what does this model actually learn?", you have concrete answers with appropriate caveats.</p>
+  <p>What comes next is different terrain entirely: the engineering problem of making attention scale to long sequences. This is where the bookstore bot starts trying to read entire order histories and shipping logs, and the GPU starts sweating. If the discomfort of not knowing how that gets solved is nagging at you, read on.</p>
 </div>
 
-<h2>Mechanistic Interpretability</h2>
+<!-- ────────────────────── PART 2: EFFICIENCY ────────────────────── -->
 
-<p>This is the ambitious frontier — trying to reverse-engineer what individual neurons, attention heads, and <em>circuits</em> (combinations of components) actually compute. The Anthropic team and researchers like Neel Nanda have made striking discoveries:</p>
+<h2>The Quadratic Wall</h2>
 
-<ul>
-  <li><strong>Induction heads:</strong> pairs of attention heads that implement a copy-paste pattern. If "Harry Potter" appeared earlier in the context, an induction head helps predict "Potter" after seeing "Harry" again. These form reliably during training and are a key mechanism for in-context learning.</li>
-  <li><strong>Superposition:</strong> individual neurons don't encode single clean features. Instead, models pack more features than they have neurons by encoding them in overlapping, almost-orthogonal directions. One neuron might respond to both "academic writing" and "the color blue" — not a bug, but a compression trick.</li>
-</ul>
+<p>Let's go back to our bookstore bot. So far, customer messages have been short — 20 or 30 tokens. At those lengths, attention is fast. But now we want the bot to read the customer's entire order history before responding. That's a page of text. Maybe ten pages. Standard self-attention computes a score between <em>every pair</em> of tokens. For a sequence of length <em>n</em>, that's n × n scores.</p>
 
-<p>Mechanistic interpretability is intellectually exciting and potentially critical for AI safety. It's also painstaking, manual, and doesn't yet scale to the largest models. Think of it as the particle physics of deep learning — important findings, but don't expect to use it in your next sprint.</p>
+<p>Let's make the pain concrete with our bookstore scenario. A short customer message is about 50 tokens: 50 × 50 = 2,500 attention scores. Comfortable. A full conversation thread is 2,000 tokens: 2,000 × 2,000 = 4 million scores. Fine. An entire order history with all correspondence is 32,000 tokens: 32,000 × 32,000 = about 1 billion scores. Now we have a problem. A full product catalog the bot might need to search through hits 100,000 tokens: 100,000 × 100,000 = 10 billion scores. The GPU throws up its hands.</p>
 
-<h2>Practical Tools (Quick Reference)</h2>
+<p>This is the quadratic wall, and every technique in the rest of this section attacks it from a different angle. Think of it like a traffic problem: a small town doesn't need highways, but a growing city needs multiple strategies — wider roads, bypasses, express lanes, smarter traffic lights. No single solution handles everything.</p>
 
-<table>
-  <thead>
-    <tr>
-      <th>Tool</th>
-      <th>What It Does</th>
-      <th>When to Reach for It</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><strong>BertViz</strong></td>
-      <td>Interactive attention visualization for any HuggingFace model</td>
-      <td>Quick debugging — "what is this head looking at?"</td>
-    </tr>
-    <tr>
-      <td><strong>TransformerLens</strong></td>
-      <td>Neel Nanda's library for mechanistic interpretability — hook into any component, ablate heads, patch activations</td>
-      <td>Research-grade circuit analysis</td>
-    </tr>
-    <tr>
-      <td><strong>Baukit</strong></td>
-      <td>David Bau's toolkit for causal tracing and neuron-level interventions</td>
-      <td>Locating where specific facts are stored</td>
-    </tr>
-  </tbody>
-</table>
+<!-- ────────────────────── SPARSE ATTENTION ────────────────────── -->
 
-<h2>Part 2: Making Attention Scale</h2>
+<h2>Sparse Attention — Don't Look at Everything</h2>
 
-<p>Now for the engineering side. Standard self-attention computes a score between <em>every pair</em> of tokens. That's O(n²) in sequence length. Let's make the pain concrete:</p>
+<p>Here's the first observation: most entries in the attention matrix are near zero anyway. When our bookstore bot processes a 2,000-token conversation, the token "Gatsby" at position 47 probably has no meaningful relationship with the token "thank" at position 1,983. We're computing a score between them and the answer is effectively zero. That's wasted work.</p>
 
-<table>
-  <thead>
-    <tr>
-      <th>Sequence Length</th>
-      <th>Attention Entries</th>
-      <th>Vibe Check</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>1,000</td>
-      <td>1 million</td>
-      <td>Fine</td>
-    </tr>
-    <tr>
-      <td>8,000</td>
-      <td>64 million</td>
-      <td>Manageable</td>
-    </tr>
-    <tr>
-      <td>32,000</td>
-      <td>1 billion</td>
-      <td>Getting uncomfortable</td>
-    </tr>
-    <tr>
-      <td>100,000</td>
-      <td>10 billion</td>
-      <td>GPU says no</td>
-    </tr>
-  </tbody>
-</table>
+<p>Sparse attention says: skip the pairs that don't matter. Instead of computing all n² scores, define a pattern that picks out the important ones.</p>
 
-<p>Context length is capability — a model reading 4K tokens handles a conversation, one reading 128K can digest an entire codebase. Every technique below attacks that quadratic wall from a different angle.</p>
+<p>The simplest pattern is a <strong>local window</strong>. Each token attends to its <em>w</em> nearest neighbors — the tokens directly before and after it. If <em>w</em> is 512, each token sees 512 neighbors instead of all <em>n</em> tokens. The cost becomes n × w instead of n × n. For our 32,000-token order history with a window of 512, that's about 16 million scores instead of 1 billion. A 60× reduction.</p>
 
-<h2>Sparse Attention</h2>
+<p>But wait — doesn't this mean distant tokens can never interact? Not quite. Information propagates through layers. If layer 1 lets token 1 see tokens 1–512, and layer 2 lets it see those same neighbors (who themselves saw <em>their</em> 512 neighbors in layer 1), then after 2 layers, token 1 has indirect access to tokens 1–1024. Stack 12 layers and information can travel across 6,000 tokens. It's like a game of telephone, except the information is encoded in high-dimensional vectors and surprisingly little gets lost.</p>
 
-<p>The simplest idea: don't attend to everything. Most attention weights are near-zero anyway, so skip the pairs that don't matter. The patterns people use:</p>
+<p>A local window handles nearby context well, but what about genuinely long-range dependencies? What if the customer's complaint at the end of the conversation references an order number from the beginning? Three additional sparse patterns help.</p>
 
-<ul>
-  <li><strong>Local window:</strong> each token attends only to its w nearest neighbors. O(n·w) — linear in n. Information propagates across layers, so 32 layers × 512 window = reach across 16K tokens.</li>
-  <li><strong>Strided:</strong> attend to every k-th token, giving a coarse global view.</li>
-  <li><strong>Global tokens:</strong> designate a few tokens (like [CLS] or start-of-sequence) that attend to everything and that everything attends to. Cheap global information routing.</li>
-  <li><strong>Random:</strong> randomly sample some attention connections. Surprisingly effective as a complement to local patterns.</li>
-</ul>
+<p><strong>Global tokens</strong> are a handful of designated positions — often the [CLS] token or a start-of-sequence marker — that attend to every token and that every token attends to. They act as information hubs: a global token can pick up the order number from position 5 and make it available to the complaint at position 1,900. The cost is small because there are only a few global tokens.</p>
 
-<p><strong>Longformer</strong> combines local + global. <strong>BigBird</strong> adds random connections on top. Both achieve near-full-attention quality at a fraction of the cost for long documents.</p>
+<p><strong>Strided attention</strong> has each token attend to every <em>k</em>-th token, giving a coarse bird's-eye view of the whole sequence. If <em>k</em> is 64, a token at position 1,000 sees positions 0, 64, 128, 192, and so on — a sparse but wide perspective.</p>
 
-<h2>Linear Attention</h2>
+<p><strong>Random connections</strong> are exactly what they sound like: for each token, randomly select a small number of other tokens to attend to. This sounds reckless, but random connections create shortcuts in the information graph, similar to how random edges in a social network shrink the "six degrees of separation" distance.</p>
 
-<p>The math trick: standard attention computes <code>softmax(QK<sup>T</sup>)V</code>, which forces you to build the n×n matrix first. But if you replace softmax with a decomposable kernel — writing <code>softmax(q·k) ≈ φ(q)·φ(k)</code> — you can rearrange the multiplication order:</p>
+<p><strong>Longformer</strong> (2020) combines local window attention with global tokens. Every token sees its neighbors, and a few special tokens see everything. This handles tasks like document classification and question answering over long texts. <strong>BigBird</strong> (2020) adds random connections on top, and proved something theoretically striking: the combination of local + global + random connections gives the same theoretical expressiveness as full attention, as measured by the ability to simulate Turing machines. Both achieve near-full-attention quality at a fraction of the cost.</p>
 
-<pre><code># Standard: (Q @ K.T) @ V  → build n×n matrix first, then multiply by V
-# Linear:   Q @ (K.T @ V)  → build d×d matrix first (much smaller!), then multiply by Q</code></pre>
+<p>The limitation? Sparse patterns are hand-designed. Someone has to decide the window size, the number of global tokens, the stride. Different tasks might want different patterns. And for tasks where the truly important attention connections are neither local nor random — where the model <em>needs</em> to discover which pairs matter — fixed patterns can miss things.</p>
 
-<p>The associativity of matrix multiplication lets you compute <code>K<sup>T</sup>V</code> first — that's d×d instead of n×n, where d is the head dimension (64 or 128). Complexity drops to O(n·d²). The <strong>Performer</strong> and <strong>Random Feature Attention</strong> use this approach with different kernel approximations. The catch: the approximation isn't free — you lose some quality, especially on tasks where precise token-to-token attention patterns matter.</p>
+<!-- ────────────────────── LINEAR ATTENTION ────────────────────── -->
 
-<h2>Flash Attention</h2>
+<h2>Linear Attention — Rearranging the Math</h2>
 
-<div class="callout callout-info">
-  <div class="callout-label">This Is What Actually Won</div>
-  <p>Flash Attention is not an approximation. It computes <em>exact</em> standard attention — same math, same outputs, bit-for-bit identical. The trick is entirely about <em>how</em> the computation is organized on the GPU.</p>
-</div>
+<p>Instead of deciding which pairs to skip, what if we could change the math so the quadratic cost disappears entirely? That's the idea behind linear attention.</p>
 
-<p>The problem it solves: to compute <code>softmax(QK<sup>T</sup>)V</code> naively, you materialize the full n×n attention matrix in GPU high-bandwidth memory (HBM). HBM is large but slow. GPU SRAM is tiny but fast. Flash Attention <strong>tiles</strong> the computation — it processes the attention matrix in small blocks that fit in SRAM, never writing the full n×n matrix to HBM. It uses an online softmax trick to compute exact softmax without needing all the values at once.</p>
+<p>Standard attention computes softmax(QK<sup>T</sup>)V. The bottleneck is QK<sup>T</sup>, which produces the n × n attention matrix. But here's a matrix algebra observation. Matrix multiplication is <strong>associative</strong>: (AB)C = A(BC). If we could skip the softmax — or approximate it — we could compute K<sup>T</sup>V first. That product has shape d × d (where d is the head dimension, typically 64 or 128). Then we multiply Q by that d × d result. The cost goes from O(n²d) to O(nd²). Since d is small and fixed, that's linear in sequence length.</p>
 
-<p>Results: 2–4× wall-clock speedup, dramatically less memory, and you can train with much longer sequences on the same hardware. Flash Attention (and its successor FlashAttention-2) is what actually runs under the hood of essentially every modern LLM. If you only remember one efficiency technique, make it this one.</p>
+<p>The catch is the softmax. It's applied element-wise to the n × n matrix, which means you can't factor it out of the multiplication. The trick that <strong>Performer</strong> (2020) and <strong>Linformer</strong> (2020) use is to replace the softmax with a <strong>kernel approximation</strong>. The Performer uses a technique called FAVOR+ (Fast Attention Via positive Orthogonal Random features), which approximates the softmax kernel using random feature maps. Linformer takes a different approach: it projects the sequence length dimension of K and V down to a smaller fixed size <em>k</em> using learned projection matrices, reducing the attention matrix from n × n to n × k.</p>
 
-<h2>Multi-Query &amp; Grouped-Query Attention</h2>
+<pre><code># Standard attention: O(n²d) — build n×n first
+scores = Q @ K.T           # shape: n × n  ← this is the problem
+weights = softmax(scores)   # shape: n × n
+output = weights @ V        # shape: n × d
 
-<p>Standard multi-head attention gives each head its own Q, K, and V projections. That means during autoregressive generation, you have to cache separate K and V tensors for every head. With 32 heads across 80 layers, the KV cache gets enormous.</p>
+# Linear attention (Performer-style): O(nd²) — build d×d first
+Q_prime = phi(Q)            # apply random feature map
+K_prime = phi(K)            # apply random feature map
+kv = K_prime.T @ V          # shape: d × d  ← much smaller!
+output = Q_prime @ kv       # shape: n × d</code></pre>
 
-<ul>
-  <li><strong>Multi-Query Attention (MQA):</strong> all query heads share a <em>single</em> set of K and V heads. Slashes KV cache by the number of heads (e.g., 32×). Used in PaLM, Falcon.</li>
-  <li><strong>Grouped-Query Attention (GQA):</strong> a middle ground — group query heads and share K/V within each group. 8 KV heads serving 32 query heads gives a 4× reduction. Used in Llama 2, Mistral, Gemma. This is the current sweet spot — most of MQA's memory savings with almost no quality loss.</li>
-</ul>
+<p>The promise is beautiful: linear scaling means a 100,000-token sequence costs 100× more than 1,000 tokens, not 10,000× more. The reality is messier. The kernel approximation introduces error. On tasks where the exact pattern of token-to-token attention matters — where the model needs to attend very sharply to one or two specific tokens — the approximation smooths things out and quality drops. The Performer and Linformer showed impressive results on certain benchmarks but never achieved the same dominance as the technique we'll look at next.</p>
 
-<h2>KV Cache</h2>
+<p>I think of sparse and linear attention like two different strategies for handling a crowded library. Sparse attention says "I'll only look at nearby shelves and a few random ones across the room." Linear attention says "I'll build a compressed summary of every shelf so I don't have to visit each one." Both work, both have blind spots, and neither is what most production systems ended up using.</p>
 
-<p>During autoregressive generation (producing one token at a time), the model runs attention over the entire sequence at each step. But all the previous tokens' keys and values haven't changed — only the new token is new. So you <strong>cache</strong> the K and V vectors from all previous steps and only compute Q, K, V for the new token.</p>
+<!-- ────────────────────── FLASHATTENTION ────────────────────── -->
 
-<p>Without KV cache: generating token 1000 recomputes all 1000 keys and values. With KV cache: you compute 1 new key and 1 new value, then attend over the 1000 cached ones. The speedup is massive — it's why LLM inference is feasible at all. The tradeoff: memory scales linearly with sequence length × number of layers × number of KV heads × head dimension. For a 70B model at 128K context, the KV cache alone can consume tens of gigabytes. That's why MQA/GQA matter so much — they shrink the thing that actually dominates inference memory.</p>
+<h2>FlashAttention — The Trick That Actually Won</h2>
 
-<div class="callout callout-danger">
-  <div class="callout-label">The Real Bottleneck</div>
-  <p>For serving LLMs in production, KV cache memory is often the binding constraint — not compute, not model weights, but the per-request cache for long conversations. Techniques like PagedAttention (used in vLLM) treat KV cache like virtual memory pages to reduce fragmentation. If you ever deploy LLMs at scale, you'll spend more time thinking about KV cache management than about model architecture.</p>
-</div>
+<p>Here's where I need to correct a misconception I held for an embarrassingly long time. When I first heard about "efficient attention," I assumed the solution was mathematical — find a clever approximation. FlashAttention is nothing of the sort. It computes <em>exact</em> standard attention. Same math, same outputs, bit-for-bit identical results. The entire trick is about how the computation is <em>organized on the GPU hardware</em>.</p>
 
-<h2>Comparison: Efficient Attention Approaches</h2>
+<p>To understand FlashAttention, we need to understand one thing about GPUs. A modern GPU has two kinds of memory. <strong>High-bandwidth memory (HBM)</strong> is large — 40 to 80 gigabytes on an A100 — but relatively slow to access. Think of it as a warehouse: lots of space, but it takes time to walk to the shelf and back. <strong>SRAM</strong> (the on-chip memory, sometimes called shared memory) is tiny — around 20 megabytes total across all streaming multiprocessors — but extremely fast. Think of it as your workbench: everything on it is within arm's reach.</p>
 
-<table>
-  <thead>
-    <tr>
-      <th>Approach</th>
-      <th>Complexity</th>
-      <th>Exact?</th>
-      <th>Practical Status</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>Standard attention</td>
-      <td>O(n²)</td>
-      <td>Yes</td>
-      <td>Baseline — still used for short sequences</td>
-    </tr>
-    <tr>
-      <td>Sparse (Longformer, BigBird)</td>
-      <td>O(n·w)</td>
-      <td>No (subset)</td>
-      <td>Good for long docs; less common in LLMs</td>
-    </tr>
-    <tr>
-      <td>Linear (Performer)</td>
-      <td>O(n·d²)</td>
-      <td>No (approx)</td>
-      <td>Research interest; quality gap remains</td>
-    </tr>
-    <tr>
-      <td>Flash Attention</td>
-      <td>O(n²) math, O(n) memory</td>
-      <td>Yes</td>
-      <td><strong>Dominant in practice</strong> — used everywhere</td>
-    </tr>
-    <tr>
-      <td>MQA / GQA</td>
-      <td>Same compute, less memory</td>
-      <td>Yes</td>
-      <td>Standard in Llama 2, Mistral, Gemma</td>
-    </tr>
-    <tr>
-      <td>KV Cache</td>
-      <td>O(1) per new token</td>
-      <td>Yes</td>
-      <td>Universal — every autoregressive model</td>
-    </tr>
-  </tbody>
-</table>
+<p>The naive attention computation goes like this. We compute Q × K<sup>T</sup>, getting the full n × n attention matrix. We write that matrix to HBM. We read it back from HBM to compute softmax. We write the softmax result to HBM. We read it back to multiply by V. We write the final output to HBM. Each of those reads and writes is a trip to the warehouse. For long sequences, we're spending more time moving data between HBM and SRAM than actually doing arithmetic. The computation is <strong>memory-bound</strong>, not compute-bound.</p>
 
-<h2>What You Should Now Be Able To Do</h2>
+<p>FlashAttention, introduced by Tri Dao in 2022, eliminates those round trips using <strong>tiling</strong>. Instead of computing the entire n × n attention matrix at once, it processes the matrix in small blocks — tiles — that fit in SRAM. The algorithm loads a tile of Q and a tile of K into SRAM, computes their attention scores, applies softmax (partially), multiplies by the corresponding tile of V, and accumulates the result. Then it moves on to the next tile. The full n × n matrix is never materialized in HBM at all.</p>
+
+<p>The clever part is the <strong>online softmax trick</strong>. Softmax needs a denominator — the sum of all exponentials — which normally requires seeing all values first. How do you compute softmax in tiles without seeing every value? The answer: maintain running statistics. For each row, keep track of the maximum value seen so far and the running sum of exponentials. As each new tile arrives, update these statistics incrementally. When all tiles are processed, the running statistics give you the exact softmax. No approximation. No error.</p>
+
+<p>Let me trace through a tiny example. Suppose our bookstore bot has a 4-token sentence and we tile it into blocks of 2. We have Q with 4 rows and K with 4 columns. Instead of computing the full 4 × 4 attention matrix, we process two tiles. Tile 1: Q rows [1,2] × K columns [1,2] — a 2 × 2 block. We compute these 4 scores, find the max per row, compute partial exponentials, and start accumulating weighted V. Tile 2: Q rows [1,2] × K columns [3,4] — another 2 × 2 block. We compute these scores, update our running max (if we found a larger value, we rescale the previous partial sums), update the running sum, and add more weighted V. After tile 2, we have the exact answer for rows 1 and 2. Then we repeat for Q rows [3,4]. The full 4 × 4 matrix was never stored anywhere.</p>
+
+<p>The results are dramatic. FlashAttention delivers a 2–4× wall-clock speedup over naive attention and uses far less memory, because it only stores O(n) values in HBM instead of O(n²). FlashAttention-2 (2023) improved the parallelism further. This is what runs under the hood of essentially every modern large language model. If you remember one technique from this entire section, make it FlashAttention.</p>
+
+<p>I want to sit with this for a moment, because the insight is profound. The math didn't change. The algorithm didn't change. What changed was <em>respecting the hardware</em>. So much of high-performance computing is about understanding that data movement costs more than arithmetic, and designing algorithms that keep data close to where the computation happens. FlashAttention is a masterclass in this principle.</p>
+
+<p>The library analogy from earlier still applies. Sparse attention says "visit fewer shelves." Linear attention says "make a summary map." FlashAttention says "bring the shelves to my workbench in small batches." Same library, same books, same reading — but faster, because we stopped walking back and forth.</p>
+
+<!-- ────────────────────── KV CACHE ────────────────────── -->
+
+<h2>The KV Cache — Why Inference Memory Blows Up</h2>
+
+<p>We've been talking about making attention efficient during training, where we process the whole sequence at once. Inference is a different beast. When our bookstore bot generates a response — one token at a time, autoregressively — it runs the full attention computation at every step. Generate token 1, run attention. Generate token 2, run attention over tokens 1–2. Generate token 100, run attention over all 100 tokens so far.</p>
+
+<p>Here's the wasteful part. When generating token 100, the model computes new key and value vectors for every previous token — but tokens 1 through 99 haven't changed. Their keys and values are exactly the same as they were when we generated token 99. We're recomputing the same thing over and over.</p>
+
+<p>The <strong>KV cache</strong> is the fix. After computing the key and value vectors for each token, we store them. When generating the next token, we only compute Q, K, and V for the single new token, then look up the cached keys and values for all previous tokens. The attention computation goes from processing <em>n</em> tokens' worth of K and V at step <em>n</em> to processing 1 new token plus a cache lookup.</p>
+
+<p>Let's trace this for our bookstore bot generating "Your order has shipped." At step 1, we compute K₁ and V₁ for "Your" and cache them. At step 2, we compute K₂ and V₂ for "order", cache them, and attend over [K₁, K₂] and [V₁, V₂] using only the new query Q₂. At step 3, we compute K₃ and V₃ for "has", cache them, attend over [K₁, K₂, K₃] using Q₃. Each step adds one entry to the cache instead of recomputing everything.</p>
+
+<p>The KV cache is what makes LLM inference feasible at all. Without it, generating each new token would be as expensive as processing the entire sequence from scratch. With it, the per-token cost is roughly constant. That's the difference between a chatbot that responds in milliseconds and one that takes minutes.</p>
+
+<p>The tradeoff: the cache consumes memory. For each layer, for each attention head, we store a key vector and a value vector for every token generated so far. A rough calculation for a 70-billion-parameter model with 80 layers, 64 attention heads, and a head dimension of 128: the KV cache for a single sequence of 4,096 tokens requires about 80 × 64 × 4,096 × 128 × 2 (K and V) × 2 bytes (FP16) ≈ 10.7 gigabytes. For a single user's conversation. Now imagine serving hundreds of users simultaneously — the KV cache alone can dwarf the model weights in memory consumption.</p>
+
+<p>This is why the KV cache became the dominant bottleneck in LLM serving. Not compute, not model weights — the per-request cache for ongoing conversations.</p>
+
+<!-- ────────────────────── MQA / GQA ────────────────────── -->
+
+<h2>Multi-Query and Grouped-Query Attention — Shrinking the Cache</h2>
+
+<p>The KV cache problem has a structural cause. In standard <strong>multi-head attention</strong>, every attention head has its own Q, K, and V projection matrices. If we have 64 heads, we store 64 separate K tensors and 64 separate V tensors per layer. That's what makes the cache so enormous.</p>
+
+<p>In 2019, Noam Shazeer proposed <strong>multi-query attention (MQA)</strong>: keep 64 separate query heads, but share a <em>single</em> K head and a <em>single</em> V head across all of them. Every query head still gets its own perspective (its own Q projection), but they all attend over the same keys and values. The KV cache shrinks by a factor of 64 — from 64 K/V pairs to 1.</p>
+
+<p>Let me trace through what this looks like for our bookstore bot. In standard multi-head attention with 4 heads, generating one token produces 4 key vectors and 4 value vectors to cache. After 100 tokens, the cache holds 800 vectors per layer. With MQA, generating one token produces 1 key vector and 1 value vector, shared across all 4 heads. After 100 tokens, the cache holds 200 vectors per layer. A 4× reduction.</p>
+
+<p>The concern with MQA is quality loss. Different heads are forced to attend over identical keys and values, which might limit the model's ability to attend to different kinds of information simultaneously. In practice, the quality hit is small for many tasks but noticeable for others.</p>
+
+<p><strong>Grouped-query attention (GQA)</strong>, introduced in the Llama 2 paper (2023), is the compromise that stuck. Instead of all heads sharing one K/V pair, you group the heads. With 64 query heads and 8 groups, you have 8 K/V pairs — each serving 8 query heads. The KV cache shrinks by 8× (instead of 64×), but each group of queries gets its own, somewhat specialized K and V. GQA is used in Llama 2, Llama 3, Mistral, and Gemma. It's the current sweet spot — most of MQA's memory savings with almost no measurable quality loss.</p>
+
+<p>I think of it like desks in an office. Standard multi-head attention gives every employee their own filing cabinet. MQA puts everyone around one shared cabinet. GQA creates team filing cabinets — small groups share, but not the whole company. It's a practical trade-off between personalization and space efficiency.</p>
+
+<p>There's a complementary technique worth mentioning: <strong>PagedAttention</strong>, used in the vLLM serving framework. Even with GQA shrinking the per-head cache, managing the memory for thousands of concurrent users is messy. Traditional implementations allocate a large contiguous memory block for each user's cache, even if the conversation is short. PagedAttention borrows an idea from operating systems: it divides the KV cache into fixed-size pages and maps them dynamically, like virtual memory. Short conversations use few pages; long ones grow as needed. No wasted memory from over-allocation. If you ever deploy LLMs at scale, you'll spend more time thinking about KV cache management than about model architecture.</p>
+
+<!-- ────────────────────── SPECULATIVE DECODING ────────────────────── -->
+
+<h2>Speculative Decoding — Two Models, One Answer</h2>
+
+<p>Even with FlashAttention for efficient computation and GQA for a lean cache, autoregressive generation has a fundamental limitation: it's sequential. We generate one token, wait for it, use it to generate the next, wait, and so on. The GPU — a machine designed for massive parallelism — spends most of its time idle, waiting for each single token to finish. It's like having a factory with a thousand workers, and only one of them can work at a time.</p>
+
+<p><strong>Speculative decoding</strong> breaks this sequential bottleneck with a clever trick. We use two models: a small, fast <strong>draft model</strong> and the large, accurate <strong>target model</strong>. The draft model guesses the next several tokens — say 8 at a time. Then the target model verifies all 8 guesses in a single forward pass (which <em>can</em> be done in parallel, since we have all the inputs). If the first 5 guesses match what the target model would have generated, we accept them all and move on. If guess 6 diverges, we reject it and everything after it, keeping only the first 5.</p>
+
+<p>Let's trace this for our bookstore bot. The customer asks "When will my order arrive?" The draft model — a small, cheap model — quickly generates 8 candidate tokens: "Your", "order", "is", "expected", "to", "arrive", "by", "Friday". The target model (our big, accurate model) takes these 8 tokens and, in a single parallel forward pass, checks: would I have generated each of these? It agrees with "Your", "order", "is", "expected", "to", "arrive" but at position 7, it would have said "on" instead of "by". We accept the first 6 tokens, discard the rest, and start a new draft from "arrive."</p>
+
+<p>The math works because <strong>verification is cheaper than generation</strong>. The target model can process 8 tokens in parallel about as fast as it processes 1 token — the attention computation scales well with batch size. So instead of 8 sequential forward passes through the big model (slow), we do 8 cheap passes through the draft model (fast) plus 1 forward pass through the big model (same cost as generating 1 token). If the draft model is right most of the time — and a well-chosen draft model can be right 70–80% of the time — we get a 2–3× speedup with <em>zero quality loss</em>. The outputs are mathematically identical to what the target model would have produced on its own.</p>
+
+<p>I still find it surprising that this works so well. The key insight is that most tokens in a well-trained LLM are highly predictable — articles, prepositions, common phrases. A small model gets those right. The big model is only truly needed for the harder decisions, and speculative decoding lets us skip ahead past the easy ones.</p>
+
+<!-- ────────────────────── WRAP-UP ────────────────────── -->
+
+<h2>Wrap-Up</h2>
+
+<p>If you're still with me, thank you. I hope it was worth the trek.</p>
+
+<p>We started by trying to peek inside our bookstore bot — first with attention heatmaps that turned out to be misleading, then with probing classifiers that revealed a clean layer-by-layer progression from surface features to syntax to semantics, and finally with mechanistic interpretability's discovery of specific circuits like induction heads. Then we hit the quadratic wall: the bot needed to handle longer inputs, and standard attention couldn't scale. We fought that wall with sparse patterns (Longformer, BigBird), tried to dissolve it with linear attention (Performer, Linformer), and then discovered that the real winner — FlashAttention — didn't change the math at all but rearranged it to respect the GPU's memory hierarchy. On the inference side, we saw how the KV cache makes generation feasible, how GQA shrinks that cache, and how speculative decoding breaks the sequential bottleneck.</p>
+
+<p>My hope is that the next time you see a transformer model behaving strangely, instead of treating it as an inscrutable black box, you'll know where to look inside — and you'll have a pretty good mental model of the tricks that make it fast enough to look inside at all.</p>
+
+<!-- ────────────────────── RESOURCES ────────────────────── -->
+
+<h2>Resources and Credits</h2>
+
+<p>The landscape here moves fast, but these are the ones I keep coming back to.</p>
 
 <ul>
-  <li>Explain why attention weights are useful for debugging but shouldn't be treated as explanations of model behavior</li>
-  <li>Describe what a probing classifier does and what it tells you about a layer's representations</li>
-  <li>Name the key ideas of mechanistic interpretability — induction heads, superposition — and know when this line of research matters (safety, auditing)</li>
-  <li>Explain why standard attention is O(n²) and why that becomes a problem beyond ~8K tokens</li>
-  <li>Distinguish Flash Attention (exact, memory-efficient) from sparse and linear attention (approximate, complexity-efficient) — and know which one actually won</li>
-  <li>Explain what the KV cache is, why it exists, and why GQA helps shrink it</li>
-  <li>Look at the efficient attention table above and have an opinion on which approach matters for a given scenario (training vs. inference, short vs. long context)</li>
+  <li><strong>"A Primer in BERTology"</strong> by Rogers, Kovaleva, and Rumshisky (2020) — the definitive survey of what BERT learns layer by layer. Wildly comprehensive and still relevant.</li>
+  <li><strong>"FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness"</strong> by Tri Dao et al. (2022) — the paper that changed how every modern LLM computes attention. Refreshingly well-written for a systems paper.</li>
+  <li><strong>"A Mathematical Framework for Transformer Circuits"</strong> by Elhage, Nanda et al. at Anthropic (2021) — the foundational work on induction heads and mechanistic interpretability. Dense but insightful.</li>
+  <li><strong>"GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints"</strong> by Ainslie et al. (2023) — the grouped-query attention paper. Short, practical, and shows how to retrofit existing models.</li>
+  <li><strong>"Fast Inference from Transformers via Speculative Decoding"</strong> by Leviathan et al. (2023) — the speculative decoding paper. Elegant idea, clean presentation.</li>
+  <li><strong>Neel Nanda's TransformerLens library and YouTube walkthroughs</strong> — if you want to actually <em>do</em> mechanistic interpretability, this is where to start. Neel has a gift for making abstract circuit analysis feel tangible.</li>
 </ul>
 
       <div class="page-nav">
