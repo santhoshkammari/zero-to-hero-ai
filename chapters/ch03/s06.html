@@ -300,129 +300,382 @@
 
 <div class="tldr">
   <div class="tldr-label">TL;DR</div>
-  <p>A preprocessing pipeline chains every transformation — scaling, encoding, imputation — into a single object that you fit once on training data and replay identically on test data and in production. Scikit-learn's <code>Pipeline</code> and <code>ColumnTransformer</code> eliminate the entire class of bugs where training and inference disagree on how data was prepared.</p>
+  <p>A preprocessing pipeline chains every transformation — scaling, encoding, imputation — into a single object that you fit once on training data and replay identically on test data and in production. Scikit-learn's <code>Pipeline</code> and <code>ColumnTransformer</code> eliminate the entire class of bugs where training and inference disagree on how data was prepared. This section builds pipelines from scratch, walks through how each piece works under the hood, and confronts the subtle leakage bugs that pipelines exist to prevent.</p>
 </div>
 
-<h2>Why Pipelines — Not Loose Code</h2>
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- OPENING -->
+<!-- ═══════════════════════════════════════════════════════════ -->
 
-<p>You scale features, encode categoricals, train a model, ship it. Three months later, new data gets garbage predictions. Why? The scaler was fit on training data but someone applied it with different parameters in production. You didn't have a bug in any single step — you had a bug in the <em>gaps between steps</em>.</p>
+<p>I avoided really understanding preprocessing pipelines for longer than I'd like to admit. For months, I wrote my scaling code in one cell, my encoding code in another, serialized the model separately from the scaler, and then prayed that my production server would apply the same transformations in the same order. Spoiler: it didn't. I shipped a loan-approval model that was confidently approving everyone, because the scaler in production was freshly initialized — never fit on the training data. The model was seeing raw, unscaled features and interpreting them as if they'd already been standardized. That was my wake-up call. Here is that dive.</p>
 
-<p>A pipeline bundles everything into one object. <code>.fit()</code> on training data, <code>.transform()</code> on new data. No gaps. No mismatches. One object to save, one to load.</p>
+<p>Scikit-learn's <code>Pipeline</code> was introduced to solve exactly this kind of gap. It bundles every preprocessing step and the final model into a single object. You call <code>.fit()</code> once on your training data, and the entire chain — imputation, scaling, encoding, modeling — gets locked in. When you later call <code>.predict()</code> on new data, every step replays with the exact parameters it learned during training. No mismatches. No gaps.</p>
 
-<h2>Basic Pipeline</h2>
+<p>Before we start, a heads-up. We're going to be writing custom transformer classes, nesting pipelines inside other pipelines, and confronting some surprisingly subtle data leakage bugs. But you don't need to know any of it beforehand. We'll add what we need, one piece at a time.</p>
+
+<p>This isn't a short journey, but I hope you'll be glad you came.</p>
+
+<!-- TOC -->
+<div class="toc">
+  <p>
+    The Gap Problem<br>
+    Your First Pipeline — The Assembly Line<br>
+    What Happens Under the Hood<br>
+    ColumnTransformer — Routing Mixed Data<br>
+    Custom Transformers — When sklearn Isn't Enough<br>
+    Rest Stop<br>
+    The Leakage Trap<br>
+    Tuning Across the Entire Chain<br>
+    Serialization and Production<br>
+    Beyond sklearn — Feature Stores<br>
+    Wrap-Up<br>
+    Resources
+  </p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- THE GAP PROBLEM -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<h2>The Gap Problem</h2>
+
+<p>Let's start with a concrete scenario. We're building a loan approval model. Our dataset has three columns: <code>age</code> (numeric), <code>income</code> (numeric), and <code>occupation</code> (categorical). Even for this tiny dataset, the preprocessing involves at least three steps: impute missing values, scale the numbers, and encode the categories. Here's what that looks like without a pipeline.</p>
+
+<pre><code>from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.impute import SimpleImputer
+import numpy as np
+
+# Step 1: Impute
+imputer = SimpleImputer(strategy="median")
+X_train_imputed = imputer.fit_transform(X_train[["age", "income"]])
+
+# Step 2: Scale
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train_imputed)
+
+# Step 3: Encode
+encoder = OneHotEncoder(handle_unknown="ignore")
+X_train_encoded = encoder.fit_transform(X_train[["occupation"]])
+
+# Step 4: Combine... somehow
+# Step 5: Train model
+# Step 6: Save scaler, imputer, encoder, model separately
+# Step 7: In production, load all four, apply in correct order
+# Step 8: Pray</code></pre>
+
+<p>Every single gap between those steps is a place where a bug can hide. Did you fit the scaler on test data by accident? Did you forget to apply the imputer in production? Did the encoding categories shift between training and serving? The bug isn't in any single step. The bug lives in the <em>spaces between</em> the steps.</p>
+
+<p>Think of it like a factory floor. If you have four workers sitting at separate tables, each doing their part of the assembly, you need someone to carry the half-finished product between tables — and that someone is you, writing fragile glue code. A pipeline is the conveyor belt. It connects the stations. Parts flow from one to the next automatically, and there's no room for someone to drop something between stations.</p>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- YOUR FIRST PIPELINE -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<h2>Your First Pipeline — The Assembly Line</h2>
+
+<p>Here's our loan approval preprocessing rewritten as a pipeline, starting with the numeric columns only.</p>
 
 <pre><code>from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 
 pipe = Pipeline([
+    ("imputer", SimpleImputer(strategy="median")),
     ("scaler", StandardScaler()),
-    ("clf", LogisticRegression())
-])
+    ("model", LogisticRegression())
+])</code></pre>
 
-pipe.fit(X_train, y_train)      # scaler.fit_transform → clf.fit
-pipe.predict(X_test)             # scaler.transform → clf.predict
-pipe.score(X_test, y_test)       # uses the same chain</code></pre>
+<p>Each entry in that list is a tuple: a name (your choice, for later reference) and a transformer or estimator object. There's one hard rule: every step except the last must implement <code>.transform()</code>. The last step can be a transformer too, but more commonly it's a model — a classifier or regressor — which implements <code>.fit()</code> and <code>.predict()</code>.</p>
 
-<p>Every step except the last must implement <code>.transform()</code>. The last step can be a classifier or regressor.</p>
+<p>Now watch what happens when we call <code>.fit()</code> on this pipeline.</p>
 
-<h2>ColumnTransformer — Different Transforms for Different Columns</h2>
+<pre><code>pipe.fit(X_train, y_train)</code></pre>
 
-<p>Real datasets have mixed types. Numeric columns need scaling; categorical columns need encoding. You can't push both through the same <code>StandardScaler</code>.</p>
+<p>That single line does three things. It fits the imputer on the training data and transforms it. It fits the scaler on the imputed training data and transforms it. It fits the logistic regression on the scaled, imputed data. Three fits, in order, each feeding its output to the next. The conveyor belt is running.</p>
+
+<p>When we later call <code>.predict()</code> on new data, the pipeline replays the chain — but this time, each step only transforms, using the parameters it learned during <code>.fit()</code>. The imputer fills in the same median values. The scaler subtracts the same mean and divides by the same standard deviation. The model predicts with the same weights. No re-fitting. No gaps.</p>
+
+<pre><code>pipe.predict(X_test)    # imputer.transform → scaler.transform → model.predict
+pipe.score(X_test, y_test)</code></pre>
+
+<p>That's the whole idea. One object. One <code>.fit()</code>. One <code>.predict()</code>.</p>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- UNDER THE HOOD -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<h2>What Happens Under the Hood</h2>
+
+<p>It's worth understanding the machinery inside <code>Pipeline.fit()</code>, because it reveals a design decision that trips people up. Here's the pseudocode for what sklearn does internally.</p>
+
+<pre><code># Pseudocode for Pipeline.fit(X, y)
+Xt = X
+for name, step in all_steps_except_last:
+    if hasattr(step, "fit_transform"):
+        Xt = step.fit_transform(Xt, y)
+    else:
+        Xt = step.fit(Xt, y).transform(Xt)
+
+last_step.fit(Xt, y)</code></pre>
+
+<p>Notice the <code>fit_transform</code> check. If a step has a dedicated <code>.fit_transform()</code> method, sklearn calls that instead of calling <code>.fit()</code> and <code>.transform()</code> separately. Why? Because for some transformers, doing both at once is faster. PCA, for instance, computes the SVD once during <code>fit_transform</code> rather than computing it in <code>fit</code> and then reapplying it in <code>transform</code>. This is an optimization, not a semantic difference — but it's the kind of detail a senior interviewer might probe.</p>
+
+<p>The other thing to notice: <code>y</code> gets passed through to every step. Most transformers ignore it (their <code>.fit()</code> accepts <code>y=None</code>), but some — like target encoders or feature selectors based on mutual information — actually use the target variable during fitting. That's why it's threaded through.</p>
+
+<p>There's a shorthand worth knowing. <code>make_pipeline</code> builds a pipeline without you needing to name each step. It auto-generates names from the class names.</p>
+
+<pre><code>from sklearn.pipeline import make_pipeline
+
+pipe = make_pipeline(SimpleImputer(strategy="median"),
+                     StandardScaler(),
+                     LogisticRegression())</code></pre>
+
+<p>The step names become <code>"simpleimputer"</code>, <code>"standardscaler"</code>, <code>"logisticregression"</code>. This is fine for quick prototyping, but for anything you'll tune or debug later, explicit names are worth the extra keystrokes.</p>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- COLUMNTRANSFORMER -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<h2>ColumnTransformer — Routing Mixed Data</h2>
+
+<p>Our loan approval pipeline so far handles only numeric columns. But <code>occupation</code> is categorical. We can't scale a string. We need different transformations for different columns, and that's what <code>ColumnTransformer</code> was built for.</p>
+
+<p>Think of it as a sorting station on our factory floor. Raw data arrives on the conveyor belt. The <code>ColumnTransformer</code> peels off the numeric columns and sends them down one sub-belt (impute, then scale). It peels off the categorical columns and sends them down a different sub-belt (impute, then one-hot encode). At the end, it glues the results back together into a single array and sends it onward.</p>
 
 <pre><code>from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
 
-numeric_features = ["age", "income", "credit_score"]
-categorical_features = ["occupation", "city", "education"]
+numeric_cols = ["age", "income"]
+categorical_cols = ["occupation"]
 
-numeric_pipeline = Pipeline([
+numeric_pipe = Pipeline([
     ("imputer", SimpleImputer(strategy="median")),
     ("scaler", StandardScaler())
 ])
 
-categorical_pipeline = Pipeline([
+categorical_pipe = Pipeline([
     ("imputer", SimpleImputer(strategy="most_frequent")),
     ("encoder", OneHotEncoder(handle_unknown="ignore"))
 ])
 
 preprocessor = ColumnTransformer([
-    ("num", numeric_pipeline, numeric_features),
-    ("cat", categorical_pipeline, categorical_features)
+    ("num", numeric_pipe, numeric_cols),
+    ("cat", categorical_pipe, categorical_cols)
 ])
 
-# Full pipeline: preprocessing → model
 full_pipe = Pipeline([
     ("prep", preprocessor),
-    ("clf", RandomForestClassifier(n_estimators=100, random_state=42))
+    ("model", LogisticRegression())
 ])
 
 full_pipe.fit(X_train, y_train)
-print(f"Accuracy: {full_pipe.score(X_test, y_test):.3f}")</code></pre>
+full_pipe.score(X_test, y_test)</code></pre>
 
-<p>This is the pattern you'll use on every real project. Memorize it.</p>
+<p>Each tuple inside <code>ColumnTransformer</code> has three parts: a name, a transformer (or sub-pipeline), and which columns to route to it. The output columns are concatenated in the order you listed the transformers.</p>
 
-<h2>Custom Transformers</h2>
+<p>Now here's something that confused me the first time. The <code>remainder</code> parameter. By default, <code>remainder="drop"</code>. That means any column you don't explicitly mention gets silently dropped. If your dataset has a column called <code>loan_amount</code> and you forgot to include it, it's gone. No error. No warning. Gone.</p>
 
-<p>When you need domain-specific logic (cyclical encoding, log transform, feature interactions), create a custom transformer that fits into the pipeline.</p>
+<pre><code># If you want unmentioned columns to pass through untouched:
+preprocessor = ColumnTransformer([
+    ("num", numeric_pipe, numeric_cols),
+    ("cat", categorical_pipe, categorical_cols)
+], remainder="passthrough")</code></pre>
+
+<p>I still occasionally get bitten by this. When my model's accuracy mysteriously drops after adding a new feature to the dataset, the first thing I check is whether the <code>ColumnTransformer</code> is actually including it. Setting <code>remainder="passthrough"</code> is the safe default for exploration. Switch to explicit column lists when you want strict control in production.</p>
+
+<p>One more thing. If you want your pipeline to output a pandas DataFrame (with column names intact) instead of a numpy array, sklearn 1.2+ lets you do this.</p>
+
+<pre><code>full_pipe.set_output(transform="pandas")</code></pre>
+
+<p>That single line makes every transformer in the chain return DataFrames. Debugging becomes dramatically easier when your intermediate outputs have column names instead of anonymous indices.</p>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- CUSTOM TRANSFORMERS -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<h2>Custom Transformers — When sklearn Isn't Enough</h2>
+
+<p>Sklearn's built-in transformers cover the common cases — scaling, encoding, imputation. But real data demands real creativity. Maybe you need to log-transform skewed income values. Maybe you need to extract the day-of-week from a timestamp. Maybe you need to compute the ratio of two columns. None of these exist as built-in transformers, so you build your own.</p>
+
+<p>There are two ways. For quick, stateless transformations — things that don't need to learn anything from the data — <code>FunctionTransformer</code> is your friend.</p>
+
+<pre><code>from sklearn.preprocessing import FunctionTransformer
+import numpy as np
+
+log_transformer = FunctionTransformer(np.log1p)
+
+pipe = Pipeline([
+    ("log", log_transformer),
+    ("scaler", StandardScaler()),
+    ("model", LogisticRegression())
+])</code></pre>
+
+<p><code>FunctionTransformer</code> wraps any callable into an sklearn-compatible transformer. The wrapped function gets called during <code>.transform()</code>, and <code>.fit()</code> does nothing. Quick. Clean. No class definition needed.</p>
+
+<p>But what if your transformation needs to learn something from the training data? Say you want to clip outliers at the 1st and 99th percentiles — percentiles you compute from training data and then apply consistently to test data. That's a <strong>stateful</strong> transformation. <code>FunctionTransformer</code> can't do that. You need a custom class.</p>
 
 <pre><code>from sklearn.base import BaseEstimator, TransformerMixin
 
-class LogTransformer(BaseEstimator, TransformerMixin):
+class PercentileClipper(BaseEstimator, TransformerMixin):
+    def __init__(self, lower=1, upper=99):
+        self.lower = lower
+        self.upper = upper
+
     def fit(self, X, y=None):
+        self.lower_bound_ = np.percentile(X, self.lower, axis=0)
+        self.upper_bound_ = np.percentile(X, self.upper, axis=0)
         return self
+
     def transform(self, X):
-        return np.log1p(X)
+        return np.clip(X, self.lower_bound_, self.upper_bound_)</code></pre>
 
-# Drops right into a pipeline
+<p>A few things to unpack here. Inheriting from <code>BaseEstimator</code> gives you <code>.get_params()</code> and <code>.set_params()</code> for free, which means your transformer works with <code>GridSearchCV</code> and pipeline cloning. Inheriting from <code>TransformerMixin</code> gives you a default <code>.fit_transform()</code> that calls <code>.fit()</code> then <code>.transform()</code>.</p>
+
+<p>The <code>__init__</code> method must only assign parameters. No computation. No data access. This is a contract with sklearn's parameter inspection system — violate it and <code>GridSearchCV</code> will silently break in confusing ways.</p>
+
+<p>Learned attributes get a trailing underscore: <code>self.lower_bound_</code>, not <code>self.lower_bound</code>. This is sklearn convention. It signals "this was learned from data during <code>.fit()</code>" versus "this was set by the user in <code>__init__</code>." It matters because sklearn uses this distinction internally.</p>
+
+<p>I'll be honest — I'm still developing my intuition for when <code>FunctionTransformer</code> stops being enough and a custom class is warranted. My rough heuristic: if you find yourself storing anything in a variable outside the function and referencing it later, you've outgrown <code>FunctionTransformer</code>. Go write the class.</p>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- REST STOP -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<h2>Rest Stop</h2>
+
+<p>If you've made it this far, you can build real preprocessing pipelines. You know how to chain transformers, route different column types through <code>ColumnTransformer</code>, and write custom transformers when the built-ins aren't enough. That's genuinely useful. You could stop here and have a solid toolkit for every sklearn-based project.</p>
+
+<p>What we haven't covered is why pipelines exist in the first place — not as a convenience, but as a defense against a specific, insidious class of bugs. And we haven't talked about what happens when your pipeline needs to leave your laptop and survive in production.</p>
+
+<p>The short version: pipelines prevent data leakage during cross-validation, and they serialize into a single file that guarantees identical preprocessing at serving time. There. That's the 80% summary.</p>
+
+<p>But if the discomfort of not knowing <em>how</em> leakage happens, and <em>why</em> it's so hard to catch, is nagging at you — read on.</p>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- THE LEAKAGE TRAP -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<h2>The Leakage Trap</h2>
+
+<p>Here's a line of code that looks completely innocent.</p>
+
+<pre><code>scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)        # <-- the trap
+
+X_train, X_test = train_test_split(X_scaled, test_size=0.2)</code></pre>
+
+<p>The scaler was fit on <em>all</em> the data, including the test set. That means the mean and standard deviation it computed contain information from samples the model will later be evaluated on. The test set is no longer independent. Your accuracy estimate is optimistic. You have <strong>data leakage</strong>.</p>
+
+<p>This is one of the most common mistakes in machine learning, and it's frighteningly easy to make. The code runs. No errors. The model trains. The accuracy looks great — maybe suspiciously great. You only discover the problem months later when production performance doesn't match your offline numbers.</p>
+
+<p>The fix: put every preprocessing step <em>inside</em> the pipeline, and let cross-validation handle the fitting.</p>
+
+<pre><code>from sklearn.model_selection import cross_val_score
+
 pipe = Pipeline([
-    ("log", LogTransformer()),
     ("scaler", StandardScaler()),
-    ("clf", LogisticRegression())
-])</code></pre>
+    ("model", LogisticRegression())
+])
 
-<h2>Hyperparameter Tuning Across the Pipeline</h2>
+scores = cross_val_score(pipe, X, y, cv=5)</code></pre>
+
+<p>Now, on each of the five folds, the scaler is fit only on the training portion of that fold. The validation portion is scaled using training-fold statistics. No information leaks across the boundary. The factory floor analogy returns: the conveyor belt runs inside a sealed room for each fold. Nothing from the validation set touches the assembly line.</p>
+
+<p>This gets more dangerous with fancier preprocessing. Target encoding — where you replace categories with the mean of the target variable — is especially prone to leakage. If the encoder sees the test labels during fitting, it will encode test-set categories using their own outcomes, which is circular. The pipeline enforces discipline: <code>.fit()</code> sees only training data, period.</p>
+
+<p>For time-series data, this discipline extends to the split strategy itself. <code>KFold</code> shuffles randomly, which means future data can leak into training folds. Use <code>TimeSeriesSplit</code> instead — it respects the temporal order, ensuring you always train on the past and evaluate on the future.</p>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- TUNING ACROSS THE CHAIN -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<h2>Tuning Across the Entire Chain</h2>
+
+<p>Here's where the pipeline really flexes. You want to tune not only the model's hyperparameters, but also the preprocessor's. Should the imputer use the mean or the median? Should the one-hot encoder drop the first category or keep them all? With a pipeline, you can search over all of it in one go.</p>
+
+<p>The trick is sklearn's double-underscore naming convention. Each step in the pipeline has a name. You reach into nested parameters by chaining names with <code>__</code>.</p>
 
 <pre><code>from sklearn.model_selection import GridSearchCV
 
-# Access nested parameters with double-underscore notation
 param_grid = {
     "prep__num__imputer__strategy": ["mean", "median"],
-    "clf__n_estimators": [100, 200],
-    "clf__max_depth": [5, 10, None]
+    "prep__cat__encoder__drop": [None, "first"],
+    "model__C": [0.1, 1.0, 10.0]
 }
 
 search = GridSearchCV(full_pipe, param_grid, cv=5, scoring="f1")
 search.fit(X_train, y_train)
-print(f"Best params: {search.best_params_}")
-print(f"Best F1: {search.best_score_:.3f}")</code></pre>
+print(search.best_params_)</code></pre>
 
-<p>The double-underscore syntax lets you tune parameters at any depth in the pipeline hierarchy. This is one of scikit-learn's most powerful features.</p>
+<p>Let's trace one of those parameter names. <code>"prep__num__imputer__strategy"</code> means: in the pipeline, find the step named <code>prep</code> (our <code>ColumnTransformer</code>). Inside it, find the sub-transformer named <code>num</code> (our numeric pipeline). Inside that, find the step named <code>imputer</code>. Set its <code>strategy</code> parameter. Four levels deep, reached through a flat string. This is why explicit step names matter — you need them to build these parameter paths.</p>
 
-<h2>Saving and Loading</h2>
+<p>And because the pipeline is inside <code>GridSearchCV</code>, every candidate combination is evaluated with proper cross-validation. The scaler is refit on each fold's training data. No leakage, even while tuning.</p>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- SERIALIZATION AND PRODUCTION -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<h2>Serialization and Production</h2>
+
+<p>A fitted pipeline contains everything: the imputer's learned medians, the scaler's learned means and standard deviations, the encoder's learned categories, and the model's learned weights. All of it serializes into a single file.</p>
 
 <pre><code>import joblib
 
-# Save the entire fitted pipeline
-joblib.dump(full_pipe, "model_pipeline.joblib")
+joblib.dump(full_pipe, "loan_approval_pipeline.joblib")</code></pre>
 
-# Load and predict — exact same preprocessing as training
-loaded_pipe = joblib.load("model_pipeline.joblib")
-predictions = loaded_pipe.predict(new_data)</code></pre>
+<p>In production, you load one file and call <code>.predict()</code>. The preprocessing that happens at inference time is byte-for-byte identical to what happened during training. That's the guarantee.</p>
 
-<p>One file. All preprocessing + model. Zero chance of train/serve mismatch.</p>
+<pre><code>loaded_pipe = joblib.load("loan_approval_pipeline.joblib")
+predictions = loaded_pipe.predict(new_applications)</code></pre>
 
-<h2 class="section-title">What You Should Now Be Able To Do</h2>
+<p>One file. One load. Zero chance of train-serve skew — at least from the preprocessing side.</p>
+
+<p>Back to our factory analogy: instead of shipping four separate machines (imputer, scaler, encoder, model) to the production facility and hoping someone assembles them correctly, you ship the entire assembly line as one sealed unit. Plug it in. Feed it raw materials. Finished product comes out the other end.</p>
+
+<p>There is a real-world limitation here, though. <code>joblib</code> serializes Python objects, which means your production server needs the same Python version, the same sklearn version, and the same custom transformer classes available for import. If you upgrade sklearn and the internal representation of <code>StandardScaler</code> changes, your saved pipeline may not load. For long-lived production systems, consider exporting to an interchange format like ONNX, or version-locking your dependencies.</p>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- BEYOND SKLEARN -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<h2>Beyond sklearn — Feature Stores</h2>
+
+<p>Sklearn pipelines solve the offline problem beautifully: training and batch inference with consistent preprocessing. But they don't solve the online problem. If your model serves real-time predictions via an API, you need features computed and served in milliseconds — and you need those features to be identical to what the model saw during training.</p>
+
+<p>This is where <strong>feature stores</strong> like Feast and Tecton enter the picture. A feature store is a centralized system that computes, stores, versions, and serves features for both training and inference. It handles things that sklearn pipelines never will: point-in-time joins to prevent temporal leakage, real-time feature computation from streaming data, feature versioning across experiments, and a shared registry so that team members can discover and reuse features instead of rebuilding them.</p>
+
+<p>The mental model: an sklearn pipeline is a recipe card you carry in your pocket. A feature store is a full commercial kitchen where recipes are versioned, ingredients are prepped by specialists, and every dish that leaves the kitchen is logged and traceable.</p>
+
+<p>You don't need a feature store for every project. For offline experiments, Kaggle competitions, or small-scale batch inference, a serialized sklearn pipeline is all you need. But once you have multiple models sharing features, real-time latency requirements, or a team that's stepping on each other's preprocessing code — you'll be glad feature stores exist.</p>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- WRAP-UP -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<h2>Wrap-Up</h2>
+
+<p>If you're still with me, thank you. I hope it was worth it.</p>
+
+<p>We started with a pain — scattered preprocessing code and the ghost bugs that live in the spaces between steps. We built our first pipeline as a conveyor belt, traced what happens inside <code>.fit()</code> under the hood, and then confronted the mixed-type reality of real datasets with <code>ColumnTransformer</code>. We wrote custom transformers — both the quick <code>FunctionTransformer</code> and the full-class version. We saw how pipelines prevent data leakage during cross-validation, how the double-underscore convention lets us tune the entire chain, and how a single <code>joblib.dump()</code> can ship everything to production. Finally, we looked past sklearn toward the feature stores that production systems eventually demand.</p>
+
+<p>My hope is that the next time you find yourself writing preprocessing code in scattered notebook cells — fitting the scaler here, encoding the categories there, passing arrays between steps and hoping nothing drifts — you'll instead reach for a <code>Pipeline</code>, bundle the whole thing up, and never wonder whether training and production agree on how the data was prepared.</p>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- RESOURCES -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<h2>Resources</h2>
+
 <ul>
-  <li>Build a <code>Pipeline</code> that chains preprocessing and model into a single object</li>
-  <li>Use <code>ColumnTransformer</code> to route numeric and categorical columns to different pipelines</li>
-  <li>Write custom transformers that fit into the sklearn pipeline API</li>
-  <li>Tune hyperparameters across the full pipeline with <code>GridSearchCV</code></li>
-  <li>Save and load a complete pipeline with <code>joblib</code></li>
-  <li>Explain why pipelines prevent the train/serve preprocessing mismatch bug</li>
+  <li><a href="https://scikit-learn.org/stable/modules/compose.html" target="_blank">Scikit-learn User Guide: Pipelines and Composite Estimators</a> — the authoritative reference, with clear examples and edge cases</li>
+  <li><a href="https://scikit-learn.org/stable/auto_examples/compose/plot_column_transformer_mixed_types.html" target="_blank">sklearn Example: Column Transformer with Mixed Types</a> — a complete walkthrough of the exact pattern we built here</li>
+  <li><a href="https://scikit-learn.org/stable/developers/develop.html" target="_blank">Developing scikit-learn estimators</a> — the official guide for writing custom transformers that play nicely with the ecosystem</li>
+  <li><a href="https://docs.feast.dev/" target="_blank">Feast Documentation</a> — an open-source feature store, for when your pipeline needs graduate beyond a single serialized file</li>
+  <li><a href="https://www.youtube.com/watch?v=BFaadIqWlAg" target="_blank">Data School: sklearn Pipelines Tutorial</a> — a wildly accessible video walkthrough of pipelines that helped things click for me</li>
 </ul>
 
 
