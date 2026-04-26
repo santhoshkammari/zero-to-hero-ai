@@ -297,32 +297,238 @@
 <h1>Object-Oriented Programming</h1>
 <div class="chapter-meta">
   <span class="tag">Chapter 1: Python &amp; Programming Foundations</span>
-  <span class="tag">7 subtopics</span>
+  <span class="tag">10 subtopics</span>
 </div>
 
-<p>Every ML framework you'll touch runs on OOP. <code>model.fit(X, y)</code> is a method call on a <code>BaseEstimator</code> subclass. <code>model(input)</code> triggers <code>__call__</code> on <code>nn.Module</code>. Custom <code>Dataset</code> classes require you to implement <code>__len__</code> + <code>__getitem__</code>. This isn't "what is a class" — it's how to read and extend class hierarchies fluently, because that's the daily work of production ML.</p>
+<!-- ═══════════════ PHASE 1: OPENING ═══════════════ -->
 
-<!-- ════════════════════════════════════════════ -->
-<h2>The Basics You Already Know</h2>
+<p>I avoided taking OOP seriously for longer than I'd like to admit. For years, I wrote Python the way most data scientists do — functions, global variables, scripts that grew to 800 lines, and a vague feeling that classes were for "software engineers," not people who train models. Every time someone mentioned design patterns, my eyes glazed over. Then I tried to add a second model variant to a training pipeline I'd built, and the whole thing collapsed like a house of cards. Not because the math was wrong, but because I had no structure. Functions called other functions that mutated shared state. One change broke three things. Here is that dive.</p>
 
-<p>Classes, <code>__init__</code>, <code>self</code>, instance vs class attributes, methods — you've seen these. If you're solid, skip ahead. One gotcha worth pausing on:</p>
+<p>Object-oriented programming has been around since the 1960s, popularized by Smalltalk and later C++ and Java. In the Python ML world, it's the skeleton beneath every framework you touch — scikit-learn, PyTorch, HuggingFace Transformers, LangChain, even the OpenAI SDK. You interact with it every time you write <code>model.fit(X, y)</code> or <code>model(input)</code>. But the real reason OOP matters in production ML isn't about syntax. It's about what happens when ten engineers need to extend the same system without breaking each other's work.</p>
+
+<p>Before we start, a heads-up. We're going to be building a tiny training framework from scratch, and along the way we'll encounter inheritance, composition, design patterns, and some Python internals. You don't need to know any of it beforehand. We'll add the concepts we need one at a time, with explanation.</p>
+
+<p>This isn't a short journey, but I hope you'll be glad you came.</p>
+
+<!-- ═══════════════ PHASE 2: TOC ═══════════════ -->
+
+<div class="callout-info" style="background: var(--bg-secondary); border-left-color: var(--accent-primary);">
+  <p style="margin:0; line-height:1.9;">
+    The spaghetti script<br>
+    The first class — encapsulation as self-defense<br>
+    The contract — why interfaces matter<br>
+    Inheritance: when the framework says so<br>
+    Composition: when you're building your own thing<br>
+    Rest stop<br>
+    The patterns you'll actually see in production<br>
+    The dunder methods that earn their keep<br>
+    The modern toolkit — dataclasses and protocols<br>
+    The anti-patterns that kill codebases<br>
+    Resources
+  </p>
+</div>
+
+<!-- ═══════════════ THE SPAGHETTI SCRIPT ═══════════════ -->
+<h2>The Spaghetti Script</h2>
+
+<p>Let's start where most ML projects start — a single Python script that trains a model. We'll call our running example <strong>minitrainer</strong>. Imagine we're building a small system that loads data, trains a model, and evaluates it. Here's the kind of code I used to write, and I suspect you've written something like it too.</p>
+
+<pre><code class="language-python">import numpy as np
+
+# globals everywhere
+train_data = None
+model_weights = None
+learning_rate = 0.01
+history = []
+
+def load_data(path):
+    global train_data
+    train_data = np.load(path)
+
+def train(epochs):
+    global model_weights, history
+    model_weights = np.random.randn(train_data.shape[1])
+    for epoch in range(epochs):
+        preds = train_data @ model_weights
+        loss = np.mean((preds - targets) ** 2)
+        grad = 2 * train_data.T @ (preds - targets) / len(targets)
+        model_weights -= learning_rate * grad
+        history.append(loss)
+
+def evaluate():
+    preds = train_data @ model_weights
+    return np.mean((preds - targets) ** 2)
+</code></pre>
+
+<p>This works. For a single experiment, on a single machine, by a single person, it works fine. The pain begins when you try to do anything beyond that. Want to train two models with different learning rates at the same time? You can't — they share the same globals. Want a colleague to add a different optimizer? They have to read every function to understand what state exists. Want to test the training logic without loading real data? Good luck — everything is wired to everything.</p>
+
+<p>I'll be honest — I wrote code like this for a couple of years. It felt productive. And then it didn't.</p>
+
+<!-- ═══════════════ THE FIRST CLASS ═══════════════ -->
+<h2>The First Class — Encapsulation as Self-Defense</h2>
+
+<p>The first problem with our spaghetti script is that all the state — data, weights, history, learning rate — floats around in module-level variables. Any function can read or modify any of them. When something goes wrong, you have to trace through the entire file to find which function mutated what.</p>
+
+<p>A <strong>class</strong> is, at its core, a way to bundle related state and the functions that operate on it into one unit. Think of it like giving each experiment its own sealed envelope. The data, weights, and history for experiment A live inside one envelope. Experiment B gets its own. They can't accidentally reach into each other's pockets.</p>
+
+<pre><code class="language-python">class MiniTrainer:
+    def __init__(self, learning_rate=0.01):
+        self.learning_rate = learning_rate
+        self.weights = None
+        self.history = []
+
+    def fit(self, X, y, epochs=100):
+        self.weights = np.random.randn(X.shape[1])
+        for epoch in range(epochs):
+            preds = X @ self.weights
+            loss = np.mean((preds - y) ** 2)
+            grad = 2 * X.T @ (preds - y) / len(y)
+            self.weights -= self.learning_rate * grad
+            self.history.append(loss)
+        return self
+
+    def predict(self, X):
+        return X @ self.weights
+</code></pre>
+
+<p>Now two experiments can run simultaneously without interference.</p>
+
+<pre><code class="language-python">trainer_a = MiniTrainer(learning_rate=0.01)
+trainer_b = MiniTrainer(learning_rate=0.001)
+trainer_a.fit(X_train, y_train)
+trainer_b.fit(X_train, y_train)
+</code></pre>
+
+<p>Each trainer carries its own weights, its own history, its own learning rate. That sealed envelope idea — in OOP, it's called <strong>encapsulation</strong>. The data and the methods that touch it live in the same place. If a bug shows up in <code>trainer_a</code>'s history, you know the problem is in <code>MiniTrainer</code>'s methods, not in some random function three files away.</p>
+
+<p>This is the entire argument for classes, stripped to the bone. Not inheritance, not polymorphism, not any of the big words. The argument is: <em>when state and behavior travel together, bugs have fewer places to hide.</em></p>
 
 <div class="callout-warning">
-  <strong>Mutable class attributes are shared across all instances.</strong> <code>class Model: layers = []</code> means every instance appends to the <em>same list</em>. Always initialize mutable state in <code>__init__</code>: <code>self.layers = []</code>. Same trap with mutable default arguments — <code>def __init__(self, items=[])</code> reuses the same list object across calls. Fix: <code>items=None</code>, then <code>self.items = items or []</code>.
+  <strong>The mutable class attribute trap.</strong> One gotcha that catches everyone at least once: <code>class Model: layers = []</code> means every instance shares the <em>same list</em>. Append to it in one instance, and it shows up in all of them. Always initialize mutable state in <code>__init__</code> as <code>self.layers = []</code>. Same trap appears with mutable default arguments — <code>def __init__(self, items=[])</code> reuses the same list object across calls. The fix: <code>items=None</code>, then <code>self.items = items or []</code>. I once spent an entire afternoon debugging a shared list between two model instances. It's the kind of bug that makes you question your career choices.
 </div>
 
-<!-- ════════════════════════════════════════════ -->
-<h2>Inheritance vs Composition — The Actual Decision</h2>
+<p>Our <code>MiniTrainer</code> works, but it has a limitation. The optimization logic is hardcoded. What if we want to try Adam instead of vanilla gradient descent? We'd have to go into the <code>fit</code> method and rewrite it. And if someone else wants to try RMSprop, they'd have to copy the entire class and change a few lines. That's not scalable.</p>
 
-<p>Here's the thing about inheritance — in a textbook, it's the star of OOP. In production, composition wins 80% of the time. The exceptions are when you're extending frameworks that <em>require</em> you to subclass: <code>nn.Module</code>, <code>BaseEstimator</code>, <code>PreTrainedModel</code>. Those are "inherit because the framework says so" situations, and they're well-designed. The trouble starts when you build your own three-level deep class hierarchy because it felt clean at the time.</p>
+<!-- ═══════════════ THE CONTRACT ═══════════════ -->
+<h2>The Contract — Why Interfaces Matter</h2>
 
-<p><strong>When to inherit:</strong> when a framework gives you a base class with hooks you need to fill in. Sklearn's <code>BaseEstimator</code> gives you <code>get_params()</code>/<code>set_params()</code> for free. PyTorch's <code>nn.Module</code> handles parameter registration, device movement, and gradient tracking. HuggingFace's <code>Dataset</code> expects <code>__len__</code> and <code>__getitem__</code>. In all these cases, the framework is doing real work for you in exchange for a subclass contract.</p>
+<p>Here's a scenario that plays out at every ML team I've seen. You build a trainer. A colleague builds a different trainer for a different algorithm. A third person writes an evaluation script. The evaluation script needs to call <code>.predict()</code> on whatever model it receives. But your colleague called their method <code>.run_inference()</code>. The evaluation script breaks.</p>
 
-<p><strong>When to compose:</strong> when you're building your own system. "Has-a" beats "is-a" almost always. A training pipeline <em>has</em> a model, a loss function, and an optimizer — it isn't any of those things. Composition means loose coupling, easy swapping, straightforward testing. The sklearn <code>Pipeline</code> is itself a masterclass in composition: <code>Pipeline([('scaler', StandardScaler()), ('clf', SVC())])</code>.</p>
+<p>The pain isn't the naming inconsistency — it's that there was no agreement about what a "model" should look like. No contract. In Python, we have two ways to express such a contract.</p>
+
+<p>The first is an <strong>Abstract Base Class</strong> (ABC). An ABC says: "If you want to be a valid model, you must implement these methods. If you forget one, Python will refuse to even create an instance of your class." It fails loudly, at construction time — not silently, two hours into a training run when <code>.predict()</code> is finally called.</p>
+
+<pre><code class="language-python">from abc import ABC, abstractmethod
+
+class BaseModel(ABC):
+    @abstractmethod
+    def fit(self, X, y):
+        ...
+
+    @abstractmethod
+    def predict(self, X):
+        ...
+
+class BrokenModel(BaseModel):
+    def fit(self, X, y):
+        pass
+    # forgot predict!
+
+# BrokenModel()
+# → TypeError: Can't instantiate abstract class BrokenModel
+#   with abstract method predict
+# Fails NOW, not when predict() is called hours later.
+</code></pre>
+
+<p>The second is a <strong>Protocol</strong>, introduced in Python 3.8 through PEP 544. A Protocol expresses the same idea — "a valid model must have <code>fit</code> and <code>predict</code>" — but it doesn't require inheritance. It works through what's called <strong>structural subtyping</strong>. If your class has the right methods with the right signatures, it satisfies the protocol. The type checker (<code>mypy</code>, <code>pyright</code>) verifies this at analysis time, not runtime.</p>
+
+<pre><code class="language-python">from typing import Protocol
+import numpy as np
+
+class Predictor(Protocol):
+    def fit(self, X: np.ndarray, y: np.ndarray) -> "Predictor": ...
+    def predict(self, X: np.ndarray) -> np.ndarray: ...
+
+class LinearModel:
+    def fit(self, X, y):
+        self.w = np.linalg.lstsq(X, y, rcond=None)[0]
+        return self
+    def predict(self, X):
+        return X @ self.w
+
+def evaluate(model: Predictor, X_test, y_test):
+    preds = model.predict(X_test)
+    return np.mean((preds - y_test) ** 2)
+
+# LinearModel satisfies Predictor without inheriting from it.
+# mypy will catch it if LinearModel is missing predict().
+</code></pre>
+
+<p>I'm still developing my intuition for when ABC vs Protocol is the right call. The rule of thumb I've landed on: use ABC when you need runtime <code>isinstance()</code> checks or when your base class provides default method implementations. Use Protocol when you want maximum flexibility, especially with third-party classes you can't modify. In newer codebases, I find myself reaching for Protocol more often.</p>
+
+<!-- ═══════════════ INHERITANCE ═══════════════ -->
+<h2>Inheritance: When the Framework Says So</h2>
+
+<p>Now let's bring our minitrainer into the real world. If we want it to work with scikit-learn's <code>Pipeline</code>, <code>GridSearchCV</code>, and <code>cross_val_score</code>, we need to follow sklearn's contract. That means inheriting from <code>BaseEstimator</code> and a mixin.</p>
+
+<p>Think of inheritance like this. A framework architect built a kitchen and said: "I've wired the gas, the plumbing, and the ventilation. You bring the recipe." When you subclass <code>nn.Module</code> or <code>BaseEstimator</code>, you're bringing the recipe. The framework has already built the kitchen — parameter registration, device movement, gradient tracking, hyperparameter introspection, grid search integration. You get all of that by inheriting and filling in the blanks.</p>
+
+<pre><code class="language-python">from sklearn.base import BaseEstimator, RegressorMixin
+from sklearn.utils.validation import check_is_fitted
+import numpy as np
+
+class MiniRegressor(BaseEstimator, RegressorMixin):
+    def __init__(self, learning_rate=0.01, epochs=100):
+        self.learning_rate = learning_rate
+        self.epochs = epochs
+
+    def fit(self, X, y):
+        self.coef_ = np.random.randn(X.shape[1])
+        for _ in range(self.epochs):
+            preds = X @ self.coef_
+            grad = 2 * X.T @ (preds - y) / len(y)
+            self.coef_ -= self.learning_rate * grad
+        return self
+
+    def predict(self, X):
+        check_is_fitted(self)
+        return X @ self.coef_
+</code></pre>
+
+<p>Three conventions make this work. First, <code>__init__</code> stores hyperparameters and does nothing else — <code>BaseEstimator</code> introspects your <code>__init__</code> signature to power <code>get_params()</code> and <code>set_params()</code>, which is how <code>GridSearchCV</code> clones your estimator with different hyperparameters. Second, <code>fit()</code> returns <code>self</code> — this enables method chaining in pipelines. Third, fitted attributes end with an underscore (<code>coef_</code>) — <code>check_is_fitted()</code> detects these to verify that <code>fit()</code> was called before <code>predict()</code>.</p>
+
+<p><code>RegressorMixin</code> gives you a <code>score()</code> method for free — it calls <code>predict()</code> and computes R² against the true labels. That's a <strong>mixin</strong>: a small class that adds a single slice of behavior without defining <code>__init__</code>. Sklearn uses mixins everywhere — <code>ClassifierMixin</code>, <code>TransformerMixin</code>, <code>ClusterMixin</code>. Each assumes the host class has certain methods, and each gives something back in return. This is a fair trade, and it's the right use of inheritance.</p>
+
+<p>The same kitchen analogy applies to PyTorch. When you subclass <code>nn.Module</code>, you implement <code>forward()</code>. The framework's <code>__call__</code> method wraps your <code>forward()</code> with pre-hooks, post-hooks, and autograd setup. That's why you write <code>model(x)</code> and never <code>model.forward(x)</code> directly — calling <code>forward()</code> bypasses the hooks and silently breaks gradient tracking. The kitchen handles the gas lines; you bring the recipe.</p>
+
+<pre><code class="language-python">import torch
+import torch.nn as nn
+
+class TinyNet(nn.Module):
+    def __init__(self, in_dim, hidden, out_dim):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, out_dim),
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+model = TinyNet(784, 256, 10)
+# model(x) → runs hooks, autograd, THEN forward()
+# model.parameters() → auto-discovered from self.net
+# model.to('cuda') → recursively moves all parameters
+</code></pre>
+
+<p>Behind the scenes, <code>nn.Module</code> uses a custom <code>__setattr__</code> to intercept every attribute assignment in <code>__init__</code>. When you write <code>self.net = nn.Sequential(...)</code>, it detects that <code>nn.Sequential</code> is a Module and registers it as a child. That's how <code>model.parameters()</code> can recurse into nested modules and find every learnable weight without you listing them manually. It's one of the most elegant uses of OOP I've seen in any framework.</p>
 
 <h3>The Diamond Problem and MRO</h3>
 
-<p>Multiple inheritance introduces the diamond problem: class D inherits from B and C, which both inherit from A. When D calls <code>super().__init__()</code>, which path does it take? Python solves this with the <strong>Method Resolution Order (MRO)</strong>, computed via C3 linearization. The key insight: <code>super()</code> doesn't mean "call my parent." It means "call the <em>next class in the MRO chain</em>."</p>
+<p>When a class inherits from multiple parents, things get interesting. Consider <code>class D(B, C)</code> where both B and C inherit from A. When D calls <code>super().__init__()</code>, which path does it take? Python resolves this with the <strong>Method Resolution Order (MRO)</strong>, computed via an algorithm called C3 linearization.</p>
+
+<p>The key insight that tripped me up for a while: <code>super()</code> doesn't mean "call my parent." It means "call the next class in the MRO chain."</p>
 
 <pre><code class="language-python">class A:
     def __init__(self):
@@ -331,7 +537,7 @@
 class B(A):
     def __init__(self):
         print("B")
-        super().__init__()    # calls C, NOT A — surprise
+        super().__init__()    # calls C, NOT A
 
 class C(A):
     def __init__(self):
@@ -345,83 +551,141 @@ class D(B, C):
 
 D()   # prints: D → B → C → A
 print(D.__mro__)
-# (D, B, C, A, object) — this IS the resolution order
+# (D, B, C, A, object)
 </code></pre>
 
-<p>The rule: every class in the MRO appears exactly once, and a class always appears before its parents. When you see <code>class SGDClassifier(BaseSGD, ClassifierMixin, RegressorMixin)</code> in sklearn's source, this is the machinery that makes it work without ambiguity.</p>
+<p>Every class appears exactly once in the MRO, and a class always appears before its parents. When you see <code>class SGDClassifier(BaseSGD, ClassifierMixin)</code> in sklearn's source, this is the machinery that makes it work without ambiguity. I still occasionally sketch the MRO on paper for complex hierarchies. It's one of those things where the algorithm is well-defined but the intuition takes a while to internalize.</p>
 
-<h3>Mixins</h3>
+<!-- ═══════════════ COMPOSITION ═══════════════ -->
+<h2>Composition: When You're Building Your Own Thing</h2>
 
-<p>Mixins are small classes that add a single slice of behavior — they're not meant to be instantiated alone. Sklearn uses them everywhere: <code>ClassifierMixin</code> adds a <code>score()</code> method, <code>TransformerMixin</code> adds <code>fit_transform()</code>. The convention: a mixin provides methods that assume the host class has certain attributes, but it doesn't define <code>__init__</code> itself. When you need to add logging, serialization, or a standard interface to multiple unrelated classes, mixins are the right pattern.</p>
+<p>Inheritance is the right tool when a framework gives you a kitchen. But when you're building your <em>own</em> system — a training pipeline, an experiment manager, a model evaluation suite — composition wins almost every time.</p>
 
-<h3>Abstract Base Classes</h3>
+<p>Let's revisit our minitrainer. Right now the optimization logic is baked into <code>fit()</code>. What if we want to try different optimizers? The inheritance approach would be to create <code>MiniTrainerSGD</code>, <code>MiniTrainerAdam</code>, <code>MiniTrainerRMSprop</code> — a new subclass for each optimizer. That's three classes that are identical except for a few lines in the training loop. Now imagine adding a new data loading strategy. Do we create <code>MiniTrainerSGDWithCSV</code>? The class hierarchy explodes.</p>
 
-<p>When you're building a system where multiple people write plugins or extensions, <code>abc.ABC</code> enforces the contract. If a subclass forgets to implement a required method, it fails <em>at instantiation</em> — not silently at runtime two hours into a training run.</p>
+<p>Composition takes the opposite approach. Instead of "the trainer <em>is</em> a kind of SGD trainer," we say "the trainer <em>has</em> an optimizer." The optimizer is a separate object, passed in from outside.</p>
 
-<pre><code class="language-python">from abc import ABC, abstractmethod
+<pre><code class="language-python">class SGDOptimizer:
+    def __init__(self, lr=0.01):
+        self.lr = lr
 
-class BasePreprocessor(ABC):
-    @abstractmethod
-    def transform(self, X):
-        """Subclasses MUST implement this."""
-        ...
+    def step(self, weights, grad):
+        return weights - self.lr * grad
 
-    def fit_transform(self, X, y=None):
-        return self.fit(X, y).transform(X)    # template method
+class AdamOptimizer:
+    def __init__(self, lr=0.001, beta1=0.9, beta2=0.999, eps=1e-8):
+        self.lr = lr
+        self.beta1, self.beta2, self.eps = beta1, beta2, eps
+        self.m = None
+        self.v = None
+        self.t = 0
 
-class MissingImpl(BasePreprocessor):
-    pass
+    def step(self, weights, grad):
+        if self.m is None:
+            self.m = np.zeros_like(weights)
+            self.v = np.zeros_like(weights)
+        self.t += 1
+        self.m = self.beta1 * self.m + (1 - self.beta1) * grad
+        self.v = self.beta2 * self.v + (1 - self.beta2) * grad ** 2
+        m_hat = self.m / (1 - self.beta1 ** self.t)
+        v_hat = self.v / (1 - self.beta2 ** self.t)
+        return weights - self.lr * m_hat / (np.sqrt(v_hat) + self.eps)
 
-# MissingImpl()  → TypeError: Can't instantiate abstract class
-# Fails NOW, not when .transform() is called 3 hours later
+class Trainer:
+    def __init__(self, optimizer):
+        self.optimizer = optimizer
+        self.history = []
+
+    def fit(self, X, y, epochs=100):
+        weights = np.random.randn(X.shape[1])
+        for _ in range(epochs):
+            preds = X @ weights
+            loss = np.mean((preds - y) ** 2)
+            grad = 2 * X.T @ (preds - y) / len(y)
+            weights = self.optimizer.step(weights, grad)
+            self.history.append(loss)
+        self.weights = weights
+        return self
 </code></pre>
 
-<h3>The Pattern You'll Actually Write</h3>
+<p>Now swapping optimizers is a one-line change.</p>
 
-<p>This is the single most common OOP pattern in ML codebases — extending sklearn's <code>BaseEstimator</code> with a mixin to create a custom transformer that plugs into any pipeline:</p>
-
-<pre><code class="language-python">from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.utils.validation import check_is_fitted
-import numpy as np
-
-class ColumnDropper(BaseEstimator, TransformerMixin):
-    """Drops columns by index. Pipeline-compatible, clone-safe, grid-searchable."""
-
-    def __init__(self, columns=None):
-        self.columns = columns               # hyperparams ONLY in __init__
-
-    def fit(self, X, y=None):
-        self.n_features_in_ = X.shape[1]     # fitted attrs end with _
-        return self                           # MUST return self
-
-    def transform(self, X):
-        check_is_fitted(self)
-        mask = [i for i in range(X.shape[1]) if i not in (self.columns or [])]
-        return X[:, mask] if hasattr(X, '__array__') else X.iloc[:, mask]
-
-# drops right into a pipeline:
-# Pipeline([('drop', ColumnDropper(columns=[0, 3])), ('clf', SVC())])
-# works with GridSearchCV: param_grid={'drop__columns': [[0], [0, 3]]}
+<pre><code class="language-python">trainer_sgd = Trainer(SGDOptimizer(lr=0.01))
+trainer_adam = Trainer(AdamOptimizer(lr=0.001))
 </code></pre>
 
-<div class="callout-info">
-  <strong>Why this works:</strong> <code>BaseEstimator</code> gives you <code>get_params()</code>/<code>set_params()</code> by introspecting <code>__init__</code>'s signature. <code>TransformerMixin</code> gives you <code>fit_transform()</code> for free. Fitted attributes ending in <code>_</code> let <code>check_is_fitted()</code> auto-detect whether <code>fit()</code> was called. Follow these three conventions and your transformer works with <code>Pipeline</code>, <code>GridSearchCV</code>, <code>clone()</code>, and <code>cross_val_score</code> — zero extra effort.
-</div>
+<p>No new subclass. No copy-pasted code. The trainer doesn't know or care which optimizer it's using — it calls <code>self.optimizer.step()</code> and trusts the result. This is the "has-a" relationship: the trainer <em>has</em> an optimizer. It <em>isn't</em> an optimizer.</p>
 
-<!-- ════════════════════════════════════════════ -->
-<h2>Dunder Methods — Only The Ones That Matter</h2>
+<p>Sklearn's <code>Pipeline</code> is a masterclass in this pattern. <code>Pipeline([('scaler', StandardScaler()), ('clf', SVC())])</code> composes a scaler and a classifier into one unit. It doesn't inherit from either. It <em>has</em> them. That's why you can swap <code>SVC()</code> for <code>RandomForestClassifier()</code> without changing the pipeline class itself.</p>
 
-<p>Python has 100+ dunder methods. You'll implement maybe 8 of them in your career. Here's which ones, when, and why — skip the rest until you need them.</p>
+<p>Here's the rule of thumb I use: inherit when a framework gives you a base class with real functionality behind it. Compose when you're building your own system and need flexibility. In four years of production ML work, the ratio has been roughly 20% inheritance, 80% composition.</p>
 
-<p><strong><code>__init__(self, ...)</code></strong> — object setup. You already know this. Store hyperparams, declare layers, set defaults. The one rule that matters: don't do heavy computation here. Sklearn expects <code>__init__</code> to only store parameters, nothing else.</p>
+<!-- ═══════════════ REST STOP ═══════════════ -->
+<h2>Rest Stop</h2>
 
-<p><strong><code>__repr__(self)</code></strong> — debugging representation. Called by <code>repr()</code> and the REPL. If you define only one string method, define this one — Python uses it as fallback for <code>str()</code> too. Sklearn auto-generates these from <code>get_params()</code>, which is why printing a model shows <code>RandomForestClassifier(n_estimators=100, ...)</code>.</p>
+<p>Congratulations on making it this far. You can stop here if you want.</p>
 
-<pre><code class="language-python">def __repr__(self):
-    return f"Config(lr={self.lr}, epochs={self.epochs})"
+<p>At this point, you have a mental model that covers the foundation: classes as sealed envelopes for state, interfaces as contracts, inheritance for extending frameworks, and composition for building your own systems. That's genuinely enough for most day-to-day ML work. If someone asks you in an interview why you'd use composition over inheritance, you can point to our minitrainer example and explain the combinatorial explosion that inheritance creates.</p>
+
+<p>The short version of what's left: design patterns are the recurring shapes you'll see when reading framework source code; dunder methods are the hooks Python gives you to make objects behave like built-in types; dataclasses and protocols are the modern tools that reduce boilerplate; and anti-patterns are the traps that turn codebases into unmaintainable messes. There — you're 60% of the way through.</p>
+
+<p>But if the discomfort of not knowing what's underneath is nagging at you, read on.</p>
+
+<!-- ═══════════════ DESIGN PATTERNS ═══════════════ -->
+<h2>The Patterns You'll Actually See in Production</h2>
+
+<p>I used to think design patterns were an enterprise Java thing — abstract factories and visitor patterns and twenty classes to print "hello world." Then I started reading PyTorch and HuggingFace source code, and I realized I'd been using these patterns all along. I was living in the design patterns house without knowing the names of the rooms.</p>
+
+<h3>Template Method</h3>
+
+<p>This is the pattern behind every framework that says "implement this one method and we'll handle the rest." PyTorch's <code>nn.Module</code> is the clearest example. The framework defines <code>__call__</code>, which runs pre-forward hooks, calls your <code>forward()</code>, runs post-forward hooks, and manages autograd. You only write <code>forward()</code>. The template — the skeleton of the algorithm — is fixed. You fill in the variable part.</p>
+
+<p>Sklearn does the same thing. <code>TransformerMixin.fit_transform()</code> calls your <code>fit()</code> then your <code>transform()</code>. You implement the pieces; the framework orchestrates them.</p>
+
+<p>The pattern's value is this: the framework author can guarantee that hooks always run, gradients are always tracked, and fitted state is always verified — regardless of what you put in <code>forward()</code> or <code>fit()</code>. You can't accidentally skip the safety rails.</p>
+
+<h3>Strategy</h3>
+
+<p>We already built this one in the composition section. When our <code>Trainer</code> accepts an optimizer object and calls <code>self.optimizer.step()</code>, the optimizer is the <em>strategy</em>. Different strategies (SGD, Adam, RMSprop) are interchangeable because they all have the same interface. The trainer doesn't know which one it's running. It doesn't need to.</p>
+
+<p>PyTorch uses this everywhere. Loss functions, activation functions, learning rate schedulers — they're all strategies. You pass them in, the training loop calls them, and the specific behavior is determined by which object you injected.</p>
+
+<h3>Observer (Hooks)</h3>
+
+<p>The observer pattern is how a system broadcasts events to interested listeners without knowing who they are. In PyTorch, this shows up as hooks — functions you register on a module that fire automatically during forward or backward passes.</p>
+
+<pre><code class="language-python">def log_activations(module, input, output):
+    print(f"{module.__class__.__name__}: "
+          f"output shape {output.shape}, "
+          f"mean {output.mean():.4f}")
+
+model = TinyNet(784, 256, 10)
+hook = model.net[0].register_forward_hook(log_activations)
+# now every forward pass through the first Linear layer
+# triggers our logging function
+# hook.remove() when done
 </code></pre>
 
-<p><strong><code>__len__(self)</code> + <code>__getitem__(self, idx)</code></strong> — the Dataset pattern. PyTorch's <code>DataLoader</code> needs <code>__len__</code> to know how many samples exist and <code>__getitem__</code> to fetch one by index. Implement these two and your class works with shuffling, batching, and multi-worker loading for free.</p>
+<p>Gradient clipping, activation logging, feature extraction from intermediate layers — all of these work through hooks. The model itself doesn't know it's being observed. This is what makes it possible to add monitoring, debugging, and profiling to any model without modifying its code.</p>
+
+<h3>Registry / Factory</h3>
+
+<p>This is the pattern that HuggingFace built its empire on. When you call <code>AutoModel.from_pretrained("bert-base-uncased")</code>, here's what happens under the hood. The system loads a config file. It reads the <code>model_type</code> field — in this case, <code>"bert"</code>. It looks up <code>"bert"</code> in a dictionary that maps type strings to classes: <code>{"bert": BertModel, "gpt2": GPT2Model, "t5": T5Model, ...}</code>. It instantiates the correct class and loads the weights.</p>
+
+<p>That dictionary is the <strong>registry</strong>. The <code>from_pretrained()</code> classmethod is the <strong>factory</strong>. Together, they let you load any of hundreds of model architectures through a single uniform interface. The same pattern powers <code>AutoTokenizer</code>, <code>AutoConfig</code>, and <code>AutoModelForSequenceClassification</code>. When you see "Auto" in HuggingFace, think "registry that maps config strings to concrete classes."</p>
+
+<p>OpenAI's Python SDK uses the same idea. Every API resource — completions, files, models — is a class inheriting from a base <code>APIResource</code>. <code>ChatCompletion.create()</code> is a classmethod (a factory) that handles HTTP, auth, serialization, and error handling behind a clean interface. You call one method; an entire orchestra of networking code plays behind the curtain.</p>
+
+<p>The limitation of all these patterns is that they have to be <em>recognized</em> to be useful. If you don't know the template method pattern exists, PyTorch's <code>__call__</code>-wraps-<code>forward()</code> trick looks like arbitrary framework magic. Once you see the pattern, the magic dissolves into a sensible design decision. That's the whole point of naming patterns — not to create jargon, but to make the architecture legible.</p>
+
+<!-- ═══════════════ DUNDER METHODS ═══════════════ -->
+<h2>The Dunder Methods That Earn Their Keep</h2>
+
+<p>Python has over a hundred dunder (double-underscore) methods. Most of them, you'll never touch. But there's a handful that shows up in ML code constantly, and understanding them is the difference between reading framework source code fluently and staring at it in confusion.</p>
+
+<p><strong><code>__call__</code></strong> is the one that makes an instance callable like a function. When you write <code>model(x)</code>, Python translates that to <code>model.__call__(x)</code>. PyTorch's <code>nn.Module</code> defines <code>__call__</code> to run hooks and autograd setup before calling your <code>forward()</code>. This is why <code>model(x)</code> and <code>model.forward(x)</code> are not interchangeable — <code>forward()</code> skips the entire hook and gradient machinery. I've seen this bug in production code more than once. It trains, it runs, and the gradients are silently wrong.</p>
+
+<p><strong><code>__len__</code> and <code>__getitem__</code></strong> are the dataset pattern. PyTorch's <code>DataLoader</code> needs <code>__len__</code> to know how many samples exist and <code>__getitem__</code> to fetch one by index. Implement these two methods on any class and it works with shuffling, batching, and multi-worker loading — all from two method definitions.</p>
 
 <pre><code class="language-python">class TextDataset:
     def __init__(self, texts, labels):
@@ -435,14 +699,14 @@ class ColumnDropper(BaseEstimator, TransformerMixin):
         return self.texts[idx], self.labels[idx]
 
 # DataLoader(TextDataset(texts, labels), batch_size=32, shuffle=True)
-# Just works. Batching, shuffling, multiprocess — all from two methods.
+# Batching, shuffling, multiprocess prefetch — all from two methods.
 </code></pre>
 
-<p><strong><code>__call__(self, ...)</code></strong> — the big one. Makes an instance callable like a function. PyTorch's <code>nn.Module.__call__</code> runs forward hooks, sets up autograd, calls your <code>forward()</code>, then runs post-forward hooks. This is why you write <code>model(x)</code> and <em>never</em> <code>model.forward(x)</code> — calling <code>forward()</code> directly skips gradient tracking and silently breaks training.</p>
+<p><strong><code>__enter__</code> and <code>__exit__</code></strong> make context managers. You use them every time you write <code>with torch.no_grad():</code> or <code>with open(path) as f:</code>. The pattern: <code>__enter__</code> sets up a resource or state change, <code>__exit__</code> tears it down — even if an exception fires in between. For anything that needs guaranteed cleanup — timers, temporary gradient disabling, database connections — this is the mechanism.</p>
 
-<p><strong><code>__enter__(self)</code> / <code>__exit__(self, ...)</code></strong> — context managers. <code>torch.no_grad()</code>, file handles, database connections, timers. The pattern: <code>__enter__</code> sets up a resource, <code>__exit__</code> tears it down — even if an exception fires. For simple cases, <code>contextlib.contextmanager</code> with a generator is less boilerplate.</p>
+<pre><code class="language-python">import time
 
-<pre><code class="language-python">class Timer:
+class Timer:
     def __enter__(self):
         self.start = time.perf_counter()
         return self
@@ -450,40 +714,21 @@ class ColumnDropper(BaseEstimator, TransformerMixin):
     def __exit__(self, *exc):
         self.elapsed = time.perf_counter() - self.start
         print(f"{self.elapsed:.3f}s")
-        return False              # don't suppress exceptions
+        return False   # don't suppress exceptions
 
 # with Timer():
-#     model.fit(X, y)             # prints elapsed time even if fit() crashes
+#     model.fit(X, y)
+# prints elapsed time even if fit() crashes
 </code></pre>
 
-<p><strong><code>__eq__(self, other)</code> / <code>__hash__(self)</code></strong> — only when you need objects as dict keys or set members. Implement <code>__eq__</code> for config comparison. But beware: defining <code>__eq__</code> sets <code>__hash__</code> to <code>None</code>, making your objects unhashable. If you need them in sets or as dict keys, define both. Most of the time, you don't need either — <code>dataclass(frozen=True)</code> generates both automatically.</p>
+<p><strong><code>__repr__</code></strong> is for debugging. It controls what you see when you type an object's name in the REPL or print it. Sklearn auto-generates these from <code>get_params()</code>, which is why printing a model shows <code>RandomForestClassifier(n_estimators=100, ...)</code> instead of <code>&lt;sklearn.ensemble._forest.RandomForestClassifier object at 0x...&gt;</code>. If you define only one string method on your class, make it <code>__repr__</code>.</p>
 
-<!-- ════════════════════════════════════════════ -->
-<h2>Properties and Descriptors</h2>
+<p>That's the core set. There are others — <code>__eq__</code> and <code>__hash__</code> for making objects work as dict keys, <code>__iter__</code> for making objects iterable — but you can look those up when you need them. The ones above are the ones that show up in framework source code daily.</p>
 
-<p><code>@property</code> makes a method behave like an attribute — computed on access, validated on set. Use it for derived values (<code>model.num_params</code> computed from layer sizes) or when setting an attribute needs validation (<code>self.learning_rate</code> must be positive). That's the 90% use case.</p>
+<!-- ═══════════════ MODERN TOOLKIT ═══════════════ -->
+<h2>The Modern Toolkit — Dataclasses and Protocols</h2>
 
-<pre><code class="language-python">class Config:
-    def __init__(self, lr=0.001):
-        self.lr = lr                # triggers the setter below
-
-    @property
-    def lr(self):
-        return self._lr
-
-    @lr.setter
-    def lr(self, value):
-        if value <= 0:
-            raise ValueError(f"lr must be positive, got {value}")
-        self._lr = value
-</code></pre>
-
-<p>Descriptors are the mechanism that powers <code>@property</code> under the hood — any object with <code>__get__</code>, <code>__set__</code>, or <code>__delete__</code> methods. You'll almost never write one directly, but knowing they exist explains why <code>@property</code>, <code>@classmethod</code>, and <code>@staticmethod</code> all work the way they do.</p>
-
-<!-- ════════════════════════════════════════════ -->
-<h2>Dataclasses</h2>
-
-<p><code>@dataclass</code> is the modern way to create classes that mainly hold data. It auto-generates <code>__init__</code>, <code>__repr__</code>, and <code>__eq__</code> from your field annotations — eliminating the boilerplate that makes simple config or record classes tedious to write.</p>
+<p>If you've ever written a config class that's nothing but <code>__init__</code> storing a dozen parameters, you know the boilerplate pain. <code>@dataclass</code> kills that dead.</p>
 
 <pre><code class="language-python">from dataclasses import dataclass, field
 
@@ -492,90 +737,71 @@ class TrainConfig:
     lr: float = 0.001
     epochs: int = 100
     batch_size: int = 32
-    tags: list = field(default_factory=list)    # mutable default done right
+    tags: list = field(default_factory=list)
 
 cfg = TrainConfig(lr=0.01)
-print(cfg)          # TrainConfig(lr=0.01, epochs=100, batch_size=32, tags=[])
+print(cfg)   # TrainConfig(lr=0.01, epochs=100, batch_size=32, tags=[])
+
 cfg2 = TrainConfig(lr=0.01)
-cfg == cfg2          # True — __eq__ compares all fields
+cfg == cfg2  # True — __eq__ compares all fields automatically
 </code></pre>
 
-<p>Add <code>frozen=True</code> for immutable config objects — attempts to modify fields raise <code>FrozenInstanceError</code>. This also auto-generates <code>__hash__</code>, so frozen dataclasses work as dict keys and set members out of the box.</p>
+<p><code>@dataclass</code> auto-generates <code>__init__</code>, <code>__repr__</code>, and <code>__eq__</code> from your field annotations. Add <code>frozen=True</code> and you get an immutable config object — attempts to modify fields raise <code>FrozenInstanceError</code>, and <code>__hash__</code> is generated automatically, so frozen dataclasses work as dict keys and set members out of the box.</p>
 
-<table>
-  <thead>
-    <tr><th>Choice</th><th>When</th><th>Trade-off</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><code>@dataclass</code></td>
-      <td>Config objects, records, anything with multiple named fields</td>
-      <td>Full class power — methods, inheritance, mutability control</td>
-    </tr>
-    <tr>
-      <td><code>NamedTuple</code></td>
-      <td>Lightweight immutable records, function return types</td>
-      <td>Immutable by default, tuple unpacking, less overhead</td>
-    </tr>
-    <tr>
-      <td>Plain class</td>
-      <td>Significant custom logic in <code>__init__</code>, complex inheritance</td>
-      <td>Full control, but you write all the boilerplate yourself</td>
-    </tr>
-  </tbody>
-</table>
+<p>The <code>field(default_factory=list)</code> syntax solves the mutable default problem we talked about earlier. Instead of sharing one list across all instances, it creates a fresh list for each one. This is the dataclass equivalent of the <code>items=None; self.items = items or []</code> pattern, but cleaner.</p>
 
-<!-- ════════════════════════════════════════════ -->
-<h2>OOP Patterns in ML Frameworks</h2>
+<p>HuggingFace uses dataclasses extensively for training arguments. <code>TrainingArguments</code> is a dataclass with dozens of fields — learning rate, batch size, logging steps, gradient accumulation — and it all works with serialization, comparison, and printing for free.</p>
 
-<p>You don't need to memorize design patterns from a textbook. But you do need to recognize the patterns that ML frameworks are built on — so when you read their source code, you know what's happening.</p>
+<p>Protocols, which we covered earlier, fit into this modern toolkit as the typing-era answer to duck typing. Where Python traditionally said "if it has a <code>fit</code> method, it's a model" and hoped for the best at runtime, Protocol lets you express that contract in code and have <code>mypy</code> verify it statically. No inheritance required. No runtime overhead. The combination of dataclasses for data-holding classes and Protocols for behavioral contracts covers most of what you need to write clean, modern Python for ML.</p>
 
-<h3>sklearn: fit / transform / predict</h3>
+<!-- ═══════════════ ANTI-PATTERNS ═══════════════ -->
+<h2>The Anti-Patterns That Kill Codebases</h2>
 
-<p>Every sklearn estimator follows the same contract: <code>__init__</code> stores hyperparams (nothing else), <code>fit()</code> learns from data and sets attributes ending in <code>_</code>, <code>predict()</code> or <code>transform()</code> uses them. <code>BaseEstimator</code> gives you <code>get_params()</code>/<code>set_params()</code> by introspecting your <code>__init__</code> signature — this is what makes <code>GridSearchCV</code> and <code>clone()</code> work. <code>check_is_fitted()</code> verifies that <code>fit()</code> was called by looking for trailing-underscore attributes. Break any of these conventions and your estimator silently fails in pipelines.</p>
+<p>I've spent more time debugging bad OOP than writing good OOP. These are the patterns I've seen destroy codebases — and the ones that senior interviewers love to probe.</p>
 
-<h3>PyTorch: nn.Module</h3>
+<h3>The God Class</h3>
 
-<p>Subclass <code>nn.Module</code>, define layers in <code>__init__</code> (calling <code>super().__init__()</code> first), implement <code>forward()</code>. The module tracks every <code>nn.Parameter</code> and sub-module you assign as attributes — that's how <code>model.parameters()</code>, <code>model.to(device)</code>, and <code>model.state_dict()</code> work automatically. Hooks let you inject behavior before or after <code>forward()</code> without modifying it — gradient clipping, activation logging, feature extraction from intermediate layers.</p>
+<p>A God class does everything: loads data, defines the model, runs training, computes metrics, saves checkpoints, sends Slack notifications. It starts as a convenient 200-line class and grows to 2,000 lines because everything is interconnected and splitting it feels too risky. I've written God classes. Everyone has. The fix is composition: extract a <code>DataLoader</code>, a <code>Model</code>, a <code>Trainer</code>, and a <code>MetricsLogger</code> as separate objects, then wire them together in a thin orchestrator.</p>
 
-<pre><code class="language-python">import torch.nn as nn
+<h3>Deep Inheritance Hierarchies</h3>
 
-class SimpleNet(nn.Module):
-    def __init__(self, in_dim, hidden, out_dim):
-        super().__init__()                      # registers params
-        self.net = nn.Sequential(
-            nn.Linear(in_dim, hidden),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(hidden, out_dim),
-        )
+<p>Three levels of inheritance is a warning sign. Four is a code smell. Five means someone confused the class hierarchy for an organizational chart. The problem isn't inheritance itself — it's that behavior is scattered across multiple files and multiple levels, and tracing which method actually runs requires walking up and down the tree. I've seen codebases where <code>CustomResNet</code> inherits from <code>ResNetBase</code> inherits from <code>CNNModel</code> inherits from <code>BaseModel</code> inherits from <code>nn.Module</code>, and nobody can tell you which <code>forward()</code> is actually called without checking four files.</p>
 
-    def forward(self, x):                       # called by __call__
-        return self.net(x)
+<p>The fix: flatten to one or two levels of inheritance (usually into a framework base class), and use composition for the rest.</p>
 
-model = SimpleNet(784, 256, 10)
-# model(x) — NOT model.forward(x)
-# model.parameters() — auto-discovered from self.net
-# model.to('cuda') — moves everything, recursively
-</code></pre>
+<h3>Global Mutable State</h3>
 
-<h3>HuggingFace: PreTrainedModel and AutoModel</h3>
+<p>Singleton config objects, module-level dictionaries that get mutated during training, global random seeds set in one file and depended on in another. Global state is the spaghetti script wearing a class costume. Every piece of shared mutable state is a potential race condition, a test isolation failure, and a debugging nightmare. Pass dependencies explicitly. If a function needs a config, it should take it as an argument, not reach into a global namespace.</p>
 
-<p>HuggingFace builds on two patterns: <strong>factory methods</strong> and a <strong>registry</strong>. <code>Model.from_pretrained("bert-base-uncased")</code> is a <code>@classmethod</code> that downloads weights, instantiates the right architecture, and loads the state dict. <code>AutoModel.from_pretrained()</code> adds a registry layer — it reads the config to figure out <em>which</em> class to instantiate, so you don't need to import <code>BertModel</code> vs <code>GPT2Model</code> vs <code>T5Model</code> yourself. The same pattern appears with <code>AutoTokenizer</code>, <code>AutoConfig</code>, and <code>AutoModelForSequenceClassification</code>. When you see "Auto" in HuggingFace, think "registry that maps config strings to classes."</p>
+<h3>Premature Abstraction</h3>
 
-<!-- ════════════════════════════════════════════ -->
-<h2>What You Should Now Be Able To Do</h2>
+<p>This is the subtlest anti-pattern, and the one I still struggle with. You build one model, and you immediately abstract it into a <code>BaseModel</code> with three abstract methods and a factory pattern — before you know whether you'll ever build a second model. The abstraction adds complexity with no payoff. The rule I try to follow: wait until you have two or three concrete implementations before extracting a shared interface. Let the pattern emerge from the code, rather than imposing it upfront.</p>
 
-<ul>
-  <li>☐ Decide inheritance vs composition for a given design problem, and articulate <em>why</em></li>
-  <li>☐ Trace MRO through a diamond hierarchy and predict <code>super()</code> resolution order</li>
-  <li>☐ Write a custom sklearn transformer with <code>BaseEstimator</code> + <code>TransformerMixin</code> that works in pipelines and grid search</li>
-  <li>☐ Implement <code>__len__</code> + <code>__getitem__</code> to make a PyTorch-compatible Dataset</li>
-  <li>☐ Explain why <code>model(x)</code> and <code>model.forward(x)</code> are not interchangeable in PyTorch</li>
-  <li>☐ Use <code>@dataclass</code> with <code>frozen=True</code> for immutable config objects</li>
-  <li>☐ Recognize fit/transform, <code>nn.Module</code>, and AutoModel patterns when reading framework source</li>
-  <li>☐ Spot mutable class attribute and mutable default argument traps on sight</li>
-</ul>
+<p>No one fully agrees on the right level of abstraction, by the way. I've seen teams with too little structure (everything is functions) and teams with too much (seven layers of interfaces before any real logic). Finding the middle ground is a judgment call that gets better with experience but never becomes automatic.</p>
+
+<!-- ═══════════════ WRAP-UP ═══════════════ -->
+<h2>Wrapping Up</h2>
+
+<p>If you're still with me, thank you. I hope it was worth it.</p>
+
+<p>We started with a spaghetti script full of global variables, felt the pain of shared mutable state, and discovered that classes are sealed envelopes — a way to keep state and behavior together. We built contracts with ABCs and Protocols, learned that inheritance is for extending framework kitchens while composition is for building our own systems, and recognized the design patterns hiding in plain sight inside PyTorch and HuggingFace. We looked at the dunder methods that make Python objects behave like built-in types, the modern tools that eliminate boilerplate, and the anti-patterns that turn codebases into unmaintainable tangles.</p>
+
+<p>My hope is that the next time you open PyTorch's <code>nn.Module</code> source or HuggingFace's <code>AutoModel</code> registry, instead of feeling like you're reading someone else's inscrutable magic, you'll recognize the template methods, the strategies, the hooks, and the factories — having a pretty good mental model of what's going on under the hood. And the next time you're designing a system that ten people will work on, you'll reach for composition first, inherit when the framework asks you to, and resist the urge to build a five-level class hierarchy that felt clean at the time.</p>
+
+<!-- ═══════════════ RESOURCES ═══════════════ -->
+<h2>Resources</h2>
+
+<p><strong>PyTorch <code>nn.Module</code> source code</strong> — Reading the actual <code>__call__</code>, <code>__setattr__</code>, and parameter registration logic is worth more than any tutorial. The template method pattern is right there in the code. <a href="https://github.com/pytorch/pytorch/blob/main/torch/nn/modules/module.py" target="_blank">GitHub link</a>.</p>
+
+<p><strong>Scikit-learn developer guide on estimators</strong> — The official guide on writing sklearn-compatible estimators. If you're building custom transformers or estimators for pipelines, this is the definitive reference. <a href="https://scikit-learn.org/stable/developers/develop.html" target="_blank">Docs link</a>.</p>
+
+<p><strong>HuggingFace Transformers philosophy page</strong> — Explains why they chose the class hierarchy they did, and how AutoModel's registry works. Insightful for understanding large-scale library design decisions. <a href="https://huggingface.co/docs/transformers/philosophy" target="_blank">Docs link</a>.</p>
+
+<p><strong>PEP 544 — Protocols: Structural subtyping</strong> — The proposal that introduced Protocol classes to Python. If you want to understand why structural subtyping matters and how it differs from ABC-based nominal typing, this is the source. <a href="https://peps.python.org/pep-0544/" target="_blank">PEP link</a>.</p>
+
+<p><strong>Refactoring Guru — Design Patterns in Python</strong> — Wildly helpful visual explanations of every major design pattern with Python code examples. Not ML-specific, but the patterns (Strategy, Observer, Template Method, Factory) map directly to what we covered. <a href="https://refactoring.guru/design-patterns/python" target="_blank">Website link</a>.</p>
+
+<p><strong>Google's Rules of Machine Learning</strong> — Not about OOP directly, but about the engineering discipline that keeps ML systems maintainable. Rule #1 is "Don't be afraid to launch a machine learning system without machine learning" — that kind of practical wisdom. <a href="https://developers.google.com/machine-learning/guides/rules-of-ml" target="_blank">Guide link</a>.</p>
 
 
 
