@@ -295,145 +295,270 @@
 <h1>Gaussian Processes &amp; Bayesian Optimization</h1>
 <div class="chapter-meta">
   <span class="tag">Chapter 14: Probabilistic &amp; Bayesian ML</span>
-  <span class="tag">7 subtopics</span>
-</div>
-
-<div class="tldr">
-  <div class="tldr-label">TL;DR</div>
-  <p>Gaussian Processes define a <em>distribution over functions</em> &mdash; instead of picking a specific model shape, you let the data decide. GPs give beautiful uncertainty estimates but scale as O(n&sup3;). Bayesian Optimization uses GPs (or similar surrogates) to intelligently search for the optimum of expensive black-box functions. It&rsquo;s the smart way to tune hyperparameters.</p>
+  <span class="tag">10 subtopics</span>
 </div>
 
 <!-- ═══════════════════════════════════════════════ -->
-<!-- GAUSSIAN PROCESSES -->
+<!-- OPENING -->
 <!-- ═══════════════════════════════════════════════ -->
-<h2 id="gp-intuition">Gaussian Processes: A Distribution Over Functions</h2>
 
-<p>Most regression models fix a functional form: linear, polynomial, neural network with a specific architecture. A Gaussian Process says: &ldquo;I won&rsquo;t commit to a form. Instead, I&rsquo;ll define a distribution over <em>all possible functions</em> and let the data narrow it down.&rdquo;</p>
+<p>I avoided Gaussian Processes for an embarrassingly long time. Every time I saw the phrase &ldquo;distribution over functions&rdquo; in a paper, I&rsquo;d nod politely and keep scrolling, privately convinced that only people who dream in measure theory could actually use them. Then I found myself on a project where I had exactly 47 data points, management wanted uncertainty bars on every prediction, and the neural network I&rsquo;d been planning to use started to look absurd. The discomfort of not knowing what a GP actually does grew too great. Here is that dive.</p>
 
-<p>Formally: a GP is a collection of random variables, any finite subset of which has a joint Gaussian distribution. A GP is fully specified by a mean function m(x) and a kernel (covariance) function k(x, x&rsquo;):</p>
+<p>Gaussian Processes emerged from geostatistics in the 1960s (where they went by the name <strong>kriging</strong>, after South African mining engineer Danie Krige) and were formalized for machine learning largely through Carl Rasmussen and Christopher Williams&rsquo; 2006 textbook. They give you regression and classification with built-in uncertainty estimates, and they power Bayesian Optimization &mdash; the most sample-efficient method we have for tuning expensive black-box functions.</p>
+
+<p>Before we start, a heads-up. We&rsquo;re going to touch on multivariate Gaussians, matrix inversions, and kernel functions. You don&rsquo;t need to know any of that beforehand. We&rsquo;ll add what we need, one piece at a time.</p>
+
+<p>This isn&rsquo;t a short journey, but I hope you&rsquo;ll be glad you came.</p>
+
+<!-- ═══════════════════════════════════════════════ -->
+<!-- TABLE OF CONTENTS -->
+<!-- ═══════════════════════════════════════════════ -->
+<div class="toc" style="margin:2em 0; padding:1.2em 2em; border-left:3px solid var(--accent,#3b82f6); background:var(--bg-alt,#f8fafc); border-radius:6px;">
+  <p style="margin-bottom:0.5em; font-weight:600;">Contents</p>
+  <p style="margin:0.2em 0; padding-left:1em;">The Weather Station Problem</p>
+  <p style="margin:0.2em 0; padding-left:1em;">What &ldquo;Distribution Over Functions&rdquo; Actually Means</p>
+  <p style="margin:0.2em 0; padding-left:1em;">The Kernel: Your Only Modeling Decision</p>
+  <p style="margin:0.2em 0; padding-left:1em;">GP Regression, Step by Step</p>
+  <p style="margin:0.2em 0; padding-left:1em;">GP Classification</p>
+  <p style="margin:0.2em 0; padding-left:1em;">Rest Stop</p>
+  <p style="margin:0.2em 0; padding-left:1em;">The O(n&sup3;) Problem and Sparse GPs</p>
+  <p style="margin:0.2em 0; padding-left:1em;">Bayesian Optimization: Searching Smartly</p>
+  <p style="margin:0.2em 0; padding-left:1em;">Acquisition Functions: Where to Look Next</p>
+  <p style="margin:0.2em 0; padding-left:1em;">Multi-Fidelity Bayesian Optimization</p>
+  <p style="margin:0.2em 0; padding-left:1em;">Wrap-Up</p>
+  <p style="margin:0.2em 0; padding-left:1em;">Resources</p>
+</div>
+
+<!-- ═══════════════════════════════════════════════ -->
+<!-- THE WEATHER STATION PROBLEM -->
+<!-- ═══════════════════════════════════════════════ -->
+<h2 id="weather-station">The Weather Station Problem</h2>
+
+<p>Imagine you&rsquo;re a meteorologist. You have three weather stations scattered across a valley. Station A, near the lake, reads 18&deg;C. Station B, up on the ridge, reads 12&deg;C. Station C, in the town center, reads 20&deg;C. A farmer calls and asks: &ldquo;What&rsquo;s the temperature at my field, which is 3 km east of Station A?&rdquo;</p>
+
+<p>You could fit a straight line through the three readings. Or a parabola. Or a wiggly polynomial that passes through all three points exactly. Each choice is a commitment to a specific shape, and with only three data points, that commitment feels premature. What you&rsquo;d really like to say is: &ldquo;Based on these three readings and the assumption that temperature changes smoothly over short distances, the field is probably around 17&deg;C &mdash; but I&rsquo;m not very sure. If you want more confidence, give me more stations.&rdquo;</p>
+
+<p>That&rsquo;s what a Gaussian Process does. It doesn&rsquo;t pick a single curve. It considers <em>all</em> smooth curves that pass near your data, and it tells you which ones are more plausible than others. Where data is dense, the plausible curves agree with each other and uncertainty is low. Where data is sparse, the curves fan out and uncertainty is high.</p>
+
+<p>We&rsquo;ll use this valley and its weather stations as our running example. It starts with three stations. By the end, it&rsquo;ll have taught us everything we need.</p>
+
+<!-- ═══════════════════════════════════════════════ -->
+<!-- DISTRIBUTION OVER FUNCTIONS -->
+<!-- ═══════════════════════════════════════════════ -->
+<h2 id="distribution-over-functions">What &ldquo;Distribution Over Functions&rdquo; Actually Means</h2>
+
+<p>The phrase &ldquo;distribution over functions&rdquo; sounds like something that should come with a warning label. Let me try to unpack it in a way that actually helped me.</p>
+
+<p>Start with a single random variable. A Gaussian distribution over it gives you a bell curve: some values are more likely, some less. Now take two random variables together &mdash; say, the temperature at Station A and Station B. A <strong>multivariate Gaussian</strong> distribution gives you a two-dimensional bell shape, and crucially, it encodes how the two temperatures correlate. If Station A is warm, Station B is probably warm too (they&rsquo;re in the same valley), and the multivariate Gaussian captures that.</p>
+
+<p>Now take three random variables &mdash; temperatures at A, B, and C. Same idea, but in three dimensions. The multivariate Gaussian still works, it&rsquo;s specified by a 3-element mean vector and a 3&times;3 covariance matrix.</p>
+
+<p>Here&rsquo;s the leap. Imagine you could have a weather station at every point in the valley &mdash; an infinite number of locations. You&rsquo;d have an infinite number of random variables (one temperature per location), and you&rsquo;d want a Gaussian distribution over all of them simultaneously. That&rsquo;s a Gaussian Process. It&rsquo;s the infinite-dimensional extension of the multivariate Gaussian. Pick any finite collection of locations, and the temperatures at those locations follow a multivariate Gaussian distribution.</p>
+
+<p>A GP is fully specified by two things. A <strong>mean function</strong> m(x) that says what temperature you&rsquo;d expect at location x before seeing any data (in practice, we usually set this to zero and let the data speak). And a <strong>kernel function</strong> k(x, x&prime;) that says how correlated the temperatures at two locations should be. The kernel is where all the interesting modeling decisions live.</p>
 
 <pre><code class="language-text">f(x) ~ GP(m(x), k(x, x'))
 
-For any finite set of points x1, ..., xn:
-[f(x1), ..., f(xn)]^T ~ N(μ, K)
+Pick any finite set of locations x₁, x₂, ..., xₙ:
+[f(x₁), f(x₂), ..., f(xₙ)] ~ Normal(μ, K)
 
-where μ_i = m(x_i) and K_ij = k(x_i, x_j)
+where μᵢ = m(xᵢ)  and  Kᵢⱼ = k(xᵢ, xⱼ)
 </code></pre>
 
-<p>The kernel controls everything: how smooth the functions are, how quickly they vary, whether they&rsquo;re periodic. You don&rsquo;t pick an architecture &mdash; you pick a kernel.</p>
+<p>Think of it this way: a regular regression model says &ldquo;the answer is this line.&rdquo; A GP says &ldquo;the answer is probably somewhere in this bundle of curves, and here&rsquo;s how likely each one is.&rdquo; Every curve in that bundle is a function. The GP assigns probabilities to all of them. That&rsquo;s the distribution over functions.</p>
+
+<p>I&rsquo;ll be honest &mdash; the first time I read this, it felt like a clever mathematical trick that couldn&rsquo;t possibly be practical. It is. And the reason it works is entirely because of the kernel.</p>
 
 <!-- ═══════════════════════════════════════════════ -->
-<h2 id="kernels">Kernel Functions</h2>
+<!-- THE KERNEL -->
+<!-- ═══════════════════════════════════════════════ -->
+<h2 id="kernels">The Kernel: Your Only Modeling Decision</h2>
 
-<p>The kernel k(x, x&rsquo;) measures how correlated function values at x and x&rsquo; should be. Nearby points &rarr; high correlation &rarr; smooth functions. Distant points &rarr; low correlation &rarr; more flexibility.</p>
+<p>In most machine learning, you choose an architecture: how many layers, how many neurons, what activation functions. In a GP, you choose a <strong>kernel</strong> (also called a covariance function). That&rsquo;s it. The kernel encodes everything you believe about the function before seeing data &mdash; how smooth it is, how quickly it varies, whether it repeats.</p>
 
-<table>
-  <thead>
-    <tr><th>Kernel</th><th>Formula</th><th>Properties</th><th>Use When</th></tr>
-  </thead>
-  <tbody>
-    <tr><td>RBF (Squared Exponential)</td><td>exp(-||x-x&rsquo;||&sup2; / 2l&sup2;)</td><td>Infinitely smooth</td><td>Default choice, smooth functions</td></tr>
-    <tr><td>Mat&eacute;rn-3/2</td><td>(1+&radic;3r/l) exp(-&radic;3r/l)</td><td>Once differentiable</td><td>Physical processes, less unrealistically smooth than RBF</td></tr>
-    <tr><td>Mat&eacute;rn-5/2</td><td>(1+&radic;5r/l+5r&sup2;/3l&sup2;) exp(-&radic;5r/l)</td><td>Twice differentiable</td><td>Good default, most practical applications</td></tr>
-    <tr><td>Periodic</td><td>exp(-2sin&sup2;(&pi;|x-x&rsquo;|/p) / l&sup2;)</td><td>Repeating patterns</td><td>Seasonal data, periodic signals</td></tr>
-    <tr><td>Linear</td><td>&sigma;&sup2; + x&middot;x&rsquo;</td><td>Encodes linearity</td><td>When you believe the function is linear</td></tr>
-  </tbody>
-</table>
+<p>The kernel k(x, x&prime;) takes two input locations and returns a number that says how correlated their outputs should be. If x and x&prime; are close together and the kernel returns a large value, the GP &ldquo;believes&rdquo; that nearby points have similar function values. That means smooth functions. If the kernel drops off quickly with distance, the GP allows more wiggly behavior.</p>
 
-<p>The <strong>lengthscale</strong> l controls how far apart points can be and still be correlated. Short lengthscale &rarr; wiggly functions. Long lengthscale &rarr; smooth functions. The lengthscale is typically learned from data by maximizing the marginal likelihood.</p>
+<p>Back to our valley: if we believe temperature changes gradually over kilometers, we want a kernel where points a few hundred meters apart are highly correlated, points 10 km apart are weakly correlated, and points 50 km apart are essentially independent. That belief, encoded as a function, is the kernel.</p>
+
+<h3>The RBF (Squared Exponential) Kernel</h3>
+
+<p>The most common starting point. Its formula is k(x, x&prime;) = &sigma;&sup2; exp(&minus;||x &minus; x&prime;||&sup2; / 2l&sup2;). The correlation between two points decays as a Gaussian bell curve with distance. The parameter l is the <strong>lengthscale</strong> &mdash; it controls how far apart two points can be and still be correlated. Short l means wiggly functions. Long l means gentle, sweeping curves.</p>
+
+<p>Functions drawn from an RBF kernel are infinitely differentiable &mdash; smoother than any real physical process. That sounds like an asset, but in practice it can be a liability. The RBF assumes the world is <em>very</em> smooth, and real data often isn&rsquo;t. I&rsquo;ve seen RBF-based GPs produce unrealistically confident predictions between data points because they refuse to wiggle.</p>
+
+<h3>The Mat&eacute;rn Kernel</h3>
+
+<p>The Mat&eacute;rn family fixes the over-smoothness problem by adding a parameter &nu; that controls how many times the function is differentiable. Mat&eacute;rn-3/2 (&nu; = 3/2) gives functions that are once differentiable &mdash; smooth, but allowed to have corners. Mat&eacute;rn-5/2 (&nu; = 5/2) gives twice-differentiable functions. As &nu; goes to infinity, the Mat&eacute;rn converges to the RBF.</p>
+
+<p>In practice, Mat&eacute;rn-5/2 has become the default recommendation for most applications. It&rsquo;s smooth enough to produce nice predictions, rough enough to not be unrealistic. If you remember one thing from this section: <strong>start with Mat&eacute;rn-5/2, not RBF.</strong></p>
+
+<h3>The Periodic Kernel</h3>
+
+<p>Some functions repeat. Daily temperature cycles. Weekly sales patterns. Heart rhythms. The periodic kernel has the form k(x, x&prime;) = &sigma;&sup2; exp(&minus;2 sin&sup2;(&pi;|x &minus; x&prime;|/p) / l&sup2;), where p is the period. Two points exactly one period apart are treated as if they were right next to each other.</p>
+
+<p>Here&rsquo;s where it gets fun: kernels can be combined. Add a periodic kernel to a Mat&eacute;rn kernel and you get a function that has both a repeating seasonal pattern and a long-term trend. Multiply a periodic kernel by an RBF and you get a pattern that repeats but whose amplitude changes over time. Kernel composition is how GPs express complex structural beliefs &mdash; and it&rsquo;s far more interpretable than stacking neural network layers.</p>
+
+<p>Every kernel has hyperparameters (lengthscale, variance, period). These are learned from data by maximizing the <strong>marginal likelihood</strong> &mdash; the probability of the observed data given the kernel and its hyperparameters, integrated over all possible functions. This is one of the genuinely elegant parts of the GP framework: the model automatically balances fit and complexity, with no need for a separate validation set.</p>
+
+<p>But this elegance has a cost, and we&rsquo;ll get to that cost soon.</p>
 
 <!-- ═══════════════════════════════════════════════ -->
-<h2 id="gp-regression">GP Regression</h2>
+<!-- GP REGRESSION -->
+<!-- ═══════════════════════════════════════════════ -->
+<h2 id="gp-regression">GP Regression, Step by Step</h2>
 
-<p>Condition the GP on observed data and the posterior is also a GP &mdash; with updated mean and covariance. The math is just Gaussian conditioning (block matrix algebra), giving you:</p>
+<p>Let&rsquo;s bring this back to our weather valley and walk through exactly what happens when a GP makes a prediction. No hand-waving.</p>
 
-<pre><code class="language-text">Predictive mean:     μ* = K*^T (K + σ²I)^{-1} y
-Predictive variance: σ*² = K** - K*^T (K + σ²I)^{-1} K*
-</code></pre>
+<p>We have three stations. Their positions along the valley (in km) are x = [2, 5, 8] and their temperature readings are y = [18, 12, 20]. We pick a Mat&eacute;rn-5/2 kernel with lengthscale l = 3 and variance &sigma;&sup2; = 1, plus some observation noise &sigma;_n&sup2; = 0.1 to account for thermometer imprecision.</p>
 
-<p>The mean is a weighted combination of training outputs. The variance shrinks near training points and grows in unexplored regions. Exactly the behavior you want.</p>
+<p>First, we build the <strong>kernel matrix</strong> K. This is a 3&times;3 matrix where entry K<sub>ij</sub> = k(x<sub>i</sub>, x<sub>j</sub>). Diagonal entries are k(x, x) = &sigma;&sup2; = 1 (each station is perfectly correlated with itself). Off-diagonal entries measure how correlated each pair of stations is &mdash; stations 2 km apart get a high value, stations 6 km apart get a lower value. We add noise: K<sub>noisy</sub> = K + &sigma;_n&sup2; I.</p>
+
+<p>Now the farmer calls and asks about position x* = 5.5 (a point between Stations B and C). We compute k*, a vector of correlations between x* and each training station. Station B at x = 5 is closest, so its entry in k* is largest.</p>
+
+<p>The predictive mean &mdash; our best guess of the temperature &mdash; comes from a beautiful formula:</p>
+
+<pre><code class="language-text">μ* = k*ᵀ (K + σ²ₙ I)⁻¹ y</code></pre>
+
+<p>Read it right to left. We take the training temperatures y, weight them by how &ldquo;important&rdquo; each station is (that&rsquo;s what the matrix inverse does), then combine those weights with how correlated x* is with each station. Stations that are close to x* and that carry non-redundant information get the most weight. The result is a single number: our predicted temperature.</p>
+
+<p>The predictive variance &mdash; our uncertainty &mdash; comes from:</p>
+
+<pre><code class="language-text">σ²* = k** − k*ᵀ (K + σ²ₙ I)⁻¹ k*</code></pre>
+
+<p>Start with the prior variance k** (how uncertain we were before seeing any data), then subtract the variance reduction from observing the training data. Near a station, the reduction is large and uncertainty is small. Far from any station, the reduction is small and uncertainty is large. This is the behavior that makes GPs so appealing for decision-making: the model tells you where it knows things and where it&rsquo;s guessing.</p>
+
+<p>The entire posterior &mdash; the updated GP after seeing data &mdash; is itself a GP. That means we can predict at any number of new locations and get a full multivariate Gaussian distribution over all of them. The predictions at nearby locations are correlated, so the uncertainty band is smooth and continuous, not a jagged mess of independent error bars.</p>
 
 <pre><code class="language-python">import numpy as np
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import Matern, WhiteKernel
-import matplotlib.pyplot as plt
 
-# Generate sparse, noisy data
-np.random.seed(42)
-X_train = np.sort(np.random.uniform(0, 10, 15)).reshape(-1, 1)
-y_train = np.sin(X_train).ravel() + 0.2 * np.random.randn(15)
+# Our three weather stations
+X_train = np.array([[2], [5], [8]])
+y_train = np.array([18, 12, 20])
 
-# Fit GP with Matern kernel + noise
-kernel = Matern(nu=2.5, length_scale=1.0) + WhiteKernel(noise_level=0.1)
-gp = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=10)
+# Matérn-5/2 kernel + noise term
+kernel = Matern(nu=2.5, length_scale=3.0) + WhiteKernel(noise_level=0.1)
+gp = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=5)
 gp.fit(X_train, y_train)
 
-# Predict with uncertainty
-X_test = np.linspace(-1, 11, 300).reshape(-1, 1)
+# Predict across the valley
+X_test = np.linspace(0, 10, 200).reshape(-1, 1)
 y_pred, y_std = gp.predict(X_test, return_std=True)
 
-fig, ax = plt.subplots(figsize=(10, 5))
-ax.scatter(X_train, y_train, c='black', s=30, zorder=5, label='Observations')
-ax.plot(X_test, y_pred, 'b-', label='GP mean')
-ax.fill_between(X_test.ravel(), y_pred - 2*y_std, y_pred + 2*y_std,
-                alpha=0.2, color='blue', label='95% CI')
-ax.plot(X_test, np.sin(X_test), 'r--', alpha=0.5, label='True function')
-ax.set_title(f'GP Regression (learned kernel: {gp.kernel_})')
-ax.legend()
-plt.tight_layout()
-plt.show()
+# y_pred[i]  = predicted temperature at X_test[i]
+# y_std[i]   = uncertainty (one standard deviation)
+# Near stations: y_std is small.  Far from stations: y_std grows.
 </code></pre>
 
+<p>That code is the whole thing. Fit three points, get predictions with uncertainty everywhere. No architecture selection, no training epochs, no learning rate. The kernel is the model.</p>
+
 <!-- ═══════════════════════════════════════════════ -->
-<h2 id="gp-limitations">GP Limitations and Sparse Approximations</h2>
+<!-- GP CLASSIFICATION -->
+<!-- ═══════════════════════════════════════════════ -->
+<h2 id="gp-classification">GP Classification</h2>
 
-<p>The elephant in the room: GP regression requires inverting an n&times;n kernel matrix, which is <strong>O(n&sup3;)</strong> in time and <strong>O(n&sup2;)</strong> in memory. For n &gt; ~10,000, this is impractical.</p>
+<p>So far we&rsquo;ve been predicting continuous temperatures. But what if our weather stations recorded something binary &mdash; say, whether it rained (1) or not (0) at each location? We still want to predict the probability of rain at the farmer&rsquo;s field, with uncertainty.</p>
 
-<p>Solutions:</p>
-<ul>
-  <li><strong>Sparse GPs (inducing points):</strong> Select m &lt;&lt; n &ldquo;pseudo-inputs&rdquo; and approximate the full GP using only these points. Reduces complexity to O(nm&sup2;). Libraries: GPyTorch, GPflow.</li>
-  <li><strong>Random Fourier Features:</strong> Approximate the kernel with random features, reducing the GP to a Bayesian linear regression problem.</li>
-  <li><strong>GPyTorch:</strong> GPU-accelerated GP inference with modern approximations. Can handle 100K+ points.</li>
-</ul>
+<p>The trouble is that a Gaussian distribution is defined over real numbers, from &minus;&infin; to +&infin;. Probabilities live between 0 and 1. We need a bridge.</p>
+
+<p>GP classification introduces a <strong>latent function</strong> f(x) that still has a GP prior &mdash; it can take any real value. Then we push f(x) through a <strong>squashing function</strong> (a sigmoid or a probit, which is the Gaussian CDF) to get a probability: p(rain | x) = &sigma;(f(x)). If the latent function is large and positive at location x, the probability of rain is high. If it&rsquo;s large and negative, the probability is low. If it&rsquo;s near zero, we&rsquo;re uncertain.</p>
+
+<p>There&rsquo;s a catch, and it&rsquo;s a real one. In GP regression, the Gaussian likelihood plays nicely with the Gaussian prior &mdash; the posterior is available in closed form (that&rsquo;s the formula we derived above). In classification, the likelihood is Bernoulli, not Gaussian, and the posterior is no longer tractable. We have to approximate it.</p>
+
+<p>The two main approximation strategies are the <strong>Laplace approximation</strong> (find the mode of the posterior and fit a Gaussian around it &mdash; fast but sometimes inaccurate) and <strong>Expectation Propagation</strong> (iteratively refine a Gaussian approximation to each likelihood term &mdash; slower but more accurate). Variational inference is a third option, and it&rsquo;s increasingly popular because it scales better.</p>
+
+<p>I&rsquo;m still developing my intuition for when each approximation matters. In my experience, the Laplace approximation works fine for well-separated classes, but if the decision boundary is subtle, Expectation Propagation gives noticeably better calibrated uncertainties.</p>
+
+<!-- ═══════════════════════════════════════════════ -->
+<!-- REST STOP -->
+<!-- ═══════════════════════════════════════════════ -->
+<h2 id="rest-stop">Rest Stop</h2>
+
+<p>Congratulations on making it this far. You can stop here if you want.</p>
+
+<p>You now have a solid mental model: a GP defines a distribution over functions, controlled by a kernel that encodes smoothness assumptions. Conditioning on data gives you a posterior GP with predictions and uncertainty. For classification, we push through a sigmoid and approximate. This mental model is enough to use GPs in practice for small datasets where you need principled uncertainty.</p>
+
+<p>It doesn&rsquo;t tell the full story, though. We haven&rsquo;t confronted the computational elephant in the room &mdash; the fact that GPs become agonizingly slow as data grows. We haven&rsquo;t talked about how to use GPs as the engine for Bayesian Optimization, which is arguably where they have the most impact in modern ML practice. And we haven&rsquo;t discussed how to make BO work when even single evaluations are expensive but you have access to cheap approximations.</p>
+
+<p>The short version: GPs scale as O(n&sup3;), sparse approximations fix this, and Bayesian Optimization uses GPs to search for optima of expensive functions with remarkable efficiency. There. You&rsquo;re 70% of the way there.</p>
+
+<p>But if the discomfort of not knowing what&rsquo;s underneath is nagging at you, read on.</p>
+
+<!-- ═══════════════════════════════════════════════ -->
+<!-- O(N^3) AND SPARSE GPS -->
+<!-- ═══════════════════════════════════════════════ -->
+<h2 id="sparse-gps">The O(n&sup3;) Problem and Sparse GPs</h2>
+
+<p>Here&rsquo;s the part where the elegance of GPs collides with reality. That beautiful prediction formula has (K + &sigma;&sup2;I)&supmin;&sup1; in it &mdash; the inverse of an n&times;n matrix, where n is the number of training points. Matrix inversion is O(n&sup3;) in time and O(n&sup2;) in memory. For our three weather stations, this is trivial. For 1,000 stations, it takes a few seconds. For 10,000 stations, it takes minutes. For 100,000, it&rsquo;s impractical on most hardware.</p>
+
+<p>To make this concrete: if a CPU can do about 10 billion floating-point operations per second, inverting a 10,000&times;10,000 matrix takes around 100 seconds. A 100,000&times;100,000 matrix? About 100,000 seconds &mdash; more than a day. The cubic scaling is brutal.</p>
+
+<p>The solution that has gained the most traction is <strong>sparse GPs with inducing points</strong>. The idea: instead of using all n training points to define the GP posterior, select a small set of m points (called <strong>inducing points</strong> or pseudo-inputs, where m is much smaller than n) and approximate the full GP using those points. Think of it as placing m &ldquo;summary stations&rdquo; in the valley that capture the essential behavior of all n stations.</p>
+
+<p>The inducing points don&rsquo;t have to be actual data points. Their locations and associated function values are <em>learned</em> as part of the optimization, typically by maximizing a variational lower bound on the marginal likelihood (an approach formalized by Titsias in 2009). This reduces the computational cost from O(n&sup3;) to O(nm&sup2;) &mdash; a massive improvement when m is, say, 500 and n is 100,000.</p>
+
+<p>A second approach is <strong>Random Fourier Features</strong>. The insight is that certain kernels (RBF, Mat&eacute;rn) can be approximated by random trigonometric features. Once you compute these features, the GP reduces to Bayesian linear regression, which is O(nd&sup2;) where d is the number of features. This trades kernel fidelity for speed.</p>
+
+<p>In practice, <strong>GPyTorch</strong> (built on PyTorch) and <strong>GPflow</strong> (built on TensorFlow) are the libraries that make sparse GPs and GPU-accelerated inference accessible. GPyTorch in particular has pushed GP inference to datasets with hundreds of thousands of points, using a combination of inducing points, conjugate gradients, and GPU parallelism. It&rsquo;s not magic &mdash; the approximation does lose some fidelity, especially in the uncertainty estimates &mdash; but for most practical purposes, it works remarkably well.</p>
+
+<p>I&rsquo;ll be honest: the first time I saw a sparse GP fit 50,000 points in under a minute and produce sensible uncertainty bands, I was surprised. The approximation loss was far smaller than I expected. But there are edge cases &mdash; multi-modal functions, data with sharp transitions &mdash; where the inducing point approximation can miss structure. It&rsquo;s good engineering, not a free lunch.</p>
 
 <!-- ═══════════════════════════════════════════════ -->
 <!-- BAYESIAN OPTIMIZATION -->
 <!-- ═══════════════════════════════════════════════ -->
-<h2 id="bayesopt">Bayesian Optimization</h2>
+<h2 id="bayesopt">Bayesian Optimization: Searching Smartly</h2>
 
-<p>The problem: you have a function that&rsquo;s expensive to evaluate (training a neural network, running a simulation, a wet-lab experiment). You want to find the optimum in as few evaluations as possible. Grid search is wasteful. Random search is better but still uninformed.</p>
+<p>Here&rsquo;s where GPs earn their keep in modern ML practice. Not as a standalone regression model (neural networks have largely eaten that market), but as the engine inside <strong>Bayesian Optimization</strong>.</p>
 
-<p>Bayesian optimization uses a <strong>surrogate model</strong> (typically a GP) to model the objective function, and an <strong>acquisition function</strong> to decide where to evaluate next. The loop:</p>
+<p>The problem: you have a function that&rsquo;s expensive to evaluate. Training a deep neural network with a specific set of hyperparameters takes 4 hours. Running a physics simulation takes 6 hours. Synthesizing a candidate molecule in a wet lab takes a week. You want to find the input that maximizes (or minimizes) this function, and you can&rsquo;t afford 10,000 evaluations. Maybe you can afford 50.</p>
 
-<ol>
-  <li>Fit the GP surrogate to all evaluations so far</li>
-  <li>Maximize the acquisition function to find the most promising next point</li>
-  <li>Evaluate the true (expensive) function at that point</li>
-  <li>Add the new observation and repeat</li>
-</ol>
+<p>Grid search divides the space into a regular grid and evaluates every point. For 5 hyperparameters with 10 values each, that&rsquo;s 100,000 evaluations &mdash; at 4 hours each, roughly 45 years. Random search is better (it doesn&rsquo;t waste evaluations on unimportant dimensions), but it doesn&rsquo;t learn from its past evaluations. Each new trial is as uninformed as the first.</p>
 
-<!-- ═══════════════════════════════════════════════ -->
-<h3 id="acquisition-functions">Acquisition Functions</h3>
+<p>Bayesian Optimization learns. It maintains a <strong>surrogate model</strong> &mdash; a cheap-to-evaluate approximation of the expensive function &mdash; and uses it to decide where to evaluate next. The surrogate is typically a GP, because GPs provide exactly what we need: a prediction of the function value at any point, plus an uncertainty estimate that tells us how much we might learn by evaluating there.</p>
 
-<p>The acquisition function balances <strong>exploration</strong> (try uncertain regions) vs. <strong>exploitation</strong> (try regions near the current best). Three classics:</p>
+<p>The loop looks like this. We start with a few initial evaluations (often random). We fit a GP to those evaluations. We then ask: &ldquo;given what I know so far, where should I evaluate next to make the most progress?&rdquo; That question is answered by an <strong>acquisition function</strong>, which we maximize over the cheap GP surrogate instead of the expensive real function. We evaluate the real function at the point the acquisition function recommends, add the result to our data, update the GP, and repeat.</p>
 
-<p><strong>Expected Improvement (EI):</strong> How much improvement over the current best do we <em>expect</em> at this point? EI is zero at the current best and high where the GP predicts high mean or high variance. The default choice.</p>
-
-<p><strong>Upper Confidence Bound (UCB):</strong> &mu;(x) + &kappa;&sigma;(x). Simple, interpretable, &kappa; controls exploration. Higher &kappa; &rarr; more exploration.</p>
-
-<p><strong>Probability of Improvement (PI):</strong> What is the probability that this point beats the current best? Simple but too greedy in practice &mdash; prefers small certain improvements over risky large ones.</p>
-
-<div class="callout"><strong>In practice:</strong> Use EI as your default. If you suspect the objective has multiple good regions, increase exploration with UCB. PI is rarely the best choice.</div>
+<p>Back to our valley analogy: imagine you&rsquo;re drilling for water, and each bore hole costs $10,000. After three holes (our weather stations), the GP tells you both where water is likely (high predicted value) and where you have the most uncertainty (high variance). The acquisition function combines these signals to pick the fourth drilling location. After 20 strategic holes, you&rsquo;ve found the water table&rsquo;s peak &mdash; something that random drilling might have needed 200 holes to achieve.</p>
 
 <!-- ═══════════════════════════════════════════════ -->
-<h2 id="bayesopt-code">BayesOpt in Practice: Tuning XGBoost</h2>
+<!-- ACQUISITION FUNCTIONS -->
+<!-- ═══════════════════════════════════════════════ -->
+<h2 id="acquisition-functions">Acquisition Functions: Where to Look Next</h2>
+
+<p>The acquisition function is the decision-making engine of Bayesian Optimization. It takes the GP&rsquo;s posterior (mean prediction &mu;(x) and uncertainty &sigma;(x) at every point) and produces a single score for each candidate location. The location with the highest score is where we evaluate next.</p>
+
+<p>Every acquisition function faces the same tension: <strong>exploitation</strong> (evaluate where the GP predicts good values) versus <strong>exploration</strong> (evaluate where the GP is uncertain, because we might discover something better). Lean too far toward exploitation and you get stuck in a local optimum. Lean too far toward exploration and you waste evaluations on irrelevant regions.</p>
+
+<h3>Expected Improvement (EI)</h3>
+
+<p>The most popular acquisition function, and a good default. EI asks: &ldquo;If I evaluate at point x, how much improvement over my current best result do I <em>expect</em>?&rdquo; The expectation is taken over the GP&rsquo;s posterior distribution at x.</p>
+
+<p>Consider our drilling analogy. Say our best hole so far hit water at depth 15 meters. At a new candidate location, the GP predicts a mean of 13 meters with standard deviation 5 meters. There&rsquo;s a reasonable probability the true depth exceeds 15 &mdash; the bell curve extends well past it. EI computes the average of all the ways this point could beat 15, weighted by their probabilities. If the mean is below 15 but the uncertainty is large, there&rsquo;s still significant expected improvement &mdash; we might get lucky. That&rsquo;s how EI naturally balances exploitation and exploration.</p>
+
+<p>EI has a closed-form solution (involving the Gaussian PDF and CDF), which makes it fast to compute. In practice, I&rsquo;ve found it works well in 80% of tuning problems without any fiddling.</p>
+
+<h3>Upper Confidence Bound (UCB)</h3>
+
+<p>UCB takes a more direct approach: UCB(x) = &mu;(x) + &kappa;&sigma;(x). The predicted mean plus a multiple of the uncertainty. The parameter &kappa; is a knob you can turn. Set &kappa; high and the acquisition function strongly favors uncertain regions (exploration). Set &kappa; low and it favors regions where the mean is already high (exploitation).</p>
+
+<p>I like UCB because the exploration-exploitation tradeoff is explicit and tunable. If you&rsquo;re early in the search and want to explore broadly, crank &kappa; up to 2 or 3. If you&rsquo;re running out of budget and want to refine around the best region, drop it to 0.5. EI doesn&rsquo;t give you that dial.</p>
+
+<h3>Probability of Improvement (PI)</h3>
+
+<p>PI answers the question: &ldquo;What is the probability that this point beats my current best?&rdquo; It&rsquo;s the simplest of the three, but it has a well-known flaw: it&rsquo;s too greedy. PI treats a point that beats the current best by 0.001 the same as a point that beats it by 10. It chases high-probability, low-magnitude improvements and tends to get stuck near the current best. In my experience, it&rsquo;s rarely the right choice for problems where the budget matters.</p>
+
+<p>For most hyperparameter tuning: start with EI. If you suspect multiple good regions in the search space, switch to UCB with a moderate &kappa;. PI exists for theoretical completeness, but I&rsquo;d reach for it last.</p>
+
+<h3>BO for Hyperparameter Tuning: A Worked Example</h3>
+
+<p>Let&rsquo;s see this in practice. We&rsquo;ll tune an XGBoost classifier with Bayesian Optimization using Optuna. Optuna&rsquo;s default surrogate is a <strong>Tree-structured Parzen Estimator</strong> (TPE), not a GP &mdash; TPE handles mixed continuous/categorical spaces better than GPs do, which is why it&rsquo;s the practical default. The core idea is the same though: a surrogate model guides the search.</p>
 
 <pre><code class="language-python">import optuna
 from sklearn.datasets import make_classification
 from sklearn.model_selection import cross_val_score
 from xgboost import XGBClassifier
 
-# Create a dataset
 X, y = make_classification(n_samples=1000, n_features=20, random_state=42)
 
 def objective(trial):
@@ -443,60 +568,58 @@ def objective(trial):
         'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
         'subsample': trial.suggest_float('subsample', 0.5, 1.0),
         'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
-        'reg_alpha': trial.suggest_float('reg_alpha', 1e-8, 10.0, log=True),
-        'reg_lambda': trial.suggest_float('reg_lambda', 1e-8, 10.0, log=True),
     }
     clf = XGBClassifier(**params, eval_metric='logloss', random_state=42)
-    scores = cross_val_score(clf, X, y, cv=5, scoring='accuracy')
-    return scores.mean()
+    return cross_val_score(clf, X, y, cv=5, scoring='accuracy').mean()
 
-# Optuna uses Tree-structured Parzen Estimators (TPE) by default
-# For GP-based BayesOpt, use the GP sampler:
-# sampler = optuna.samplers.GPSampler()
 study = optuna.create_study(direction='maximize')
-study.optimize(objective, n_trials=50, show_progress_bar=True)
-
-print(f"Best accuracy: {study.best_value:.4f}")
-print(f"Best params: {study.best_params}")
-# 50 intelligent trials often beats 500 random trials
+study.optimize(objective, n_trials=50)
 </code></pre>
 
-<!-- ═══════════════════════════════════════════════ -->
-<h2 id="bayesopt-tools">BayesOpt Tools Landscape</h2>
+<p>Each of those 50 trials is informed by all previous trials. Optuna builds a surrogate, decides which hyperparameter combination is most promising, evaluates it, and updates. Fifty intelligent trials often outperform 500 random ones. That&rsquo;s the power of Bayesian Optimization &mdash; not faster individual evaluations, but far fewer wasted evaluations.</p>
 
-<table>
-  <thead>
-    <tr><th>Tool</th><th>Surrogate</th><th>Best For</th><th>Notes</th></tr>
-  </thead>
-  <tbody>
-    <tr><td>Optuna</td><td>TPE (default), GP optional</td><td>Hyperparameter tuning</td><td>Most popular, great pruning</td></tr>
-    <tr><td>BoTorch / Ax</td><td>GP (GPyTorch)</td><td>Research, custom acquisition</td><td>Meta&rsquo;s library, PyTorch-native</td></tr>
-    <tr><td>scikit-optimize</td><td>GP, RF, GBRT</td><td>Simple BayesOpt</td><td>sklearn-compatible, less maintained</td></tr>
-    <tr><td>Ray Tune</td><td>Various (wraps Optuna, etc.)</td><td>Distributed tuning</td><td>For large-scale distributed HPO</td></tr>
-  </tbody>
-</table>
-
-<p>For most hyperparameter tuning tasks, <strong>Optuna with TPE</strong> is the practical default. It&rsquo;s not technically a GP-based BayesOpt, but TPE is a competent surrogate that handles mixed (continuous + categorical) search spaces natively. Use BoTorch when you need custom acquisition functions or when the search space is purely continuous.</p>
+<p>For GP-based BO specifically (say, when your search space is purely continuous), <strong>BoTorch</strong> (Meta&rsquo;s library built on GPyTorch) gives you full control over the GP surrogate and acquisition function. It&rsquo;s more complex to set up, but it&rsquo;s the tool of choice for research and custom optimization problems.</p>
 
 <!-- ═══════════════════════════════════════════════ -->
-<h2 id="gp-when">When to Use GPs</h2>
+<!-- MULTI-FIDELITY BO -->
+<!-- ═══════════════════════════════════════════════ -->
+<h2 id="multi-fidelity">Multi-Fidelity Bayesian Optimization</h2>
 
-<p><strong>GPs shine when:</strong> small data (n &lt; 1000), you need principled uncertainty, the input is low-dimensional (&lt; ~20D), you don&rsquo;t know the functional form.</p>
+<p>There&rsquo;s one more problem worth confronting. Even with Bayesian Optimization choosing evaluation points intelligently, each evaluation might still take hours. Training a neural network for 100 epochs takes a long time. But training it for 5 epochs? That&rsquo;s fast, and it gives you a rough estimate of how well those hyperparameters will perform.</p>
 
-<p><strong>Skip GPs when:</strong> large data (use a neural network), high-dimensional inputs (use deep learning or random forests), you need fast inference at serving time (GP prediction is O(n) per point).</p>
+<p>Multi-fidelity Bayesian Optimization exploits this idea: instead of always evaluating the full expensive function, use cheap low-fidelity approximations (fewer epochs, less data, lower resolution) to weed out bad candidates quickly, and reserve expensive high-fidelity evaluations for the most promising ones.</p>
 
-<p><strong>BayesOpt shines when:</strong> each evaluation is expensive (minutes to hours), you have a moderate number of hyperparameters (&lt; 20), you want sample efficiency over parallelism.</p>
+<p>The most influential algorithm in this space is <strong>Hyperband</strong>, which runs multiple rounds of <strong>Successive Halving</strong>. Start with many hyperparameter configurations, each given a tiny resource budget (say, 1 epoch). Evaluate all of them. Throw away the worst half. Double the budget for the survivors. Repeat until one remains. Hyperband runs several of these races with different starting configurations and budget allocations, automatically balancing between evaluating many configurations cheaply and few configurations expensively.</p>
+
+<p><strong>BOHB</strong> (Bayesian Optimization + HyperBand) combines Hyperband&rsquo;s resource allocation with a TPE surrogate for choosing <em>which</em> configurations to try. Instead of picking configurations randomly (as vanilla Hyperband does), BOHB uses the surrogate model to propose configurations that are more likely to be good. It gets the sample efficiency of Bayesian Optimization and the resource efficiency of early stopping.</p>
+
+<p>This matters because it changes the economics of hyperparameter tuning. Without multi-fidelity, a 50-trial BO search where each trial takes 4 hours costs 200 hours. With BOHB, most configurations are killed after a few minutes, and only the top candidates get the full 4-hour treatment. The total cost might drop to 20&ndash;30 hours for the same quality result.</p>
+
+<p>My favorite thing about multi-fidelity BO is that it matches how humans actually tune models. You train for a few epochs, glance at the loss curve, mutter &ldquo;that&rsquo;s terrible,&rdquo; and kill it. BOHB automates that instinct with a principled framework underneath.</p>
 
 <!-- ═══════════════════════════════════════════════ -->
-<h2>What You Should Now Be Able To Do</h2>
+<!-- WRAP-UP -->
+<!-- ═══════════════════════════════════════════════ -->
+<h2 id="wrapup">Wrap-Up</h2>
+
+<p>If you&rsquo;re still with me, thank you. I hope it was worth it.</p>
+
+<p>We started with three weather stations in a valley and the question &ldquo;what&rsquo;s the temperature at the farmer&rsquo;s field?&rdquo; To answer it, we built up from a single Gaussian to a multivariate Gaussian to a Gaussian Process &mdash; an infinite-dimensional distribution over functions. We learned that the kernel is the entire model, walked through the posterior prediction formula, saw how classification requires approximate inference, confronted the O(n&sup3;) scaling wall and how sparse GPs break through it, then used everything we built to power Bayesian Optimization: the art of finding optima with as few expensive evaluations as possible. We ended with multi-fidelity methods that make even BO more efficient by using cheap approximations to kill bad candidates early.</p>
+
+<p>My hope is that the next time you see a Gaussian Process in a paper or hear someone mention Bayesian Optimization for hyperparameter tuning, instead of nodding politely and scrolling past, you&rsquo;ll have a pretty good mental model of what&rsquo;s going on under the hood &mdash; a bundle of curves, a kernel that shapes them, and an acquisition function that points toward where to look next.</p>
+
+<!-- ═══════════════════════════════════════════════ -->
+<!-- RESOURCES -->
+<!-- ═══════════════════════════════════════════════ -->
+<h2 id="resources">Resources</h2>
+
 <ul>
-  <li>Explain GPs as a &ldquo;distribution over functions&rdquo; and how the kernel encodes prior assumptions about function properties</li>
-  <li>Choose an appropriate kernel (RBF, Mat&eacute;rn, periodic) based on domain knowledge</li>
-  <li>Use sklearn&rsquo;s GaussianProcessRegressor for regression with uncertainty</li>
-  <li>Know GP scaling limitations (O(n&sup3;)) and when sparse approximations help</li>
-  <li>Explain the BayesOpt loop: surrogate &rarr; acquisition &rarr; evaluate &rarr; update</li>
-  <li>Describe Expected Improvement, UCB, and Probability of Improvement acquisition functions</li>
-  <li>Use Optuna or BoTorch for practical hyperparameter tuning</li>
+  <li><strong>Rasmussen &amp; Williams, &ldquo;Gaussian Processes for Machine Learning&rdquo; (2006)</strong> &mdash; The O.G. textbook. Available free online. Dense but comprehensive. Chapter 2 alone is worth the read.</li>
+  <li><strong>Distill.pub, &ldquo;A Visual Exploration of Gaussian Processes&rdquo;</strong> &mdash; Wildly helpful interactive article. If you want to <em>see</em> what kernels do to the function distribution, this is the one.</li>
+  <li><strong>BoTorch documentation (botorch.org)</strong> &mdash; Meta&rsquo;s library for GP-based Bayesian Optimization. Excellent tutorials for custom acquisition functions.</li>
+  <li><strong>Optuna documentation (optuna.org)</strong> &mdash; The practical default for hyperparameter tuning. Their &ldquo;10 minutes to Optuna&rdquo; tutorial is accurate about the time commitment.</li>
+  <li><strong>Falkner et al., &ldquo;BOHB: Robust and Efficient Hyperparameter Optimization at Scale&rdquo; (2018)</strong> &mdash; The paper that married Bayesian Optimization with Hyperband. Insightful and well-written.</li>
+  <li><strong>GPyTorch (gpytorch.ai)</strong> &mdash; If you need GPs at scale, this is the library. GPU-accelerated, supports inducing points, and integrates with BoTorch.</li>
 </ul>
 
 
