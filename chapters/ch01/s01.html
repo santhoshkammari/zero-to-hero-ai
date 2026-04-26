@@ -296,871 +296,613 @@
 <h1>Python Basics</h1>
 <div class="chapter-meta">
   <span class="tag">Chapter 1: Python &amp; Programming Foundations</span>
-  <span class="tag">Essentials · Patterns · File I/O · Modules</span>
+  <span class="tag">Memory Model · Data Structures · Iteration · Decorators · Patterns</span>
 </div>
 
 <div class="tldr">
   <div class="tldr-label">Section Overview</div>
-  <p>This section combines Python Essentials, Pythonic Patterns, File I/O, and Modules &amp; Packages into one comprehensive reference for Python fundamentals.</p>
+  <p>A ground-up exploration of how Python actually works — from variables as name bindings to generators, decorators, and the patterns that separate production code from scripts. Built for engineers who will face senior experts across the table.</p>
 </div>
 
 
-<!-- ═══════════ Python Essentials ═══════════ -->
-<h2>Python Essentials</h2>
-
-<p>Python is the glue of ML — data loading, feature engineering, training loops, deployment scripts, all of it flows through Python. This section is your cheat-sheet for the parts that actually matter: the power tools that save you hours, the gotchas that bite in production, and the decisions you'll make every day.</p>
-
-<!-- ════════════════════════════════════════════ -->
-<h3>Types &amp; Basics — The 30-Second Pass</h3>
-
-<p><code>int</code>, <code>float</code>, <code>str</code>, <code>bool</code>, <code>None</code> — you know these. Here's what's actually worth remembering:</p>
-
-<p><strong>Float comparison will burn you.</strong> <code>0.1 + 0.2 != 0.3</code> — that's IEEE 754, not a Python bug. Use <code>math.isclose(a, b)</code> or set an explicit tolerance. Every loss comparison, every threshold check in your pipeline should use this.</p>
-
-<p><strong>Identity vs equality for None.</strong> Always <code>x is None</code>, never <code>x == None</code>. There's exactly one <code>None</code> object in memory — identity check (<code>is</code>) is both correct and faster. Custom <code>__eq__</code> methods can make <code>==</code> return weird things.</p>
-
-<p><strong>String concat in a loop is O(n²).</strong> Every <code>+=</code> creates a new string object, copies everything, then discards the old one. Collect into a list and <code>"".join(parts)</code> at the end — it's the difference between 2 seconds and 20 minutes on large text corpora.</p>
-
-<p><strong>bool is secretly int.</strong> <code>True + True == 2</code>. This isn't trivia — it's why <code>sum(flags)</code> counts truthy values and why boolean masks work the way they do in NumPy.</p>
-
-<!-- ════════════════════════════════════════════ -->
-<h3>Data Structures — Which One When</h3>
-
-<p>The decision table. This is where a table actually earns its keep:</p>
-
-<table>
-  <thead>
-    <tr><th>Structure</th><th>Use When</th><th>Gotcha</th><th>Lookup</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><code>list</code></td>
-      <td>Ordered, mutable, need index access</td>
-      <td><code>b = a</code> copies the <em>reference</em>. <code>in</code> is O(n). <code>[[0]*3]*3</code> creates 3 refs to same inner list.</td>
-      <td>O(n)</td>
-    </tr>
-    <tr>
-      <td><code>tuple</code></td>
-      <td>Fixed records, dict keys, function returns</td>
-      <td>Immutable ≠ hashable — <code>([1,2], 3)</code> has a mutable inside, can't be a dict key.</td>
-      <td>O(n)</td>
-    </tr>
-    <tr>
-      <td><code>dict</code></td>
-      <td>Key→value mapping, configs, lookups</td>
-      <td>Keys must be hashable. Insertion order preserved (3.7+). Use <code>defaultdict</code> for accumulation.</td>
-      <td>O(1) avg</td>
-    </tr>
-    <tr>
-      <td><code>set</code></td>
-      <td>Membership tests, dedup, set math</td>
-      <td>Unordered — no indexing. If checking <code>in</code> on a list repeatedly, convert to set first.</td>
-      <td>O(1) avg</td>
-    </tr>
-    <tr>
-      <td><code>frozenset</code></td>
-      <td>Need a set as a dict key or inside another set</td>
-      <td>Immutable set. Same O(1) lookup, but you can't add/remove.</td>
-      <td>O(1) avg</td>
-    </tr>
-  </tbody>
-</table>
-
-<p>The rule of thumb: need order? <code>list</code>. Need immutability? <code>tuple</code>. Need fast lookup? <code>dict</code> or <code>set</code>. If you're doing <code>if x in my_list</code> inside a loop, you've got an O(n²) bug hiding in plain sight.</p>
-
-<!-- ════════════════════════════════════════════ -->
-<h3>The Real Stuff: collections + itertools + functools</h3>
-
-<p>This is where you go from "I know Python" to "I'm dangerous with Python." These three modules are the power tools that replace dozens of lines of manual code with one clean, battle-tested call. Once you internalize these, you'll spot opportunities to use them everywhere.</p>
-
-<!-- ─── collections ─── -->
-<h4>collections</h4>
-
-<p><strong><code>Counter</code></strong> — the thing about Counter is that it replaces every manual counting loop you've ever written. Token frequencies in NLP, class distributions in datasets, error type tallies in logs — all one line:</p>
-
-<pre><code class="language-python">from collections import Counter
-
-# word frequency from a corpus — replaces 5 lines of dict bookkeeping
-word_freq = Counter(corpus.split())
-word_freq.most_common(10)          # top-10 tokens, sorted
-word_freq["the"]                   # direct access, returns 0 for missing (not KeyError)
-
-# class balance check in a dataset
-label_dist = Counter(y_train)      # {0: 4500, 1: 500} — instantly see imbalance
-</code></pre>
-
-<p>Counter also supports arithmetic: <code>counter_a - counter_b</code> gives you the diff, <code>counter_a & counter_b</code> gives the min overlap. Handy for comparing vocabulary between two corpora.</p>
-
-<p><strong><code>defaultdict</code></strong> — eliminates the "check if key exists, create if not" pattern. You hand it a factory function, and missing keys auto-initialize. The mental shift: stop thinking "does this key exist?" and start thinking "just append/add/increment":</p>
-
-<pre><code class="language-python">from collections import defaultdict
-
-# group samples by label — no if/else, no setdefault
-by_label = defaultdict(list)
-for features, label in dataset:
-    by_label[label].append(features)
-
-# aggregate metrics per experiment
-metrics = defaultdict(lambda: {"total": 0, "correct": 0})
-for exp_id, is_correct in results:
-    metrics[exp_id]["total"] += 1
-    metrics[exp_id]["correct"] += int(is_correct)
-</code></pre>
-
-<p><strong><code>deque</code></strong> — a double-ended queue with O(1) append/pop on both ends. Lists are O(n) for <code>insert(0, x)</code> or <code>pop(0)</code> because they shift everything. Deque is purpose-built for sliding windows and recent-N tracking:</p>
-
-<pre><code class="language-python">from collections import deque
-
-# sliding window of last 100 losses for smoothing
-recent_losses = deque(maxlen=100)
-for batch_loss in training_loop:
-    recent_losses.append(batch_loss)
-    smoothed = sum(recent_losses) / len(recent_losses)
-</code></pre>
-
-<p>The <code>maxlen</code> argument is the magic — it auto-evicts the oldest element when full. No manual slicing, no off-by-one bugs.</p>
-
-<p><strong><code>OrderedDict</code></strong> — "but regular dicts preserve order since 3.7?" True. OrderedDict still matters for two reasons: <code>move_to_end(key)</code> for LRU-style reordering, and equality that cares about order (<code>OrderedDict(a=1, b=2) != OrderedDict(b=2, a=1)</code>, while regular dicts would be equal). You'll see it in PyTorch's <code>state_dict</code> for model layer ordering.</p>
-
-<p><strong><code>namedtuple</code></strong> — lightweight data records when you want named fields but don't need a full class. Zero runtime overhead over a regular tuple, but you get readable attribute access:</p>
-
-<pre><code class="language-python">from collections import namedtuple
-
-Sample = namedtuple("Sample", ["features", "label", "weight"])
-s = Sample([0.2, 0.8], label=1, weight=0.5)
-s.label          # 1 — readable
-s[1]             # 1 — still works as a tuple
-# immutable, hashable, works as dict keys — free
-</code></pre>
-
-<p>For anything with default values or mutability, reach for <code>dataclasses</code> instead. Namedtuple is for the cases where immutability is a feature, not a limitation.</p>
-
-<!-- ─── itertools ─── -->
-<h4>itertools</h4>
-
-<p>itertools is lazy by default — nothing materializes until you consume it. That matters when your data doesn't fit in memory.</p>
-
-<p><strong><code>chain</code></strong> — flatten nested iterables without copying. When you have train/val/test splits and need to iterate all of them:</p>
-
-<pre><code class="language-python">from itertools import chain
-
-# iterate all splits as one stream — zero memory overhead
-for sample in chain(train_data, val_data, test_data):
-    process(sample)
-
-# flatten a list of lists (one level)
-flat = list(chain.from_iterable(nested_lists))
-</code></pre>
-
-<p><strong><code>product</code> / <code>combinations</code></strong> — hyperparameter grid search without nested loops. This is the one that cleans up the ugliest code in your experiment scripts:</p>
-
-<pre><code class="language-python">from itertools import product, combinations
-
-# grid search — replaces 3 nested for loops
-lrs = [0.001, 0.01, 0.1]
-batch_sizes = [32, 64, 128]
-dropouts = [0.1, 0.3, 0.5]
-
-for lr, bs, drop in product(lrs, batch_sizes, dropouts):
-    run_experiment(lr=lr, batch_size=bs, dropout=drop)
-
-# all pairs of features for interaction terms
-for feat_a, feat_b in combinations(feature_names, 2):
-    create_interaction(feat_a, feat_b)
-</code></pre>
-
-<p><strong><code>groupby</code></strong> — group sorted data on the fly. Critical caveat: the data <em>must be sorted</em> by the grouping key first, or you get fragmented groups:</p>
-
-<pre><code class="language-python">from itertools import groupby
-from operator import itemgetter
-
-# group predictions by class — data MUST be sorted by key first
-sorted_preds = sorted(predictions, key=itemgetter("class"))
-for cls, group in groupby(sorted_preds, key=itemgetter("class")):
-    group_list = list(group)  # consume the iterator
-    print(f"{cls}: {len(group_list)} predictions")
-</code></pre>
-
-<p><strong><code>islice</code></strong> — lazy slicing for huge iterables. When you want the first 1000 lines of a 50GB file without loading it all:</p>
-
-<pre><code class="language-python">from itertools import islice
-
-# preview first 5 items from any iterator — no list conversion
-first_five = list(islice(huge_generator, 5))
-
-# skip header, take next 1000
-batch = list(islice(data_stream, 1, 1001))
-</code></pre>
-
-<p><strong><code>accumulate</code></strong> — running totals and cumulative operations. Useful for cumulative distribution plots, running loss averages, or prefix sums:</p>
-
-<pre><code class="language-python">from itertools import accumulate
-import operator
-
-losses = [0.9, 0.7, 0.5, 0.3, 0.2]
-cumulative = list(accumulate(losses))           # running sum
-running_max = list(accumulate(losses, max))     # running max
-running_prod = list(accumulate(losses, operator.mul))  # running product
-</code></pre>
-
-<!-- ─── functools ─── -->
-<h4>functools</h4>
-
-<p><strong><code>lru_cache</code> / <code>cache</code></strong> — memoization with one decorator. If a function is pure (same input → same output) and expensive, cache it. <code>@cache</code> (3.9+) is unbounded; <code>@lru_cache(maxsize=256)</code> evicts least-recently-used entries:</p>
-
-<pre><code class="language-python">from functools import lru_cache
-
-@lru_cache(maxsize=1024)
-def extract_features(file_path):
-    """Expensive I/O + computation — cache it."""
-    data = load_and_parse(file_path)
-    return compute_features(data)
-
-# second call with same path is instant
-features = extract_features("data/sample_001.wav")
-features = extract_features("data/sample_001.wav")  # cache hit
-</code></pre>
-
-<div class="callout-warning"><strong>Gotcha:</strong> arguments must be hashable (no lists, no dicts). If you need to cache something that takes a list, convert to tuple first: <code>tuple(my_list)</code>.</div>
-
-<p><strong><code>partial</code></strong> — pre-fill arguments to create specialized versions of general functions. This shows up constantly in ML pipelines where you want to configure a transform once and pass it around:</p>
-
-<pre><code class="language-python">from functools import partial
-
-# create configured versions of a general function
-normalize = partial(sklearn_normalize, norm="l2", axis=1)
-tokenize_en = partial(tokenizer, lang="en", lowercase=True)
-
-# use in map/pipeline — clean, no lambdas
-processed = list(map(tokenize_en, documents))
-</code></pre>
-
-<p>The difference from lambda: partial is picklable (works with multiprocessing), inspectable, and doesn't have the late-binding gotcha that closures do.</p>
-
-<p><strong><code>reduce</code></strong> — fold an iterable into a single value. You rarely need it (most cases are covered by <code>sum</code>, <code>max</code>, <code>min</code>, or <code>accumulate</code>), but when you do, nothing else fits:</p>
-
-<pre><code class="language-python">from functools import reduce
-
-# merge a list of dicts into one (Python 3.9+ has dict | operator, but reduce works everywhere)
-configs = [base_config, model_config, experiment_overrides]
-merged = reduce(lambda a, b: {**a, **b}, configs)
-</code></pre>
-
-<!-- ════════════════════════════════════════════ -->
-<h3>Control Flow — Only What's Non-Obvious</h3>
-
-<p>You know <code>if</code>, <code>for</code>, <code>while</code>. Here are the four patterns people miss:</p>
-
-<p><strong><code>for/else</code></strong> — the <code>else</code> block runs only if the loop completes <em>without</em> hitting <code>break</code>. It eliminates the "found" flag variable:</p>
-
-<pre><code class="language-python">for sample in dataset:
-    if is_corrupted(sample):
-        log_error(sample)
-        break
-else:
-    print("All samples clean")  # only runs if no break
-</code></pre>
-
-<p><strong>Walrus operator <code>:=</code></strong> (3.8+) — assign and use in one expression. Most useful in while loops and filtering:</p>
-
-<pre><code class="language-python"># read until empty — no awkward "prime the loop" pattern
-while (line := file.readline()):
-    process(line)
-
-# filter with expensive computation — compute once, not twice
-valid = [result for x in data if (result := expensive(x)) is not None]
-</code></pre>
-
-<p><strong>Ternary</strong> — <code>x = a if cond else b</code>. One level only. The moment you nest ternaries, you've lost the readability war. Use a plain <code>if/else</code>.</p>
-
-<p><strong><code>match/case</code></strong> (3.10+) — not just a switch statement. It destructures. <code>case [x, y]:</code> unpacks a 2-element list, <code>case {"type": "error", "msg": m}:</code> extracts from dicts. Worth knowing it exists; reach for it when parsing structured messages or command patterns.</p>
-
-<!-- ════════════════════════════════════════════ -->
-<h3>Functions — The Patterns That Matter</h3>
-
-<p><strong><code>*args</code>/<code>**kwargs</code></strong> — pass-through for wrappers and decorators. <code>args</code> is a tuple, <code>kwargs</code> is a dict. Common in ML: <code>Model(**config)</code> unpacks a config dict into keyword arguments.</p>
-
-<p><strong>Closures</strong> — a function that captures variables from its enclosing scope. This is the factory pattern, and it's everywhere in ML — creating configured transforms, building callback functions, generating loss functions with specific parameters:</p>
-
-<pre><code class="language-python">def make_augmenter(noise_level, crop_size):
-    """Factory that returns a configured augmentation function."""
-    def augment(image):
-        noisy = add_noise(image, sigma=noise_level)
-        return random_crop(noisy, size=crop_size)
-    return augment
-
-# create specialized versions
-light_aug = make_augmenter(noise_level=0.01, crop_size=224)
-heavy_aug = make_augmenter(noise_level=0.1, crop_size=196)
-</code></pre>
-
-<div class="callout-danger"><strong>The closure loop trap:</strong> <code>[lambda: i for i in range(3)]</code> — all three lambdas return 2, not 0, 1, 2. Closures capture the <em>variable</em>, not the <em>value</em>. By the time you call them, <code>i</code> is already 2. Fix: <code>lambda i=i: i</code> binds the current value as a default argument.</div>
-
-<p><strong>Lambda</strong> — use for throwaway one-liners: sort keys (<code>sorted(items, key=lambda x: x[1])</code>), quick transforms in <code>map</code>. The moment it needs a name, a docstring, or more than one expression, switch to <code>def</code>. Don't assign lambdas to variables — that's just a worse function definition.</p>
-
-<p><strong>Type hints</strong> — they don't affect runtime, but they're how you communicate intent. IDEs give you autocomplete, <code>mypy</code> catches bugs before they happen, and your future self can actually read the function signatures:</p>
-
-<pre><code class="language-python">def train(model: nn.Module, data: DataLoader, epochs: int = 10) -> dict[str, float]:
-    ...
-</code></pre>
-
-<p>In production ML code, type hints are the cheapest documentation you'll ever write.</p>
-
-<!-- ════════════════════════════════════════════ -->
-<h3>What You Should Now Be Able To Do</h3>
-
-<ul>
-  <li>Explain why <code>0.1 + 0.2 != 0.3</code> and know when to use <code>math.isclose</code></li>
-  <li>Pick the right data structure by access pattern and O() cost — and spot O(n²) <code>in</code> checks hiding in loops</li>
-  <li>Reach for <code>Counter</code>, <code>defaultdict</code>, and <code>deque</code> before writing manual counting/grouping/windowing code</li>
-  <li>Use <code>itertools.product</code> to replace nested loops in hyperparameter sweeps</li>
-  <li>Apply <code>lru_cache</code> to expensive pure functions and know the hashability constraint</li>
-  <li>Use <code>partial</code> over lambda for creating configured callbacks in pipelines</li>
-  <li>Write a closure-based factory function and explain the loop capture trap</li>
-  <li>Know when <code>for/else</code> and <code>:=</code> clean up your code — and when they don't</li>
-</ul>
-<!-- ═══════════ Pythonic Patterns ═══════════ -->
-<h2>Pythonic Patterns</h2>
-
-<p>Writing Python is one thing. Writing <em>Pythonic</em> Python is where readability meets performance — it's the gap between code that works and code that a team can maintain, extend, and ship. This section covers the patterns that separate amateur scripts from production code.</p>
-
-
-<!-- ═══════════════════════════════════════ -->
-<!-- COMPREHENSIONS                          -->
-<!-- ═══════════════════════════════════════ -->
-<h3>Comprehensions</h3>
-
-<p>You already know <code>[x**2 for x in range(10)]</code>. The non-obvious ones: <strong>dict comprehensions</strong> for building lookup tables (<code>{name: idx for idx, name in enumerate(labels)}</code>), <strong>set comprehensions</strong> for dedup (<code>{row["category"] for row in data}</code>), and <strong>nested</strong> for flattening (<code>[x for row in matrix for x in row]</code>). Once nesting goes past two levels, stop — write a loop. Readability always wins.</p>
-
-<div class="callout-info">
-  <strong>Memory matters:</strong> <code>(x**2 for x in range(10_000_000))</code> with round brackets is a <strong>generator expression</strong> — it produces values lazily, using almost zero memory. Square brackets <code>[]</code> builds the entire list in RAM first. When you're feeding something into <code>sum()</code>, <code>max()</code>, or <code>any()</code>, always use the generator form.
+<!-- ═══════════ Opening ═══════════ -->
+
+<p>I avoided truly understanding Python for longer than I'd care to admit. I could write it — training loops, data pipelines, deployment scripts — but if someone asked me <em>why</em> <code>b = a</code> on a list doesn't copy the list, or what exactly happens inside a <code>for</code> loop, I'd mumble something about references and change the subject. I knew Python the way you know a car you drive every day but have never opened the hood of. Finally, the discomfort of not knowing what's really happening under the hood grew too great for me. Here is that dive.</p>
+
+<p>Python was created by Guido van Rossum and first released in 1991. It became the dominant language for machine learning and AI not because it's the fastest — it isn't, not by a long shot — but because it's the most effective <em>glue</em>. OpenAI, Google DeepMind, every major ML lab writes research code, training orchestration, data pipelines, and experiment management in Python. The heavy computation happens in C++ and CUDA kernels underneath, but the entire orchestration layer — the layer <em>you</em> write — is Python. Understanding it deeply matters.</p>
+
+<p>Before we start, a heads-up. We're going to build up Python from its memory model to decorators, generators, and production patterns. You don't need to know any of it beforehand. We'll add the concepts we need one at a time, with explanation.</p>
+
+<p>This isn't a short journey, but I hope you'll be glad you came.</p>
+
+<!-- ═══════════ Table of Contents ═══════════ -->
+<div style="margin: 2em 0; padding-left: 1.5em; border-left: 3px solid var(--accent, #666); line-height: 2;">
+  Variables Are Not Boxes<br>
+  Mutable vs Immutable — Why the Distinction Exists<br>
+  Data Structures — Choosing the Right Container<br>
+  The Iteration Protocol<br>
+  Generators — Lazy Evaluation<br>
+  Rest Stop<br>
+  Functions Are Objects<br>
+  Closures — Captured State<br>
+  Decorators — Wrapping Behavior<br>
+  Context Managers — Resource Safety<br>
+  Exception Handling — The EAFP Philosophy<br>
+  Comprehensions and Pythonic Patterns<br>
+  Type Hints — Why They Matter at Scale<br>
+  Wrap-Up<br>
+  Resources
 </div>
 
+<!-- ═══════════ Running Example Setup ═══════════ -->
 
-<!-- ═══════════════════════════════════════ -->
-<!-- GENERATORS & LAZY EVALUATION            -->
-<!-- ═══════════════════════════════════════ -->
-<h3>Generators &amp; Lazy Evaluation</h3>
+<p>To ground everything, we'll build a tiny running example throughout this section: a small experiment tracker. Every ML engineer needs one — something that records which hyperparameters you tried, what score you got, and when. We'll start with something embarrassingly simple and let it grow as we need new concepts.</p>
 
-<p>Here's the scenario: you have 10GB of training data on disk. You need to read it, clean it, tokenize it, and feed it to a model. If you load all of it into a list, your machine runs out of RAM and the OOM killer ends your process. Generators solve this by producing values <em>one at a time</em> — memory stays O(1) regardless of data size.</p>
+<pre><code>results = []
+results.append({"lr": 0.01, "epochs": 10, "accuracy": 0.82})
+results.append({"lr": 0.001, "epochs": 20, "accuracy": 0.91})
+results.append({"lr": 0.01, "epochs": 50, "accuracy": 0.89})</code></pre>
 
-<p>The keyword is <code>yield</code>. When a function contains <code>yield</code>, calling it doesn't execute the body — it returns a generator object. Each time you pull the next value (via <code>next()</code> or a <code>for</code> loop), the function runs until it hits <code>yield</code>, hands you the value, and <em>freezes</em>. Next call, it resumes exactly where it left off. All local variables are preserved.</p>
-
-<p>The mental model: a generator is a <strong>recipe</strong>, not a <strong>meal</strong>. It describes how to produce values without producing them all at once. A list is a meal — every dish is on the table, taking up space, whether you eat it or not.</p>
-
-<pre><code class="language-python">def read_lines(path):
-    """Yields one line at a time — handles files larger than RAM."""
-    with open(path) as f:
-        for line in f:
-            stripped = line.strip()
-            if stripped:  # skip blanks
-                yield stripped
-
-def tokenize(lines):
-    """Takes any iterable of strings, yields token lists."""
-    for line in lines:
-        yield line.lower().split()
-
-def filter_short(token_lists, min_len=3):
-    """Drop sequences shorter than min_len."""
-    for tokens in token_lists:
-        if len(tokens) >= min_len:
-            yield tokens
-
-# Compose the pipeline — nothing executes yet
-lines   = read_lines("corpus.txt")       # generator (lazy)
-tokens  = tokenize(lines)                # generator (lazy)
-cleaned = filter_short(tokens)           # generator (lazy)
-
-# NOW it runs — one item flows through the entire chain at a time
-for batch in cleaned:
-    model.train_on(batch)</code></pre>
-
-<p>Each stage is its own generator. Data flows through the pipeline one item at a time — at no point does the full dataset live in memory. This is exactly how PyTorch's <code>DataLoader</code> and TensorFlow's <code>tf.data</code> work under the hood.</p>
-
-<p><strong><code>yield from</code></strong> lets you compose generators cleanly. Instead of looping through a sub-generator and re-yielding each item, delegate:</p>
-
-<pre><code class="language-python">def read_all_files(paths):
-    for path in paths:
-        yield from read_lines(path)  # flattens automatically</code></pre>
-
-<div class="callout-warning">
-  <strong>The exhaustion gotcha:</strong> A generator can only be iterated <strong>once</strong>. After one pass, it's empty — silently. No error, no warning, just... no data on the second loop. If you need multiple passes, either convert to a list (<code>data = list(gen)</code>) or recreate the generator. This bites people in debugging all the time: the first loop works, the second produces nothing, and the code looks perfectly fine.
-</div>
-
-<div class="callout-info">
-  <strong>Decision rule:</strong> Need <code>len()</code>, indexing, or multiple passes? → List. Processing sequentially and data might be large? → Generator. When in doubt, start with a generator — you can always <code>list()</code> it later. You can't un-materialize a list.
-</div>
+<p>Three experiments. A list of dictionaries. That's our tracker, version one. It will get better.</p>
 
 
-<!-- ═══════════════════════════════════════ -->
-<!-- DECORATORS                              -->
-<!-- ═══════════════════════════════════════ -->
-<h3>Decorators</h3>
+<!-- ═══════════ Variables Are Not Boxes ═══════════ -->
+<h2>Variables Are Not Boxes</h2>
 
-<p>You don't need to build decorator factories. You don't need to understand triple-nested closures. What you <em>do</em> need is to write the one decorator everyone actually uses — and recognize the built-in ones you'll see in every codebase.</p>
+<p>Here's the mental model shift that took me an embarrassingly long time. In most programming introductions, variables are described as boxes that hold values. You put the number 5 into a box labeled <code>x</code>. That mental model is actively wrong in Python, and it's the source of some of the most persistent bugs in production code.</p>
 
-<p>The one decorator worth writing yourself — a timing wrapper:</p>
+<p>In Python, a variable is a <strong>name binding</strong> — a label, a post-it note stuck onto an object that lives somewhere in memory. The object exists independently of any names attached to it. Multiple names can point to the same object. No name "contains" anything.</p>
 
-<pre><code class="language-python">import time
-import functools
+<p>Let's see what this means concretely. Consider our experiment tracker:</p>
 
-def timer(func):
-    @functools.wraps(func)  # preserves func.__name__, __doc__
+<pre><code>best_run = results[1]       # {"lr": 0.001, "epochs": 20, "accuracy": 0.91}
+alias = best_run</code></pre>
+
+<p>How many dictionaries exist in memory right now? One. The names <code>best_run</code>, <code>alias</code>, and <code>results[1]</code> are all post-it notes stuck on the <em>same</em> dictionary object. If we modify through any of those names, every other name sees the change.</p>
+
+<pre><code>alias["accuracy"] = 0.95
+print(best_run["accuracy"])  # 0.95 — same object, remember</code></pre>
+
+<p>This behavior has a name: <strong>aliasing</strong>. When two or more names refer to the same object in memory, they are aliases. You can verify this with Python's built-in <code>id()</code> function, which returns the memory address of an object in CPython (the standard Python implementation, written in C, that you're almost certainly using).</p>
+
+<pre><code>print(id(best_run) == id(alias))  # True — same object
+print(best_run is alias)          # True — 'is' checks identity</code></pre>
+
+<p>That <code>is</code> keyword checks whether two names point to the same object in memory — <strong>identity</strong>. The <code>==</code> operator checks whether two objects have the same <strong>value</strong> — equality. These are different questions. Two separate dictionaries can have identical contents (<code>==</code> returns True) while being distinct objects in memory (<code>is</code> returns False).</p>
+
+<p>This distinction is why you always write <code>x is None</code>, never <code>x == None</code>. There's exactly one <code>None</code> object in all of Python. Identity check is both semantically correct and faster. A custom <code>__eq__</code> method on some object could make <code>== None</code> return something unexpected.</p>
+
+<p>I'll be honest — when this post-it-note model finally clicked for me, half the "weird" Python behaviors I'd been memorizing as special cases suddenly became obvious consequences of a single rule. But that model alone doesn't tell us everything. We need one more distinction.</p>
+
+
+<!-- ═══════════ Mutable vs Immutable ═══════════ -->
+<h2>Mutable vs Immutable — Why the Distinction Exists</h2>
+
+<p>If variables are post-it notes on objects, the next question is: can we change the object itself, or do we have to create a new one? This is the <strong>mutable</strong> versus <strong>immutable</strong> distinction.</p>
+
+<p><strong>Mutable</strong> objects — lists, dictionaries, sets — can be changed in place. You can append to a list, update a dictionary key, add to a set. The object at that memory address gets modified. All names pointing to it see the change.</p>
+
+<p><strong>Immutable</strong> objects — integers, floats, strings, tuples — cannot be changed once created. When you do <code>x = x + 1</code>, Python creates a <em>new</em> integer object with the value <code>x + 1</code> and rebinds the name <code>x</code> to point at it. The old integer object is left behind, unnamed, eventually collected by the garbage collector.</p>
+
+<pre><code>name = "experiment"
+print(id(name))        # some address, say 140234567890
+name = name + "_v2"
+print(id(name))        # different address — new string object was created</code></pre>
+
+<p>Compare that with a mutable list:</p>
+
+<pre><code>scores = [0.82, 0.91]
+print(id(scores))      # some address
+scores.append(0.89)
+print(id(scores))      # same address — the list was modified in place</code></pre>
+
+<p>Why does this matter? Because it determines whether passing something to a function or assigning it to a new variable creates a shared reference that can lead to surprising mutations — or an independent value that's safe to change.</p>
+
+<p>Here's a bug that has bitten me in production. Suppose we write a function to add a default metric to an experiment result:</p>
+
+<pre><code>def add_default_metric(result, defaults=[]):
+    defaults.append("loss")
+    result["defaults"] = defaults
+    return result</code></pre>
+
+<p>The default argument <code>[]</code> is evaluated <em>once</em>, when the function is <em>defined</em> — not on every call. That empty list is a single mutable object shared across all calls. Every invocation appends "loss" to the same list.</p>
+
+<pre><code>r1 = add_default_metric({"lr": 0.01})
+r2 = add_default_metric({"lr": 0.001})
+print(r1["defaults"])  # ["loss", "loss"] — surprise!</code></pre>
+
+<p>The fix is the Python idiom you'll see everywhere:</p>
+
+<pre><code>def add_default_metric(result, defaults=None):
+    if defaults is None:
+        defaults = []    # fresh list on every call
+    defaults.append("loss")
+    result["defaults"] = defaults
+    return result</code></pre>
+
+<p>This is one of those patterns where the <em>why</em> matters more than the <em>what</em>. The fix is mechanical. Understanding that default arguments are evaluated at definition time — because they're object bindings, not box values — is the insight that prevents you from re-discovering this bug in twelve different forms.</p>
+
+<p>One more consequence worth knowing: CPython caches small integers from -5 to 256 as singleton objects (a performance optimization called <strong>interning</strong>). So <code>a = 256; b = 256; a is b</code> returns <code>True</code> — same cached object. But <code>a = 257; b = 257; a is b</code> may return <code>False</code> — two separate objects. This is why <code>is</code> should never be used to compare values. Use <code>==</code> for values, <code>is</code> for identity. The interning behavior is an implementation detail, not a language guarantee.</p>
+
+<p>We now have a solid foundation: names bind to objects, objects are either mutable or immutable, and this determines everything about copying, aliasing, and function argument behavior. But our experiment tracker is still a plain list of dictionaries. We need to think about which containers to reach for.</p>
+
+
+<!-- ═══════════ Data Structures ═══════════ -->
+<h2>Data Structures — Choosing the Right Container</h2>
+
+<p>Python gives us four core container types, and the choice between them isn't stylistic — it has real performance and correctness consequences. The decisive question is always: <em>what operations do I need to be fast?</em></p>
+
+<h3>Lists — Ordered, Mutable Sequences</h3>
+
+<p>A <code>list</code> in CPython is a contiguous array of pointers. Not the elements themselves — pointers to the elements, which live elsewhere on the heap. This is why a Python list can hold mixed types (each pointer can point to any object) and why index access is O(1) (pointer arithmetic).</p>
+
+<p>Appending to a list is amortized O(1) because Python over-allocates. When the internal array fills up, CPython allocates roughly 12.5% more space than currently needed. So most appends are a simple pointer write, with occasional resizing.</p>
+
+<p>The trap: checking membership with <code>in</code> is O(n). Python has to scan the entire list. This is fine for 10 items. For 10 million items — say, checking if a token exists in a vocabulary — it's a disaster. That's where sets come in.</p>
+
+<h3>Dictionaries — The Hash Table</h3>
+
+<p>A <code>dict</code> is Python's implementation of a <strong>hash table</strong>. When you write <code>d["lr"] = 0.01</code>, Python computes a hash of the key <code>"lr"</code>, uses it to find a slot in an internal array, and stores the key-value pair there. Lookup, insertion, and deletion are all O(1) on average.</p>
+
+<p>Our experiment tracker is already using dicts, and for good reason. When you need to associate keys with values — hyperparameters with their settings, metric names with their scores — dict is the answer.</p>
+
+<p>Since Python 3.7, dictionaries preserve insertion order. This isn't an accident — it fell out of a clever reimplementation by Raymond Hettinger that separated the hash indices from the actual entries, making dicts both more memory-efficient and ordered as a side effect. Before 3.7, if you needed ordered keys, you had to use <code>collections.OrderedDict</code>.</p>
+
+<p>The constraint: dict keys must be <strong>hashable</strong>, which in practice means immutable. Strings, numbers, tuples (of hashable elements) — all fine. Lists and dicts — not hashable, can't be keys. The reason is that if a key mutated after being inserted, its hash would change, and the hash table would lose track of it.</p>
+
+<h3>Sets — Fast Membership</h3>
+
+<p>A <code>set</code> is essentially a dict without values — same hash table underneath. This means membership testing (<code>x in my_set</code>) is O(1).</p>
+
+<p>Imagine our tracker grows, and we want to quickly check if we've already tried a specific learning rate:</p>
+
+<pre><code>tried_lrs = {r["lr"] for r in results}   # set comprehension
+if 0.01 in tried_lrs:
+    print("Already tried this learning rate")</code></pre>
+
+<p>With a list, this check would scan every element. With a set, it computes one hash and checks one slot.</p>
+
+<h3>Tuples — Immutable Records</h3>
+
+<p>A <code>tuple</code> is like a list that can't be changed after creation. Same contiguous array of pointers internally, but with the immutability guarantee. This makes tuples slightly lighter on memory (no over-allocation needed) and — critically — hashable. You can use a tuple as a dict key or add it to a set.</p>
+
+<pre><code># using tuples as composite keys
+best_by_config = {}
+for r in results:
+    key = (r["lr"], r["epochs"])    # tuple is hashable, list would fail
+    if key not in best_by_config or r["accuracy"] > best_by_config[key]["accuracy"]:
+        best_by_config[key] = r</code></pre>
+
+<p>The limitation of all these containers is that they hold data passively. To <em>process</em> that data — iterate through experiments, filter results, transform values — we need to understand how Python's iteration actually works. And it's more interesting than most people think.</p>
+
+
+<!-- ═══════════ Iteration Protocol ═══════════ -->
+<h2>The Iteration Protocol</h2>
+
+<p>When you write a <code>for</code> loop in Python, something specific happens under the hood. It's not pattern matching, it's not indexing — it's a <strong>protocol</strong>, meaning a set of methods that objects agree to implement.</p>
+
+<p>Here's what <code>for item in results:</code> actually does:</p>
+
+<pre><code># Python translates this:
+for item in results:
+    print(item)
+
+# Into roughly this:
+_iter = iter(results)          # calls results.__iter__()
+while True:
+    try:
+        item = next(_iter)     # calls _iter.__next__()
+        print(item)
+    except StopIteration:
+        break</code></pre>
+
+<p>Two methods make this work. <code>__iter__()</code> returns an <strong>iterator</strong> object — something that knows how to produce the next element. <code>__next__()</code> on that iterator returns the next element, or raises <code>StopIteration</code> when there are no more elements. That's it. That's the entire iteration protocol.</p>
+
+<p>An <strong>iterable</strong> is any object that has an <code>__iter__</code> method — lists, dicts, sets, strings, files, range objects. An <strong>iterator</strong> is the object returned by <code>__iter__</code>, which has a <code>__next__</code> method. Think of the iterable as the book and the iterator as the bookmark. You can have multiple bookmarks in the same book, each tracking a different position.</p>
+
+<p>Here's why this matters: you can make <em>anything</em> iterable by implementing these two methods. Want to iterate over experiment results sorted by accuracy?</p>
+
+<pre><code>class SortedResults:
+    def __init__(self, results):
+        self.data = sorted(results, key=lambda r: r["accuracy"], reverse=True)
+        self.index = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.index >= len(self.data):
+            raise StopIteration
+        item = self.data[self.index]
+        self.index += 1
+        return item
+
+for run in SortedResults(results):
+    print(f"accuracy: {run['accuracy']}")</code></pre>
+
+<p>This works, but writing a class with explicit state management for every custom iteration pattern is verbose. There's a far more elegant tool for this, and it's one of Python's best ideas.</p>
+
+
+<!-- ═══════════ Generators ═══════════ -->
+<h2>Generators — Lazy Evaluation</h2>
+
+<p>A <strong>generator</strong> is a function that produces a sequence of values lazily — one at a time, on demand, instead of computing them all upfront and storing them in a list. You create one by using the <code>yield</code> keyword instead of <code>return</code>.</p>
+
+<pre><code>def top_results(results, threshold=0.85):
+    for r in results:
+        if r["accuracy"] >= threshold:
+            yield r</code></pre>
+
+<p>When you call <code>top_results(results)</code>, Python does <em>not</em> execute the function body. It returns a <strong>generator object</strong> — which implements the iterator protocol automatically. The function body only runs when you call <code>next()</code> on the generator, and it runs only until it hits the next <code>yield</code>, at which point it <em>suspends</em>, remembering its entire state (local variables, where it paused), and hands back the yielded value.</p>
+
+<pre><code>gen = top_results(results, threshold=0.85)
+print(next(gen))  # runs until first yield: {"lr": 0.001, "epochs": 20, "accuracy": 0.91}
+print(next(gen))  # resumes, runs to next yield: {"lr": 0.01, "epochs": 50, "accuracy": 0.89}
+print(next(gen))  # no more matches — raises StopIteration</code></pre>
+
+<p>The magic is that the function's state — every local variable, the position in the loop — is preserved between calls to <code>next()</code>. The function is frozen mid-execution, like pausing a movie.</p>
+
+<p>Why does this matter? Memory. When you're processing a dataset that's too large to fit in memory — millions of training examples, gigabytes of text — a generator lets you process one item (or one batch) at a time without ever loading everything. This is exactly how PyTorch's <code>DataLoader</code> works under the hood: it uses an iterator that yields batches lazily.</p>
+
+<pre><code>def batch_generator(data, batch_size=32):
+    batch = []
+    for item in data:
+        batch.append(item)
+        if len(batch) == batch_size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch    # don't forget the last incomplete batch
+
+for batch in batch_generator(huge_dataset, batch_size=64):
+    model.train_on_batch(batch)</code></pre>
+
+<p>I still occasionally get tripped up by one generator behavior: they can only be iterated <em>once</em>. After a generator is exhausted, it's done. Calling <code>next()</code> again raises <code>StopIteration</code>. Converting to a list with <code>list(gen)</code> exhausts it. Passing an exhausted generator to another <code>for</code> loop produces nothing. No error, no warning — an empty loop. This has caused me more silent bugs than I'd like to admit.</p>
+
+<pre><code>gen = top_results(results)
+first_pass = list(gen)       # [... results ...]
+second_pass = list(gen)      # [] — empty! generator is spent</code></pre>
+
+
+<!-- ═══════════ Rest Stop ═══════════ -->
+<h2>Rest Stop</h2>
+
+<p>Congratulations on making it this far. You can stop here if you want.</p>
+
+<p>You now have a mental model of how Python actually works: variables are names bound to objects, objects are mutable or immutable, the four core containers each serve a specific purpose based on the operations you need to be fast, and iteration is a protocol that generators implement elegantly for lazy, memory-efficient processing.</p>
+
+<p>With these tools you can write real, working Python for ML — load data, process it in batches, choose the right containers, and avoid the aliasing bugs that haunt production systems. That's genuinely useful.</p>
+
+<p>But it doesn't tell the complete story. We haven't talked about the patterns that let you write Python that's <em>maintainable</em> at scale — decorators that add behavior without modifying functions, context managers that guarantee resource cleanup, the EAFP philosophy that makes Python's error handling different from every other language. These are the things that separate scripts from production code, and they're what senior engineers probe for in interviews.</p>
+
+<p>The short version: functions are objects you can pass around, decorators wrap functions to add behavior, context managers ensure cleanup, and Python prefers trying things and handling failures over checking conditions upfront. There. You're about 60% of the way there.</p>
+
+<p>But if the discomfort of not knowing what's underneath is nagging at you, read on.</p>
+
+
+<!-- ═══════════ Functions Are Objects ═══════════ -->
+<h2>Functions Are Objects</h2>
+
+<p>This is one of those ideas that sounds academic until you see what it makes possible. In Python, a function is an object — an instance of the <code>function</code> type, living on the heap like any other object. It has attributes (<code>__name__</code>, <code>__doc__</code>, <code>__defaults__</code>). You can assign it to a variable, put it in a list, pass it as an argument to another function, return it from a function.</p>
+
+<p>This property is called being a <strong>first-class citizen</strong>, and it's the foundation of everything that follows — closures, decorators, higher-order functions, callbacks.</p>
+
+<pre><code>def square(x):
+    return x * x
+
+def apply(func, value):
+    return func(value)
+
+print(apply(square, 5))   # 25 — we passed a function as an argument</code></pre>
+
+<p>We already used this when we wrote <code>sorted(results, key=lambda r: r["accuracy"])</code>. The <code>key</code> parameter accepts a function. We passed a <code>lambda</code> — an anonymous function expression — as the sorting criterion. The <code>sorted</code> function calls our lambda on each element to decide the ordering.</p>
+
+<p>A <code>lambda</code> is nothing special. It's a shorthand for defining a function that consists of a single expression. <code>lambda r: r["accuracy"]</code> is exactly equivalent to:</p>
+
+<pre><code>def get_accuracy(r):
+    return r["accuracy"]</code></pre>
+
+<p>The only difference is that <code>lambda</code> doesn't bind a name. It creates the function object and hands it over, unnamed. Use <code>lambda</code> for short, throwaway functions. Use <code>def</code> for anything more than one expression — readability matters more than cleverness.</p>
+
+<p>Functions being objects is interesting on its own, but the real power emerges when a function <em>remembers</em> variables from the scope where it was created. That's a closure.</p>
+
+
+<!-- ═══════════ Closures ═══════════ -->
+<h2>Closures — Captured State</h2>
+
+<p>A <strong>closure</strong> is a function that remembers variables from the enclosing scope even after that scope has finished executing. The function "closes over" those variables, carrying them along wherever it goes.</p>
+
+<pre><code>def make_threshold_filter(min_accuracy):
+    def passes(result):
+        return result["accuracy"] >= min_accuracy
+    return passes
+
+is_good = make_threshold_filter(0.85)
+print(is_good(results[0]))  # False (0.82 < 0.85)
+print(is_good(results[1]))  # True (0.91 >= 0.85)</code></pre>
+
+<p>When <code>make_threshold_filter(0.85)</code> is called, it creates the inner function <code>passes</code> and returns it. At this point, <code>make_threshold_filter</code> has finished executing — its local scope is gone. But <code>passes</code> still has access to <code>min_accuracy</code> because Python stores it in a <strong>cell object</strong> attached to the function. The inner function carries its environment with it.</p>
+
+<p>There's a gotcha here that catches even experienced developers. Closures capture the <em>variable</em>, not the <em>value</em>. This is called <strong>late binding</strong>:</p>
+
+<pre><code>filters = []
+for threshold in [0.7, 0.8, 0.9]:
+    filters.append(lambda r: r["accuracy"] >= threshold)
+
+# You'd expect three different filters. But:
+print(filters[0]({"accuracy": 0.75}))  # False — threshold is 0.9, not 0.7!</code></pre>
+
+<p>All three lambdas closed over the <em>same variable</em> <code>threshold</code>, not the value it held at each iteration. By the time you call any of them, <code>threshold</code> has its final loop value of 0.9. The fix is to capture the current value as a default argument:</p>
+
+<pre><code>filters = []
+for threshold in [0.7, 0.8, 0.9]:
+    filters.append(lambda r, t=threshold: r["accuracy"] >= t)
+    # t=threshold evaluates at definition time, freezing the value</code></pre>
+
+<p>Remember our earlier discussion about default arguments being evaluated at definition time? That behavior, which caused the mutable default argument bug, is the same mechanism that <em>fixes</em> the late binding problem here. Same rule, opposite consequence. Python is consistent — it's our mental models that are inconsistent.</p>
+
+<p>Closures are the engine that makes decorators work.</p>
+
+
+<!-- ═══════════ Decorators ═══════════ -->
+<h2>Decorators — Wrapping Behavior</h2>
+
+<p>A <strong>decorator</strong> is a function that takes another function as input and returns a new function that usually extends or modifies the original's behavior. Think of it as gift wrapping — the gift (original function) stays the same, but the wrapper adds something around it.</p>
+
+<p>Suppose we want to time every experiment in our tracker:</p>
+
+<pre><code>import time
+
+def timed(func):
     def wrapper(*args, **kwargs):
-        start = time.perf_counter()
+        start = time.time()
         result = func(*args, **kwargs)
-        elapsed = time.perf_counter() - start
-        print(f"{func.__name__} took {elapsed:.4f}s")
+        elapsed = time.time() - start
+        print(f"{func.__name__} took {elapsed:.2f}s")
         return result
-    return wrapper
+    return wrapper</code></pre>
 
-@timer
-def train_epoch(model, data):
-    ...  # train_epoch took 42.1337s</code></pre>
+<p>The <code>timed</code> function receives our original function, creates a <code>wrapper</code> that records the start time, calls the original, measures the elapsed time, prints it, and returns the original's result. The wrapper is a closure — it closes over <code>func</code>.</p>
 
-<p>The decorators you'll <em>read</em> in framework code (don't memorize — just know what they mean when you see them):</p>
+<p>We can apply it with the <code>@</code> syntax:</p>
 
-<ul>
-  <li><strong><code>@property</code></strong> — turns a method into an attribute access. <code>model.num_params</code> instead of <code>model.get_num_params()</code>.</li>
-  <li><strong><code>@staticmethod</code></strong> — a function that lives in a class namespace but doesn't touch <code>self</code> or <code>cls</code>.</li>
-  <li><strong><code>@classmethod</code></strong> — receives the class as first arg. Used for factory constructors: <code>Model.from_pretrained("bert")</code>.</li>
-  <li><strong><code>@functools.lru_cache</code></strong> — memoizes return values. Great for expensive pure functions. <strong>Gotcha:</strong> it holds references to all cached arguments — on large objects like DataFrames, this silently leaks memory.</li>
-</ul>
+<pre><code>@timed
+def train_model(lr, epochs):
+    # ... training code ...
+    return {"lr": lr, "epochs": epochs, "accuracy": 0.91}
+
+result = train_model(0.001, 20)
+# prints: train_model took 3.42s</code></pre>
+
+<p>The <code>@timed</code> line is pure syntax sugar. It's exactly equivalent to writing:</p>
+
+<pre><code>train_model = timed(train_model)</code></pre>
+
+<p>After decoration, the name <code>train_model</code> no longer points to the original function. It points to <code>wrapper</code>. This means <code>train_model.__name__</code> would return <code>"wrapper"</code>, not <code>"train_model"</code> — confusing for debugging. The fix is <code>functools.wraps</code>, which copies the original function's metadata onto the wrapper:</p>
+
+<pre><code>from functools import wraps
+
+def timed(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        start = time.time()
+        result = func(*args, **kwargs)
+        elapsed = time.time() - start
+        print(f"{func.__name__} took {elapsed:.2f}s")
+        return result
+    return wrapper</code></pre>
+
+<p>Always use <code>@wraps</code>. It preserves <code>__name__</code>, <code>__doc__</code>, and <code>__module__</code>, which tools like debuggers, logging frameworks, and documentation generators rely on.</p>
+
+<p>In production ML code, decorators show up everywhere. <code>@torch.no_grad()</code> disables gradient computation for inference. <code>@functools.lru_cache</code> memoizes expensive computations. Custom <code>@retry</code> decorators handle flaky API calls to data services. The pattern is always the same: take a function, wrap it, add behavior around the edges.</p>
+
+<p>Our gift-wrapping analogy carries forward: you can stack decorators. Each one wraps the result of the previous one. <code>@decorator_a</code> above <code>@decorator_b</code> means <code>func = decorator_a(decorator_b(func))</code> — the outermost wrapper runs first.</p>
+
+<p>Decorators let us add behavior without modifying the function itself. But there are other patterns of "add behavior around something" in Python, and the most important one involves resource management.</p>
 
 
-<!-- ═══════════════════════════════════════ -->
-<!-- ERROR HANDLING                           -->
-<!-- ═══════════════════════════════════════ -->
-<h3>Error Handling</h3>
+<!-- ═══════════ Context Managers ═══════════ -->
+<h2>Context Managers — Resource Safety</h2>
 
-<p>Production ML code fails constantly — bad data, network timeouts, GPU OOM. The one rule that matters: <strong>catch specific exceptions, never bare <code>except:</code></strong>. A bare <code>except</code> catches <code>KeyboardInterrupt</code>, <code>SystemExit</code>, memory errors — bugs you absolutely want to see. <code>except Exception</code> is almost as bad. Name exactly what you expect: <code>except ValueError</code>, <code>except FileNotFoundError</code>.</p>
+<p>Every production system manages resources — files, database connections, GPU memory, network sockets, locks. The pattern is always the same: acquire the resource, do something with it, release it — even if something goes wrong in the middle. Especially if something goes wrong.</p>
 
-<h4>LBYL vs EAFP</h4>
+<p>Python's <code>with</code> statement and the <strong>context manager</strong> protocol handle this. You've seen it with files:</p>
 
-<p>Two philosophies. <strong>LBYL</strong> (Look Before You Leap): check first, then act. <strong>EAFP</strong> (Easier to Ask Forgiveness than Permission): just do it, handle failure. Python's culture is EAFP — and there's a real reason beyond style:</p>
+<pre><code>with open("experiments.json", "w") as f:
+    json.dump(results, f)</code></pre>
 
-<pre><code class="language-python"># LBYL — two lookups, and in concurrent code, the key
-# could disappear between the check and the access
-if key in config:
-    value = config[key]
+<p>When execution enters the <code>with</code> block, Python calls the context manager's <code>__enter__</code> method (which opens the file and returns the file object). When execution exits the block — whether normally, via an exception, or via a <code>return</code> statement — Python calls <code>__exit__</code> (which closes the file). The cleanup is <em>guaranteed</em>.</p>
 
-# EAFP — one lookup, atomic, Pythonic
+<p>Without <code>with</code>, you'd need a <code>try/finally</code> block:</p>
+
+<pre><code>f = open("experiments.json", "w")
 try:
-    value = config[key]
-except KeyError:
-    value = default</code></pre>
+    json.dump(results, f)
+finally:
+    f.close()</code></pre>
 
-<p>EAFP is faster on the happy path (no redundant check) and safer in concurrent code (no race condition between check and access). Use LBYL only when the check itself is the point — like validating user input before expensive processing.</p>
+<p>Same result, more typing, easier to forget. The <code>with</code> statement is not syntactic sugar for convenience — it's a safety mechanism. In long-running ML training scripts, a forgotten <code>f.close()</code> can mean file handles leaking over hours, eventually crashing your process when the OS runs out of file descriptors.</p>
 
-<h4>Custom Exceptions</h4>
+<p>You can write your own context managers. For our experiment tracker, maybe we want to log the start and end of each experiment:</p>
 
-<p>When your library raises <code>ValueError</code> for everything, callers can't distinguish "bad input shape" from "model not fitted" without parsing error strings. That's fragile. One custom exception fixes it:</p>
-
-<pre><code class="language-python">class ModelNotFittedError(RuntimeError):
-    """Raised when predict() is called before fit()."""
-
-class MyModel:
-    def predict(self, X):
-        if self.weights is None:
-            raise ModelNotFittedError(
-                f"{self.__class__.__name__}.fit() must be called before predict()"
-            )
-        ...</code></pre>
-
-<p>Now callers can <code>except ModelNotFittedError</code> and handle it cleanly — retrain, load from cache, whatever. Always inherit from a built-in exception (<code>RuntimeError</code>, <code>ValueError</code>) so generic <code>except Exception</code> still catches it.</p>
-
-<h4>Context Managers</h4>
-
-<p>The <code>with</code> statement guarantees cleanup — even if an exception fires midway. You've seen <code>with open(f) as fh:</code>. But you can make your own without writing a class:</p>
-
-<pre><code class="language-python">from contextlib import contextmanager
+<pre><code>from contextlib import contextmanager
 
 @contextmanager
-def gpu_memory_scope(device):
-    """Allocate GPU memory, guarantee release."""
-    torch.cuda.set_device(device)
+def experiment_context(name):
+    print(f"Starting experiment: {name}")
+    start = time.time()
     try:
-        yield device
+        yield    # everything inside the 'with' block runs here
     finally:
-        torch.cuda.empty_cache()
+        elapsed = time.time() - start
+        print(f"Experiment {name} finished in {elapsed:.2f}s")
 
-with gpu_memory_scope(0) as dev:
-    model.to(dev)
-    # ... train ...
-# GPU cache cleared even if training crashes</code></pre>
+with experiment_context("baseline"):
+    result = train_model(lr=0.01, epochs=10)</code></pre>
 
-<p>Any resource that needs cleanup — files, database connections, locks, GPU memory — should be a context manager. If you find yourself writing <code>try: ... finally: cleanup()</code>, you want <code>with</code> instead.</p>
+<p>The <code>@contextmanager</code> decorator from <code>contextlib</code> is itself a beautiful example of generators meeting decorators. The code before <code>yield</code> runs on entry, the code after <code>yield</code> (in the <code>finally</code> block) runs on exit. Every concept we've built so far — generators, decorators, closures — is working together here.</p>
 
+<p>In production ML, context managers appear as <code>torch.no_grad()</code> for disabling gradients during inference, <code>torch.cuda.amp.autocast()</code> for mixed precision training, database connection pools, and distributed training synchronization primitives. The pattern is always: set up, yield control, tear down safely.</p>
 
-<!-- ═══════════════════════════════════════ -->
-<!-- STRING FORMATTING                       -->
-<!-- ═══════════════════════════════════════ -->
-<h3>String Formatting &amp; f-strings</h3>
 
-<p>f-strings won. Use them. <code>f"{accuracy:.4f}"</code> for ML metrics, <code>f"{name!r}"</code> for debugging (adds quotes). The trick most people don't know: <code>f"{variable=}"</code> prints both the name and the value — <code>variable=42</code>. Invaluable for quick debugging without writing <code>print(f"variable={variable}")</code> every time.</p>
+<!-- ═══════════ Exception Handling ═══════════ -->
+<h2>Exception Handling — The EAFP Philosophy</h2>
 
+<p>Most languages follow <strong>LBYL</strong> — "Look Before You Leap." Check if the file exists, then open it. Check if the key is in the dictionary, then access it. Python takes the opposite approach: <strong>EAFP</strong> — "Easier to Ask Forgiveness than Permission." Try the operation, and handle the exception if it fails.</p>
 
-<!-- ═══════════════════════════════════════ -->
-<!-- UNPACKING & ASSIGNMENT                  -->
-<!-- ═══════════════════════════════════════ -->
-<h3>Unpacking &amp; Assignment Patterns</h3>
+<pre><code># LBYL style (common in other languages)
+if "accuracy" in result:
+    acc = result["accuracy"]
+else:
+    acc = None
 
-<p>These look small but they save code every single day in data processing.</p>
+# EAFP style (Pythonic)
+try:
+    acc = result["accuracy"]
+except KeyError:
+    acc = None</code></pre>
 
-<pre><code class="language-python"># Star unpacking — grab first, collect the rest
-first, *rest = [1, 2, 3, 4, 5]       # first=1, rest=[2,3,4,5]
-*init, last = [1, 2, 3, 4, 5]        # init=[1,2,3,4], last=5
-head, *_, tail = range(10)            # grab endpoints, discard middle
+<p>Why does Python prefer EAFP? Three reasons. First, it's often faster — in the common case where the key exists, there's no check overhead. Second, it handles race conditions — between your check and your access, another thread could modify the data. Third, it maps naturally to Python's dynamic nature, where you don't always know the type or structure of an object ahead of time.</p>
 
-# Swap without a temp variable
-a, b = b, a
+<p>For production code, the critical rules are:</p>
 
-# Underscore for throwaway values
-_, accuracy = model.evaluate(X, y)    # don't need the loss
-for _, row in df.iterrows():          # don't need the index
+<p>Never use bare <code>except:</code> without specifying the exception type. A bare except catches <em>everything</em>, including <code>KeyboardInterrupt</code> and <code>SystemExit</code>, making your program impossible to kill cleanly. Always catch the specific exception you expect.</p>
 
-# Multiple return → tuple unpacking
-def train_step(model, batch):
-    ...
-    return loss, accuracy, gradients
+<pre><code># Dangerous — catches everything, hides real bugs
+try:
+    result = train_model()
+except:
+    pass
 
-loss, acc, grads = train_step(model, batch)</code></pre>
+# Correct — catches only what you expect
+try:
+    result = train_model()
+except ValueError as e:
+    logger.error(f"Invalid hyperparameter: {e}")
+    raise    # re-raise after logging</code></pre>
 
-<p>The star unpacking pattern (<code>first, *rest</code>) is especially useful for parsing CSVs, splitting command arguments, and any situation where you know the structure of the first few items but the rest varies. The <code>_</code> convention tells other readers "I'm intentionally ignoring this value" — it's not magic, just convention.</p>
-
-
-<!-- ═══════════════════════════════════════ -->
-<!-- CHECKLIST                               -->
-<!-- ═══════════════════════════════════════ -->
-<h3>What You Should Now Be Able To Do</h3>
-
-<ul>
-  <li>☑ Use dict and set comprehensions — and know when nesting becomes unreadable</li>
-  <li>☑ Explain why <code>()</code> generator expressions use less memory than <code>[]</code> list comprehensions</li>
-  <li>☑ Build a multi-stage data pipeline using generators and <code>yield</code></li>
-  <li>☑ Explain why generators exhaust after one pass — and know the workaround</li>
-  <li>☑ Write a timing decorator with <code>@functools.wraps</code></li>
-  <li>☑ Catch specific exceptions — and articulate why bare <code>except:</code> is dangerous</li>
-  <li>☑ Choose EAFP over LBYL by default and explain the concurrency reason</li>
-  <li>☑ Write a custom context manager with <code>contextlib.contextmanager</code></li>
-</ul>
-<!-- ═══════════ File I/O ═══════════ -->
-<h2>File I/O</h2>
+<p>Never silently swallow exceptions. If you catch an exception, either handle it (log, retry, fallback) or re-raise it. A silent <code>except: pass</code> is how bugs become mysteries that take days to track down.</p>
 
-<p>ML is 80% data plumbing. If you can't efficiently read configs, stream large files, and handle paths cleanly, you'll lose time every single day. This section isn't about <code>open()</code> — you know <code>open()</code> — it's about the patterns that keep your I/O fast, portable, and production-safe.</p>
-
-<!-- ════════════════════════════════════════════ -->
-<h3>The Basics in 30 Seconds</h3>
-
-<p><code>open()</code>, <code>with</code> statement, modes (<code>r</code>/<code>w</code>/<code>a</code>/<code>rb</code>/<code>wb</code>) — you know these. Two rules that matter:</p>
+<p>Custom exceptions are worth the effort for any non-trivial project. They make your error handling specific and your error messages actionable:</p>
 
-<ul>
-  <li><strong>Always use <code>with</code></strong> (context manager) to auto-close. No exceptions. Leaked file descriptors pile up silently until your long-running training script dies with <code>OSError: Too many open files</code>.</li>
-  <li><strong>Binary mode <code>rb</code>/<code>wb</code></strong> for anything that isn't text. Model weights, images, pickle files, <code>.npy</code> arrays — text mode will corrupt them because it tries to decode bytes as UTF-8.</li>
-</ul>
+<pre><code>class ExperimentFailedError(Exception):
+    def __init__(self, experiment_name, reason):
+        self.experiment_name = experiment_name
+        self.reason = reason
+        super().__init__(f"Experiment '{experiment_name}' failed: {reason}")</code></pre>
 
-<pre><code class="language-python"># The only pattern you should ever use
-with open("data.csv") as f:
-    content = f.read()
-# f is closed here — guaranteed, even if an exception fired
+<p>I'll be honest — I spent years writing generic <code>except Exception</code> blocks in ML scripts, thinking that detailed exception handling was overkill for research code. Then I spent a weekend debugging a training run that had silently caught and ignored a CUDA out-of-memory error, continued "training" on meaningless tensors, and produced results that looked plausible but were garbage. Custom exceptions would have caught it in seconds.</p>
 
-# Binary for non-text
-with open("model.pkl", "rb") as f:
-    model = pickle.load(f)</code></pre>
 
-<!-- ════════════════════════════════════════════ -->
-<h3>pathlib — The Modern Way</h3>
+<!-- ═══════════ Comprehensions ═══════════ -->
+<h2>Comprehensions and Pythonic Patterns</h2>
 
-<p>Here's the thing about <code>pathlib</code> — once you start chaining paths with the <code>/</code> operator, <code>os.path.join</code> starts to look like a relic. It's object-oriented, chainable, cross-platform, and the code reads like English.</p>
+<p>Python offers a compact syntax for creating new collections from existing ones. A <strong>list comprehension</strong> is a single expression that produces a list:</p>
 
-<pre><code class="language-python">from pathlib import Path
+<pre><code># instead of:
+good_results = []
+for r in results:
+    if r["accuracy"] > 0.85:
+        good_results.append(r["accuracy"])
 
-# Building dataset paths — clean and readable
-project = Path(__file__).parent
-data_dir = project / "data" / "processed"
-output_dir = project / "outputs" / "experiment_03"
+# write:
+good_results = [r["accuracy"] for r in results if r["accuracy"] > 0.85]</code></pre>
 
-# Create directories — one line, no errors if they exist
-output_dir.mkdir(parents=True, exist_ok=True)
+<p>The same pattern works for sets and dicts:</p>
 
-# Find all CSVs in nested directories
-csv_files = list(data_dir.glob("**/*.csv"))
-print(f"Found {len(csv_files)} CSV files")
-
-# Process each file — .stem, .suffix, .parent all just work
-for csv_path in csv_files:
-    print(f"  {csv_path.stem} ({csv_path.suffix}) in {csv_path.parent.name}/")
-    df = pd.read_csv(csv_path)
-    out = output_dir / f"{csv_path.stem}_cleaned.parquet"
-    df.to_parquet(out)</code></pre>
-
-<p>The key methods you'll use daily:</p>
-
-<ul>
-  <li><code>p / "subdir" / "file.txt"</code> — the <code>/</code> operator joins paths. No more <code>os.path.join(a, b, c)</code>.</li>
-  <li><code>p.glob("**/*.csv")</code> — recursive file search. Returns a generator, so it's lazy on huge trees.</li>
-  <li><code>p.stem</code> → <code>"train"</code>, <code>p.suffix</code> → <code>".csv"</code>, <code>p.name</code> → <code>"train.csv"</code> — anatomy of a path, as attributes.</li>
-  <li><code>p.parent</code> — go up one level. Chain it: <code>p.parent.parent</code> for two levels.</li>
-  <li><code>p.mkdir(parents=True, exist_ok=True)</code> — creates the full directory tree. The two flags you always want.</li>
-  <li><code>p.read_text()</code> / <code>p.write_text(s)</code> — one-liner for small files, no <code>with</code> needed.</li>
-  <li><code>Path(__file__).parent</code> — resolve paths relative to the script, not the current working directory. This is the single biggest portability win.</li>
-</ul>
+<pre><code># set comprehension — unique learning rates
+unique_lrs = {r["lr"] for r in results}
 
-<div class="callout-warning"><strong>Never hardcode paths.</strong> <code>"/home/user/data"</code> breaks on every other machine. <code>"data/train.csv"</code> breaks when run from a different directory. <code>Path(__file__).parent / "data" / "train.csv"</code> works everywhere — it resolves relative to where the script lives, not where you launched it from.</div>
-
-<!-- ════════════════════════════════════════════ -->
-<h3>Config Files — JSON, YAML, TOML</h3>
+# dict comprehension — map config to score
+scores_by_lr = {r["lr"]: r["accuracy"] for r in results}</code></pre>
 
-<p>Every ML project needs config files. The question is which format — and this is one of those genuine decision points where a table is the right tool:</p>
-
-<table>
-<tr><th>Format</th><th>Strengths</th><th>Weaknesses</th><th>Use When</th></tr>
-<tr>
-  <td><strong>JSON</strong></td>
-  <td>Built-in (<code>json</code> module), universal, strict syntax</td>
-  <td>No comments, verbose, no trailing commas</td>
-  <td>Data exchange, API responses, simple configs</td>
-</tr>
-<tr>
-  <td><strong>YAML</strong></td>
-  <td>Human-friendly, comments, anchors &amp; aliases for reuse</td>
-  <td>Indentation-sensitive (bugs from tabs vs spaces), <code>yaml.load()</code> is a security hole</td>
-  <td>Experiment configs, Kubernetes manifests, anything humans edit often</td>
-</tr>
-<tr>
-  <td><strong>TOML</strong></td>
-  <td>Simple, readable, built-in since Python 3.11 (<code>tomllib</code>)</td>
-  <td>Less expressive than YAML, no built-in write support yet</td>
-  <td><code>pyproject.toml</code>, simple project configs</td>
-</tr>
-</table>
+<p>Replace the brackets with parentheses and you get a <strong>generator expression</strong> — lazy, memory-efficient, produces values on demand instead of building the full collection:</p>
 
-<p>The pattern you'll use most — loading experiment configs with YAML:</p>
-
-<pre><code class="language-python">import yaml
-from pathlib import Path
-
-config_path = Path(__file__).parent / "configs" / "experiment.yaml"
-
-# ALWAYS safe_load — never yaml.load() which executes arbitrary Python
-with open(config_path) as f:
-    config = yaml.safe_load(f)
-
-lr = config["training"]["learning_rate"]      # 0.001
-batch_size = config["training"]["batch_size"]  # 32
-model_name = config["model"]["architecture"]   # "resnet50"</code></pre>
-
-<div class="callout-danger"><strong>Never use <code>yaml.load()</code></strong> — it can execute arbitrary Python code embedded in the YAML file. Always <code>yaml.safe_load()</code>. This isn't a style preference, it's a security vulnerability on the level of <code>eval()</code>.</div>
-
-<!-- ════════════════════════════════════════════ -->
-<h3>Handling Large Files</h3>
-
-<p>When your dataset doesn't fit in memory — and it will happen sooner than you think — you need to stop reading entire files at once. The good news: Python already has the right primitives.</p>
-
-<p><strong>Line-by-line reading is already lazy.</strong> This is the thing people miss — <code>for line in file</code> doesn't load the whole file. It reads one line at a time from the OS buffer. For text processing, this is your default pattern:</p>
-
-<pre><code class="language-python"># Streams a 50GB log file without loading it all into memory
-with open("training.log") as f:
-    errors = [line for line in f if "ERROR" in line]</code></pre>
-
-<p><strong>Streaming CSV with generators</strong> — when you need to process rows without materializing the whole dataset:</p>
-
-<pre><code class="language-python">import csv
-
-def stream_csv(path):
-    """Yields one row at a time — constant memory regardless of file size."""
-    with open(path) as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            yield row
-
-# Process 10M rows without loading them all
-for row in stream_csv("huge_dataset.csv"):
-    if float(row["score"]) > 0.95:
-        process(row)</code></pre>
-
-<p><strong>Memory-mapped files</strong> — when you need random access into a huge file without reading it all. The OS maps the file into virtual memory and pages in only what you access. This is how you'd read into a large binary file of pre-computed embeddings or model weights:</p>
-
-<pre><code class="language-python">import mmap
-
-with open("embeddings.bin", "rb") as f:
-    mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
-    # Read bytes 1000-2000 without loading the whole file
-    chunk = mm[1000:2000]
-    mm.close()</code></pre>
-
-<p><strong>Binary serialization formats</strong> — for saving and loading Python objects:</p>
-
-<ul>
-  <li><strong><code>pickle</code></strong> — fast, handles any Python object, but Python-only and a security risk (unpickling executes arbitrary code). Fine for internal checkpoints you control.</li>
-  <li><strong><code>joblib</code></strong> — better than pickle for large numpy arrays (compressed, memory-mapped loading). The <code>scikit-learn</code> standard for saving models.</li>
-  <li><strong>Never load untrusted pickle/joblib files</strong> — treat them like executables, because they are.</li>
-</ul>
-
-<pre><code class="language-python">import joblib
-
-# Save — compressed, efficient for numpy arrays
-joblib.dump(trained_model, "model.joblib", compress=3)
-
-# Load — can memory-map large arrays automatically
-model = joblib.load("model.joblib", mmap_mode="r")</code></pre>
-
-<!-- ════════════════════════════════════════════ -->
-<h3>What You Should Now Be Able To Do</h3>
-
-<ul>
-  <li>Use <code>pathlib</code> for all path operations — the <code>/</code> operator, <code>.glob()</code>, <code>.stem</code>, <code>.parent</code>, <code>.mkdir()</code> — and never go back to <code>os.path.join</code></li>
-  <li>Build paths relative to <code>Path(__file__).parent</code>, never hardcoded, never dependent on cwd</li>
-  <li>Choose the right config format — JSON for data exchange, YAML for human-edited configs (<code>safe_load</code> only), TOML for project metadata</li>
-  <li>Stream large files without loading them into memory — <code>for line in file</code>, CSV generators, <code>mmap</code> for random access</li>
-  <li>Pick the right serialization — <code>pickle</code> for quick checkpoints, <code>joblib</code> for numpy-heavy models, and never load untrusted files from either</li>
-  <li>Explain why <code>with</code> is mandatory (resource leaks) and why binary mode matters (data corruption)</li>
-</ul>
-<!-- ═══════════ Modules and Packages ═══════════ -->
-<h2>Modules and Packages</h2>
-
-<p>Clean project structure and proper packaging separate scripts from maintainable ML systems. This section is about the <em>structure</em>, not the syntax — how to organize code so your teammates can clone, install, and run in under a minute.</p>
-
-<!-- ════════════════════════════════════════════ -->
-<h3>Imports in 10 Seconds</h3>
-
-<p><code>import x</code>, <code>from x import y</code>, <code>from x import y as z</code> — you know these. One gotcha worth internalizing: <strong>circular imports</strong>. They happen when module A imports B and B imports A — both try to load each other before either finishes. Fix: move the shared code to a third module, or move the import inside the function that needs it (lazy import). If you're hitting circular imports often, your project structure needs rethinking.</p>
-
-<!-- ════════════════════════════════════════════ -->
-<h3>Project Structure — The Real Value</h3>
-
-<p>This is what actually matters. Not import syntax — everyone can Google that. The difference between a script that only works on your laptop and a project anyone can contribute to comes down to structure.</p>
-
-<pre><code class="language-text">my_project/
-├── src/
-│   └── my_project/
-│       ├── __init__.py
-│       ├── data/
-│       │   ├── __init__.py
-│       │   └── loader.py
-│       ├── models/
-│       │   ├── __init__.py
-│       │   └── resnet.py
-│       ├── training/
-│       │   ├── __init__.py
-│       │   └── trainer.py
-│       └── utils/
-│           ├── __init__.py
-│           └── metrics.py
-├── tests/
-│   ├── test_loader.py
-│   └── test_trainer.py
-├── configs/
-│   └── experiment.yaml
-├── pyproject.toml
-└── README.md</code></pre>
-
-<p><strong>Why the <code>src/</code> layout?</strong> Without it, Python can accidentally import your local package directory instead of the installed version. When your project root contains a folder named <code>my_project/</code> and you're sitting in that root, <code>import my_project</code> grabs the local folder — not the version you <code>pip install</code>-ed. The <code>src/</code> layer prevents this. You run <code>pip install -e .</code> from the root, and imports always resolve to the installed package. It's a small structural choice that eliminates an entire class of "works on my machine" bugs.</p>
-
-<p><strong><code>__init__.py</code></strong> — what it does and when to care:</p>
-
-<ul>
-  <li>It marks a directory as a Python package. Without it, Python won't recognize the directory for imports.</li>
-  <li><strong>Keep it empty</strong> most of the time. Seriously. An empty <code>__init__.py</code> is the right default.</li>
-  <li><strong>Put stuff in it</strong> when you want a clean public API — re-exporting the things users of your package should access directly:</li>
-</ul>
-
-<pre><code class="language-python"># src/my_project/__init__.py
-from .models.resnet import ResNet50
-from .training.trainer import Trainer
-from .data.loader import DataLoader
-
-# Now users can do: from my_project import ResNet50, Trainer
-# Instead of: from my_project.models.resnet import ResNet50</code></pre>
-
-<p><strong><code>__all__</code></strong> controls what <code>from package import *</code> exports. It does <em>not</em> prevent direct imports — it only restricts star imports. Define it when your module has internal helpers that shouldn't leak into <code>*</code>:</p>
-
-<pre><code class="language-python"># models/resnet.py
-__all__ = ["ResNet50", "ResNet101"]
-
-def _build_block(channels):   # internal — not in __all__
-    ...
-
-class ResNet50:  # public
-    ...</code></pre>
-
-<!-- ════════════════════════════════════════════ -->
-<h3>Virtual Environments</h3>
-
-<p>The core idea: <strong>isolation</strong>. Your project's dependencies don't pollute system Python, and your TensorFlow project doesn't break your PyTorch one. If you're not using virtual environments, every <code>pip install</code> is a ticking time bomb.</p>
-
-<pre><code class="language-bash"># Create, activate, install — three commands, done
-python -m venv .venv
-source .venv/bin/activate      # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-
-# Verify you're in the right env
-which python   # should show .venv/bin/python
-pip list       # only this project's dependencies</code></pre>
-
-<p><strong>When to use <code>conda</code> instead:</strong> When you need CUDA libraries, compiled C/Fortran packages (like some scipy builds), or non-Python dependencies. <code>conda</code> manages binary packages across languages — it can install CUDA toolkit, cuDNN, and PyTorch with GPU support in one command. <code>venv</code> + <code>pip</code> can only install Python packages.</p>
-
-<p><strong>Requirements management</strong> — the ecosystem has converged, but there are still choices:</p>
-
-<ul>
-  <li><strong><code>requirements.txt</code></strong> — a flat list of pinned packages. Simple, universal. Generate with <code>pip freeze > requirements.txt</code>. Problem: includes transitive dependencies, gets bloated.</li>
-  <li><strong><code>pyproject.toml</code></strong> — the modern standard. Replaces <code>setup.py</code>, <code>setup.cfg</code>, and can specify dependencies. What you should use for new projects.</li>
-  <li><strong><code>poetry.lock</code> / <code>uv.lock</code></strong> — lock files that pin exact versions of every transitive dependency. True reproducibility. Worth the tooling cost for production systems.</li>
-</ul>
-
-<div class="callout-warning"><strong>Pin your versions.</strong> <code>pip install numpy</code> installs the latest — which might break your code next month. Always use <code>numpy==1.26.4</code> in requirements files. Unpinned dependencies are the #1 cause of "it worked yesterday" bugs.</div>
-
-<!-- ════════════════════════════════════════════ -->
-<h3>Packaging Tools — Which One</h3>
-
-<table>
-<tr><th>Tool</th><th>What It Does</th><th>Use When</th></tr>
-<tr>
-  <td><strong>pip + requirements.txt</strong></td>
-  <td>Simple dependency list, manual pinning</td>
-  <td>Quick scripts, small projects, tutorials. Everyone has it.</td>
-</tr>
-<tr>
-  <td><strong>pip + pyproject.toml</strong></td>
-  <td>Modern standard, replaces setup.py, declarative metadata</td>
-  <td>Any new project. This is the direction Python packaging is going.</td>
-</tr>
-<tr>
-  <td><strong>Poetry</strong></td>
-  <td>Dependency resolution, lock files, virtual env management, publishing</td>
-  <td>Libraries you'll publish, teams that need strict reproducibility.</td>
-</tr>
-<tr>
-  <td><strong>uv</strong></td>
-  <td>Fast Rust-based pip/venv replacement, lock files, project management</td>
-  <td>When speed matters (10-100× faster installs). Rapidly gaining adoption.</td>
-</tr>
-<tr>
-  <td><strong>conda</strong></td>
-  <td>Cross-language package manager, manages binaries and CUDA</td>
-  <td>GPU workloads, scientific computing, non-Python dependencies.</td>
-</tr>
-</table>
-
-<p>For most ML projects: start with <strong>pip + pyproject.toml</strong>. If you need GPU libraries that are painful to compile, add <strong>conda</strong>. If you need reproducible lock files and plan to publish, consider <strong>Poetry</strong> or <strong>uv</strong>.</p>
-
-<!-- ════════════════════════════════════════════ -->
-<h3><code>if __name__ == "__main__":</code></h3>
-
-<p>Guards code that should only run when the file is executed directly, not when imported. Without it, importing a module that trains a model would <em>start training</em>.</p>
-
-<!-- ════════════════════════════════════════════ -->
-<h3>What You Should Now Be Able To Do</h3>
-
-<ul>
-  <li>Structure an ML project with the <code>src/</code> layout and explain why it prevents accidental local imports</li>
-  <li>Know when <code>__init__.py</code> should be empty (most of the time) vs when to re-export a public API</li>
-  <li>Create and activate a virtual environment, and explain why isolation matters</li>
-  <li>Choose between pip+requirements.txt (simple), pyproject.toml (modern standard), Poetry/uv (lock files), and conda (GPU/binary)</li>
-  <li>Diagnose circular imports and <code>ModuleNotFoundError</code> — check <code>which python</code>, check <code>sys.path</code>, restructure if needed</li>
-  <li>Use the <code>__name__ == "__main__"</code> guard and explain what happens without it</li>
-</ul>
+<pre><code># generator expression — doesn't build a list in memory
+total = sum(r["accuracy"] for r in results)</code></pre>
+
+<p>Use list comprehensions when you need to index into the result or iterate multiple times. Use generator expressions when you're feeding the result into a function that consumes it once (like <code>sum</code>, <code>max</code>, <code>any</code>, <code>all</code>). The difference is invisible for small data, but for millions of items, a generator uses kilobytes where a list comprehension would use gigabytes.</p>
+
+<p>A few more patterns worth having in your toolkit:</p>
+
+<p><strong>Unpacking</strong> lets you assign multiple values at once. Extended unpacking with <code>*</code> captures the rest:</p>
+
+<pre><code>best, *rest = sorted(results, key=lambda r: r["accuracy"], reverse=True)
+# best is the top result, rest is everything else</code></pre>
+
+<p>The <strong>walrus operator</strong> (<code>:=</code>), introduced in Python 3.8, lets you assign and use a value within an expression. It's useful in comprehensions where you'd otherwise compute the same thing twice:</p>
+
+<pre><code># without walrus — computes expensive_metric twice
+good = [expensive_metric(r) for r in results if expensive_metric(r) > 0.9]
+
+# with walrus — computes once, names it 'm'
+good = [m for r in results if (m := expensive_metric(r)) > 0.9]</code></pre>
+
+<p><strong>f-strings</strong>, available since Python 3.6, are the cleanest way to build strings with embedded expressions:</p>
+
+<pre><code>for r in results:
+    print(f"lr={r['lr']}, epochs={r['epochs']}, acc={r['accuracy']:.2%}")</code></pre>
+
+<p>The <code>:.2%</code> inside the f-string is a format specifier — it formats the number as a percentage with two decimal places. f-strings can contain any valid Python expression, including function calls and method invocations.</p>
+
+
+<!-- ═══════════ Type Hints ═══════════ -->
+<h2>Type Hints — Why They Matter at Scale</h2>
+
+<p>Python is dynamically typed. You can pass anything to any function, and Python won't complain until it actually tries to do something that doesn't work. This flexibility is liberating for small scripts and exploratory code. For a 500,000-line ML codebase with 40 contributors, it's terrifying.</p>
+
+<p><strong>Type hints</strong> (also called type annotations) are optional annotations that document what types a function expects and returns. They don't change runtime behavior — Python ignores them. But tools like <code>mypy</code>, <code>pyright</code>, and <code>pyre</code> can analyze them statically, before the code ever runs, catching bugs that would otherwise surface only in production.</p>
+
+<pre><code>from typing import Optional
+
+def best_result(results: list[dict], metric: str = "accuracy") -> Optional[dict]:
+    if not results:
+        return None
+    return max(results, key=lambda r: r[metric])</code></pre>
+
+<p>The type annotations say: this function takes a list of dicts and an optional string, and returns either a dict or <code>None</code>. If someone passes an integer where <code>results</code> should be, <code>mypy</code> catches it before anyone runs the code.</p>
+
+<p>For ML codebases, type hints are especially valuable because the data flowing through your pipeline is complex — tensors of specific shapes, nested dicts of configs, optional fields that may or may not be present. The <code>Protocol</code> class from <code>typing</code> lets you define structural types — "any object with a <code>predict</code> method" — without requiring inheritance. This is Python's way of formalizing duck typing: if it has a <code>predict</code> method, it's a predictor, regardless of its class hierarchy.</p>
+
+<pre><code>from typing import Protocol
+
+class Predictor(Protocol):
+    def predict(self, X) -> list: ...
+
+def evaluate(model: Predictor, test_data) -> float:
+    predictions = model.predict(test_data)
+    # ... compute metrics ...
+    return accuracy</code></pre>
+
+<p>Any object with a <code>predict</code> method that matches this signature — a scikit-learn model, a PyTorch wrapper, a custom class — will satisfy the type checker. No base class needed. I'm still developing my intuition for when <code>Protocol</code> is the right choice versus an abstract base class, but the general guideline is: use <code>Protocol</code> when you don't control the classes you're type-checking against.</p>
+
+
+<!-- ═══════════ Wrap-Up ═══════════ -->
+<h2>Wrap-Up</h2>
+
+<p>If you're still with me, thank you. I hope it was worth it.</p>
+
+<p>We started with the most fundamental idea — that Python variables are names bound to objects, not boxes holding values — and built from there. We saw how mutability determines aliasing behavior and default argument gotchas. We explored the four core containers and why each exists. We traced the iteration protocol through to generators — Python's elegant mechanism for lazy evaluation. Then we climbed into the power tools: first-class functions enabling closures, closures enabling decorators, context managers guaranteeing resource safety, and the EAFP philosophy that makes Python's error handling distinct. We finished with comprehensions, Pythonic patterns, and why type hints matter when code grows beyond a single person's head.</p>
+
+<p>Our experiment tracker grew from three lines of code to a system that could time experiments, filter results lazily, manage resources safely, and catch errors precisely. That's the shape of production Python.</p>
+
+<p>My hope is that the next time you encounter a mysterious aliasing bug, or wonder why a generator silently produces nothing on the second pass, or see a stack of decorators on a function, instead of pattern-matching against memorized rules, you'll trace through the mechanics yourself — names binding to objects, closures capturing variables, protocols being satisfied — having a pretty solid mental model of what's going on under the hood.</p>
+
+
+<!-- ═══════════ Resources ═══════════ -->
+<h2>Resources</h2>
+
+<p><strong>Fluent Python by Luciano Ramalho</strong> — The single best book on Python for people who already know how to program. The chapters on the data model and iterators are worth the price alone.</p>
+
+<p><strong>Python Data Model documentation</strong> (<a href="https://docs.python.org/3/reference/datamodel.html">docs.python.org/3/reference/datamodel.html</a>) — The official reference for how objects, types, and special methods work. Dense but authoritative.</p>
+
+<p><strong>Raymond Hettinger's PyCon talks</strong> — Especially "Modern Python Dictionaries" and "Beyond PEP 8." Hettinger has a gift for making internals feel intuitive. Wildly helpful.</p>
+
+<p><strong>CPython source code</strong> (<a href="https://github.com/python/cpython">github.com/python/cpython</a>) — When you want to know exactly how something works, this is where you go. Start with <code>Objects/listobject.c</code> and <code>Objects/dictobject.c</code>.</p>
+
+<p><strong>The Hitchhiker's Guide to Python</strong> (<a href="https://docs.python-guide.org/">docs.python-guide.org</a>) — Opinionated best practices for writing production Python. The sections on project structure and packaging are insightful.</p>
+
+<p><strong>PEP 703 — Making the GIL Optional</strong> (<a href="https://peps.python.org/pep-0703/">peps.python.org/pep-0703</a>) — The proposal for free-threaded Python, experimental in 3.13. If you care about Python's future in multi-core computing, this is the document to read.</p>
 
       <div class="page-nav">
         <span></span>
