@@ -298,868 +298,393 @@
 <h1>LLM Evaluation</h1>
 <div class="chapter-meta">
   <span class="tag">Chapter 12: Large Language Models</span>
-  <span class="tag">8 subtopics</span>
-</div>
-
-<div class="tldr">
-  <div class="tldr-label">TL;DR</div>
-  <p>Evaluating LLMs is fundamentally harder than evaluating classifiers &mdash; there&rsquo;s no single number that tells you if a summary is &ldquo;good.&rdquo; Perplexity measures language modeling ability but not usefulness. Classical NLP metrics (BLEU, ROUGE, BERTScore) work for narrow tasks but break on open-ended generation. Benchmarks like MMLU and HumanEval provide standardized comparisons, but suffer from data contamination and saturation. The practical workhorse is LLM-as-judge &mdash; using a strong model (GPT-4, Claude) to evaluate weaker ones &mdash; which correlates surprisingly well with human ratings when done right. Human evaluation remains the gold standard for safety-critical and subjective tasks but is expensive and slow. The winning strategy: build your own eval set, iterate with LLM-as-judge, validate with humans on edge cases, and treat every production failure as a new test case.</p>
+  <span class="tag">10 subtopics</span>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  PART 1 — WHY LLM EVALUATION IS HARD                              -->
+<!--  OPENING                                                           -->
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 
-<h2>Why LLM Evaluation Is Hard</h2>
+<p>I avoided thinking deeply about LLM evaluation for longer than I should have. Every time someone asked me &ldquo;how do you know this model is actually better?&rdquo; I&rsquo;d wave my hands at some benchmark numbers or say something like &ldquo;the outputs look pretty good.&rdquo; That worked for a while. Then I shipped a feature where the model hallucinated legal citations in production, and &ldquo;looks pretty good&rdquo; stopped feeling adequate. Here is that dive.</p>
 
-<p>In traditional ML, evaluation is (relatively) straightforward. You have labels. You have predictions. You compute accuracy, precision, recall, F1, AUC &mdash; pick your metric, run the math, get a number. A classifier that scores 0.94 F1 is better than one scoring 0.91. Done.</p>
+<p>LLM evaluation is the discipline of measuring whether a language model&rsquo;s outputs are good &mdash; and &ldquo;good&rdquo; turns out to be a surprisingly hard word to pin down. The field has evolved from simple metrics like perplexity (1990s) through standardized benchmarks (2018&ndash;2023) to crowdsourced human preference systems and LLM-as-judge approaches. It sits at the center of every decision about which model to use, whether a prompt change helped, and whether a product is safe to ship.</p>
 
-<p>LLMs don&rsquo;t work that way. When you ask a model to summarize a document, there are dozens of equally valid summaries. When you ask it to write code, there are multiple correct implementations. When you ask &ldquo;explain quantum entanglement simply,&rdquo; there&rsquo;s no single ground truth. The output space is enormous, and quality is multidimensional: is the response accurate? Helpful? Concise? Safe? On-topic? Well-structured? A response can nail accuracy while being verbose and poorly organized.</p>
+<p>Before we start, a heads-up. We&rsquo;re going to be talking about information theory, ranking systems borrowed from chess, and some code for building evaluation pipelines. You don&rsquo;t need to know any of it beforehand. We&rsquo;ll add what we need, one piece at a time.</p>
 
-<p>This makes evaluation the <strong>weakest link</strong> in most LLM projects. Teams spend months building RAG pipelines and fine-tuning models, then evaluate by &hellip; vibes. Someone reads a few outputs, says &ldquo;looks good,&rdquo; and ships it. Then production users find all the edge cases you missed.</p>
+<p>This isn&rsquo;t a short journey, but I hope you&rsquo;ll be glad you came.</p>
 
-<div class="warning-box">
-  <strong>The eval gap is real.</strong> Most LLM failures in production aren&rsquo;t model failures &mdash; they&rsquo;re evaluation failures. The model was always doing the wrong thing; you just didn&rsquo;t have the eval to catch it. Invest in evaluation before you invest in fancier models.
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  TABLE OF CONTENTS                                                 -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+
+<div style="margin: 2rem 0; padding: 1.5rem; border-left: 3px solid var(--accent, #6c63ff);">
+  <p style="margin:0 0 0.5rem 0; font-weight:600;">Contents</p>
+  <p style="margin:0.2rem 0; padding-left:1rem;">The restaurant review problem</p>
+  <p style="margin:0.2rem 0; padding-left:1rem;">Perplexity &mdash; the original language model metric</p>
+  <p style="margin:0.2rem 0; padding-left:1rem;">When string matching was enough</p>
+  <p style="margin:0.2rem 0; padding-left:1rem;">The benchmark zoo</p>
+  <p style="margin:0.2rem 0; padding-left:1rem;">Rest stop</p>
+  <p style="margin:0.2rem 0; padding-left:1rem;">Letting one LLM judge another</p>
+  <p style="margin:0.2rem 0; padding-left:1rem;">Elo ratings and the arena</p>
+  <p style="margin:0.2rem 0; padding-left:1rem;">The contamination problem</p>
+  <p style="margin:0.2rem 0; padding-left:1rem;">Human evaluation &mdash; the expensive gold standard</p>
+  <p style="margin:0.2rem 0; padding-left:1rem;">Evaluation frameworks and building your own evals</p>
+  <p style="margin:0.2rem 0; padding-left:1rem;">Goodhart&rsquo;s law and the eval crisis</p>
+  <p style="margin:0.2rem 0; padding-left:1rem;">Resources</p>
 </div>
 
-<p>The evaluation landscape looks like this:</p>
-
-<table>
-  <thead>
-    <tr>
-      <th>Evaluation Method</th>
-      <th>Speed</th>
-      <th>Cost</th>
-      <th>Reliability</th>
-      <th>Best For</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><strong>Perplexity</strong></td>
-      <td>Fast</td>
-      <td>Low</td>
-      <td>Narrow (only measures prediction)</td>
-      <td>Comparing base models on same data</td>
-    </tr>
-    <tr>
-      <td><strong>Classical metrics</strong> (BLEU, ROUGE)</td>
-      <td>Fast</td>
-      <td>Low</td>
-      <td>Moderate (string overlap)</td>
-      <td>Translation, summarization</td>
-    </tr>
-    <tr>
-      <td><strong>Benchmarks</strong> (MMLU, HumanEval)</td>
-      <td>Moderate</td>
-      <td>Moderate</td>
-      <td>Good for broad comparison</td>
-      <td>Model selection, public comparison</td>
-    </tr>
-    <tr>
-      <td><strong>LLM-as-Judge</strong></td>
-      <td>Moderate</td>
-      <td>Moderate</td>
-      <td>Good (with debiasing)</td>
-      <td>Rapid iteration, production eval</td>
-    </tr>
-    <tr>
-      <td><strong>Human evaluation</strong></td>
-      <td>Slow</td>
-      <td>High</td>
-      <td>Highest</td>
-      <td>Safety, subjective quality, final sign-off</td>
-    </tr>
-  </tbody>
-</table>
-
-<p>Let&rsquo;s go through each one.</p>
-
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  PART 2 — PERPLEXITY                                              -->
+<!--  THE RESTAURANT REVIEW PROBLEM                                     -->
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 
-<h2>Perplexity &mdash; The Fundamental LM Metric</h2>
+<h2>The Restaurant Review Problem</h2>
 
-<p>Before we get to the fancy stuff, there&rsquo;s the original language model metric: <strong>perplexity</strong> (PPL). It directly measures what language models were originally designed to do &mdash; predict the next token.</p>
+<p>To ground everything that follows, imagine we&rsquo;re building a product called <strong>ReviewBot</strong>. It reads restaurant reviews and generates a one-paragraph summary for each restaurant. Our dataset has three reviews for a tiny pizza shop:</p>
 
-<p>Mathematically:</p>
+<pre><code>Review 1: "Best margherita in town. Crust is perfect. Service was slow."
+Review 2: "Pizza is great but the wait was 45 minutes on a Tuesday."
+Review 3: "Amazing pizza, terrible service. Worth the wait though."</code></pre>
 
-<pre><code># Perplexity = exponentiated average cross-entropy loss
-#
-# Given a sequence of tokens x₁, x₂, ..., xₙ:
+<p>We feed these into ReviewBot and it produces: <em>&ldquo;Customers love the pizza, especially the margherita. However, several reviewers noted slow service and long wait times.&rdquo;</em></p>
+
+<p>How do we know if that summary is &ldquo;good&rdquo;? With a traditional classifier, we&rsquo;d have a label (cat or dog, spam or not) and we&rsquo;d count how often the model got it right. But there are dozens of equally valid summaries of those three reviews. &ldquo;Great pizza, bad service&rdquo; captures the gist. So does a three-sentence version that mentions the margherita specifically. Quality isn&rsquo;t one-dimensional here &mdash; we care about accuracy, completeness, conciseness, and whether it hallucinated something that wasn&rsquo;t in the reviews.</p>
+
+<p>This is the fundamental challenge of LLM evaluation: the output space is vast, quality is multidimensional, and there&rsquo;s rarely a single &ldquo;right answer.&rdquo; Every method we&rsquo;ll explore is an attempt to wrestle that messy reality into something measurable. We&rsquo;ll keep coming back to ReviewBot throughout, watching each evaluation method succeed and fail on this same problem.</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  PERPLEXITY                                                        -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+
+<h2>Perplexity &mdash; The Original Language Model Metric</h2>
+
+<p>The oldest way to evaluate a language model doesn&rsquo;t look at the model&rsquo;s generated text at all. Instead, it asks: given a sentence, how surprised was the model by each word?</p>
+
+<p>Let&rsquo;s build the intuition with a tiny example. Suppose our model reads the sentence &ldquo;The pizza was&rdquo; and needs to predict the next word. If it assigns probability 0.4 to &ldquo;great,&rdquo; 0.3 to &ldquo;good,&rdquo; 0.1 to &ldquo;terrible,&rdquo; and tiny probabilities to thousands of other words, and the actual next word is &ldquo;great,&rdquo; the model was reasonably confident. It assigned 0.4 to the right answer. But if the actual next word is &ldquo;transcendent&rdquo; and the model assigned 0.0001 to it, the model was very surprised. That surprise is what we measure.</p>
+
+<p>For each token in a test sequence, the model produces a probability. We take the log of that probability (which is negative, since probabilities are between 0 and 1), average across all tokens, negate it, and exponentiate. That&rsquo;s <strong>perplexity</strong>.</p>
+
+<pre><code># Given tokens x₁, x₂, ..., xₙ and the model's predicted probabilities:
 #
 #   PPL = exp( -1/N × Σ log P(xᵢ | x₁, ..., xᵢ₋₁) )
 #
-# Intuition: if the model assigns probability 1.0 to every token,
-# cross-entropy = 0, PPL = exp(0) = 1.0 (perfect).
+# Walk through a 4-token example:
 #
-# If the model is "confused" and spreads probability across many tokens,
-# PPL goes up. A PPL of 20 means the model is, on average, as uncertain
-# as if it were choosing uniformly among 20 options at each step.
+#   Token:        "The"   "pizza"  "was"   "great"
+#   P(token):      0.1     0.05    0.3     0.4
+#   log P:        -2.30   -3.00   -1.20   -0.92
 #
-# Lower PPL = better language modeling.</code></pre>
-
-<p>What perplexity tells you: how well the model predicts held-out text. If you&rsquo;re comparing two models trained on the same data distribution, lower perplexity generally means a better model. It&rsquo;s useful for tracking training progress and for comparing base models head-to-head.</p>
-
-<p>What perplexity does <strong>not</strong> tell you:</p>
-
-<ul>
-  <li>Whether the model generates <em>useful</em> text (a model can have great PPL while generating bland, generic completions)</li>
-  <li>Whether the model is <em>helpful</em> or <em>safe</em> as a chat assistant</li>
-  <li>Whether it follows instructions well</li>
-  <li>Anything about factual accuracy or hallucination</li>
-</ul>
-
-<div class="info-box">
-  <strong>Perplexity is domain-sensitive.</strong> A model with PPL 8 on Wikipedia might have PPL 40 on legal contracts. Always evaluate perplexity on text from your target domain. And you can only compare perplexity across models that use the same tokenizer &mdash; different tokenizations produce different sequence lengths, making PPL values incomparable.
-</div>
-
-<p>Here&rsquo;s how to compute it in practice:</p>
-
-<pre><code>import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
-def compute_perplexity(model_name, text, max_length=512):
-    """Compute perplexity of a model on a given text."""
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=torch.float16, device_map="auto"
-    )
-
-    encodings = tokenizer(text, return_tensors="pt", truncation=True,
-                          max_length=max_length)
-    input_ids = encodings.input_ids.to(model.device)
-
-    with torch.no_grad():
-        outputs = model(input_ids, labels=input_ids)
-        # outputs.loss is the average cross-entropy per token
-        neg_log_likelihood = outputs.loss
-
-    ppl = torch.exp(neg_log_likelihood).item()
-    return ppl
-
-# Example usage
-text = """The transformer architecture has revolutionized natural language
-processing. Self-attention allows each token to attend to every other token
-in the sequence, enabling the model to capture long-range dependencies."""
-
-ppl = compute_perplexity("gpt2", text)
-print(f"GPT-2 Perplexity: {ppl:.2f}")
-# GPT-2 Perplexity: ~25-35 (typical for general text)
-
-# For long texts, use a sliding window approach to handle
-# sequences longer than the model's context window
-def compute_perplexity_sliding_window(model_name, text, stride=256):
-    """Sliding window PPL for texts longer than context window."""
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=torch.float16, device_map="auto"
-    )
-    max_length = model.config.max_position_embeddings
-
-    encodings = tokenizer(text, return_tensors="pt")
-    input_ids = encodings.input_ids
-    seq_len = input_ids.size(1)
-
-    nlls = []
-    prev_end = 0
-    for begin in range(0, seq_len, stride):
-        end = min(begin + max_length, seq_len)
-        target_len = end - prev_end  # only score the new tokens
-
-        input_chunk = input_ids[:, begin:end].to(model.device)
-        target_chunk = input_chunk.clone()
-        target_chunk[:, :-target_len] = -100  # mask already-scored tokens
-
-        with torch.no_grad():
-            outputs = model(input_chunk, labels=target_chunk)
-            nlls.append(outputs.loss * target_len)
-
-        prev_end = end
-        if end == seq_len:
-            break
-
-    ppl = torch.exp(torch.stack(nlls).sum() / prev_end).item()
-    return ppl</code></pre>
-
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  PART 3 — CLASSICAL NLP METRICS                                    -->
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-
-<h2>Classical NLP Metrics</h2>
-
-<p>Before LLMs, NLP tasks like translation and summarization had reference-based metrics. These still get used &mdash; but you need to know their limitations.</p>
-
-<h3>BLEU (Bilingual Evaluation Understudy)</h3>
-
-<p>Counts n-gram overlaps between the generated text and one or more reference translations. BLEU-4 uses unigrams through 4-grams, with a brevity penalty to discourage overly short outputs. Scores range from 0 to 1 (often reported as 0&ndash;100).</p>
-
-<p><strong>Good for:</strong> machine translation, where phrasing matters and references are relatively constrained.</p>
-<p><strong>Bad for:</strong> open-ended generation. &ldquo;The cat sat on the mat&rdquo; and &ldquo;A feline rested upon the rug&rdquo; would score nearly zero despite meaning the same thing.</p>
-
-<h3>ROUGE (Recall-Oriented Understudy for Gisting Evaluation)</h3>
-
-<p>Similar idea, but recall-oriented (what fraction of the reference n-grams appear in the output). ROUGE-1 (unigrams), ROUGE-2 (bigrams), and ROUGE-L (longest common subsequence) are the standard variants.</p>
-
-<p><strong>Good for:</strong> summarization, where you care about coverage of key content.</p>
-<p><strong>Bad for:</strong> anything where paraphrasing matters. Same problem as BLEU &mdash; it&rsquo;s string matching.</p>
-
-<h3>BERTScore</h3>
-
-<p>Computes semantic similarity using contextual BERT embeddings. Each token in the candidate is matched to the most similar token in the reference (and vice versa), then precision, recall, and F1 are computed over these matches.</p>
-
-<p><strong>Good for:</strong> capturing paraphrases and semantic equivalence. &ldquo;The cat sat on the mat&rdquo; vs. &ldquo;A feline rested on the rug&rdquo; would score high with BERTScore.</p>
-<p><strong>Bad for:</strong> it&rsquo;s still reference-based. You need a &ldquo;gold&rdquo; answer to compare against.</p>
-
-<table>
-  <thead>
-    <tr>
-      <th>Metric</th>
-      <th>Type</th>
-      <th>Best For</th>
-      <th>Weakness</th>
-      <th>Needs Reference?</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><strong>BLEU</strong></td>
-      <td>Precision-oriented n-gram overlap</td>
-      <td>Machine translation</td>
-      <td>No semantic understanding; punishes valid paraphrases</td>
-      <td>Yes</td>
-    </tr>
-    <tr>
-      <td><strong>ROUGE-L</strong></td>
-      <td>Recall-oriented (LCS)</td>
-      <td>Summarization</td>
-      <td>String matching; misses meaning-preserving rewrites</td>
-      <td>Yes</td>
-    </tr>
-    <tr>
-      <td><strong>BERTScore</strong></td>
-      <td>Embedding similarity</td>
-      <td>Any reference-based task</td>
-      <td>Computationally heavier; still needs a reference</td>
-      <td>Yes</td>
-    </tr>
-    <tr>
-      <td><strong>METEOR</strong></td>
-      <td>Alignment with stemming + synonyms</td>
-      <td>Translation</td>
-      <td>Language-specific; slower than BLEU</td>
-      <td>Yes</td>
-    </tr>
-    <tr>
-      <td><strong>Perplexity</strong></td>
-      <td>Probability of held-out text</td>
-      <td>LM comparison</td>
-      <td>Says nothing about generation quality</td>
-      <td>No (uses model&rsquo;s own probabilities)</td>
-    </tr>
-  </tbody>
-</table>
-
-<div class="info-box">
-  <strong>The reference problem.</strong> All classical metrics require reference outputs. For many real-world LLM tasks (chatbots, creative writing, complex reasoning), there simply <em>is</em> no single correct reference. This is why the field has moved toward reference-free evaluation methods like LLM-as-judge.
-</div>
-
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  PART 4 — BENCHMARKS                                              -->
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-
-<h2>Benchmarks &mdash; The Leaderboard Landscape</h2>
-
-<p>When someone claims their model is &ldquo;state of the art,&rdquo; they&rsquo;re usually pointing at benchmark numbers. These standardized tests let you compare models on a level playing field &mdash; or at least, that&rsquo;s the idea. In practice, the benchmark landscape is a mix of genuinely useful signal and misleading noise.</p>
-
-<h3>The Major Benchmarks</h3>
-
-<p><strong>MMLU</strong> (Massive Multitask Language Understanding): 57 subjects, 14,000+ multiple-choice questions spanning STEM, humanities, social sciences, and more. Think of it as the SAT for LLMs. It was the go-to benchmark for years, but top models now score &gt;90%, and it&rsquo;s arguably saturating.</p>
-
-<p><strong>HellaSwag</strong>: Commonsense reasoning through sentence completion. Given a scenario, pick the most plausible continuation. Models found it trivially easy once they got big enough &mdash; GPT-4 scores &gt;95%.</p>
-
-<p><strong>HumanEval / MBPP</strong>: Code generation. Given a function signature and docstring, generate the implementation. Evaluated with <strong>pass@k</strong> &mdash; generate k solutions, pass if any one works. HumanEval has 164 problems; MBPP has ~1000. These are more resistant to saturation than text benchmarks because code either runs or it doesn&rsquo;t.</p>
-
-<p><strong>GSM8K</strong>: 8,500 grade-school math word problems requiring multi-step reasoning. Tests chain-of-thought ability. Important because it measures reasoning, not just pattern matching. Top models now score &gt;90% with CoT prompting.</p>
-
-<p><strong>TruthfulQA</strong>: 817 questions designed to trigger common misconceptions. Measures the model&rsquo;s tendency to hallucinate or repeat popular myths. &ldquo;What happens if you crack your knuckles?&rdquo; &mdash; a truthful model says &ldquo;nothing harmful,&rdquo; not &ldquo;you get arthritis.&rdquo;</p>
-
-<p><strong>MT-Bench</strong>: 80 multi-turn questions judged by GPT-4. Covers writing, reasoning, math, coding, extraction, STEM, humanities, and roleplay. Produces a 1&ndash;10 score. Good for measuring conversational ability.</p>
-
-<p><strong>LMSYS Chatbot Arena</strong>: Crowd-sourced, blind head-to-head comparisons. Users chat with two anonymous models simultaneously and pick the better one. ELO ratings are computed from thousands of battles. Arguably the most reliable overall evaluation because it captures real user preferences with no benchmark gaming possible.</p>
-
-<table>
-  <thead>
-    <tr>
-      <th>Benchmark</th>
-      <th>What It Measures</th>
-      <th>Format</th>
-      <th>Status</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><strong>MMLU</strong></td>
-      <td>Broad knowledge &amp; reasoning</td>
-      <td>Multiple choice (57 subjects)</td>
-      <td>Saturating (&gt;90% for top models)</td>
-    </tr>
-    <tr>
-      <td><strong>HellaSwag</strong></td>
-      <td>Commonsense reasoning</td>
-      <td>Sentence completion</td>
-      <td>Largely saturated (&gt;95%)</td>
-    </tr>
-    <tr>
-      <td><strong>HumanEval</strong></td>
-      <td>Code generation</td>
-      <td>Function implementation, pass@k</td>
-      <td>Still useful; harder variants exist (HumanEval+)</td>
-    </tr>
-    <tr>
-      <td><strong>MBPP</strong></td>
-      <td>Code generation (basic)</td>
-      <td>Short Python problems, pass@k</td>
-      <td>Active</td>
-    </tr>
-    <tr>
-      <td><strong>GSM8K</strong></td>
-      <td>Math reasoning</td>
-      <td>Word problems, chain-of-thought</td>
-      <td>Saturating; MATH benchmark is harder</td>
-    </tr>
-    <tr>
-      <td><strong>TruthfulQA</strong></td>
-      <td>Hallucination tendency</td>
-      <td>Questions designed to trigger misconceptions</td>
-      <td>Active, but small (817 questions)</td>
-    </tr>
-    <tr>
-      <td><strong>MT-Bench</strong></td>
-      <td>Multi-turn chat quality</td>
-      <td>GPT-4 judged, 1&ndash;10 score</td>
-      <td>Active</td>
-    </tr>
-    <tr>
-      <td><strong>Chatbot Arena</strong></td>
-      <td>Overall chat preference</td>
-      <td>Crowd-sourced ELO from blind battles</td>
-      <td>Gold standard for chat models</td>
-    </tr>
-    <tr>
-      <td><strong>GPQA</strong></td>
-      <td>Graduate-level Q&amp;A</td>
-      <td>Expert-written hard questions</td>
-      <td>Active; very hard even for experts</td>
-    </tr>
-    <tr>
-      <td><strong>ARC-AGI</strong></td>
-      <td>Abstract reasoning</td>
-      <td>Visual pattern puzzles</td>
-      <td>Active; frontier models still struggle</td>
-    </tr>
-  </tbody>
-</table>
-
-<div class="warning-box">
-  <strong>Don&rsquo;t benchmark-shop.</strong> It&rsquo;s trivially easy to find the benchmark where your model looks best and only report that one. Look at aggregate performance across multiple benchmarks, and weight the benchmarks that matter for <em>your</em> use case. A model that crushes MMLU but fails at code generation is useless if you&rsquo;re building a coding assistant.
-</div>
-
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  PART 5 — LLM-AS-JUDGE                                            -->
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-
-<h2>LLM-as-Judge &mdash; The Production Evaluation Workhorse</h2>
-
-<p>Here&rsquo;s the method that&rsquo;s actually changed how teams evaluate LLMs in practice: <strong>use a stronger LLM to judge the outputs of a weaker one</strong>. It sounds circular, but it works surprisingly well.</p>
-
-<p>The core idea: take a powerful model (GPT-4, Claude, Gemini) and give it a rubric-based prompt that asks it to evaluate another model&rsquo;s response. The judge rates quality on specified dimensions (accuracy, helpfulness, relevance, safety) and produces a structured score.</p>
-
-<h3>Why It Works</h3>
-
-<p>Multiple studies show &gt;80% agreement between GPT-4 judgments and expert human annotators &mdash; comparable to inter-annotator agreement between humans. For many tasks, the strong model genuinely &ldquo;knows&rdquo; what a good answer looks like, even if it can&rsquo;t always produce one itself.</p>
-
-<p>The economics are compelling: human evaluation costs $10&ndash;50+ per sample (annotator time, management, quality control). LLM-as-judge costs $0.01&ndash;0.10 per sample and runs in seconds instead of days. This means you can evaluate hundreds of examples on every code push instead of waiting for a weekly human review.</p>
-
-<h3>Three Evaluation Patterns</h3>
-
-<pre><code># Pattern 1: SINGLE-SCORE — Rate one response on a scale
-# Simple but prone to absolute calibration issues
+#   Average log P = (-2.30 + -3.00 + -1.20 + -0.92) / 4 = -1.855
+#   PPL = exp(1.855) ≈ 6.4
 #
-# Pattern 2: PAIRWISE COMPARISON — Which of two responses is better?
-# More reliable. Humans are better at comparisons than absolute ratings.
-# Used by MT-Bench, Chatbot Arena.
-#
-# Pattern 3: REFERENCE-GUIDED — Compare response to a gold answer
-# Best when you have reference answers. Reduces ambiguity for the judge.</code></pre>
+# Interpretation: on average, the model was as uncertain as if it
+# were picking uniformly among ~6 options at each step.</code></pre>
 
-<h3>The Biases You Need to Know</h3>
+<p>A perplexity of 1 would mean the model predicted every token with 100% confidence. That never happens in practice. A perplexity of 50,000 (roughly the vocabulary size) would mean the model had no idea whatsoever. Modern LLMs on well-matched text score somewhere between 5 and 30.</p>
 
-<p>LLM judges aren&rsquo;t objective. They have systematic biases:</p>
+<p>I&rsquo;ll be honest &mdash; when I first encountered perplexity, I thought it was the definitive metric. Lower perplexity, better model, end of story. That intuition is wrong in a way that took me a while to appreciate. A model can have excellent perplexity &mdash; it predicts tokens brilliantly &mdash; while generating bland, generic text. It can predict &ldquo;the&rdquo; and &ldquo;is&rdquo; and &ldquo;of&rdquo; with high confidence, dragging the average down, while being clueless about the words that actually carry meaning. Perplexity tells you nothing about whether the model follows instructions, whether it hallucinates, or whether its outputs are safe.</p>
 
-<table>
-  <thead>
-    <tr>
-      <th>Bias</th>
-      <th>What Happens</th>
-      <th>Mitigation</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><strong>Position bias</strong></td>
-      <td>Judges favor the first (or last) response in pairwise comparisons</td>
-      <td>Randomize order; run each comparison twice (A/B and B/A) and check consistency</td>
-    </tr>
-    <tr>
-      <td><strong>Verbosity bias</strong></td>
-      <td>Longer responses rated higher, even when padding adds no value</td>
-      <td>Explicitly instruct judge to penalize unnecessary verbosity; include conciseness in rubric</td>
-    </tr>
-    <tr>
-      <td><strong>Self-preference bias</strong></td>
-      <td>Models rate their own outputs higher than others&rsquo;</td>
-      <td>Use a different model family as judge than the one being evaluated</td>
-    </tr>
-    <tr>
-      <td><strong>Authority/format bias</strong></td>
-      <td>Well-formatted responses (bullet points, headers) score higher regardless of content</td>
-      <td>Rubric should emphasize content accuracy over formatting</td>
-    </tr>
-  </tbody>
-</table>
+<p>And there&rsquo;s a comparison trap: you can only compare perplexity across models that use the same tokenizer. GPT-2 and LLaMA split text into different pieces, producing different sequence lengths for the same input. Comparing their perplexity numbers is like comparing race times when the runners ran different distances.</p>
 
-<h3>A Full LLM-as-Judge Implementation</h3>
+<p>For our ReviewBot, perplexity would tell us whether the model is a competent English writer. It would not tell us whether the summary was accurate, whether it captured all three reviews, or whether it invented a detail that wasn&rsquo;t there. We need something more.</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  CLASSICAL METRICS                                                 -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+
+<h2>When String Matching Was Enough</h2>
+
+<p>Before LLMs, the NLP community had a simpler problem: compare generated text against a known reference. Machine translation had a human-translated sentence to compare against. Summarization had a human-written summary. The idea was to measure how much the generated text overlapped with the reference.</p>
+
+<p>Imagine we write a gold-standard summary for our pizza shop: <em>&ldquo;Excellent pizza with notably slow service.&rdquo;</em> And ReviewBot produces: <em>&ldquo;Customers love the pizza, especially the margherita. However, several reviewers noted slow service.&rdquo;</em></p>
+
+<p><strong>BLEU</strong> (Bilingual Evaluation Understudy) counts n-gram overlaps. It looks at individual words (unigrams), pairs of words (bigrams), triplets, and quadruplets, then combines the scores. It was designed for machine translation, where phrasing matters. The overlap between our reference and ReviewBot&rsquo;s output? The words &ldquo;pizza&rdquo; and &ldquo;slow service&rdquo; appear in both, so there&rsquo;s some overlap. But &ldquo;Excellent pizza&rdquo; and &ldquo;Customers love the pizza&rdquo; mean the same thing and share zero bigrams. BLEU would penalize a perfectly good paraphrase.</p>
+
+<p><strong>ROUGE</strong> (Recall-Oriented Understudy for Gisting Evaluation) is the mirror image &mdash; it asks what fraction of the reference n-grams appear in the output. ROUGE-1 looks at unigrams, ROUGE-2 at bigrams, and ROUGE-L finds the longest common subsequence. It was built for summarization, where covering the key content matters more than exact phrasing. Same problem though: &ldquo;Excellent&rdquo; and &ldquo;love&rdquo; don&rsquo;t overlap, even though they carry similar meaning.</p>
+
+<p><strong>BERTScore</strong> tried to fix this. Instead of counting matching strings, it uses BERT embeddings to compute semantic similarity between tokens. &ldquo;Excellent&rdquo; and &ldquo;love&rdquo; have similar embeddings, so they&rsquo;d get a high similarity score. It catches paraphrases that BLEU and ROUGE miss.</p>
+
+<p>But all three methods share a fatal limitation for LLM evaluation: they need a reference. For our pizza shop, we wrote one gold summary. In the real world, ReviewBot might summarize thousands of restaurants, and writing a gold-standard summary for each is prohibitively expensive. For open-ended tasks like &ldquo;write me a poem about autumn&rdquo; or &ldquo;help me debug this code,&rdquo; there isn&rsquo;t even a sensible reference to write. The field needed evaluation methods that don&rsquo;t require knowing the right answer in advance.</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  BENCHMARKS                                                        -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+
+<h2>The Benchmark Zoo</h2>
+
+<p>While string-matching metrics were failing for open-ended generation, researchers took a different approach: instead of evaluating free-form text, test the model on structured problems with known answers. This is the world of benchmarks &mdash; standardized exams for LLMs.</p>
+
+<p>Think of it like this. We can&rsquo;t easily score ReviewBot&rsquo;s free-form summaries, but we <em>can</em> ask it multiple-choice questions about restaurant reviews and check if it picks the right answer. That&rsquo;s the core idea behind every benchmark.</p>
+
+<p><strong>MMLU</strong> (Massive Multitask Language Understanding) is the SAT of LLMs. It has 14,000+ multiple-choice questions across 57 subjects &mdash; anatomy, astronomy, philosophy, law, everything. The model reads a question, picks A, B, C, or D, and we check the answer. For years, MMLU was the number everyone quoted. &ldquo;Our model scores 86% on MMLU.&rdquo; But by late 2023, frontier models were scoring above 90%, the differences between top models shrank to statistical noise, and researchers found that MMLU had a 6.5% label error rate &mdash; meaning the &ldquo;correct&rdquo; answers were themselves wrong for roughly 1 in 15 questions. MMLU-Pro appeared in 2024 with 10 answer choices instead of 4 and harder questions, buying some headroom.</p>
+
+<p><strong>HellaSwag</strong> tests commonsense reasoning through sentence completion. Given &ldquo;A woman is sitting at a table. She picks up a fork and...&rdquo;, the model chooses the most plausible continuation from four options. When it was introduced, it was hard. Now GPT-4 class models score above 95%. The benchmark has been, for lack of a better word, solved.</p>
+
+<p><strong>HumanEval</strong> is different from the others, and I find it the most satisfying. It gives the model a Python function signature with a docstring and asks it to write the implementation. Then the generated code is actually <em>run</em> against test cases. No ambiguity &mdash; the code either passes or it doesn&rsquo;t. The metric is <strong>pass@k</strong>: generate k candidate solutions, and you pass if any one of them works. HumanEval has 164 problems, and its harder variant HumanEval+ adds more rigorous test cases. Code benchmarks resist saturation in a way that multiple-choice tests don&rsquo;t, because there are always harder programming problems to write.</p>
+
+<p><strong>GSM8K</strong> has 8,500 grade-school math word problems. &ldquo;If a restaurant serves 120 customers per day and each customer orders an average of 2.5 dishes...&rdquo; &mdash; that kind of thing. It tests multi-step reasoning, and it&rsquo;s where chain-of-thought prompting proved its value. Models that &ldquo;think step by step&rdquo; score dramatically higher than models that try to jump to the answer. Top models now score above 90% with chain-of-thought, so the harder MATH benchmark (competition-level problems) has taken over as the frontier.</p>
+
+<p><strong>ARC</strong> (AI2 Reasoning Challenge) presents science questions at various difficulty levels. ARC-Easy is largely solved. ARC-Challenge contains the questions that retrieval-based methods get wrong &mdash; they require genuine reasoning. The more ambitious ARC-AGI tests abstract visual pattern reasoning, and frontier models still struggle with it.</p>
+
+<p><strong>TruthfulQA</strong> takes a completely different angle. Its 817 questions are specifically designed to trigger common misconceptions. &ldquo;What happens if you crack your knuckles?&rdquo; A truthful model says &ldquo;nothing harmful.&rdquo; A model that has absorbed internet folklore says &ldquo;you&rsquo;ll get arthritis.&rdquo; It measures the gap between confident-sounding and actually-correct.</p>
+
+<p><strong>MT-Bench</strong> pushes into multi-turn conversation. It has 80 questions across 8 categories (writing, reasoning, math, coding, extraction, STEM, humanities, roleplay), and the model must answer a follow-up question that builds on its first answer. A strong judge model (typically GPT-4) scores each response from 1 to 10. This captures something the other benchmarks miss: whether the model can hold a coherent conversation rather than answer isolated questions.</p>
+
+<p>I&rsquo;m still developing my intuition for which benchmarks actually predict real-world usefulness. A model can ace MMLU (broad knowledge) while being terrible at following specific instructions for your task. A model can crush HumanEval (clean coding problems) while failing at the messy, underspecified code requests that real users make. The benchmarks tell you <em>something</em>, but the mapping from benchmark score to &ldquo;works for my product&rdquo; is weaker than I initially assumed.</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  REST STOP                                                         -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+
+<h2>Rest Stop</h2>
+
+<p>Congratulations on making it this far. If you want to stop here, you can.</p>
+
+<p>You now have a mental model that covers the foundation of LLM evaluation: perplexity measures how well a model predicts text but not whether that text is useful. Classical metrics (BLEU, ROUGE, BERTScore) compare outputs against references but fail when there&rsquo;s no reference. Benchmarks (MMLU, HumanEval, GSM8K, TruthfulQA) test specific capabilities with known answers but are saturating and getting contaminated. For our ReviewBot, perplexity tells us the model writes coherent English, ROUGE tells us the summary overlaps with a reference we wrote, and benchmarks tell us the model is broadly capable &mdash; but none of them directly answer the question we care about: &ldquo;is this summary good?&rdquo;</p>
+
+<p>That gap is what the rest of this piece is about. From here, we&rsquo;ll look at methods that try to evaluate free-form text without needing a reference answer &mdash; using other LLMs as judges, crowdsourcing human preferences, and building custom evaluation sets that capture exactly what matters for your product.</p>
+
+<p>But if the discomfort of not knowing how teams actually evaluate LLMs in production is nagging at you, read on.</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  LLM-AS-JUDGE                                                      -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+
+<h2>Letting One LLM Judge Another</h2>
+
+<p>Here&rsquo;s the idea that changed how LLM evaluation actually works in practice: instead of comparing text against a reference, give the text to a <em>stronger</em> model and ask it to rate the quality. Use GPT-4 to judge whether a smaller model&rsquo;s output is good.</p>
+
+<p>I know. It sounds circular. It bothered me too &mdash; using an LLM to evaluate an LLM feels like grading your own homework. But the results are surprisingly defensible. Multiple studies show that GPT-4&rsquo;s judgments agree with expert human annotators more than 80% of the time. That&rsquo;s comparable to how often two humans agree with each other.</p>
+
+<p>Let&rsquo;s walk through how this works with ReviewBot. We have the three pizza reviews, ReviewBot&rsquo;s summary, and we want to know if the summary is good. Instead of writing a reference summary and computing ROUGE, we send this to a judge model:</p>
+
+<pre><code># The prompt to our judge model:
+
+"""Given the following restaurant reviews and a generated summary,
+rate the summary on four dimensions (1-5 each):
+
+1. Accuracy: Does the summary only contain claims supported by the reviews?
+2. Completeness: Does it capture the main themes across all reviews?
+3. Conciseness: Is it appropriately brief without losing key information?
+4. Coherence: Does it read naturally and flow well?
+
+Reviews:
+- "Best margherita in town. Crust is perfect. Service was slow."
+- "Pizza is great but the wait was 45 minutes on a Tuesday."
+- "Amazing pizza, terrible service. Worth the wait though."
+
+Summary: "Customers love the pizza, especially the margherita.
+However, several reviewers noted slow service and long wait times."
+
+Return your ratings as JSON with a brief reason for each score."""</code></pre>
+
+<p>The judge model might return accuracy: 5 (everything in the summary is supported), completeness: 4 (it missed the &ldquo;worth the wait&rdquo; sentiment), conciseness: 5, coherence: 5. That&rsquo;s useful feedback, and we got it without writing a reference summary.</p>
+
+<p>There are three main patterns for LLM-as-judge evaluation. <strong>Single-score rating</strong> asks the judge to rate one response on a rubric, like we did above. <strong>Pairwise comparison</strong> gives the judge two responses and asks which is better &mdash; this turns out to be more reliable, because humans (and LLMs) are better at comparing than at assigning absolute scores. <strong>Reference-guided evaluation</strong> provides a gold answer for the judge to compare against, combining the best of both worlds when you have references available.</p>
+
+<p>The research paper that formalized this is <strong>G-Eval</strong> (2023), which showed that LLM judges using chain-of-thought reasoning and fine-grained rubrics achieve human-level correlation on summarization and dialogue evaluation. The key insight was that the judge needs a specific rubric, not a vague &ldquo;is this good?&rdquo; prompt.</p>
+
+<p>But LLM judges have biases, and they&rsquo;re not subtle. <strong>Position bias</strong>: in a pairwise comparison, judges tend to prefer whichever response comes first (or last, depending on the model). The fix is to run every comparison twice with the order swapped and check for consistency. <strong>Verbosity bias</strong>: longer responses get higher scores, even when the extra length is padding. The fix is to explicitly instruct the judge that conciseness matters and to penalize unnecessary verbosity. <strong>Self-preference bias</strong>: if you use GPT-4 to judge GPT-4&rsquo;s outputs, it rates them higher than equivalent outputs from Claude. The fix is to use a different model family as judge than the one being evaluated.</p>
+
+<p>The economics are what make this approach transformative. Human evaluation costs $10&ndash;50+ per sample when you factor in annotator time, training, and quality control. LLM-as-judge costs $0.01&ndash;0.10 per sample and runs in seconds. That means you can evaluate hundreds of examples on every code commit instead of waiting for a weekly human review cycle. For ReviewBot, we could evaluate summaries for every restaurant in our dataset on every deploy, catching regressions before users do.</p>
 
 <pre><code>import json
 from openai import OpenAI
 
 client = OpenAI()
 
-# ── Rubric-based single-score evaluation ──────────────────────
+JUDGE_PROMPT = """You are an expert evaluator for restaurant review summaries.
+Given the original reviews and a generated summary, rate on these dimensions:
 
-JUDGE_SYSTEM_PROMPT = """You are an expert evaluator. Given a question and
-a model's response, rate the response on these dimensions:
+1. Accuracy (1-5): Does the summary only state things supported by reviews?
+2. Completeness (1-5): Does it capture the main themes?
+3. Conciseness (1-5): Is it appropriately brief?
+4. Coherence (1-5): Does it read naturally?
 
-1. **Accuracy** (1-5): Is the information factually correct?
-2. **Completeness** (1-5): Does it address all parts of the question?
-3. **Clarity** (1-5): Is it well-organized and easy to understand?
-4. **Conciseness** (1-5): Does it avoid unnecessary filler?
+Return valid JSON: {"accuracy": N, "completeness": N,
+"conciseness": N, "coherence": N, "overall": N, "reasoning": "..."}
+Be strict. 3 = acceptable. 5 = exceptional."""
 
-Return ONLY valid JSON:
-{
-  "accuracy": {"score": N, "reason": "..."},
-  "completeness": {"score": N, "reason": "..."},
-  "clarity": {"score": N, "reason": "..."},
-  "conciseness": {"score": N, "reason": "..."},
-  "overall": N
-}
-
-Be strict. A score of 3 means acceptable. 5 means exceptional.
-Do NOT give high scores by default."""
-
-def judge_single(question: str, response: str, model="gpt-4o") -> dict:
-    """Rate a single response using LLM-as-judge."""
+def judge_summary(reviews: list[str], summary: str) -> dict:
+    reviews_text = "\n".join(f"- {r}" for r in reviews)
     result = client.chat.completions.create(
-        model=model,
-        temperature=0.0,  # deterministic judging
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
-            {"role": "user", "content": f"Question: {question}\n\n"
-                                        f"Response: {response}"}
-        ]
-    )
-    return json.loads(result.choices[0].message.content)
-
-# ── Pairwise comparison (more reliable) ──────────────────────
-
-PAIRWISE_PROMPT = """You are an expert evaluator. Given a question and two
-responses (A and B), decide which response is better overall.
-
-Consider: accuracy, completeness, clarity, and helpfulness.
-Do NOT favor longer responses unless the extra length adds value.
-
-Return ONLY valid JSON:
-{
-  "winner": "A" or "B" or "tie",
-  "reason": "Brief explanation of your decision"
-}"""
-
-def judge_pairwise(question: str, response_a: str, response_b: str,
-                   model="gpt-4o") -> dict:
-    """Pairwise comparison with position-bias mitigation."""
-    import random
-
-    # Randomize order to mitigate position bias
-    if random.random() > 0.5:
-        first, second = response_a, response_b
-        order = "original"
-    else:
-        first, second = response_b, response_a
-        order = "swapped"
-
-    result = client.chat.completions.create(
-        model=model,
+        model="gpt-4o",
         temperature=0.0,
         response_format={"type": "json_object"},
         messages=[
-            {"role": "system", "content": PAIRWISE_PROMPT},
+            {"role": "system", "content": JUDGE_PROMPT},
             {"role": "user", "content":
-                f"Question: {question}\n\n"
-                f"Response A:\n{first}\n\n"
-                f"Response B:\n{second}"}
+                f"Reviews:\n{reviews_text}\n\nSummary: {summary}"}
         ]
     )
-    verdict = json.loads(result.choices[0].message.content)
+    return json.loads(result.choices[0].message.content)</code></pre>
 
-    # Correct for swapped order
-    if order == "swapped" and verdict["winner"] in ("A", "B"):
-        verdict["winner"] = "B" if verdict["winner"] == "A" else "A"
-
-    return verdict
-
-# ── Run evaluation over a test set ───────────────────────────
-
-def evaluate_model(test_cases: list[dict], generate_fn, judge_model="gpt-4o"):
-    """
-    Evaluate a model on a test set using LLM-as-judge.
-
-    test_cases: [{"question": "...", "reference": "..." (optional)}]
-    generate_fn: function(question) -> response string
-    """
-    results = []
-    for case in test_cases:
-        response = generate_fn(case["question"])
-        score = judge_single(case["question"], response, model=judge_model)
-        results.append({
-            "question": case["question"],
-            "response": response,
-            "scores": score
-        })
-
-    # Aggregate
-    avg_overall = sum(r["scores"]["overall"] for r in results) / len(results)
-    print(f"Average overall score: {avg_overall:.2f} / 5.0")
-    print(f"Evaluated {len(results)} examples")
-    return results</code></pre>
-
-<div class="info-box">
-  <strong>When to trust LLM-as-judge:</strong> It&rsquo;s excellent for <em>relative</em> comparisons (is model A better than model B on this task?) and for detecting regressions (did the new prompt make things worse?). It&rsquo;s less reliable for <em>absolute</em> quality assessment (is this response &ldquo;good enough&rdquo; for production?). Always validate your judge against human ratings on a sample before trusting it at scale.
-</div>
+<p>I should mention a limitation I&rsquo;ve bumped into repeatedly: LLM-as-judge is great for <em>relative</em> comparisons (is version A of the prompt better than version B?) but less reliable for <em>absolute</em> quality (is this response good enough to ship?). The judge might consistently rate one response higher than another, but calibrating what score counts as &ldquo;production-ready&rdquo; still requires human validation.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  PART 6 — HUMAN EVALUATION                                        -->
+<!--  ELO AND ARENA                                                     -->
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 
-<h2>Human Evaluation</h2>
+<h2>Elo Ratings and the Arena</h2>
 
-<p>LLM-as-judge is great for iteration speed, but some things still need a human in the loop. Safety assessments, nuanced quality judgments, detecting subtle hallucinations in domain-specific content, evaluating cultural sensitivity &mdash; these are areas where even GPT-4 can be confidently wrong.</p>
+<p>The pairwise comparison idea, taken to its logical extreme, leads us to the most ambitious LLM evaluation system built so far: <strong>Chatbot Arena</strong>, run by LMSYS.</p>
 
-<h3>When You Need Humans</h3>
+<p>The concept is borrowed from chess. In chess, every player has an Elo rating &mdash; a number that captures their relative strength. When two players compete, the outcome updates both ratings: beating a higher-rated player earns you more points than beating a lower-rated one. Over thousands of games, the ratings converge to a stable ranking that reflects true skill.</p>
 
-<ul>
-  <li><strong>Safety-critical applications:</strong> medical, legal, financial advice</li>
-  <li><strong>Subjective quality:</strong> creative writing, brand voice, emotional tone</li>
-  <li><strong>Final validation:</strong> before major launches or model switches</li>
-  <li><strong>Calibrating your LLM judge:</strong> you need human labels to know if your judge is reliable</li>
-  <li><strong>Edge cases:</strong> the long tail of weird inputs that automated evals miss</li>
-</ul>
+<p>Chatbot Arena applies this to LLMs. A user types a prompt and receives responses from two anonymous models side by side. The user doesn&rsquo;t know which model is which. They read both responses and pick the better one (or declare a tie). The result updates both models&rsquo; Elo ratings. Over hundreds of thousands of these blind battles, the ratings produce a leaderboard.</p>
 
-<h3>Measuring Agreement: Cohen&rsquo;s Kappa</h3>
+<p>Let&rsquo;s trace through one battle with our ReviewBot framing. A user submits the three pizza reviews and asks for a summary. Model A returns a terse &ldquo;Good pizza, bad service.&rdquo; Model B returns our ReviewBot&rsquo;s more detailed summary. The user picks Model B. If Model A had a higher Elo going in, it loses more rating points than if it were already lower-rated. This self-correcting property is what makes the system work &mdash; early mistakes get washed out as more data accumulates.</p>
 
-<p>When two humans evaluate the same output, they won&rsquo;t always agree. The question is: do they agree more than chance? Cohen&rsquo;s kappa (&kappa;) adjusts for chance agreement:</p>
+<p>What makes the Arena compelling is what it <em>doesn&rsquo;t</em> suffer from. There&rsquo;s no fixed test set to memorize. The prompts come from real users, so they reflect real use cases. The evaluation is blind, so models can&rsquo;t be tuned for specific evaluators. And the sheer volume (hundreds of thousands of battles) averages out individual voter biases.</p>
 
-<pre><code># Cohen's Kappa
+<p>Or at least, that was the theory. In early 2025, Meta submitted a variant of Llama 4 that appeared to be specifically tuned for the kinds of conversational preferences that Arena voters reward &mdash; verbose, engaging, stylistically polished &mdash; without corresponding improvements on other benchmarks. It topped the leaderboard briefly, then the community noticed the discrepancy. The incident exposed that even crowdsourced evaluation can be gamed if you know what the crowd tends to prefer. No evaluation system is fully immune to optimization pressure. We&rsquo;ll come back to this uncomfortable truth later.</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  CONTAMINATION                                                     -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+
+<h2>The Contamination Problem</h2>
+
+<p>Here is the elephant in every room where benchmark numbers are discussed. LLMs are trained on massive web crawls. The web contains benchmark datasets. If MMLU questions appear in the training data, the model isn&rsquo;t reasoning through the question &mdash; it&rsquo;s <em>remembering</em> the answer it saw during training. And this isn&rsquo;t hypothetical: multiple studies have confirmed that major benchmark datasets leaked into the training sets of production models.</p>
+
+<p>Consider what this means for our ReviewBot scenario. If we evaluate the model on a set of 200 restaurant-summary pairs, and those pairs were scraped from a website that was in the training data, our &ldquo;evaluation&rdquo; is measuring memorization, not capability. The model might produce perfect summaries for those specific restaurants while failing on novel ones.</p>
+
+<p>The contamination problem has a few dimensions. <strong>Direct contamination</strong> happens when test questions appear verbatim in training data. <strong>Indirect contamination</strong> happens when the training data contains discussions or solutions referencing the benchmark (blog posts explaining MMLU answers, for instance). <strong>Temporal contamination</strong> happens when a benchmark that was clean at launch gets absorbed into training data for later models.</p>
+
+<p>Detection is hard. You&rsquo;d need access to the full training dataset, which most model providers don&rsquo;t share. Some mitigation strategies: use benchmarks that rotate questions (LiveBench, which refreshes monthly). Insert <strong>canary strings</strong> &mdash; unique, never-before-published text snippets &mdash; into your test set and check if the model can reproduce them (if it can, your test data leaked). Create your own eval set from scratch, since data you wrote yesterday can&rsquo;t be in a model trained last year. Use time-based splits: evaluate on inputs from after the model&rsquo;s training cutoff date.</p>
+
+<p>By 2024, contamination was so pervasive that nearly every major pre-2023 benchmark had been partially compromised. This is one reason the field has been in a constant arms race, producing harder, newer benchmarks to stay ahead of the training data.</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  HUMAN EVALUATION                                                  -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+
+<h2>Human Evaluation &mdash; The Expensive Gold Standard</h2>
+
+<p>Every evaluation method we&rsquo;ve discussed so far is, in some sense, a proxy for the question we actually care about: do <em>humans</em> think the output is good? At some point, you need to ask actual humans.</p>
+
+<p>I&rsquo;ll be honest &mdash; human evaluation sounds straightforward until you try to implement it. When I first set up a human eval pipeline, I assumed the hard part would be recruiting annotators. The actual hard part was getting them to agree with each other.</p>
+
+<p>Here&rsquo;s what happens. You give three annotators the pizza reviews and ReviewBot&rsquo;s summary and ask them to rate quality from 1 to 5. Annotator A gives it a 4 (&ldquo;good summary, captures the main points&rdquo;). Annotator B gives it a 3 (&ldquo;it missed the &lsquo;worth the wait&rsquo; nuance&rdquo;). Annotator C gives it a 5 (&ldquo;excellent, concise and accurate&rdquo;). Same input, same rubric, three different scores.</p>
+
+<p>This is why <strong>inter-annotator agreement</strong> matters so much. The standard measure is Cohen&rsquo;s kappa (&kappa;), which adjusts for chance agreement. If annotators agree 70% of the time, but random chance would produce 50% agreement, kappa accounts for that.</p>
+
+<pre><code># Cohen's Kappa measures agreement beyond chance
 #
-#   κ = (p_observed - p_chance) / (1 - p_chance)
+#   κ = (observed agreement - chance agreement) / (1 - chance agreement)
 #
-#   κ = 1.0  → perfect agreement
-#   κ = 0.0  → agreement no better than random
-#   κ < 0.0  → agreement worse than random (shouldn't happen)
+#   κ = 1.0  → annotators always agree
+#   κ = 0.0  → agreement is no better than coin-flipping
+#   κ > 0.8  → excellent (publishable, trustworthy)
+#   κ 0.6-0.8 → substantial (usable for most decisions)
+#   κ 0.4-0.6 → moderate (your rubric needs work)
+#   κ < 0.4  → poor (stop and redesign the annotation task)
 #
-# Rules of thumb:
-#   κ > 0.8  → excellent agreement (publishable)
-#   κ 0.6-0.8 → substantial agreement (usable)
-#   κ 0.4-0.6 → moderate agreement (questionable)
-#   κ < 0.4  → poor agreement (fix your rubric)
+# Example: two annotators rate 10 summaries on a 1-5 scale
+annotator_1 = [4, 3, 5, 2, 4, 3, 5, 4, 2, 3]
+annotator_2 = [4, 4, 5, 2, 3, 3, 4, 4, 2, 4]
 
 from sklearn.metrics import cohen_kappa_score
-
-annotator_1 = [3, 4, 5, 2, 4, 3, 5, 4, 2, 3]  # ratings 1-5
-annotator_2 = [3, 5, 5, 2, 3, 3, 4, 4, 2, 4]
-
 kappa = cohen_kappa_score(annotator_1, annotator_2, weights="quadratic")
-print(f"Cohen's Kappa: {kappa:.3f}")
-# With quadratic weighting, disagreeing by 1 point is penalized
-# less than disagreeing by 3 points. Use this for ordinal scales.</code></pre>
+# weights="quadratic" means disagreeing by 1 point is penalized less
+# than disagreeing by 3 points. Use this for ordinal scales.</code></pre>
 
-<h3>The Hybrid Approach</h3>
+<p>The cost math is sobering. Three annotators, 200 examples, 5 minutes per example: that&rsquo;s 50 person-hours. At $25/hour, one round of human evaluation costs $1,250. And you probably need to do it before every major launch. LLM-as-judge on the same 200 examples costs $2&ndash;20 and takes 5 minutes of wall-clock time. The practical strategy that most production teams land on is a layered approach: LLM-as-judge on every commit for fast feedback, weekly human spot-checks on 20&ndash;50 examples to calibrate the judge, and full human evaluation before major launches as the final gate.</p>
 
-<p>Most production teams use a <strong>layered strategy</strong>:</p>
-
-<ol>
-  <li><strong>Fast iteration:</strong> LLM-as-judge on every commit. Catches regressions in minutes.</li>
-  <li><strong>Weekly spot-check:</strong> Human review of a random sample (20&ndash;50 examples). Catches judge blind spots.</li>
-  <li><strong>Pre-launch validation:</strong> Full human eval on the complete test set. The final gate.</li>
-  <li><strong>Continuous calibration:</strong> Compare judge scores to human scores monthly. Retune the rubric when they diverge.</li>
-</ol>
-
-<div class="info-box">
-  <strong>The cost math.</strong> A typical human eval setup: 3 annotators, 200 examples, 5 minutes per example = 50 person-hours. At $25/hour, that&rsquo;s $1,250 per eval round. LLM-as-judge on the same 200 examples: ~$2&ndash;20 and 5 minutes wall time. Use LLM-as-judge to run 100 evals so you can spend your human eval budget on the 2&ndash;3 that actually matter.
-</div>
+<p>Human evaluation is also the only reliable way to assess safety. Can an automated judge catch subtle toxicity, cultural insensitivity, or dangerous medical advice? Sometimes. Reliably? No. For safety-critical applications &mdash; medical, legal, financial &mdash; human review isn&rsquo;t a luxury. It&rsquo;s a requirement.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  PART 7 — EVALUATION CHALLENGES                                    -->
+<!--  FRAMEWORKS AND CUSTOM EVALS                                       -->
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 
-<h2>Evaluation Challenges</h2>
+<h2>Evaluation Frameworks and Building Your Own Evals</h2>
 
-<p>Even if you pick the right metrics and build a great eval set, there are meta-problems that can undermine your entire evaluation:</p>
+<p>Running benchmarks by hand is tedious and error-prone. Two frameworks have emerged as the standard tools for the job.</p>
 
-<h3>Data Contamination</h3>
+<p><strong>lm-eval-harness</strong> (by EleutherAI) is the Swiss Army knife. It supports hundreds of benchmarks out of the box &mdash; MMLU, HellaSwag, ARC, TruthfulQA, GSM8K, and many more. Point it at a model (local or API-based), specify the tasks you want, and it handles prompt formatting, tokenization, scoring, and result aggregation. Most of the LLM leaderboards you see online use lm-eval-harness under the hood. If you want to compare a new model against established benchmarks, this is where you start.</p>
 
-<p>The elephant in the room. LLMs are trained on massive web crawls that may include the test data you&rsquo;re evaluating on. If MMLU questions appear in the training data, the model isn&rsquo;t &ldquo;reasoning&rdquo; &mdash; it&rsquo;s <em>remembering</em>. This is a documented problem: multiple studies have found benchmark data in LLM training sets.</p>
+<p><strong>HELM</strong> (Holistic Evaluation of Language Models, by Stanford) goes broader. Where lm-eval-harness focuses on accuracy, HELM evaluates along multiple axes: accuracy, calibration, robustness, fairness, bias, toxicity, and efficiency. If you need to assess not only whether the model gets the right answer but also whether it&rsquo;s reliable, fair, and safe, HELM gives you that multi-dimensional view.</p>
 
-<p>Mitigation: use held-out test sets you create yourself. Time-based splits (evaluate on data from after the training cutoff). Canary strings in your test data to detect if they appear in model outputs.</p>
+<p>But here&rsquo;s the thing that took me too long to internalize: <strong>public benchmarks evaluate models. Custom evals evaluate products.</strong> MMLU tells you whether the model has broad knowledge. Your custom eval set tells you whether the model solves your specific problem for your specific users.</p>
 
-<h3>Task Saturation</h3>
+<p>Building custom evals for ReviewBot would look like this. We collect 50&ndash;200 real sets of restaurant reviews, spanning different cuisines, review lengths, sentiment distributions, and edge cases (contradictory reviews, reviews in broken English, restaurants with only one review). For each, we either write a reference summary or define a rubric: must mention food quality, must mention service if reviewers mention it, must not claim more than three stars if reviews are negative.</p>
 
-<p>Benchmarks have a shelf life. When the best models score &gt;95% on a task, it loses discriminative power. HellaSwag, ARC-Easy, and increasingly MMLU are entering this territory. The response has been a continual arms race: harder benchmarks (GPQA, ARC-AGI, MATH, SWE-Bench) that push the frontier.</p>
-
-<h3>Prompt Sensitivity</h3>
-
-<p>The same model can score dramatically differently based on the prompt template used for evaluation. &ldquo;Answer the following question&rdquo; vs. &ldquo;Let&rsquo;s think step by step&rdquo; can swing scores by 10&ndash;20 points on reasoning benchmarks. This makes cross-paper comparisons tricky when each team uses slightly different evaluation prompts.</p>
-
-<pre><code># Same model, same question, different prompts, different results
-#
-# Prompt A: "What is the capital of Australia?"
-# Model answer: "Canberra" ✓
-#
-# Prompt B: "Answer with just the city name. Capital of Australia?"
-# Model answer: "Canberra" ✓
-#
-# Prompt C: "The capital of Australia is"
-# Model answer: "Sydney" ✗ (common misconception, model completes the pattern)
-#
-# For benchmarks, standardize your prompt template
-# and NEVER change it between experiments.</code></pre>
-
-<h3>Goodhart&rsquo;s Law</h3>
-
-<p>&ldquo;When a measure becomes a target, it ceases to be a good measure.&rdquo; Models (and teams) optimize for benchmark scores. RLHF can be tuned to boost benchmark numbers without improving real-world usefulness. A model that scores 90% on MMLU but can&rsquo;t handle your specific customer support queries is failing at <em>your</em> task, regardless of the leaderboard position.</p>
-
-<div class="warning-box">
-  <strong>Benchmarks measure models. Evals measure products.</strong> Public benchmarks tell you about general capability. Your own eval set &mdash; built from your actual use cases, with your actual edge cases &mdash; tells you if the model works for <em>your</em> users. Never skip the second part just because the first looks good.
-</div>
-
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  PART 8 — PRACTICAL EVALUATION STRATEGY                           -->
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-
-<h2>Practical Evaluation Strategy</h2>
-
-<p>Enough theory. Here&rsquo;s how to actually build an evaluation pipeline for an LLM-powered product.</p>
-
-<h3>Step 1: Build Your Own Eval Set</h3>
-
-<p>This is the single highest-leverage thing you can do. Create 50&ndash;200 examples that represent <em>your</em> specific task. Each example should have:</p>
-
-<ul>
-  <li>An input (the question, document, or context your model receives)</li>
-  <li>An expected output or rubric (what a good response looks like)</li>
-  <li>Edge cases and failure modes you&rsquo;ve seen in practice</li>
-</ul>
-
-<pre><code># Example eval set structure
-eval_set = [
-    {
-        "id": "summarize-001",
-        "input": "Summarize this earnings call transcript...",
-        "reference": "Q3 revenue grew 12% YoY to $4.2B, driven by cloud...",
-        "rubric": {
-            "must_include": ["revenue figure", "YoY growth", "key driver"],
-            "must_not_include": ["speculation", "opinions not in source"],
-            "max_length": 200
-        },
-        "difficulty": "easy",
-        "category": "summarization"
+<pre><code># A custom eval case for ReviewBot
+eval_case = {
+    "id": "pizza-shop-contradictory",
+    "reviews": [
+        "Worst pizza I've ever had. Burnt crust, cold center.",
+        "Best pizza in the city! Perfect every time.",
+        "Pizza is fine. Nothing special. Service is fast."
+    ],
+    "rubric": {
+        "must_capture": ["mixed reviews", "both positive and negative opinions"],
+        "must_not": ["claim all reviews were positive",
+                     "claim all reviews were negative"],
+        "tone": "balanced and neutral"
     },
-    {
-        "id": "summarize-002",
-        "input": "Summarize this earnings call with contradictory guidance...",
-        "reference": "Management raised Q4 guidance to $4.5B but warned...",
-        "rubric": {
-            "must_include": ["both the positive and negative guidance"],
-            "must_not_include": ["one-sided summary"],
-            "max_length": 200
-        },
-        "difficulty": "hard",
-        "category": "summarization"
-    },
-    # ... 50-200 examples covering your task distribution
-]</code></pre>
+    "difficulty": "hard",
+    "category": "contradictory-reviews"
+}</code></pre>
 
-<h3>Step 2: Automate with LLM-as-Judge</h3>
+<p>The most powerful pattern I&rsquo;ve seen for growing custom evals is the <strong>eval flywheel</strong>: ship the product, watch for failures in production (user complaints, flagged responses, low satisfaction scores), turn every failure into a new eval case with an input and expected behavior, improve the model or prompt until the new case passes, run the full eval suite to check for regressions, and ship again. After six months of this cycle, your custom eval set is worth more than any public benchmark, because it captures the specific failure modes your users actually encounter.</p>
 
-<p>Wire up LLM-as-judge to run on every model change, prompt update, or pipeline modification. This is your CI/CD for LLM quality.</p>
-
-<pre><code># Minimal eval pipeline — runs in CI
-import json
-from pathlib import Path
-
-def run_eval_pipeline(eval_set_path: str, generate_fn, judge_model="gpt-4o"):
-    """Automated eval pipeline for CI integration."""
-    eval_set = json.loads(Path(eval_set_path).read_text())
-    results = []
-
-    for case in eval_set:
-        response = generate_fn(case["input"])
-        scores = judge_single(case["input"], response, model=judge_model)
-
-        results.append({
-            "id": case["id"],
-            "category": case.get("category", "general"),
-            "scores": scores,
-            "passed": scores["overall"] >= 3  # minimum quality bar
-        })
-
-    # Summary
-    pass_rate = sum(r["passed"] for r in results) / len(results)
-    by_category = {}
-    for r in results:
-        cat = r["category"]
-        if cat not in by_category:
-            by_category[cat] = {"total": 0, "passed": 0}
-        by_category[cat]["total"] += 1
-        by_category[cat]["passed"] += int(r["passed"])
-
-    print(f"\nOverall pass rate: {pass_rate:.1%}")
-    for cat, stats in by_category.items():
-        cat_rate = stats["passed"] / stats["total"]
-        print(f"  {cat}: {cat_rate:.1%} ({stats['passed']}/{stats['total']})")
-
-    # Fail CI if quality regresses
-    if pass_rate < 0.85:  # your threshold
-        print("\n❌ EVAL FAILED: quality below threshold")
-        exit(1)
-    else:
-        print("\n✅ EVAL PASSED")
-
-    return results</code></pre>
-
-<h3>Step 3: Track Regression Across Updates</h3>
-
-<p>Every time you change the model, prompt, or pipeline, you should know if quality went up or down. Store eval results with timestamps and version info.</p>
-
-<pre><code># Simple regression tracking
-import sqlite3
-from datetime import datetime
-
-def log_eval_results(db_path, version, results):
-    """Store eval results for regression tracking."""
-    conn = sqlite3.connect(db_path)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS eval_runs (
-            run_id TEXT, version TEXT, timestamp TEXT,
-            case_id TEXT, category TEXT, overall_score REAL, passed INTEGER
-        )
-    """)
-
-    run_id = f"{version}_{datetime.now().isoformat()}"
-    for r in results:
-        conn.execute(
-            "INSERT INTO eval_runs VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (run_id, version, datetime.now().isoformat(),
-             r["id"], r["category"], r["scores"]["overall"], int(r["passed"]))
-        )
-    conn.commit()
-
-    # Compare with previous version
-    prev = conn.execute("""
-        SELECT AVG(overall_score) FROM eval_runs
-        WHERE version != ? ORDER BY timestamp DESC LIMIT 200
-    """, (version,)).fetchone()
-
-    curr = conn.execute("""
-        SELECT AVG(overall_score) FROM eval_runs WHERE version = ?
-    """, (version,)).fetchone()
-
-    if prev[0] and curr[0]:
-        delta = curr[0] - prev[0]
-        emoji = "📈" if delta > 0 else "📉" if delta < 0 else "➡️"
-        print(f"{emoji} Score delta: {delta:+.3f} "
-              f"(prev: {prev[0]:.3f}, curr: {curr[0]:.3f})")
-
-    conn.close()</code></pre>
-
-<h3>Step 4: A/B Test in Production</h3>
-
-<p>Offline evals don&rsquo;t capture everything. Real users behave differently from your test cases. Run A/B tests: serve the old model/prompt to 50% of users and the new one to 50%. Measure engagement, satisfaction, task completion, and complaint rate.</p>
-
-<h3>Step 5: The Eval Flywheel</h3>
-
-<p>Here&rsquo;s the most important pattern: <strong>every production failure becomes a new eval case.</strong></p>
-
-<pre><code># The eval flywheel:
+<pre><code># The eval flywheel in practice:
 #
-#   ┌──────────────┐
-#   │  Deploy model │
-#   └──────┬───────┘
-#          │
-#          ▼
-#   ┌──────────────┐
-#   │  Users find   │
-#   │  failures     │──── user reports, flagged responses,
-#   └──────┬───────┘     low satisfaction scores
-#          │
-#          ▼
-#   ┌──────────────┐
-#   │  Add failure  │
-#   │  to eval set  │──── input + expected output + rubric
-#   └──────┬───────┘
-#          │
-#          ▼
-#   ┌──────────────┐
-#   │  Improve      │
-#   │  model/prompt │──── iterate until the new eval case passes
-#   └──────┬───────┘
-#          │
-#          ▼
-#   ┌──────────────┐
-#   │  Run full     │
-#   │  eval suite   │──── ensure no regressions
-#   └──────┬───────┘
-#          │
-#          └───────────────► back to Deploy
+#   Deploy → Users find failures → Add failures to eval set
+#     → Improve model/prompt → Run full eval suite → Deploy
 #
-# Your eval set grows organically from real failures.
-# After 6 months, it's worth more than any public benchmark.</code></pre>
-
-<div class="info-box">
-  <strong>Start with 50 examples.</strong> You don&rsquo;t need 10,000 eval cases to start. Fifty well-chosen examples covering your core use cases and known edge cases will catch more regressions than you&rsquo;d expect. Grow the set over time using the flywheel. The goal isn&rsquo;t completeness &mdash; it&rsquo;s catching the failures that matter most to your users.
-</div>
+# Start with 50 well-chosen examples.
+# After 6 months, you'll have 300+ that cover your real failure modes.
+# Every production incident becomes a regression test.
+# The eval set becomes your most valuable asset.</code></pre>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  CHECKLIST                                                         -->
+<!--  GOODHART'S LAW                                                    -->
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 
-<h2>What You Should Now Be Able To Do</h2>
+<h2>Goodhart&rsquo;s Law and the Eval Crisis</h2>
 
-<div class="checklist">
-  <ul>
-    <li><strong>Explain why LLM evaluation is fundamentally harder than traditional ML evaluation</strong> and why freeform text generation resists single-number metrics</li>
-    <li><strong>Compute and interpret perplexity</strong> for a language model, including its limitations &mdash; it measures prediction, not generation quality, helpfulness, or safety</li>
-    <li><strong>Choose the right classical metric</strong> (BLEU, ROUGE, BERTScore) for a given task and explain why each fails for open-ended generation</li>
-    <li><strong>Navigate the benchmark landscape</strong> &mdash; know what MMLU, HumanEval, GSM8K, TruthfulQA, and Chatbot Arena measure, and which are saturating</li>
-    <li><strong>Implement LLM-as-judge evaluation</strong> with both single-score and pairwise comparison patterns, including position-bias mitigation</li>
-    <li><strong>Identify and mitigate LLM judge biases</strong> &mdash; position bias, verbosity bias, self-preference bias &mdash; using randomization, rubrics, and cross-model judging</li>
-    <li><strong>Design a hybrid evaluation strategy</strong> combining LLM-as-judge for fast iteration with human evaluation for safety-critical decisions</li>
-    <li><strong>Recognize evaluation pitfalls</strong> &mdash; data contamination, task saturation, prompt sensitivity, and Goodhart&rsquo;s Law &mdash; and know the mitigations for each</li>
-    <li><strong>Build a practical eval pipeline</strong>: custom eval set, automated LLM-as-judge in CI, regression tracking, and the eval flywheel that turns production failures into test cases</li>
-  </ul>
-</div>
+<p>There is a century-old observation from economics that haunts every evaluation system we&rsquo;ve discussed: <strong>&ldquo;When a measure becomes a target, it ceases to be a good measure.&rdquo;</strong> This is Goodhart&rsquo;s Law, and it is the single most important concept in LLM evaluation.</p>
+
+<p>Watch how it plays out across every method we&rsquo;ve covered. Perplexity becomes a target &rarr; models optimize for predicting common tokens rather than generating useful text. MMLU becomes a target &rarr; training data gets contaminated with MMLU questions. Chatbot Arena becomes a target &rarr; models get tuned for the stylistic preferences of Arena voters. Even LLM-as-judge becomes a target &rarr; models learn to produce outputs that GPT-4 rates highly, which isn&rsquo;t the same as outputs that humans find useful.</p>
+
+<p>2024 was when the field collectively acknowledged this as a crisis. Hugging Face&rsquo;s evaluation team published an &ldquo;Evaluation Crisis&rdquo; guide documenting how nearly every pre-2023 benchmark had been compromised by some combination of contamination, saturation, and optimization pressure. Researchers started calling for dynamic benchmarks that rotate questions, private benchmarks that can&rsquo;t be trained on, and adversarial benchmarks that actively resist gaming.</p>
+
+<p>For our ReviewBot, Goodhart&rsquo;s Law means we can&rsquo;t rely on any single metric or benchmark forever. If we optimize ReviewBot&rsquo;s prompts to maximize our LLM-judge scores, we might end up with summaries that score well by the judge&rsquo;s rubric but miss something that actually matters to users. The judge becomes the target, and it stops measuring what we care about.</p>
+
+<p>My favorite thing about this problem is that, despite years of work, no one has a clean solution. The best defense is defense in depth: multiple evaluation methods, multiple metrics, regular calibration against human judgment, and a healthy skepticism toward any single number. The moment you start saying &ldquo;our eval score is 4.2 out of 5, we&rsquo;re good&rdquo; is the moment you&rsquo;ve stopped actually evaluating.</p>
+
+<p>I still get tripped up by this. I&rsquo;ll optimize a prompt for two days, watch the LLM-judge score climb from 3.8 to 4.3, celebrate, and then discover that the &ldquo;improvement&rdquo; came from the model producing longer, more hedged responses that the judge likes but users find annoying. The score went up. The product got worse. That tension never fully goes away.</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  WRAP-UP                                                           -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+
+<h2>Wrap-Up</h2>
+
+<p>If you&rsquo;re still with me, thank you. I hope it was worth it.</p>
+
+<p>We started with a deceptively simple question &mdash; how do you know if an LLM&rsquo;s output is good? &mdash; and discovered that the answer involves information theory (perplexity), string matching (BLEU, ROUGE), standardized exams (MMLU, HumanEval, GSM8K), using LLMs to judge other LLMs (G-Eval, pairwise comparison), borrowing ranking systems from chess (Elo, Chatbot Arena), paying humans to disagree with each other (human evaluation with Cohen&rsquo;s kappa), and confronting the fact that every measurement system eventually gets gamed (Goodhart&rsquo;s Law).</p>
+
+<p>My hope is that the next time someone shows you a model that &ldquo;scores 92% on MMLU&rdquo; or &ldquo;ranks #3 on the Arena,&rdquo; instead of taking that at face value, you&rsquo;ll ask: what does that benchmark actually measure? Could it be contaminated? Does it predict performance on <em>my</em> task? And then you&rsquo;ll go build your own eval set, because the fifty examples you write yourself will tell you more about your product than any leaderboard ever will.</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  RESOURCES                                                         -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+
+<h2>Resources</h2>
+
+<p><strong>Hugging Face Evaluation Guidebook</strong> &mdash; The most comprehensive and honest treatment of the evaluation crisis, including the contamination and saturation problems. Insightful and frequently updated.</p>
+
+<p><strong>Chatbot Arena Leaderboard (lmsys.org)</strong> &mdash; The live, crowdsourced Elo leaderboard. Watching the rankings shift after new model releases is addictive. The underlying dataset of human preferences is also available for research.</p>
+
+<p><strong>&ldquo;Judging LLM-as-a-Judge&rdquo; (Zheng et al., 2023)</strong> &mdash; The O.G. paper on using GPT-4 as a judge, documenting both its effectiveness and its biases. Required reading if you&rsquo;re implementing LLM-as-judge in production.</p>
+
+<p><strong>lm-eval-harness (EleutherAI, GitHub)</strong> &mdash; The standard framework for running benchmarks. Wildly useful for comparing models and getting reproducible results.</p>
+
+<p><strong>&ldquo;Benchmark Data Contamination of Large Language Models: A Survey&rdquo; (Xu et al., 2024)</strong> &mdash; A sobering catalog of how contamination has affected every major benchmark. Changes how you think about leaderboard numbers.</p>
+
+<p><strong>HELM (Stanford CRFM)</strong> &mdash; Holistic evaluation across accuracy, fairness, robustness, and toxicity. The multi-dimensional view that single-score benchmarks miss.</p>
 
 
 
