@@ -293,279 +293,324 @@
 
     <div class="content">
 
-<h1>Modern Breakthroughs</h1>
+<h1>Modern Breakthroughs in Generative AI</h1>
 <div class="chapter-meta">
   <span class="tag">Chapter 15: Generative Models</span>
   <span class="tag">7 subtopics</span>
 </div>
 
-<div class="tldr">
-  <div class="tldr-label">TL;DR</div>
-  <p>The diffusion world didn't stand still. Consistency models collapse 50+ denoising steps into 1–2. Flow matching straightens the noise-to-data path for faster, simpler training. Diffusion Transformers (DiT) replace U-Net with a transformer backbone that scales predictably — powering DALL·E 3, Stable Diffusion 3, and Sora. Video generation extends the framework to temporal sequences (with enormous compute cost). ControlNet and IP-Adapter give fine-grained spatial and stylistic control without retraining. And Score Distillation Sampling lets 2D diffusion models supervise 3D asset generation. These advances turned diffusion from a research curiosity into the production backbone of generative AI.</p>
+<!-- ============================================================ -->
+<!-- OPENING -->
+<!-- ============================================================ -->
+
+<p>I avoided doing a proper deep dive into generative AI for longer than I'd like to admit. Every week there was a new model — DALL·E something, Midjourney v-something, another Stable Diffusion release — and I'd scroll past the demo reels thinking "cool, but I know the gist." Except I didn't, not really. I couldn't explain why one model produced photorealistic faces while another excelled at oil paintings. I couldn't tell you how a text prompt becomes a video, or how a flat image becomes a 3D object, or how an AI generates a piano solo that sounds eerily human. The discomfort of not knowing what's happening under all these hoods finally grew too great. Here is that dive.</p>
+
+<p>Generative AI — the family of models that create new images, videos, 3D objects, and audio from learned data distributions — went from a research curiosity to the backbone of creative tools in roughly three years (2022–2025). The field spans text-to-image systems like DALL·E 3 and Stable Diffusion, video generators like Sora and Runway, 3D creation tools, and audio synthesizers. The underlying techniques are all variations on a handful of core ideas, and that's what makes this dive worthwhile.</p>
+
+<p>Before we start, a heads-up. We'll be touching on diffusion models, transformers, neural radiance fields, and audio tokenization — but you don't need to be an expert on any of them beforehand. If you followed the earlier chapters on diffusion and transformers, you have more than enough. We'll add what we need, one piece at a time.</p>
+
+<p>This isn't a short journey, but I hope you'll be glad you came.</p>
+
+<!-- ============================================================ -->
+<!-- TABLE OF CONTENTS -->
+<!-- ============================================================ -->
+
+<div class="toc" style="margin: 2rem 0; padding: 1.5rem; border-left: 3px solid var(--accent, #4a90d9); background: var(--bg-alt, #f8f9fa); border-radius: 4px;">
+  <p style="margin-bottom: 0.75rem; font-weight: 600;">Contents</p>
+  <p style="margin: 0.3rem 0; padding-left: 1rem;">The Text-to-Image Revolution</p>
+  <p style="margin: 0.3rem 0; padding-left: 1rem;">Image Editing — Inpainting, Outpainting, and Img2Img</p>
+  <p style="margin: 0.3rem 0; padding-left: 1rem;">From Still to Motion — Video Generation</p>
+  <p style="margin: 0.3rem 0; padding-left: 1rem;">Rest Stop</p>
+  <p style="margin: 0.3rem 0; padding-left: 1rem;">Escaping Flatland — 3D Generation</p>
+  <p style="margin: 0.3rem 0; padding-left: 1rem;">The Sound of AI — Audio and Music Generation</p>
+  <p style="margin: 0.3rem 0; padding-left: 1rem;">Multimodal Generation — Putting It All Together</p>
+  <p style="margin: 0.3rem 0; padding-left: 1rem;">The Creative AI Ecosystem and What It Means</p>
+  <p style="margin: 0.3rem 0; padding-left: 1rem;">Resources and Credits</p>
 </div>
 
 <!-- ============================================================ -->
-<h2>Consistency Models — Generation in One Step</h2>
+<!-- TEXT-TO-IMAGE REVOLUTION -->
+<!-- ============================================================ -->
 
-<p>Standard diffusion is slow. You start from noise and walk backward through 20, 50, sometimes 1000 denoising steps to get a clean image. Each step is a full neural network forward pass. That's fine for research; it's a problem for production.</p>
+<h2>The Text-to-Image Revolution</h2>
 
-<p>Yang Song et al. (2023) asked a sharp question: <em>what if we could skip the walk entirely?</em></p>
+<p>Let's start with a thought experiment. Imagine you're a one-person creative studio. You've been hired to produce a short animated film — characters, environments, soundtrack, the whole thing. Five years ago, you'd need a team of dozens and a budget measured in hundreds of thousands. Today, the tools to do each piece of this exist, and they're powered by generative AI. We'll build our understanding of the entire generative landscape through the lens of this studio — one capability at a time.</p>
 
-<h3>The Core Insight</h3>
+<p>The first thing our studio needs is still images. Concept art, backgrounds, character designs. And the text-to-image revolution is where this all began in earnest.</p>
 
-<p>Think of the diffusion process as drawing a trajectory through space — from clean data x₀, through progressively noisier versions x₁, x₂, …, x<sub>T</sub>, all the way to pure Gaussian noise. A trained diffusion model can map from any point on that trajectory back to x₀, but it does so incrementally — small steps.</p>
+<h3>The Three Families</h3>
 
-<p>A <strong>consistency model</strong> learns a function f(x<sub>t</sub>, t) that maps <em>any</em> point on the trajectory directly to x₀. The key constraint: all points on the same trajectory must map to the same output. That's the <strong>self-consistency property</strong>:</p>
+<p>By late 2022, three systems had emerged that could generate photorealistic images from text descriptions: <strong>DALL·E</strong> (OpenAI), <strong>Midjourney</strong> (an independent research lab), and <strong>Stable Diffusion</strong> (Stability AI / open source community). They look similar from the outside — type words, get pictures — but the architectures underneath are meaningfully different, and understanding those differences is what separates "I use AI tools" from "I understand AI tools."</p>
 
-<pre><code>f(x_t, t) = f(x_t', t')    for any t, t' on the same trajectory</code></pre>
+<p><strong>DALL·E's lineage</strong> tells the story of the field in miniature. DALL·E 1 (January 2021) used a discrete VAE with an autoregressive transformer — it generated tokens representing image patches, one at a time, conditioned on text. Slow, limited resolution, but genuinely novel. DALL·E 2 (April 2022) switched to a diffusion model guided by CLIP embeddings — a technique called <strong>unCLIP</strong>. You encode the text with CLIP's text encoder, map that embedding into CLIP's image embedding space, then use a diffusion model to generate an image conditioned on that image embedding. The intermediate CLIP embedding acted as a bridge between language and pixels. DALL·E 3 (September 2023) went further: it put a language model (similar to GPT-4) directly in the loop to rewrite and expand user prompts before feeding them to the diffusion backbone, which by then was a transformer-based architecture. The result was dramatically better prompt adherence — the model actually generates what you asked for, including spatial relationships and quantities that earlier systems botched.</p>
 
-<p>This means you can generate an image in a single forward pass: sample noise z ~ N(0, I), evaluate f(z, T), done. One network call. No iterative denoising.</p>
+<p>I'll be honest — when I first learned that DALL·E 3's biggest improvement was essentially having a chatbot rewrite your prompt before generating, it felt almost anticlimactic. But then I tried prompting "a blue cube on top of a red sphere, with a green cylinder behind both" in DALL·E 2 versus DALL·E 3, and the difference was stark. The language model doesn't add creativity — it adds <em>comprehension</em>.</p>
 
-<h3>Two Training Approaches</h3>
+<p><strong>Midjourney</strong> remains a black box. The architecture is proprietary and undisclosed. What we know: it's diffusion-based, optimized aggressively for aesthetic quality, and clearly uses custom training data curation and loss functions that favor visual appeal over strict prompt fidelity. Midjourney images have a distinctive "look" — slightly dreamy, with cinematic lighting and rich color palettes. That's not an accident; it's a design choice baked into the training pipeline. For our creative studio, Midjourney is like having an art director with strong opinions: the output is beautiful, but getting it to match your exact mental image requires learning its language.</p>
 
-<p><strong>Consistency distillation</strong> starts from a pre-trained diffusion model. You take pairs of adjacent points (x<sub>t</sub>, x<sub>t'</sub>) on a trajectory (computed using the teacher's denoiser), and train the student to produce the same output for both. The teacher provides the trajectory; the student learns to shortcut it.</p>
+<p><strong>Stable Diffusion</strong> is the open-source family, and its evolution tells us the most about the technical trajectory of the field because we can actually see what changed. Stable Diffusion 1.5 (2022) used a U-Net backbone operating in latent space (the "latent diffusion" breakthrough from Rombach et al., 2022), with a CLIP text encoder and a VAE for compressing images into a smaller latent representation. It worked surprisingly well for its size, but the text encoder was limited — CLIP wasn't designed for generation, and complex prompts often produced incoherent results.</p>
 
-<p><strong>Consistency training</strong> works from scratch — no pre-trained teacher needed. You enforce the self-consistency property using pairs generated by adding noise at different levels to the same clean image, plus an EMA target network for stability. It's harder to train but avoids the two-stage pipeline.</p>
+<p>SDXL (2023) scaled the U-Net up and added a second, larger text encoder (OpenCLIP ViT-G) alongside the original CLIP model. Bigger model, better text understanding, higher resolution. But the fundamental architecture was still a U-Net. Then came <strong>Stable Diffusion 3</strong> (2024), which replaced the U-Net entirely with a <strong>Multimodal Diffusion Transformer (MMDiT)</strong>. This was the pivotal shift. Instead of processing text and image tokens through separate pathways joined by cross-attention, MMDiT feeds both into the same transformer — text tokens and image-latent tokens attend to each other in every layer. It also switched from the traditional DDPM noise schedule to <strong>flow matching</strong>, a framework where the noise-to-data path is a straight line rather than a curved stochastic trajectory. Straighter paths mean fewer steps to generate an image, and the math is cleaner.</p>
 
-<h3>Latent Consistency Models (LCM)</h3>
+<p><strong>FLUX</strong> (by Black Forest Labs, founded by key Stable Diffusion researchers) pushed this further in late 2024. Same core ideas — flow matching, DiT backbone — but with refined architecture and training at larger scale. FLUX.1-dev became the go-to open model for many practitioners.</p>
 
-<p>Luo et al. (2023) made this practical by applying consistency distillation in latent space (on top of Stable Diffusion's VAE). The result: <strong>Latent Consistency Models</strong> generate good images in 1–4 steps. At 4 steps, quality approaches the 50-step teacher. At 1 step, you get real-time generation — fast enough for interactive applications.</p>
+<p>The pattern across all three families: early systems used patchwork architectures (VAE + CLIP + U-Net + separate text encoders), and the field converged toward unified transformer-based systems that process text and images together. Think of it like the film industry moving from separate departments that barely talk to each other — writing, cinematography, editing — toward a single integrated production pipeline. The unified approach doesn't mean each part is identical; it means information flows freely between all of them, and that makes the final output more coherent.</p>
 
-<p>The key trick: LCM uses a <strong>one-stage guided distillation</strong> that bakes classifier-free guidance directly into the consistency model, so you don't need to run the model twice per step (conditional + unconditional) like standard CFG.</p>
+<h3>The Limitation</h3>
 
-<pre><code># Pseudo-code: LCM inference (1-4 steps)
-z = torch.randn(1, 4, 64, 64)               # noise in latent space
-timesteps = [999, 749, 499, 249][:num_steps] # skip schedule
-
-for t in timesteps:
-    z = consistency_model(z, t, prompt_emb)  # single model call per step
-
-image = vae.decode(z)                        # decode latent to pixels</code></pre>
-
-<p>LCM-LoRA took it further — a LoRA adapter that turns any fine-tuned Stable Diffusion checkpoint into a few-step generator without full distillation. Plug and play.</p>
+<p>Text-to-image is remarkable, but for our creative studio, it has a frustrating constraint: you get what the model gives you. If the character's left hand looks wrong, or the background is perfect except for one distracting element, you can't reach in and fix it. You can re-roll the dice (generate again), but you can't <em>edit</em>. That's what we need next.</p>
 
 <!-- ============================================================ -->
-<h2>Rectified Flow &amp; Flow Matching</h2>
+<!-- IMAGE EDITING -->
+<!-- ============================================================ -->
 
-<p>Standard diffusion follows curved paths from noise to data. The SDE-based formulation meanders through latent space, which is why you need many steps to trace it accurately. What if the path were a straight line?</p>
+<h2>Image Editing — Inpainting, Outpainting, and Img2Img</h2>
 
-<h3>The Straight Path Idea</h3>
+<p>Our creative studio has generated a beautiful concept art piece for our film. But the protagonist's eyes look slightly off, and we want to extend the background to the left for a wider composition. We don't want to start over. We want to <em>edit</em>.</p>
 
-<p><strong>Flow matching</strong> (Lipman et al., 2022) and <strong>rectified flow</strong> (Liu et al., 2022) independently arrived at a beautiful simplification. Instead of learning to reverse a stochastic noise process, learn a <em>velocity field</em> that transports samples from a noise distribution to the data distribution along straight(ish) paths.</p>
+<p>It turns out that the denoising process at the heart of diffusion models is naturally suited for editing. The core insight is beautiful: if generation means starting from pure noise and denoising to a clean image, then editing means starting from a <em>mostly clean</em> image — with specific regions replaced by noise — and letting the model fill in only those regions.</p>
 
-<p>The interpolation is dead simple:</p>
+<h3>Inpainting: Filling What's Missing</h3>
 
-<pre><code># Linear interpolation between noise and data
-x_t = (1 - t) * x_0 + t * epsilon    # t ∈ [0, 1]
+<p><strong>Inpainting</strong> is the task of filling in masked (erased) regions of an image. You give the model an image, a binary mask indicating which region to regenerate, and optionally a text prompt describing what should go there.</p>
 
-# The velocity field to learn
-v(x_t, t) = epsilon - x_0            # constant along a straight path!</code></pre>
+<p>The simplest approach works during inference: at each denoising step, keep the unmasked pixels at their original values and only update the masked region. The model "sees" the surrounding context and generates content that blends naturally with it. It's like tearing a hole in a painting and asking an artist to fill it in — the surrounding brushstrokes guide what goes in the gap.</p>
 
-<p>Train a network v<sub>θ</sub>(x<sub>t</sub>, t) to predict this velocity using a simple MSE loss. At inference, integrate the ODE dx/dt = v<sub>θ</sub>(x, t) from t=1 (noise) to t=0 (data). Straight paths mean simple integration — even Euler's method with few steps works well.</p>
+<p>The more sophisticated approach — used by Stable Diffusion's dedicated inpainting model — trains the denoiser with extra input channels. The standard model takes a 4-channel latent as input (the VAE's latent space). The inpainting model takes 9 channels: 4 for the noisy latent, 4 for the masked image's latent, and 1 for the mask itself. The model learns the concept of "fill this specific region" as part of its training, not as an inference-time hack. The results are noticeably more coherent.</p>
 
-<h3>Why This Matters</h3>
+<h3>Outpainting: Expanding the Canvas</h3>
 
-<p>Curved trajectories are harder to integrate numerically. You either need many small steps (slow) or a sophisticated solver (complicated). Straight paths let you get away with 4–8 Euler steps. In practice, flow matching models achieve comparable quality to DDPM at a fraction of the sampling cost, with simpler training code to boot.</p>
+<p><strong>Outpainting</strong> is inpainting's sibling. Instead of filling a hole in the middle, you expand the image beyond its original borders. You place the original image on a larger canvas, mark the new blank areas as "masked," and run inpainting. The model generates scenery, patterns, or whatever makes sense given the existing content at the edges.</p>
 
-<p><strong>Stable Diffusion 3</strong> and <strong>FLUX</strong> (by Black Forest Labs) both use flow matching as their core framework. The shift from DDPM-style noise schedules to flow matching is one of the biggest practical advances in the field — simpler math, faster sampling, easier to implement.</p>
+<p>For our studio, this is incredibly practical. We generated a portrait-oriented character design but now need a landscape version for a background plate. Outpainting extends the scene without regenerating the parts we already like.</p>
 
-<h3>Reflow: Straightening Further</h3>
+<h3>Img2Img: Controlled Transformation</h3>
 
-<p>Rectified flow adds an extra trick: <strong>reflow</strong>. After training an initial model, you generate (noise, data) pairs by running it forward. Then retrain on these pairs. The paths become even straighter because you're now matching pairs that are already approximately connected by the learned flow. Iterate this process and paths converge toward perfect straight lines — enabling near-single-step generation.</p>
+<p><strong>Image-to-image (img2img)</strong> is a different beast. Instead of masking specific regions, you take the entire source image, encode it into latent space, add a controlled amount of noise (the <strong>strength</strong> parameter), and then denoise it — but conditioned on a <em>new</em> text prompt. Low strength (say, 0.3) preserves most of the original structure — colors, composition, rough shapes — and makes subtle changes. High strength (0.8+) basically uses the original image as a rough sketch and regenerates aggressively.</p>
+
+<p>Think of the strength parameter as a dial between "touch up" and "reimagine." At 0.0, you get the original image back unchanged. At 1.0, you get a completely new generation that ignores the input entirely. Somewhere in between, you get creative alchemy: a pencil sketch becomes a photorealistic scene, a daytime photo becomes a moody night shot, a rough 3D render becomes concept art.</p>
+
+<p>I still occasionally get tripped up by the strength parameter — it's more art than science, and the "right" value depends on the specific image, model, and prompt in ways that resist clean formulas. But that's the territory we're in with generative AI: powerful tools with knobs that require intuition to turn well.</p>
+
+<h3>ControlNet: Precise Spatial Control</h3>
+
+<p>Inpainting, outpainting, and img2img give us broad control. But what if we need something more precise? What if we want the generated image to follow a specific edge map, or match a particular human pose, or respect a depth map from a 3D scene?</p>
+
+<p><strong>ControlNet</strong> (Zhang et al., 2023) solved this elegantly. The idea: take a pre-trained diffusion model, clone its encoder, and feed your control signal — a Canny edge map, a depth map, an OpenPose skeleton, a segmentation mask — into the clone. The clone's outputs are injected back into the original model through <strong>zero convolution</strong> layers, which are convolutional layers initialized with all weights at zero.</p>
+
+<p>That initialization trick is key. At the start of training, the zero convolutions output nothing, so ControlNet has zero effect on the base model. Gradually, during training, it learns to inject exactly the right amount of spatial guidance. The base model's weights stay frozen throughout — you never risk degrading its generation quality.</p>
+
+<p>For our creative studio, ControlNet is transformative. We can pose a character using a stick-figure skeleton and have the model fill in the details. We can use a rough 3D blockout as a depth map and get a fully rendered environment. The filmmaker's visual intent flows directly into the generation process.</p>
+
+<h3>The Limitation</h3>
+
+<p>We can now generate and edit still images with remarkable control. But our studio is making a film, and a film needs <em>motion</em>. A sequence of independently generated frames won't cut it — each one would look slightly different from the last, creating an uncanny flickering effect. We need models that understand time.</p>
 
 <!-- ============================================================ -->
-<h2>Diffusion Transformers (DiT)</h2>
-
-<p>For years, the U-Net was the default backbone for diffusion models. It works — skip connections preserve spatial detail, and the encoder-decoder structure handles multi-scale features naturally. But U-Nets have a ceiling: they don't scale as predictably as transformers, and they're architecturally complex with all those skip connections, attention blocks at specific resolutions, and resolution-dependent channel counts.</p>
-
-<h3>The DiT Architecture</h3>
-
-<p>Peebles &amp; Xie (2023) proposed <strong>Diffusion Transformer (DiT)</strong>: replace the U-Net entirely with a standard Vision Transformer. The design is surprisingly clean:</p>
-
-<ol>
-<li><strong>Patchify</strong>: Split the latent (e.g., 32×32×4 from a VAE) into non-overlapping patches, project each to a token embedding.</li>
-<li><strong>Transformer blocks</strong>: Standard self-attention + feedforward layers. No skip connections across blocks, no encoder-decoder asymmetry.</li>
-<li><strong>Conditioning</strong>: Timestep t and class label (or text embedding) are injected via <strong>adaptive layer norm (adaLN-Zero)</strong> — scale and shift parameters of LayerNorm are predicted from the conditioning signal. This beats cross-attention for conditioning in DiT's design.</li>
-<li><strong>Unpatchify</strong>: Project tokens back to the latent spatial layout. Predict both noise and diagonal covariance.</li>
-</ol>
-
-<pre><code># DiT block (simplified)
-class DiTBlock(nn.Module):
-    def __init__(self, dim, num_heads):
-        self.norm1 = nn.LayerNorm(dim, elementwise_affine=False)
-        self.attn = nn.MultiheadAttention(dim, num_heads)
-        self.norm2 = nn.LayerNorm(dim, elementwise_affine=False)
-        self.mlp = MLP(dim, dim * 4)
-        self.adaLN = nn.Linear(dim, 6 * dim)  # scale, shift for norm1 & norm2 + gate
-
-    def forward(self, x, cond):
-        # adaLN-Zero: conditioning modulates normalization
-        gamma1, beta1, alpha1, gamma2, beta2, alpha2 = self.adaLN(cond).chunk(6, dim=-1)
-
-        # Self-attention with adaptive norm
-        h = self.norm1(x) * (1 + gamma1) + beta1
-        x = x + alpha1 * self.attn(h, h, h)
-
-        # Feedforward with adaptive norm
-        h = self.norm2(x) * (1 + gamma2) + beta2
-        x = x + alpha2 * self.mlp(h)
-        return x</code></pre>
-
-<h3>Why DiT Wins at Scale</h3>
-
-<p>The key result from the DiT paper: <strong>compute-quality scaling follows clean power laws</strong>, just like language model scaling laws. Double the compute → predictable improvement in FID. This makes architecture and resource decisions much easier than the U-Net world, where scaling required careful per-resolution tuning.</p>
-
-<p>DiT also inherits the entire transformer optimization ecosystem: FlashAttention, tensor parallelism, sequence parallelism, KV caching during iterative denoising. None of these were designed for U-Nets.</p>
-
-<p>Real-world adoption is widespread:</p>
-<ul>
-<li><strong>DALL·E 3</strong> — Transformer-based diffusion backbone</li>
-<li><strong>Stable Diffusion 3 / FLUX</strong> — MMDiT (multimodal DiT), jointly processes text and image tokens in the same transformer</li>
-<li><strong>Sora</strong> — Spacetime DiT for video, treating video as sequences of spacetime patches</li>
-<li><strong>Hunyuan-DiT, PixArt-α</strong> — Efficient DiT variants for text-to-image</li>
-</ul>
-
+<!-- VIDEO GENERATION -->
 <!-- ============================================================ -->
-<h2>Video Generation</h2>
 
-<p>If diffusion can generate a single image, can it generate a sequence of frames that form coherent video? The answer is yes — with caveats.</p>
+<h2>From Still to Motion — Video Generation</h2>
 
-<h3>The Core Challenge</h3>
+<p>The jump from generating a single image to generating a video is like the jump from photography to cinema. It's not about generating 30 images per second — it's about making those images <em>tell a coherent story across time</em>. A ball thrown in frame 1 has to arc correctly through frame 30. A person turning their head must maintain consistent facial features throughout the rotation. Lighting can't randomly shift between frames.</p>
 
-<p>Image generation needs spatial coherence. Video needs spatial <em>and</em> temporal coherence — objects should move smoothly, lighting should stay consistent, a ball thrown in frame 1 should arc correctly through frame 30. This is dramatically harder. You're not just sampling from a distribution of images; you're sampling from a distribution of <em>physically plausible spacetime volumes</em>.</p>
+<p>This is <strong>temporal coherence</strong>, and it's brutally hard. An image model needs to learn the statistics of what natural scenes look like. A video model needs to learn what natural scenes look like, how they change over time, and — to some degree — the physics that governs that change. You're no longer sampling from a distribution of images; you're sampling from a distribution of physically plausible spacetime volumes.</p>
 
-<h3>Architectural Approaches</h3>
+<p>I'm still developing my intuition for why temporal coherence is so much harder than spatial coherence. My best mental model is this: in a single image, nearby pixels are strongly correlated (a blue sky pixel predicts that neighboring pixels are also blue sky). In video, the correlations span both space and time, but the temporal correlations are much longer-range and more complex — a hand that starts reaching for a cup in frame 1 might not grasp it until frame 60, and the model needs to maintain a plausible trajectory for the entire motion. That's a dependency spanning seconds, not pixels.</p>
 
-<p>Most video diffusion models extend image architectures with temporal modeling:</p>
+<h3>How Video Diffusion Works</h3>
 
-<ul>
-<li><strong>Temporal attention</strong>: Add attention layers that attend across frames at the same spatial position. Interleave with spatial attention (within-frame). This is the most common approach.</li>
-<li><strong>3D convolutions / patches</strong>: Treat video as a 3D volume. Sora patchifies spacetime — a video becomes a sequence of spacetime tokens, processed by a DiT.</li>
-<li><strong>Autoregressive + diffusion hybrids</strong>: Generate keyframes with diffusion, interpolate between them. Reduces the temporal modeling burden.</li>
-</ul>
+<p>Most video generation models extend image diffusion architectures in one of three ways. The first is <strong>temporal attention</strong>: take a standard image diffusion model and insert additional attention layers that attend across frames at the same spatial position. You interleave spatial attention (within a frame) with temporal attention (across frames). Each frame stays sharp, and the temporal attention layers learn to keep things consistent across time.</p>
 
-<h3>The State of the Art (2024–2025)</h3>
+<p>The second approach treats video as a 3D volume. Instead of 2D patches of an image, you extract <strong>spacetime patches</strong> — little cubes that span width, height, and time. A transformer processes the sequence of these spacetime tokens. This is the approach that <strong>Sora</strong> (OpenAI, 2024) popularized. A 10-second video becomes a long sequence of 3D patches, and the DiT (Diffusion Transformer) learns the relationships between all of them — spatial, temporal, and cross-frame.</p>
 
-<p><strong>Sora</strong> (OpenAI) demonstrated that scaling a spacetime DiT produces remarkably coherent videos — up to a minute long — with emergent physics understanding. It processes variable-length, variable-resolution videos natively. The approach: compress video with a visual encoder into spacetime patches, apply a large DiT, decode back.</p>
+<p>The third approach is a hybrid: generate a few keyframes with image diffusion, then interpolate between them using a separate model. This is more modular — you can use an excellent image model for the keyframes and a lighter model for interpolation — but the interpolation model needs to invent plausible motion between keyframes, which is its own hard problem.</p>
 
-<p><strong>Runway Gen-3</strong>, <strong>Kling</strong> (Kuaishou), and <strong>Pika</strong> offer production-grade text-to-video and image-to-video. Quality has reached the point where short clips (5–15 seconds) are often indistinguishable from real footage for casual viewing.</p>
+<h3>The Major Players</h3>
 
-<p><strong>Open models</strong> like Stable Video Diffusion and CogVideo/CogVideoX have made video generation accessible to researchers, though quality still trails the best closed systems.</p>
+<p><strong>Sora</strong> demonstrated that scaling a spacetime DiT produces remarkably coherent videos — up to a minute long — with what appears to be emergent physics understanding. Water flows, reflections behave, objects have weight. The model processes variable-length, variable-resolution videos natively, compressing the raw video with a visual encoder into spacetime patches, applying a massive DiT, and decoding back. OpenAI has been deliberately slow to release it widely, citing safety concerns — which tells you something about the realism it achieves.</p>
+
+<p><strong>Runway Gen-3</strong> (and its successor Gen-4) is perhaps the most production-ready tool. Cinematic quality, excellent camera control, smooth motion. Clips run 10–16 seconds, and Gen-4 introduced "world consistency" — characters, lighting, and objects stay coherent across multiple generated shots. For our creative studio, this is the workhorse: you describe a scene, maybe provide a reference image, and get usable footage.</p>
+
+<p><strong>Kling</strong> (by Kuaishou, a Chinese tech company) pushes the duration frontier. It can generate clips up to 1–2 minutes with impressive temporal coherence, maintaining character identity and scene consistency over much longer durations than competitors. It also offers "virtual director" tools — storyboard-based interfaces where you specify camera angles, pacing, and shot transitions.</p>
+
+<p><strong>Stable Video Diffusion</strong> and <strong>CogVideoX</strong> represent the open-source frontier. Quality trails the best closed systems, but they're accessible to researchers and the community continues to improve them rapidly. For our studio, they're the R&amp;D sandbox — less polished, but we can look inside and modify them.</p>
 
 <h3>What's Still Hard</h3>
 
-<ul>
-<li><strong>Temporal coherence over long durations</strong>: Hands gain or lose fingers. Objects teleport. Physics breaks down after ~10 seconds.</li>
-<li><strong>Compute cost</strong>: A 1-minute Sora video reportedly takes orders of magnitude more compute than a single image. Real-time video generation remains far off for high quality.</li>
-<li><strong>Controllability</strong>: Specifying precise camera motion, character actions, and scene dynamics through text alone is inherently limited.</li>
-<li><strong>Evaluation</strong>: There's no consensus metric — FVD (Fréchet Video Distance) captures statistics but misses temporal artifacts that humans notice instantly.</li>
-</ul>
+<p>The honest truth: video generation in 2025 is roughly where image generation was in mid-2022. The results are often stunning in short clips, but break down in predictable ways. Hands gain or lose fingers across frames. Objects occasionally teleport. Physics deteriorates after about 10 seconds. The compute cost is enormous — generating a one-minute video with Sora-level quality takes orders of magnitude more compute than a single image.</p>
+
+<p>And there's a deep evaluation problem. There's no consensus metric for video quality. <strong>Fréchet Video Distance (FVD)</strong> captures statistical similarity to real video distributions but misses the temporal artifacts that humans spot instantly — a briefly-appearing sixth finger, a shadow that jumps between frames. We know good video when we see it, but we can't reliably measure it automatically.</p>
 
 <!-- ============================================================ -->
-<h2>Image Editing &amp; Control</h2>
+<!-- REST STOP -->
+<!-- ============================================================ -->
 
-<p>Generating images from scratch is impressive. But for production workflows, you usually want <em>control</em> — "generate an image like this, but change the lighting," or "fill in this masked region," or "follow this edge map exactly."</p>
+<div style="margin: 3rem 0; padding: 2rem; border: 2px dashed var(--border, #ccc); border-radius: 8px; background: var(--bg-alt, #f8f9fa);">
+<h2 style="margin-top: 0;">Rest Stop</h2>
 
-<h3>ControlNet</h3>
+<p>Congratulations on making it this far. You can stop here if you want.</p>
 
-<p>Zhang et al. (2023) introduced <strong>ControlNet</strong>, which adds spatial conditioning to a pre-trained diffusion model <em>without retraining the base model</em>. The trick: clone the encoder of the U-Net (or DiT), feed your control signal (edge map, depth map, pose skeleton, segmentation mask) into the clone, and inject the clone's outputs into the original model via addition.</p>
+<p>You now have a solid mental model of how generative AI creates and edits visual content: text-to-image systems that evolved from U-Net + CLIP patchworks to unified transformer architectures, image editing techniques (inpainting, outpainting, img2img, ControlNet) that leverage the denoising process for precise control, and video generation that extends these ideas into the temporal dimension with spacetime patches and temporal attention.</p>
 
-<pre><code># ControlNet architecture (conceptual)
-# Frozen: original diffusion model weights
-# Trainable: cloned encoder + zero convolutions
+<p>That mental model is genuinely useful. You can have informed conversations about these tools, evaluate which is right for a given task, and understand the technical announcements that will keep coming.</p>
 
-control_features = controlnet_encoder(control_image)  # e.g., Canny edges
-for block, zero_conv, ctrl_feat in zip(unet_decoder, zero_convs, control_features):
-    block_input = block_input + zero_conv(ctrl_feat)   # inject control
-    block_output = block(block_input)</code></pre>
+<p>But the story doesn't stop at flat screens. Our creative studio needs 3D objects, a soundtrack, and eventually the ability to weave all these modalities together. The techniques for generating 3D content from 2D priors are some of the most clever ideas in the whole field — and audio generation introduces a completely different way of thinking about the problem, one that involves treating sound the way we treat language.</p>
 
-<p>The <strong>zero convolution</strong> layers start with all weights at zero, so ControlNet initially has no effect on the base model. As training progresses, it gradually learns to inject the control signal. This preserves the quality of the original model while adding precise spatial control.</p>
+<p>The short version: 3D generation uses 2D diffusion models as "critics" to sculpt 3D shapes. Audio generation tokenizes sound into discrete symbols and predicts the next one, like a language model. There. You're 80% of the way there.</p>
 
-<p>ControlNet has spawned an ecosystem: Canny edge control, depth control (MiDaS), pose control (OpenPose), segmentation control, scribble-to-image, and more. Each requires training a separate ControlNet adapter, but the base model stays frozen.</p>
-
-<h3>IP-Adapter: Image Prompting</h3>
-
-<p>Text is powerful but imprecise. Sometimes you want to say "make it look like <em>this</em>" by providing a reference image. <strong>IP-Adapter</strong> (Ye et al., 2023) adds image prompt capability to text-to-image models. It encodes a reference image with a CLIP image encoder, projects it through a small adapter network, and injects the result into the cross-attention layers alongside the text embedding.</p>
-
-<p>The clever part: it uses <strong>decoupled cross-attention</strong> — separate key/value projections for text tokens and image tokens. This lets the model attend to text and image prompts independently without interference.</p>
-
-<h3>Inpainting &amp; Outpainting</h3>
-
-<p>Inpainting — filling in masked regions of an image — is a natural fit for diffusion. The approach: during denoising, keep the unmasked pixels fixed (or close to fixed) at each step, and only denoise the masked region. The model naturally generates content that blends with the surroundings.</p>
-
-<p>More sophisticated approaches train dedicated inpainting models that take the mask and masked image as additional input channels. Stable Diffusion's inpainting model, for example, has a 9-channel input (4 latent channels + 4 masked latent channels + 1 mask channel).</p>
+<p>But if the discomfort of not knowing what's underneath is nagging at you, read on.</p>
+</div>
 
 <!-- ============================================================ -->
-<h2>Text-to-3D</h2>
+<!-- 3D GENERATION -->
+<!-- ============================================================ -->
 
-<p>Here's a wild idea: you have a 2D diffusion model that understands what objects look like from every angle (because it was trained on billions of images). Can you use it to create 3D objects, even though it has never seen 3D data?</p>
+<h2>Escaping Flatland — 3D Generation</h2>
 
-<h3>Score Distillation Sampling (SDS)</h3>
+<p>Our creative studio has a problem. We've generated beautiful concept art and short video clips, but the film needs 3D assets — characters that can be viewed from any angle, environments that a virtual camera can fly through. Traditionally, 3D modeling is one of the most labor-intensive parts of production. A single detailed character might take an artist weeks. Can generative AI help?</p>
 
-<p><strong>DreamFusion</strong> (Poole et al., 2022) showed that yes, you can. The technique is called <strong>Score Distillation Sampling</strong>. The setup:</p>
+<p>The answer involves some of the most ingenious thinking in recent AI research. The core challenge is this: we have diffusion models that understand what objects look like from essentially every angle — because they were trained on billions of images from billions of viewpoints. But they generate flat 2D images. Can we somehow use that 2D understanding to create 3D objects, even though the model has never seen 3D data?</p>
 
-<ol>
-<li>Initialize a 3D representation (a NeRF — neural radiance field).</li>
-<li>Render the 3D object from a random camera angle to get a 2D image.</li>
-<li>Ask a pre-trained diffusion model: "Does this 2D rendering look like [text prompt]?" The diffusion model's noise prediction tells you how to improve the rendered image.</li>
-<li>Backpropagate that gradient through the renderer into the 3D representation.</li>
-<li>Repeat from many camera angles.</li>
-</ol>
+<h3>Neural Radiance Fields — The 3D Foundation</h3>
 
-<pre><code># SDS gradient (simplified)
-rendered_image = render_nerf(nerf_params, camera_pose)
-noisy_image = add_noise(rendered_image, t)
-predicted_noise = diffusion_model(noisy_image, t, text_prompt)
-actual_noise = noisy_image - rendered_image
+<p>Before we can generate 3D content, we need a way to <em>represent</em> 3D content that neural networks can work with. <strong>Neural Radiance Fields (NeRF)</strong>, introduced by Mildenhall et al. in 2020, provided exactly that. A NeRF is a neural network that takes a 3D position (x, y, z) and a viewing direction (two angles) as input, and outputs a color and a density at that point. To render an image from any camera angle, you trace rays through the scene, querying the NeRF at many points along each ray, and composite the results.</p>
 
-# The SDS gradient: difference between predicted and actual noise
-grad = predicted_noise - actual_noise
-nerf_params -= lr * backprop_through_renderer(grad)</code></pre>
+<p>Think of it like this: instead of storing a 3D model as a mesh of triangles (the traditional approach), you store it as a function — "given a point in space and a direction you're looking from, here's what color you see." The advantage is that NeRFs can represent incredibly complex scenes — reflections, translucency, fine detail — because the neural network can learn arbitrary functions. The disadvantage is speed: rendering requires hundreds of network evaluations per pixel, per ray. A single frame might take seconds to render. That's far too slow for real-time applications.</p>
 
-<p>The diffusion model is never fine-tuned. It acts as a frozen critic, guiding the 3D representation toward something that looks good from every viewpoint. Brilliant — but the results tend to be over-saturated and lack fine detail (the "Janus problem" where objects grow multiple faces because the diffusion model is independently satisfied from each view).</p>
+<h3>3D Gaussian Splatting — The Speed Revolution</h3>
+
+<p>In mid-2023, <strong>3D Gaussian Splatting</strong> (Kerbl et al.) arrived and upended the field. The approach is fundamentally different from NeRF. Instead of representing a scene as a continuous function, it represents it as a cloud of millions of tiny 3D Gaussians — ellipsoidal blobs, each with a position, size, orientation, color, and opacity. To render a view, you project each Gaussian onto the 2D image plane and blend them together. No ray marching. No per-pixel network evaluations.</p>
+
+<p>The result: real-time rendering at 60+ frames per second on consumer GPUs. Same visual quality as high-end NeRF methods, but hundreds of times faster at rendering time.</p>
+
+<p>I'll admit — when I first read about Gaussian splatting, the idea felt almost too crude to work. Millions of colored blobs? How could that produce photorealistic scenes? But then I saw the demos, and it clicked. The secret is that with enough Gaussians (millions of them), you can approximate any visual appearance. Each Gaussian is like a tiny, soft brushstroke in 3D space. The "painting" emerges from the aggregate. And because splatting (projecting Gaussians onto a 2D plane) is a well-understood, GPU-friendly operation, the rendering pipeline is blazingly fast.</p>
+
+<p>The analogy to our film studio: NeRF is like oil painting — slow, meticulous, beautiful results if you're patient. Gaussian splatting is like a mosaic — thousands of discrete pieces that, from a slight distance, form a cohesive, stunning image, and you can rearrange them in real time.</p>
+
+<h3>Score Distillation — The Bridge from 2D to 3D</h3>
+
+<p>Now the clever part. <strong>DreamFusion</strong> (Poole et al., 2022) introduced <strong>Score Distillation Sampling (SDS)</strong>, which lets a 2D diffusion model guide the creation of 3D content without ever training on 3D data.</p>
+
+<p>Here's how it works. You start with a randomly initialized 3D representation — a NeRF, or a set of Gaussians. You render it from a random camera angle to get a 2D image. Then you ask a pre-trained diffusion model: "Does this 2D rendering look like [the text prompt]?" The diffusion model's noise prediction tells you <em>how the rendered image should change</em> to better match the prompt. You backpropagate that signal through the renderer into the 3D representation, nudging it to look better from that particular viewpoint. Then you pick a new random camera angle and repeat.</p>
+
+<p>Over thousands of iterations from hundreds of viewpoints, the 3D representation converges toward something that looks like the text prompt from every angle. The diffusion model is never fine-tuned — it acts as a frozen critic, like an art director who can't paint but has incredibly discerning taste. The 3D representation learns to satisfy the critic from all directions simultaneously.</p>
+
+<p>It's a genuinely brilliant idea. But the early results had a telltale problem: the <strong>Janus problem</strong>. Since the diffusion model is independently asked "does this look good?" from each viewpoint, it tends to create objects with recognizable features on every side — a dog with a face on both its front and back, for instance. The model finds it easier to stick a face everywhere than to create a consistent 3D structure that looks like a dog's face from the front and a dog's back from behind.</p>
 
 <h3>Beyond SDS</h3>
 
-<p><strong>Variational Score Distillation (VSD)</strong> / ProlificDreamer addressed the over-saturation issue with a more principled distillation objective. <strong>Magic3D</strong> added a coarse-to-fine pipeline (NeRF → mesh refinement). <strong>Zero-1-to-3</strong> and <strong>One-2-3-45</strong> take a different approach entirely: fine-tune a diffusion model to generate novel views given a single input image, then reconstruct 3D from the generated multi-view images. More recently, large-scale 3D generation models trained on 3D datasets (like <strong>Point-E</strong>, <strong>Shap-E</strong>, and <strong>Meshy</strong>) are reducing dependence on SDS altogether.</p>
+<p><strong>Zero-1-to-3</strong> took a different approach entirely. Instead of using SDS optimization, it fine-tuned a diffusion model to generate <em>novel views</em> of an object given a single input image. You show it a photo of a chair from the front, and it generates plausible views from the side, back, and top. Then you reconstruct 3D geometry from these generated multi-view images using standard 3D reconstruction techniques. No iterative optimization loop. No Janus problem (because the model learns view consistency during training).</p>
 
-<p>The field is moving fast. SDS was the proof-of-concept that 2D priors could bootstrap 3D generation. The endgame is likely large 3D-native models, but the 2D-to-3D distillation approach remains important as a technique and as a conceptual bridge.</p>
+<p>More recently, direct 3D generation models — trained on actual 3D datasets — are emerging. <strong>Point-E</strong> and <strong>Shap-E</strong> (both from OpenAI) generate 3D point clouds and implicit 3D representations directly from text prompts. They're faster than SDS-based approaches and avoid the 2D-to-3D optimization entirely, but they require large 3D training datasets, which are much harder to curate than 2D image datasets.</p>
 
-<!-- ============================================================ -->
-<h2>Architecture Trends: U-Net vs. DiT</h2>
-
-<p>The backbone architecture for diffusion models has shifted dramatically since 2020. Here's where things stand:</p>
-
-<div class="table-responsive">
-<table>
-<thead>
-<tr><th>Aspect</th><th>U-Net</th><th>DiT (Diffusion Transformer)</th><th>Hybrid (MMDiT / U-ViT)</th></tr>
-</thead>
-<tbody>
-<tr><td><strong>Architecture</strong></td><td>Encoder-decoder with skip connections, multi-resolution</td><td>Plain ViT — patchify, transformer blocks, unpatchify</td><td>Joint text+image tokens in a shared transformer; some U-Net-like features</td></tr>
-<tr><td><strong>Conditioning</strong></td><td>Cross-attention (text), timestep embedding (FiLM/adaGN)</td><td>adaLN-Zero (class/time), cross-attention (text)</td><td>Joint self-attention over all modalities</td></tr>
-<tr><td><strong>Scaling behavior</strong></td><td>Unclear scaling laws; manual architecture tuning per resolution</td><td>Clean power-law scaling with compute (like LLMs)</td><td>Scales well; benefits from joint multimodal representation</td></tr>
-<tr><td><strong>Optimization ecosystem</strong></td><td>Limited — custom kernels, limited parallelism</td><td>Full transformer stack: FlashAttention, TP, SP, fused ops</td><td>Same as DiT</td></tr>
-<tr><td><strong>Notable models</strong></td><td>Stable Diffusion 1.x/2.x, DALL·E 2, Imagen</td><td>DiT, DALL·E 3, Sora, PixArt-α</td><td>SD3, FLUX, Hunyuan-DiT</td></tr>
-<tr><td><strong>Current status (2025)</strong></td><td>Legacy — still used in fine-tuned SD 1.5 community models</td><td>Dominant for new large-scale systems</td><td>Frontier — best current results for text-to-image</td></tr>
-<tr><td><strong>When to choose</strong></td><td>Small-scale, existing ecosystem, fine-tuning community models</td><td>New projects at scale, video, predictable scaling</td><td>State-of-the-art text-to-image with strong text understanding</td></tr>
-</tbody>
-</table>
-</div>
-
-<p>The trend is clear: new systems are transformer-based. The U-Net served the field brilliantly for five years, but transformers bring predictable scaling, a mature optimization ecosystem, and natural multimodal integration. If you're starting a new generative model project in 2025, you're almost certainly using a DiT variant.</p>
+<p>For our creative studio, the practical choice depends on the workflow. SDS is slow but works with any text prompt and any pre-trained image model. Zero-1-to-3 is fast if you have a reference image. Direct 3D models are fastest but currently limited in the diversity and detail of what they can generate. The field is converging toward large 3D-native models, but the 2D-to-3D distillation trick remains important — both as a practical technique and as a conceptual bridge that showed the AI community what's possible.</p>
 
 <!-- ============================================================ -->
-<h2>What You Should Now Be Able To Do</h2>
+<!-- AUDIO GENERATION -->
+<!-- ============================================================ -->
+
+<h2>The Sound of AI — Audio and Music Generation</h2>
+
+<p>Our creative studio now has images, video clips, and 3D assets. What it lacks is a soundtrack — music, sound effects, maybe even narration. And here is where the generative AI landscape takes a surprising turn, because the most successful approach to audio generation doesn't look like diffusion at all. It looks like language modeling.</p>
+
+<p>That surprised me when I first encountered it. Images and video are continuous — smooth gradients of color and motion — and diffusion (which operates on continuous values) is a natural fit. But audio is different. Raw audio is a sequence of samples at 16,000 to 48,000 per second. Training a diffusion model on raw waveforms is possible but extraordinarily expensive — the sequences are enormous.</p>
+
+<h3>The Tokenization Insight</h3>
+
+<p>The breakthrough came from an unexpected direction: <strong>neural audio codecs</strong>. Models like Google's <strong>SoundStream</strong> (2021) and Meta's <strong>EnCodec</strong> (2022) learned to compress raw audio into discrete tokens — a vocabulary of sound fragments, analogous to how a tokenizer breaks text into subword units. A 10-second audio clip at 24kHz sampling rate contains 240,000 raw samples. After compression through EnCodec, it becomes a sequence of perhaps 750 discrete tokens from a vocabulary of roughly 1,024.</p>
+
+<p>This reframes the entire audio generation problem. Instead of generating 240,000 continuous values (intractable for most architectures), you generate 750 discrete tokens from a fixed vocabulary. And generating sequences of discrete tokens from a vocabulary is exactly what language models do.</p>
+
+<p>My favorite thing about this approach is how it collapses two seemingly different problems — language generation and audio generation — into the same framework. The codec acts as a translator: continuous audio in, discrete tokens out. A transformer generates new token sequences. The codec's decoder converts tokens back into continuous audio. The only part that "knows" about audio is the codec. The generator is a generic sequence model. That's elegant.</p>
+
+<h3>AudioLM — Language Modeling for Sound</h3>
+
+<p><strong>AudioLM</strong> (Google, 2022) was the first model to show this approach could work at high quality. It uses SoundStream's codec tokens and generates them autoregressively — predict the next audio token given all previous tokens, exactly like GPT predicts the next word token. The model operates in a hierarchical fashion: first it generates "semantic tokens" that capture the high-level content (what words are being said, what melody is being played), then it generates "acoustic tokens" that capture the fine details (the timbre of the voice, the texture of the instrument).</p>
+
+<p>The results were startling. Given a few seconds of a person talking, AudioLM could continue the speech in the same voice, with coherent words and natural prosody. Given a piano piece, it could continue the melody in a musically plausible way. No one explicitly taught it grammar or music theory. The statistical patterns in the audio tokens were enough.</p>
+
+<h3>MusicGen — Text-Conditioned Music</h3>
+
+<p><strong>MusicGen</strong> (Meta, 2023) took this framework and added text conditioning. The architecture: encode music with EnCodec into discrete tokens, train a transformer to generate these token sequences conditioned on a text description ("upbeat electronic dance music with a heavy bass line"). The transformer uses a clever <strong>delay pattern</strong> for the multiple parallel streams of codec tokens — instead of generating all codebook levels simultaneously or one after another, it offsets them by one timestep each, allowing a single transformer to handle multi-stream generation efficiently.</p>
+
+<p>The output quality is good enough that short MusicGen clips regularly fool casual listeners into thinking they're hearing human-composed music. For our creative studio, this is the background music generator — describe the mood, get a score.</p>
+
+<h3>Bark and Beyond</h3>
+
+<p><strong>Bark</strong> (by Suno, open-sourced in 2023) pushed text-to-audio in a more general direction. It generates not only speech in multiple languages but also laughter, sighs, music, and sound effects — all from text prompts, including annotations like [laughs] or [music]. The architecture uses a cascade of three transformer models: text to semantic tokens, semantic tokens to coarse acoustic tokens, coarse to fine acoustic tokens. Each stage adds more detail, like a painter blocking in shapes, then adding color, then adding texture.</p>
+
+<p>The broader audio generation landscape now includes diffusion-based approaches too — <strong>Stable Audio</strong> (Stability AI) uses latent diffusion for music generation, treating spectrograms the way Stable Diffusion treats images. <strong>Udio</strong> and <strong>Suno</strong> (the company behind Bark) offer commercial music generation services that combine multiple techniques. The field hasn't fully converged on a single approach the way image generation converged on diffusion, which makes it an active and somewhat unpredictable area of research.</p>
+
+<p>I'm still developing my intuition for why the codec-plus-language-model approach works as well as it does for audio. My best guess is that the compression performed by the neural codec isn't "lossy" in the naive sense — it doesn't discard information so much as reorganize it into a form that makes sequence-level patterns easier to learn. The codec doesn't throw away the emotion in a voice or the groove in a beat; it distills them into a sequence that a transformer can model.</p>
+
+<!-- ============================================================ -->
+<!-- MULTIMODAL GENERATION -->
+<!-- ============================================================ -->
+
+<h2>Multimodal Generation — Putting It All Together</h2>
+
+<p>Our creative studio now has access to tools that generate images, edit them precisely, produce video, create 3D assets, and compose audio. Each of these started as a separate research thread. The frontier of generative AI is weaving them together.</p>
+
+<p><strong>Multimodal generation</strong> means models that can understand and produce content across multiple modalities — text, images, audio, video, 3D — within a single system. The idea is that a model trained jointly on all these modalities develops richer internal representations than one trained on any single modality. A model that has seen millions of videos with audio develops an understanding of the relationship between visual events and their sounds — a ball bouncing and the "thud" that accompanies it — that a vision-only model never could.</p>
+
+<p>The architectural trend is converging toward a pattern: tokenize everything into a shared vocabulary. Text is already tokens. Images become patches (visual tokens). Audio becomes codec tokens. Video becomes spacetime patch tokens. 3D objects become multi-view image tokens. Feed them all into a single large transformer. The model learns cross-modal relationships from the data — which sounds go with which images, which motions go with which camera angles, which 3D structures produce which 2D appearances.</p>
+
+<p>This unification isn't complete yet. As of 2025, most production systems are still single-modality specialists. But the research prototypes are increasingly multimodal, and the trajectory is clear. For our creative studio, the endgame is a single model that takes a script as input and produces a film — visuals, motion, sound, and dialogue — as output. We're not there yet. We're probably not close. But the pieces are all on the table.</p>
+
+<!-- ============================================================ -->
+<!-- ETHICS AND ECOSYSTEM -->
+<!-- ============================================================ -->
+
+<h2>The Creative AI Ecosystem and What It Means</h2>
+
+<p>We've spent this entire journey building technical understanding. Now we need to look up from the engineering and reckon with what we've built.</p>
+
+<p>Our creative studio — the one-person operation producing a short film with AI tools — is no longer a thought experiment. People are doing this right now. The tools exist, they work, and they're getting better at a rate that makes even practitioners uncomfortable. That discomfort deserves examination.</p>
+
+<h3>The Copyright Question</h3>
+
+<p>Every model we've discussed was trained on data created by humans. Stable Diffusion was trained on billions of images scraped from the internet — photographs, illustrations, paintings, designs. MusicGen was trained on licensed music. The legal question of whether training on copyrighted material constitutes fair use is being litigated in courts worldwide as of 2025, with no clear resolution.</p>
+
+<p>The practical reality is thornier still. These models can generate images "in the style of" specific living artists. They can generate music that sounds like specific genres or performers. They can mimic voices with a few seconds of sample audio. Whether this constitutes copying, transformative use, or something entirely new that our legal frameworks weren't designed for — I genuinely don't know, and I'm skeptical of anyone who claims to.</p>
+
+<h3>Deepfakes and Trust</h3>
+
+<p>Video generation that can produce realistic footage of events that never happened poses obvious risks. The detection-versus-generation arms race is already underway. The EU AI Act (2024) requires labeling of AI-generated content. The C2PA standard for content provenance is being adopted by major platforms. Whether these measures will be sufficient is an open question — the history of digital watermarking does not inspire unbounded optimism.</p>
+
+<h3>Creative Disruption</h3>
+
+<p>The film industry is already being reshaped. The 2023 Hollywood writers' and actors' strikes were partly about AI's role in creative production. Concept artists, illustrators, voice actors, and musicians are all watching these developments with a mixture of anxiety and adaptation. Some are integrating AI tools into their workflows and finding that it amplifies their productivity. Others are watching their freelance markets contract.</p>
+
+<p>I don't have a neat conclusion for this section, because the situation doesn't have one. What I can say is this: understanding the technology — how these models actually work, what they can and can't do, where their outputs come from — is the prerequisite for having informed opinions about any of these questions. And that's what we've been building.</p>
+
+<!-- ============================================================ -->
+<!-- WRAP-UP -->
+<!-- ============================================================ -->
+
+<h2>Wrap-Up</h2>
+
+<p>If you're still with me, thank you. I hope it was worth it.</p>
+
+<p>We started with the text-to-image revolution — how DALL·E, Midjourney, and Stable Diffusion evolved from patchwork architectures to unified transformer-based systems. We learned how to edit images using inpainting, outpainting, img2img, and ControlNet. We watched the jump from still images to temporally coherent video, powered by spacetime patches and temporal attention. We escaped flatland into 3D generation — NeRF, Gaussian splatting, the brilliant SDS trick that uses 2D diffusion models as 3D critics. We discovered that audio generation looks like language modeling thanks to neural audio codecs. And we surveyed the emerging multimodal landscape where all these threads are being woven together.</p>
+
+<p>My hope is that the next time you see a headline about a new AI model generating stunning images or music or video, instead of scrolling past thinking "cool, but I know the gist," you'll pause and ask the specific questions — what's the backbone architecture? How does it handle conditioning? What are the failure modes? — having a pretty darn good mental model of what's going on under the hood.</p>
+
+<!-- ============================================================ -->
+<!-- RESOURCES -->
+<!-- ============================================================ -->
+
+<h2>Resources and Credits</h2>
+
+<p>The following resources shaped my understanding and are worth your time:</p>
 
 <ul>
-<li>Explain the self-consistency property and how consistency models collapse iterative denoising into 1–2 steps</li>
-<li>Describe the difference between consistency distillation (from a teacher) and consistency training (from scratch), and explain why LCM-LoRA is practical</li>
-<li>Articulate how flow matching replaces curved diffusion trajectories with straight-line paths and why that simplifies sampling</li>
-<li>Sketch the DiT architecture — patchify, transformer blocks with adaLN-Zero conditioning, unpatchify — and explain why it scales better than U-Net</li>
-<li>Identify the key challenges in video generation (temporal coherence, compute cost, controllability) and name the major systems (Sora, Gen-3, Kling)</li>
-<li>Explain how ControlNet injects spatial conditioning into a frozen diffusion model via zero convolutions</li>
-<li>Describe Score Distillation Sampling: how a 2D diffusion model can supervise 3D optimization without ever seeing 3D data</li>
-<li>Choose between U-Net, DiT, and hybrid architectures for a new generative model project based on scale and requirements</li>
+  <li><strong>High-Resolution Image Synthesis with Latent Diffusion Models</strong> (Rombach et al., 2022) — The O.G. latent diffusion paper that made Stable Diffusion possible. Dense but essential reading.</li>
+  <li><strong>Scalable Diffusion Models with Transformers</strong> (Peebles &amp; Xie, 2023) — The DiT paper. Clean experiments, clear writing, and the scaling curves that convinced the field to move to transformers.</li>
+  <li><strong>3D Gaussian Splatting for Real-Time Radiance Field Rendering</strong> (Kerbl et al., 2023) — The paper that made real-time 3D rendering from learned representations practical. The demos are unforgettable.</li>
+  <li><strong>Simple and Controllable Music Generation</strong> (Copet et al., 2023) — The MusicGen paper. Clearly explains how audio tokens plus a transformer equals music. Wildly readable for an academic paper.</li>
+  <li><strong>Video generation models as world simulators</strong> (OpenAI, 2024) — The Sora technical report. Short, tantalizing, and deliberately incomplete — but the best primary source on spacetime patch approaches to video generation.</li>
+  <li><strong>Adding Conditional Control to Text-to-Image Diffusion Models</strong> (Zhang et al., 2023) — The ControlNet paper. If you've ever wanted to understand how spatial conditioning works without retraining, this is insightful and well-illustrated.</li>
 </ul>
 
 
