@@ -300,232 +300,298 @@
 
 <div class="tldr">
   <div class="tldr-label">TL;DR</div>
-  <p>Computers don't do math perfectly — they approximate. Floating-point numbers have finite precision, and naive implementations of common ML operations (softmax, log-probabilities, loss functions) will silently produce garbage. This section covers the practical numerical tricks every ML engineer needs: stability patterns like log-sum-exp, efficient solvers for linear systems, sparse matrix formats, GPU computing fundamentals, and mixed-precision training. These aren't theoretical niceties — they're the difference between a model that trains and one that returns NaN.</p>
+  <p>Computers lie about numbers. They store approximations, not exact values, and naive math on those approximations produces silent garbage — NaN losses, zero gradients, training runs that drift into nonsense. This section builds your instinct for where the traps are: IEEE 754 floating point, catastrophic cancellation, the log-sum-exp trick, why you never invert a matrix, how GPUs actually move data, and the mixed-precision regime that is now the default for all serious training. These aren't academic footnotes. They're the difference between a model that converges and one that silently fails at 3 AM.</p>
 </div>
 
-<h2>Floating-Point Arithmetic</h2>
+<p>I avoided digging into numerical computing for longer than I'd like to admit. Every time a training run returned <code>NaN</code>, I'd restart it with a smaller learning rate and move on. Every time someone mentioned "catastrophic cancellation," I'd nod wisely and change the subject. Finally, after spending two full days debugging a loss that turned out to be an unprotected <code>log(0)</code>, the discomfort of not understanding what was actually happening with my numbers grew too great. Here is that dive.</p>
 
-<p>Before we talk about fancy algorithms, we need to talk about how computers store numbers. Because they don't store them the way you think.</p>
+<p>Numerical computing is the study of how to do math on machines that can't actually do math perfectly. The field has been around since the 1950s, when scientists first realized that computers introduce errors every time they store a number. In ML, these errors compound across millions of operations per training step, and the consequences range from subtle accuracy drift to spectacular NaN explosions.</p>
 
-<p>When you write <code>0.1</code> in Python, the computer doesn't store exactly one-tenth. It can't. Computers think in binary, and just like 1/3 has no finite decimal representation (0.333...), 1/10 has no finite binary representation. So the computer stores the closest binary fraction it can, and that introduces a tiny error. This is not a bug. It's a fundamental constraint of representing real numbers in finite memory.</p>
+<p>Before we start, a heads-up. We're going to be walking through binary representations, exponents, and some matrix algebra, but you don't need to know any of it beforehand. We'll add what we need, one piece at a time.</p>
 
-<p>The <strong>IEEE 754 standard</strong> defines how floating-point numbers are stored. Every number is broken into three parts: a <strong>sign bit</strong> (positive or negative), an <strong>exponent</strong> (which determines the magnitude), and a <strong>mantissa</strong> (also called the significand, which carries the precision digits). Think of it like scientific notation: -2.998 × 10⁸ has a sign (-), a mantissa (2.998), and an exponent (8). IEEE 754 does the same thing in base 2.</p>
+<p>This isn't a short journey, but I hope you'll be glad you came.</p>
 
-<p>The two formats you'll encounter daily are <strong>float32</strong> (single precision) and <strong>float64</strong> (double precision). Float32 uses 1 sign bit, 8 exponent bits, and 23 mantissa bits, giving you roughly 7 decimal digits of precision. Float64 uses 1 sign bit, 11 exponent bits, and 52 mantissa bits, giving you about 15-16 decimal digits. NumPy defaults to float64. PyTorch defaults to float32. This matters more than you think.</p>
+<div style="margin: 2rem 0; padding-left: 1.5rem; border-left: 3px solid var(--accent);">
+  Computers lie about numbers<br>
+  The number line has holes<br>
+  When small errors become catastrophes<br>
+  The log-sum-exp trick<br>
+  Rest stop<br>
+  Solving systems without inverting matrices<br>
+  When matrices get too big<br>
+  The GPU: a factory floor, not an office<br>
+  Mixed precision — training with half the bits<br>
+  Wrap-up<br>
+  Resources
+</div>
 
-<p><strong>Machine epsilon</strong> is the smallest number ε such that 1.0 + ε ≠ 1.0 in floating-point. It tells you the fundamental resolution limit of your number format. For float32, it's about 1.19 × 10⁻⁷. For float64, it's about 2.22 × 10⁻¹⁶. Any difference smaller than machine epsilon, relative to the numbers involved, simply vanishes.</p>
+<h2>Computers Lie About Numbers</h2>
+
+<p>Let's start with the most famous lie in computing.</p>
+
+<pre><code>a = 0.1 + 0.2
+print(a == 0.3)        # False
+print(f"{a:.20f}")     # 0.30000000000000004441
+</code></pre>
+
+<p>The first time I saw this, I genuinely questioned whether Python was broken. It's not. The issue is deeper than any programming language. Computers think in binary — base 2 — and in base 2, the number 0.1 has no exact representation. It's the same reason 1/3 has no exact decimal representation: 0.33333... goes on forever. In binary, 0.1 goes on forever too. So the computer stores the closest binary fraction it can fit, and that introduces a tiny error. This is not a bug. It's a law of the universe, like friction.</p>
+
+<p>The <strong>IEEE 754 standard</strong>, established in 1985 and used by virtually every computer on Earth, defines how these approximations work. Every floating-point number is stored as three pieces: a <strong>sign bit</strong> (positive or negative), an <strong>exponent</strong> (which sets the magnitude), and a <strong>mantissa</strong> (also called the <strong>significand</strong>, which carries the actual precision digits). Think of it like scientific notation. The number -2.998 × 10⁸ has a sign (negative), a significand (2.998), and an exponent (8). IEEE 754 does the same thing, but in base 2: the value is (-1)^sign × 1.mantissa × 2^(exponent - bias).</p>
+
+<p>Here's a way to think about it that stuck with me. Imagine a ruler where the tick marks are not evenly spaced. Near zero, the ticks are packed tightly together — you can distinguish between very small numbers with fine precision. But as you move toward larger magnitudes, the ticks spread farther and farther apart. Between 1.0 and 2.0, there are millions of representable float32 values. Between 10,000,000 and 10,000,001, there might be none. The ruler covers an enormous range, but it pays for that range by getting coarser as the numbers grow.</p>
+
+<p>The formats you'll encounter in practice are <strong>float64</strong> (double precision: 1 sign + 11 exponent + 52 mantissa bits, about 15-16 decimal digits of precision), <strong>float32</strong> (single precision: 1 sign + 8 exponent + 23 mantissa bits, about 7 decimal digits), <strong>float16</strong> (half precision: 1 sign + 5 exponent + 10 mantissa bits, about 3.3 decimal digits), and <strong>bfloat16</strong> (brain float: 1 sign + 8 exponent + 7 mantissa bits, about 2.4 decimal digits but the same range as float32). NumPy defaults to float64. PyTorch defaults to float32. That gap matters enormously and we'll come back to it.</p>
+
+<h2>The Number Line Has Holes</h2>
+
+<p>There's a number called <strong>machine epsilon</strong>, often written ε, and it tells you the fundamental resolution of your floating-point format. It's the smallest number you can add to 1.0 and get something different from 1.0. For float32, machine epsilon is about 1.19 × 10⁻⁷. For float64, it's about 2.22 × 10⁻¹⁶. Anything smaller than that, relative to the number you're adding it to, gets swallowed. Vanishes. As if it never existed.</p>
 
 <pre><code>import numpy as np
 
-# Machine epsilon for different types
 print(np.finfo(np.float32).eps)   # 1.1920929e-07
 print(np.finfo(np.float64).eps)   # 2.220446049250313e-16
 
-# The classic demonstration
-a = np.float64(0.1) + np.float64(0.2)
-print(a == 0.3)                    # False
-print(f"{a:.20f}")                 # 0.30000000000000004441
-
-# This is why you never compare floats with ==
-print(np.isclose(a, 0.3))         # True (uses a tolerance)
-
-# Precision limits in float32
+# When adding small to large, the small disappears
 big = np.float32(1e7)
 small = np.float32(1.0)
-print(big + small == big)          # True — the 1.0 is lost entirely
+print(big + small == big)          # True — the 1.0 is gone entirely
 </code></pre>
 
-<p>Why does this matter for ML? Gradient accumulation is essentially adding many small numbers to a large one, thousands of times. If your loss is 1000.0 and a gradient update is 0.00001, that update might get swallowed entirely in float32. Loss comparisons using <code>==</code> will randomly fail. Running sums drift. These aren't hypothetical problems — they're Tuesday afternoon bugs that cost you hours of debugging.</p>
+<p>Stop and feel the weight of that last line. Adding 1.0 to ten million gives you... ten million. The 1.0 got absorbed. In float32, ten million and ten million plus one are the same number. The tick marks on our ruler are too far apart to tell them apart.</p>
+
+<p>Now think about what gradient accumulation does. It adds many small gradient updates to a large running sum, thousands of times. If your accumulated loss is in the thousands and a gradient update is 0.00001, that update can be smaller than machine epsilon relative to the sum. It disappears. Your model looks like it's training, the loss prints to your terminal every epoch, but the weights haven't budged. I've seen this happen in production. It's the quietest bug you'll ever encounter.</p>
+
+<p>There are also special values. When the exponent bits are all ones and the mantissa is zero, you get <strong>infinity</strong> — the result of overflow, like computing e^1000. When the exponent bits are all ones but the mantissa is non-zero, you get <strong>NaN</strong> (Not a Number), which is what you get from 0/0 or infinity minus infinity. NaN is contagious: any operation involving NaN produces NaN. And here's the strangest thing — NaN is the only floating-point value that is not equal to itself. That's actually how you detect it: <code>x != x</code> is true only when x is NaN.</p>
+
+<p>At the other extreme, when all exponent bits are zero, you get <strong>denormalized numbers</strong> (also called subnormals). These are the tiny numbers between zero and the smallest normal float, filling what would otherwise be an abrupt gap. They matter because gradients near zero sometimes live in this range. The catch: some hardware processes denormals 10-100x slower than normal floats, which can cause mysterious performance drops in training.</p>
 
 <div class="callout callout-warning">
   <div class="callout-label">Watch Out</div>
-  <p>Never compare floating-point numbers with <code>==</code>. Use <code>np.isclose(a, b)</code> or <code>np.allclose(a, b)</code> with appropriate tolerances. This applies to loss values, metrics, convergence checks — everywhere.</p>
+  <p>Never compare floating-point numbers with <code>==</code>. Use <code>np.isclose(a, b)</code> or <code>np.allclose(a, b)</code> with appropriate tolerances. This applies to loss values, metrics, convergence checks — everywhere. Also: <code>np.isnan(x)</code> is your friend. Sprinkle it liberally when debugging training.</p>
 </div>
 
-<h2>Numerical Stability</h2>
+<h2>When Small Errors Become Catastrophes</h2>
 
-<p>Floating-point errors are usually tiny. The real danger is when algorithms <em>amplify</em> those tiny errors into catastrophic ones. That's what numerical instability means, and ML is riddled with opportunities for it.</p>
+<p>Floating-point errors are usually tiny — 10⁻⁷ relative error in float32, 10⁻¹⁶ in float64. The real danger is when an algorithm takes those tiny errors and amplifies them into disasters. That's what the term <strong>numerical instability</strong> means, and ML is riddled with opportunities for it.</p>
 
-<p><strong>Catastrophic cancellation</strong> happens when you subtract two nearly equal numbers. If a = 1.000000001 and b = 1.000000000, the true difference is 10⁻⁹, but in float32 both numbers round to the same value and the difference becomes exactly zero. You just lost all significant digits. This shows up whenever you compute things like variance using the formula E[X²] - E[X]² — if the variance is small relative to the mean, this formula self-destructs.</p>
+<p>The most common villain is <strong>catastrophic cancellation</strong>. It happens when you subtract two numbers that are nearly equal. Suppose a = 1.00000005 and b = 1.00000004 in float32. The true difference is 10⁻⁸, but float32 can only represent about 7 decimal digits. Both numbers stored the same way. The difference becomes exactly zero. All significant digits, gone.</p>
 
-<p>The single most important stability trick in all of ML is the <strong>log-sum-exp trick</strong>. You'll encounter it in softmax, in log-likelihood computations, in attention mechanisms, everywhere. The problem: you need to compute log(e^a₁ + e^a₂ + ... + e^aₙ). If any aᵢ is large (say 1000), e^1000 overflows to infinity. If all aᵢ are very negative (say -1000), every e^aᵢ underflows to zero, and you're taking log(0) = -infinity. The trick is simple: factor out the maximum value. log(Σ e^aᵢ) = max(a) + log(Σ e^(aᵢ - max(a))). Now the largest exponent is e⁰ = 1, so nothing overflows, and at least one term is non-zero, so the log is safe.</p>
+<p>Where does this ambush us in practice? Variance. The textbook one-pass formula says Var(X) = E[X²] - E[X]². Both terms can be enormous when the mean is large, but their difference — the actual variance — might be tiny. In float32, this formula will return zero for data with a small spread around a large mean. Worse, it can return a <em>negative</em> number, which is nonsensical for a variance. Batch normalization computes variance of activations on every forward pass. If the activations have a large mean and small variance, the textbook formula silently poisons your normalization layer.</p>
+
+<p>The fix is <strong>Welford's algorithm</strong>, an online method that accumulates variance without ever subtracting two large numbers. It maintains a running mean and a running sum of squared deviations from that mean, updating both as each data point arrives. It's a single pass through the data, it's numerically stable, and it's what every serious library uses under the hood.</p>
+
+<pre><code>import numpy as np
+
+# The textbook formula self-destructs for large means with small variance
+data = np.float32([10000000.0, 10000001.0, 10000002.0])
+naive_var = np.mean(data**2) - np.mean(data)**2
+print(f"Naive variance:   {naive_var}")    # 0.0 — completely wrong
+print(f"Correct variance: {np.var(data)}") # 0.6667 — np.var uses stable algorithm
+
+# Welford's algorithm — stable single-pass variance
+def welford_var(data):
+    n = 0
+    mean = 0.0
+    M2 = 0.0
+    for x in data:
+        n += 1
+        delta = x - mean
+        mean += delta / n
+        delta2 = x - mean
+        M2 += delta * delta2
+    return M2 / n
+
+print(f"Welford variance: {welford_var(data.astype(np.float64)):.4f}")  # 0.6667
+</code></pre>
+
+<p>Catastrophic cancellation also lurks in <code>log(1 + x)</code> when x is tiny. If x = 10⁻¹⁵, then 1 + x rounds to 1.0 in float64, and <code>log(1.0)</code> is exactly 0. The true answer, approximately 10⁻¹⁵, has been completely destroyed. Python and NumPy provide <code>np.log1p(x)</code> which computes log(1 + x) directly without first adding 1, keeping full precision. Similarly, <code>np.expm1(x)</code> computes e^x - 1 for small x without cancellation. These aren't obscure library curiosities — they show up constantly in log-likelihood computations and loss functions.</p>
+
+<p>Another subtle trap: <strong>Kahan summation</strong>. When you add millions of small numbers (say, per-sample losses across a dataset), the running sum grows large while each new term is small. The small terms start getting swallowed by machine epsilon. Kahan's algorithm maintains a separate "compensation" variable that tracks the accumulated rounding error, feeding it back into the next addition. It turns O(n·ε) drift into O(ε) drift. Some frameworks use it internally for gradient accumulation, but it's worth knowing about because naive Python <code>sum()</code> does not.</p>
+
+<h2>The Log-Sum-Exp Trick</h2>
+
+<p>If you learn one numerical trick for ML, make it this one. It shows up in softmax, in log-likelihood computations, in attention scores, in variational inference, everywhere. I'm still a little amazed at how much mileage this single idea gets.</p>
+
+<p>The problem starts innocently. You have a vector of numbers — let's say logits from a neural network — and you need to compute log(e^a₁ + e^a₂ + ... + e^aₙ). Maybe you're computing a softmax, or a log-partition function, or a log-marginal likelihood. In exact math, this is straightforward. On a computer, it's a minefield.</p>
+
+<p>Let's walk through a concrete example. Suppose our logits are [1000, 1001, 1002]. We need e^1000. How big is that? It's a number with 434 digits. Float64 maxes out around 10³⁰⁸. So e^1000 overflows to infinity, and our whole computation returns <code>inf</code>. Now suppose our logits are [-1000, -1001, -1002]. Every e^aᵢ underflows to 0.0, and we're taking log(0), which gives us negative infinity. Both are garbage.</p>
+
+<p>The trick is deceptively simple. Factor out the maximum value:</p>
+
+<p>log(Σ e^aᵢ) = max(a) + log(Σ e^(aᵢ - max(a)))</p>
+
+<p>Why does this work? Because Σ e^aᵢ = e^max(a) · Σ e^(aᵢ - max(a)), and taking the log separates it into max(a) + log(Σ e^(aᵢ - max(a))). Now the largest exponent in the sum is e^(max(a) - max(a)) = e⁰ = 1. Nothing overflows. And at least one term in the sum is 1, so the argument to log is always at least 1, so we never take log of zero. The answer is mathematically identical to the original expression. The numerics are completely different.</p>
 
 <pre><code>import numpy as np
 
 def naive_logsumexp(x):
-    """This WILL overflow or underflow."""
     return np.log(np.sum(np.exp(x)))
 
 def stable_logsumexp(x):
-    """The log-sum-exp trick — subtract the max first."""
     c = np.max(x)
     return c + np.log(np.sum(np.exp(x - c)))
 
-# Overflow example
-big_values = np.array([1000.0, 1001.0, 1002.0])
-print(naive_logsumexp(big_values))   # inf (overflow!)
-print(stable_logsumexp(big_values))  # 1002.4076... (correct)
+big = np.array([1000.0, 1001.0, 1002.0])
+print(naive_logsumexp(big))    # inf — overflow
+print(stable_logsumexp(big))   # 1002.408 — correct
 
-# Underflow example
-small_values = np.array([-1000.0, -1001.0, -1002.0])
-print(naive_logsumexp(small_values)) # -inf (underflow!)
-print(stable_logsumexp(small_values))# -999.5924... (correct)
+small = np.array([-1000.0, -1001.0, -1002.0])
+print(naive_logsumexp(small))  # -inf — underflow
+print(stable_logsumexp(small)) # -999.592 — correct
 
-# NumPy has this built in
-print(np.logaddexp.reduce(big_values))  # same correct answer
+# scipy has it built in, and so does PyTorch
+from scipy.special import logsumexp
+print(logsumexp(big))          # 1002.408
 </code></pre>
 
-<p>This is exactly why we work with <strong>log-probabilities</strong> instead of raw probabilities throughout ML. A probability of 10⁻³⁰⁰ underflows to zero in any floating-point format. But its log, -690.7, is a perfectly ordinary number. Multiplying probabilities becomes adding log-probabilities. Everything stays in a numerically comfortable range.</p>
+<p>The <strong>softmax</strong> function uses the same insight. Naively computing e^xᵢ / Σe^xⱼ overflows when any xᵢ is large. The fix: subtract max(x) from every element before exponentiating. Because the constant appears in both the numerator and denominator, it cancels perfectly — the output is mathematically identical, but every exponent is now ≤ 0, so nothing overflows.</p>
 
-<p>The <strong>softmax</strong> function uses the same trick. Naively computing e^xᵢ / Σe^xⱼ overflows when any xᵢ is large. The fix: subtract max(x) from every element before exponentiating. The result is mathematically identical (the constant cancels in the ratio) but numerically safe.</p>
-
-<pre><code>import numpy as np
-
-def naive_softmax(x):
-    """Overflows for large inputs."""
-    exp_x = np.exp(x)
-    return exp_x / np.sum(exp_x)
-
-def stable_softmax(x):
-    """Subtract max for numerical stability."""
+<pre><code>def stable_softmax(x):
     shifted = x - np.max(x)
     exp_x = np.exp(shifted)
     return exp_x / np.sum(exp_x)
 
 logits = np.array([1000.0, 1001.0, 1002.0])
-print(naive_softmax(logits))   # [nan, nan, nan]  — useless
 print(stable_softmax(logits))  # [0.0900, 0.2447, 0.6652] — correct
-
-# The sigmoid has a similar issue
-def stable_sigmoid(x):
-    """Stable for both large positive and negative x."""
-    pos_mask = x &gt;= 0
-    z = np.zeros_like(x)
-    z[pos_mask] = 1.0 / (1.0 + np.exp(-x[pos_mask]))
-    exp_x = np.exp(x[~pos_mask])
-    z[~pos_mask] = exp_x / (1.0 + exp_x)
-    return z
 </code></pre>
+
+<p>This is why we work with <strong>log-probabilities</strong> throughout ML rather than raw probabilities. A probability of 10⁻³⁰⁰ underflows to zero in any floating-point format. But its log, -690.7, is a perfectly ordinary number that fits comfortably in a float32. Multiplying probabilities becomes adding log-probabilities. Division becomes subtraction. Everything stays in a numerically comfortable range.</p>
+
+<p>And this is exactly why PyTorch's <code>CrossEntropyLoss</code> expects raw logits, not probabilities. Internally, it computes <code>log_softmax</code> — which combines the log and the softmax into a single numerically stable operation — and then applies the negative log-likelihood. If you apply softmax yourself first and then pass the result to <code>NLLLoss</code>, you've broken the stability guarantee. I've seen this mistake in production code. The model trains, sort of, but the loss landscape becomes noisy because of floating-point gremlins in the separate softmax-then-log pipeline.</p>
 
 <div class="callout callout-info">
   <div class="callout-label">Key Insight</div>
-  <p>Every time you see <code>np.exp()</code> in your code, pause and ask: can the input be large? Can it be very negative? If yes, you probably need the log-sum-exp trick or the subtract-the-max pattern. This one habit will save you from 90% of numerical bugs.</p>
+  <p>Every time you see <code>np.exp()</code> in your code, pause. Can the input be large positive? Can it be very negative? If so, you probably need the subtract-the-max pattern. And every time you see <code>np.log()</code>, ask: can the argument be zero or negative? If so, you need <code>log1p</code> or the log-sum-exp formulation. Building this reflex will save you from 90% of numerical bugs.</p>
 </div>
 
-<h2>Linear System Solvers</h2>
+<h2>Rest Stop</h2>
 
-<p>Here's a mistake nearly every new engineer makes: given the system Ax = b, they compute x = A⁻¹b by first inverting the matrix. Never do this. Computing a matrix inverse is roughly three times more expensive than solving the system directly, and it introduces significantly more numerical error. Use <code>np.linalg.solve(A, b)</code> instead — it uses <strong>LU decomposition</strong> internally, factoring A into a lower-triangular and upper-triangular matrix, then solving two easy triangular systems by back-substitution.</p>
+<p>Congratulations on making it this far. If you want to stop here, you can.</p>
 
-<p>If your matrix A is symmetric and positive definite (common in ML — think covariance matrices, kernel matrices, the Gram matrix XᵀX), you can do even better. <strong>Cholesky decomposition</strong> factors A = LLᵀ, where L is lower-triangular. It's about twice as fast as general LU and numerically more stable. Use <code>np.linalg.cholesky(A)</code> followed by <code>scipy.linalg.cho_solve()</code>.</p>
+<p>You now have a mental model for how computers represent numbers (a ruler with uneven tick marks that get coarser at larger magnitudes), why subtracting nearly equal numbers is dangerous (catastrophic cancellation), and the single most important stabilization trick in all of ML (log-sum-exp / subtract-the-max). With those three ideas, you can diagnose and fix the vast majority of NaN explosions and silent numerical drift in training pipelines.</p>
 
-<p>But how do you know if your system is "hard" to solve? The <strong>condition number</strong> of a matrix, κ(A), tells you how much input errors get amplified in the solution. If κ(A) = 10ᵏ, you lose roughly k digits of precision. A condition number of 10¹⁶ means your float64 solution has essentially zero reliable digits. You can check with <code>np.linalg.cond(A)</code>.</p>
+<p>That's the short version. You're 60% of the way there.</p>
 
-<p>This connects directly to <strong>ridge regression</strong>. The normal equations give (XᵀX)β = Xᵀy. If features are correlated, XᵀX is ill-conditioned. Adding a regularization term λI gives (XᵀX + λI)β = Xᵀy. That λ on the diagonal improves the condition number dramatically. Regularization isn't just about overfitting — it's also about making the math actually solvable on a computer.</p>
+<p>What's ahead: how to solve linear systems without inverting matrices (and why the condition number tells you whether to even trust the answer), how GPUs actually move data around (spoiler: memory bandwidth is the bottleneck, not compute), and the mixed-precision training regime that has become the default for all serious work. These aren't academic topics — they're the skills that separate someone who can train a model from someone who can train a model efficiently and debug it when the numbers go wrong.</p>
+
+<p>But if you feel solid on the foundations and the discomfort of not knowing what happens in those deeper layers is nagging at you, read on.</p>
+
+<h2>Solving Systems Without Inverting Matrices</h2>
+
+<p>I still catch myself reaching for matrix inversion. The notation x = A⁻¹b is so clean on paper that it feels like the natural thing to compute. It's not. Computing a matrix inverse is roughly three times more expensive than solving the system directly, and the numerical errors are significantly worse. This is one of those cases where the mathematically elegant approach and the computationally smart approach are different things.</p>
+
+<p>Given Ax = b, use <code>np.linalg.solve(A, b)</code>. Under the hood, this performs <strong>LU decomposition</strong> — it factors A into a product of a lower-triangular matrix L and an upper-triangular matrix U, then solves two easy triangular systems by back-substitution. Same answer, less work, fewer rounding errors.</p>
+
+<p>If your matrix A happens to be symmetric and positive definite — and in ML this is common, think covariance matrices, kernel matrices, the Gram matrix XᵀX — you can do better still. <strong>Cholesky decomposition</strong> factors A = LLᵀ where L is lower-triangular. It's about twice as fast as general LU, and it's more numerically stable because it exploits the matrix's structure. Use <code>np.linalg.cholesky()</code> followed by <code>scipy.linalg.cho_solve()</code>.</p>
+
+<p>But how do you know if your system is even trustworthy? The <strong>condition number</strong> of a matrix, written κ(A), measures how much errors in the input get amplified in the output. If κ(A) = 10ᵏ, you lose roughly k digits of precision in the solution. A condition number of 10¹⁶ means your float64 answer has essentially zero reliable digits — you've been rearranging noise. I'll be honest: condition numbers still intimidate me a bit, but the practical rule is simple — check it with <code>np.linalg.cond(A)</code>, and if the number is bigger than about 10¹⁰, treat your solution with deep suspicion.</p>
 
 <pre><code>import numpy as np
 
-# Never invert — solve instead
 A = np.array([[4.0, 1.0], [1.0, 3.0]])
 b = np.array([1.0, 2.0])
 
-# Bad: x = A_inv @ b (slow, less accurate)
+# Don't do this:
 x_bad = np.linalg.inv(A) @ b
 
-# Good: direct solve via LU decomposition
+# Do this:
 x_good = np.linalg.solve(A, b)
 
-print(np.allclose(x_bad, x_good))     # True, but solve is faster and stabler
-print(f"Condition number: {np.linalg.cond(A):.2f}")  # 2.62 — well-conditioned
+print(f"Condition number: {np.linalg.cond(A):.2f}")  # 2.62 — healthy
 
-# Cholesky for symmetric positive definite matrices
-L = np.linalg.cholesky(A)             # A = L @ L.T
-x_chol = np.linalg.solve(L.T, np.linalg.solve(L, b))
-print(np.allclose(x_good, x_chol))    # True
-
-# Ill-conditioned example — regularization helps
+# Ill-conditioned example
 X = np.random.randn(100, 50)
 XtX = X.T @ X
-print(f"Unregularized cond: {np.linalg.cond(XtX):.0f}")
 lam = 1.0
+print(f"Unregularized cond: {np.linalg.cond(XtX):.0f}")
 print(f"Regularized cond:   {np.linalg.cond(XtX + lam * np.eye(50)):.0f}")
 </code></pre>
 
-<div class="callout callout-warning">
-  <div class="callout-label">Watch Out</div>
-  <p>If <code>np.linalg.cond(A)</code> returns a number larger than 10¹⁰, treat any solution with suspicion. Consider regularization, better feature scaling, or a different algorithmic approach entirely.</p>
-</div>
+<p>That last example connects to something deep. In <strong>ridge regression</strong>, the normal equations give (XᵀX)β = Xᵀy. If your features are correlated, XᵀX becomes ill-conditioned — its smallest eigenvalues are near zero, the condition number explodes, and the solution oscillates wildly with tiny changes in the data. Adding a regularization term λI to get (XᵀX + λI)β = Xᵀy inflates those tiny eigenvalues, pulling the condition number back to something sane. Regularization isn't only about preventing overfitting. It's also about making the linear algebra actually solvable on a machine with finite precision. Two problems, one fix.</p>
 
-<h2>Iterative Methods</h2>
+<h2>When Matrices Get Too Big</h2>
 
-<p>LU and Cholesky are <strong>direct solvers</strong> — they give you an exact answer (up to floating-point) in a fixed number of steps. But they scale as O(n³), and when n is a million (say, a large graph Laplacian or a kernel matrix for a big dataset), that's simply not feasible. You can't even store the full matrix, let alone factor it.</p>
+<p>LU and Cholesky are <strong>direct solvers</strong> — they give you an answer (up to floating-point rounding) in a fixed number of steps. But they scale as O(n³). When n is a million — a large graph Laplacian, a kernel matrix for a big dataset — you can't even store the full matrix in memory, let alone factor it.</p>
 
-<p><strong>Iterative methods</strong> approach the solution gradually, giving you a better approximation each step. The workhorse for symmetric positive definite systems is the <strong>conjugate gradient method</strong>. It only needs to compute matrix-vector products Av, never the full matrix, so it works beautifully with sparse matrices. In exact arithmetic, it converges in at most n steps, but in practice a good approximation arrives much sooner — often in O(√κ) iterations, where κ is the condition number.</p>
+<p><strong>Iterative methods</strong> approach the solution gradually, producing a better approximation with each step. The workhorse for symmetric positive definite systems is the <strong>conjugate gradient method</strong>. It only needs to compute matrix-vector products Av, never the full matrix itself. That means it works beautifully with <strong>sparse matrices</strong> — matrices that are mostly zeros, stored in compact formats that only record the non-zero entries.</p>
 
-<p>Conjugate gradient belongs to the family of <strong>Krylov subspace methods</strong>, which build solutions from the sequence {b, Ab, A²b, ...}. For non-symmetric systems, GMRES and BiCGSTAB are common alternatives. The convergence of all these methods depends heavily on the condition number, which is where <strong>preconditioning</strong> comes in: instead of solving Ax = b, you solve M⁻¹Ax = M⁻¹b, choosing M so that M⁻¹A is better conditioned. Finding a good preconditioner is often more art than science, but incomplete Cholesky or algebraic multigrid are reliable starting points. In ML, iterative solvers show up in Gaussian processes, graph-based semi-supervised learning, and large-scale kernel methods.</p>
+<p>And sparse matrices are everywhere in ML. A document-term matrix with 100,000 documents and 50,000 words has 5 billion entries, but any single document uses maybe 500 unique words. That's 99.999% zeros. Storing the full dense matrix is absurd. The two standard sparse formats are <strong>CSR (Compressed Sparse Row)</strong> and <strong>CSC (Compressed Sparse Column)</strong>. CSR stores three arrays — the non-zero values, their column indices, and pointers to where each row starts — making row slicing and matrix-vector products fast. CSC is the column-oriented analog. In Python, <code>scipy.sparse</code> handles both. The rule of thumb: above about 90% zeros, sparse wins on both memory and speed.</p>
 
-<h2>Numerical Integration</h2>
+<p>For finding eigenvalues of large sparse matrices — the top principal components, the smallest eigenvectors of a graph Laplacian for spectral clustering — the tools are different again. <strong>Power iteration</strong> is the simplest: multiply by A and normalize, repeat. It converges to the largest eigenvector. Google's original PageRank was essentially power iteration on the web's link matrix. For more eigenvectors simultaneously, the <strong>Lanczos algorithm</strong> (SciPy's <code>scipy.sparse.linalg.eigsh()</code>) is the standard. And for truly massive matrices where even Lanczos is slow, <strong>randomized SVD</strong> — project into a random low-dimensional subspace, then compute exact SVD there — is surprisingly effective. Scikit-learn's PCA uses it by default.</p>
 
-<p>Sometimes you need to compute an integral that has no closed-form solution. In one or two dimensions, <strong>quadrature rules</strong> work well. The <strong>trapezoidal rule</strong> approximates the area under a curve using trapezoids — simple but only second-order accurate. <strong>Simpson's rule</strong> uses parabolic segments and is fourth-order. <strong>Gaussian quadrature</strong> chooses evaluation points and weights optimally to be exact for polynomials up to a certain degree, giving you remarkable accuracy with very few function evaluations.</p>
+<h2>The GPU: A Factory Floor, Not an Office</h2>
 
-<p>But quadrature rules fall apart in high dimensions. A grid with 100 points per dimension becomes 100¹⁰ = 10²⁰ points in 10 dimensions. This is the curse of dimensionality. The solution is <strong>Monte Carlo integration</strong>: estimate ∫f(x)dx by averaging f over random samples. The error decreases as 1/√N regardless of dimension — no curse. The catch is that 1/√N convergence is slow; you need 100x more samples for one extra digit of accuracy.</p>
+<p>A CPU is like a small team of brilliant engineers. Maybe 16 of them, each capable of complex reasoning, branching logic, and creative problem-solving. A GPU is like a factory floor with thousands of workers, each doing one simple repetitive task in lockstep. The CPU excels when the work is varied and sequential. The GPU excels when the work is uniform and parallel. Matrix multiplication — the heartbeat of neural networks — is exactly the kind of uniform, embarrassingly parallel work that a factory floor devours.</p>
 
-<p>This connects directly to Bayesian ML. Computing posterior expectations like E[f(θ)|data] requires integrating over the parameter space, which is almost never tractable analytically. <strong>Markov Chain Monte Carlo (MCMC)</strong> methods generate samples from the posterior distribution, and averaging f(θ) over those samples gives you Monte Carlo estimates of any expectation you need. The entire field of Bayesian deep learning rests on clever integration approximations.</p>
+<p>The GPU <strong>memory hierarchy</strong> is where most performance stories are actually told. <strong>Global memory</strong> — the VRAM you see on spec sheets, 24GB on an RTX 4090, 80GB on an A100 — is large but slow. <strong>Shared memory</strong> is a small, fast scratchpad (tens of KB) shared within a thread block, sitting on the chip itself. <strong>Registers</strong> are the fastest, private to each thread. The counterintuitive reality is that <strong>memory bandwidth</strong>, not compute, is usually the bottleneck. Moving data from global memory to the compute cores takes far longer than the arithmetic itself. A modern GPU can perform trillions of operations per second, but if every operation needs to fetch from global memory, it's sitting idle waiting for data most of the time.</p>
 
-<h2>Eigensolvers</h2>
+<p>This is why algorithms like <strong>FlashAttention</strong> matter. Standard attention computes and stores the full N×N attention matrix in global memory. FlashAttention tiles the computation so that each block fits in shared memory, processes it entirely on-chip, and writes only the final output back to global memory. The FLOPs are actually the same or slightly higher. But the memory traffic drops dramatically, so it's much faster. The lesson generalizes: in GPU computing, the question is rarely "how many operations?" and almost always "how many bytes moved?"</p>
 
-<p>Computing all eigenvalues of a large matrix is O(n³) and usually unnecessary. In ML, you typically need only the top few eigenvectors — the first k principal components, or the smallest eigenvectors of a graph Laplacian for spectral clustering.</p>
+<p>Modern GPUs also include <strong>Tensor Cores</strong>, specialized hardware units that perform small matrix multiplies (4×4 or 8×8 blocks) in reduced precision at extraordinary speed. A Tensor Core can multiply in float16 while accumulating the result in float32, getting roughly 2-8x the throughput of standard CUDA cores. This hardware is what makes the next section practical.</p>
 
-<p><strong>Power iteration</strong> is the simplest eigensolver: start with a random vector, repeatedly multiply by A and normalize. This converges to the eigenvector with the largest eigenvalue. It's slow (convergence depends on the ratio of the top two eigenvalues), but it's dead simple and works on enormous matrices. Google's original <strong>PageRank</strong> algorithm is essentially power iteration on the web's link matrix.</p>
+<h2>Mixed Precision — Training with Half the Bits</h2>
 
-<p>For sparse matrices, the <strong>Lanczos algorithm</strong> is the standard tool. It's a Krylov method that builds a tridiagonal matrix whose eigenvalues approximate those of A, converging to extremal eigenvalues first. SciPy's <code>scipy.sparse.linalg.eigsh()</code> uses Lanczos under the hood. It needs only matrix-vector products, making it ideal for matrices too large to store densely.</p>
+<p>Training in full float32 is safe but wasteful. That's the insight behind <strong>mixed-precision training</strong>: most neural network operations — forward pass matrix multiplies, convolutions, attention — don't need 32 bits of precision. They work fine in 16-bit. So run the forward and backward passes in half precision (float16 or bfloat16), which uses half the memory and runs faster on Tensor Cores. Keep a <strong>master copy</strong> of the weights in float32, and do the weight update step in float32. That's the whole scheme.</p>
 
-<p>For truly massive matrices (millions of rows), <strong>randomized SVD</strong> is the modern approach. The idea is counterintuitive: project the matrix into a much lower-dimensional random subspace, then compute an exact SVD of the small projection. The mathematical guarantee (due to random matrix theory) is that this approximation is surprisingly good. Scikit-learn's PCA uses randomized SVD by default when you set <code>svd_solver='randomized'</code>. It turns a problem that would take hours into one that takes seconds.</p>
+<p>The danger with <strong>float16</strong> is its limited range. The smallest positive normal float16 is about 6×10⁻⁵. Gradient values smaller than this underflow to zero, and your model silently stops learning. <strong>Loss scaling</strong> handles this: before the backward pass, multiply the loss by a large constant (say 1024). This scales all gradients up into float16's representable range. After the backward pass, divide by the same constant before updating weights. PyTorch's <code>GradScaler</code> does this automatically, dynamically increasing the scale when training is stable and decreasing it when it detects overflow.</p>
 
-<h2>Sparse Computations</h2>
+<pre><code>import torch
+from torch.cuda.amp import autocast, GradScaler
 
-<p>Most matrices in real-world ML are sparse — they're mostly zeros. A document-term matrix with 100,000 documents and 50,000 words has 5 billion entries, but any given document uses maybe 500 unique words. That's 99.999% zeros. Storing and computing with the full dense matrix is absurd.</p>
+model = MyModel().cuda()
+optimizer = torch.optim.Adam(model.parameters())
+scaler = GradScaler()
 
-<p>Sparse matrices are stored using compact formats that only record non-zero entries. The two most common are <strong>CSR (Compressed Sparse Row)</strong> and <strong>CSC (Compressed Sparse Column)</strong>. CSR stores three arrays: the non-zero values, their column indices, and pointers to where each row starts. This makes row slicing and matrix-vector products fast. CSC is the column-oriented analog, better for column slicing and for solvers that work column by column.</p>
+for inputs, targets in dataloader:
+    optimizer.zero_grad()
+    with autocast():                          # forward in fp16
+        outputs = model(inputs.cuda())
+        loss = loss_fn(outputs, targets.cuda())
+    scaler.scale(loss).backward()             # backward in fp16 with scaled loss
+    scaler.step(optimizer)                    # unscale gradients, update in fp32
+    scaler.update()                           # adjust scale factor
+</code></pre>
 
-<p>In Python, <code>scipy.sparse</code> is the standard library. You construct sparse matrices from coordinate lists (<code>coo_matrix</code>) then convert to CSR or CSC for computation. The rule of thumb: if your matrix is more than ~90% zeros, sparse formats save both memory and time. Below 90%, the indexing overhead makes dense operations faster.</p>
+<p>The choice between <strong>float16</strong> and <strong>bfloat16</strong> is a tradeoff between precision and range. Float16 gives you 5 exponent bits and 10 mantissa bits — decent precision, but a narrow range that requires loss scaling. Bfloat16 gives you 8 exponent bits (the same as float32!) but only 7 mantissa bits — coarser precision, but the same range as float32. In practice, bfloat16 almost never overflows or underflows, which means you can often skip loss scaling entirely. This is why Google designed it for their TPUs, and why NVIDIA's A100 and H100 both support it natively. If your hardware supports bfloat16, use it. It's the less fussy option.</p>
 
-<p>Sparse structures are everywhere in ML. Bag-of-words features are sparse. One-hot encoded categorical variables are sparse. Graph adjacency matrices are sparse. Attention masks in transformers are sparse (or at least structured). Even neural network weights, after pruning, are sparse. Understanding sparse computation is not optional — it's a practical necessity for working with real data at real scale.</p>
+<p>There's also <strong>FP8</strong>, which emerged in 2023-2024 on NVIDIA's Hopper architecture (H100). It comes in two flavors: E4M3 (4 exponent, 3 mantissa bits) for forward passes and E5M2 (5 exponent, 2 mantissa bits) for backward passes. The H100's Tensor Cores operate natively on FP8, offering up to 4x throughput over float16. My intuition for when FP8 is safe is still developing, but the trajectory is clear — each hardware generation pushes viable precision lower.</p>
 
-<h2>GPU Computing Fundamentals</h2>
-
-<p>A modern CPU has maybe 16 powerful cores, each capable of complex control flow and branch prediction. A modern GPU has thousands of simpler cores, each designed to do the same operation on different data simultaneously. This is <strong>SIMD parallelism</strong> — Single Instruction, Multiple Data — and it's exactly what matrix multiplication needs. Multiplying two 4096×4096 matrices requires about 137 billion multiply-add operations, all independent. A CPU grinds through them with a few cores; a GPU blasts through them with thousands.</p>
-
-<p>The GPU <strong>memory hierarchy</strong> is critical to understand. <strong>Global memory</strong> (the GPU's main VRAM — 24GB on a 4090, 80GB on an A100) is large but slow. <strong>Shared memory</strong> is a small, fast scratchpad shared within a thread block. <strong>Registers</strong> are the fastest, private to each thread. The key insight is that <strong>memory bandwidth</strong>, not compute, is usually the bottleneck. Moving data from global memory to the cores takes far longer than the actual arithmetic. This is why memory-efficient algorithms (FlashAttention, kernel fusion) matter so much — they reduce data movement, not FLOPs.</p>
-
-<p>Modern GPUs also include <strong>Tensor Cores</strong>, specialized hardware for small matrix multiplies (typically 4×4 or 8×8) in reduced precision. Tensor Cores can perform mixed-precision operations — multiplying in float16 while accumulating in float32 — at roughly 2-8x the throughput of standard CUDA cores. This hardware is specifically what makes mixed-precision training practical.</p>
-
-<h2>Mixed-Precision Arithmetic</h2>
-
-<p>Training in full float32 is safe but wasteful. The insight behind <strong>mixed-precision training</strong> is that most neural network operations don't need 32 bits of precision. Forward and backward passes run in half precision (<strong>float16</strong> or <strong>bfloat16</strong>), which uses half the memory and runs faster on Tensor Cores. Only the master copy of weights and the gradient accumulation step use float32.</p>
-
-<p>The main danger with float16 is its limited range: the smallest positive normal float16 is about 6×10⁻⁵. Gradient values smaller than this underflow to zero, and your model stops learning. <strong>Loss scaling</strong> solves this elegantly: before the backward pass, multiply the loss by a large constant (say 1024). This scales all gradients up into float16's representable range. After the backward pass, divide by the same constant before updating weights. PyTorch's <code>GradScaler</code> does this automatically, dynamically adjusting the scale factor.</p>
-
-<p>The choice between <strong>bfloat16</strong> and float16 is a tradeoff between range and precision. Float16 has 5 exponent bits and 10 mantissa bits — good precision but limited range. Bfloat16 has 8 exponent bits (same as float32!) but only 7 mantissa bits — less precision but the same range as float32. In practice, bfloat16 is more robust because it almost never overflows or underflows, making loss scaling unnecessary. This is why Google's TPUs and NVIDIA's A100+ GPUs all support bfloat16 natively.</p>
-
-<p>The practical impact is substantial: mixed-precision training halves your memory usage (which means you can double your batch size or train a larger model), and runs 1.5-3x faster thanks to Tensor Core acceleration. In 2024, there is essentially no reason to train in full float32 unless you're debugging a numerical issue. Mixed precision isn't an optimization — it's the default.</p>
+<p>The practical impact of mixed precision is enormous: it roughly halves memory usage (which means you can double your batch size or fit a larger model), and runs 1.5-3x faster on Tensor Core-enabled hardware. In 2024, there is no good reason to train in full float32 unless you're actively debugging a numerical issue. Mixed precision isn't an optimization. It's the default.</p>
 
 <div class="callout callout-danger">
   <div class="callout-label">Danger</div>
-  <p>Never reduce precision for the weight update step itself. Accumulating small gradient updates into float16 weights will destroy your training through rounding errors. The pattern is: forward in fp16, backward in fp16, accumulate and update in fp32. Always keep a float32 master copy of your weights.</p>
+  <p>Never reduce precision for the weight update itself. Accumulating tiny gradient updates into float16 weights destroys training through rounding errors — the updates are smaller than float16's epsilon relative to the weights, so they vanish. The pattern is sacred: forward in fp16, backward in fp16, accumulate and update in fp32. Always keep a float32 master copy of your weights.</p>
 </div>
 
+<h2>Wrap-Up</h2>
 
+<p>If you're still with me, thank you. I hope it was worth it.</p>
+
+<p>We started with the unsettling fact that 0.1 + 0.2 ≠ 0.3, traced through how IEEE 754 stores numbers on an unevenly-spaced ruler, watched catastrophic cancellation destroy a variance computation, learned the log-sum-exp trick that makes softmax and log-likelihoods safe, detoured through condition numbers and why inverting matrices is almost always wrong, peeked at the GPU memory hierarchy that actually determines training speed, and landed on the mixed-precision regime that has become standard practice for all serious training.</p>
+
+<p>My hope is that the next time you see <code>NaN</code> in a training log, instead of blindly reducing the learning rate and restarting, you'll have a pretty darn good mental model of where to look — an unprotected <code>exp()</code>, a variance computed with the textbook formula, a condition number that's blown up, or a gradient that underflowed to zero in float16. The numbers don't lie, but they do approximate. Now you know how to work with that.</p>
+
+<h2>Resources</h2>
+
+<ul>
+  <li><em>What Every Computer Scientist Should Know About Floating-Point Arithmetic</em> by David Goldberg — the O.G. deep dive. Dense but unforgettable once you push through it.</li>
+  <li><em>Numerical Linear Algebra</em> by Trefethen and Bau — the gold standard textbook. The chapters on conditioning and stability are wildly clear.</li>
+  <li>NVIDIA's <a href="https://docs.nvidia.com/deeplearning/performance/mixed-precision-training/index.html">Mixed Precision Training Guide</a> — the definitive practical reference for mixed precision with PyTorch.</li>
+  <li><em>FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness</em> by Tri Dao et al. — a beautiful example of how understanding memory hierarchy changes everything.</li>
+  <li>The <a href="https://floating-point-gui.de/">Floating-Point Guide</a> — a gentle, visual introduction to floating-point arithmetic. Great place to start if IEEE 754 still feels foggy.</li>
+</ul>
 
 <h2>✅ What You Should Now Be Able To Do</h2>
 <ul>
-  <li>Explain why <code>0.1 + 0.2 != 0.3</code> in floating point and always use <code>np.isclose</code> for comparisons</li>
-  <li>Implement the log-sum-exp trick and explain why it prevents overflow in softmax</li>
-  <li>Choose between <code>np.linalg.solve</code>, Cholesky, and iterative solvers based on matrix properties</li>
-  <li>Explain why you should never invert a matrix and what the condition number tells you</li>
-  <li>Work with sparse matrices in <code>scipy.sparse</code> — know when CSR vs CSC and when sparse beats dense</li>
-  <li>Explain mixed-precision training: forward/backward in fp16, weight update in fp32</li>
-  <li>Describe the difference between float16 and bfloat16 and why bfloat16 is often preferred</li>
-  <li>Diagnose NaN issues in training: check for log(0), unscaled features, exploding gradients</li>
+  <li>Explain why <code>0.1 + 0.2 != 0.3</code> in terms of IEEE 754 binary representation and the unevenly-spaced number line</li>
+  <li>Identify catastrophic cancellation in code (variance formulas, loss functions) and reach for stable alternatives like Welford's algorithm and <code>log1p</code></li>
+  <li>Implement the log-sum-exp trick from memory, and explain why PyTorch's <code>CrossEntropyLoss</code> wants raw logits, not probabilities</li>
+  <li>Choose between <code>np.linalg.solve</code>, Cholesky, and iterative solvers based on matrix properties, and explain why you never invert</li>
+  <li>Read a condition number and know when a solution is trustworthy vs. garbage</li>
+  <li>Explain why GPU memory bandwidth, not compute, is usually the bottleneck, and why FlashAttention helps</li>
+  <li>Set up mixed-precision training with <code>autocast</code> and <code>GradScaler</code>, and explain why the weight update must stay in fp32</li>
+  <li>Compare float16, bfloat16, and FP8 — their tradeoffs, when to use each, and why bfloat16 is often preferred</li>
+  <li>Debug NaN in training: systematically check for unprotected <code>exp()</code>, <code>log(0)</code>, ill-conditioned systems, and gradient underflow</li>
 </ul>
 
       <div class="page-nav">
