@@ -298,242 +298,360 @@
   <span class="tag">Chapter 2: Mathematical Foundations</span>
 </div>
 
-<div class="tldr">
-  <div class="tldr-label">TL;DR</div>
-  <p>Information theory gives ML its native language. Entropy measures uncertainty; cross-entropy measures how badly your model approximates reality (and is exactly the classification loss you already use). KL divergence quantifies the gap between two distributions, powering VAEs, knowledge distillation, and policy optimization. Mutual information tells you which features actually matter. The data processing inequality explains why deep networks must learn efficient representations. If you only remember one thing: minimizing cross-entropy loss <em>is</em> minimizing KL divergence from the true data distribution.</p>
+<p>I avoided information theory for longer than I should have. Every time I saw "entropy" in a paper, my brain filed it under "physics thing, skip for now." Every time I saw a KL divergence term in a loss function, I'd copy the code, nod politely, and move on without asking what it actually meant. Finally the discomfort grew too great — I kept bumping into these ideas in loss functions, in VAE papers, in decision tree internals, in RL objectives — and I realized information theory wasn't some side topic. It was the language my tools had been speaking all along. Here is that dive.</p>
+
+<p>Information theory was born in 1948 when Claude Shannon published "A Mathematical Theory of Communication." He was trying to solve a practical engineering problem: how do you transmit messages reliably over a noisy wire? In the process, he gave us a mathematical framework for quantifying uncertainty, surprise, and the cost of being wrong. It turns out those concepts are exactly what machine learning needs.</p>
+
+<p>Before we start, a heads-up. We're going to be working with logarithms, probability distributions, and a few summation formulas. You don't need to know any of it beforehand. We'll add what we need, one piece at a time.</p>
+
+<p>This isn't a short journey, but I hope you'll be glad you came.</p>
+
+<div class="callout callout-info">
+  <div class="callout-label">Contents</div>
+  <p>
+    Surprise and Entropy<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;Why Logarithms?<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;Differential Entropy<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;Conditional and Joint Entropy<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;Entropy in the Wild<br>
+    Cross-Entropy: Measuring How Wrong Your Model Is<br>
+    KL Divergence: The Exact Cost of Being Wrong<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;Forward vs Reverse KL<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;Jensen-Shannon Divergence<br>
+    Rest Stop<br>
+    Mutual Information: What Do These Variables Share?<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;Feature Selection That Actually Works<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;Contrastive Learning and InfoNCE<br>
+    The Data Processing Inequality<br>
+    The Information Bottleneck<br>
+    Fisher Information<br>
+    The Bigger Picture: Why ML Speaks Information Theory<br>
+  </p>
 </div>
 
-<h2>Entropy</h2>
+<h2>Surprise and Entropy</h2>
 
-<p>Before we talk about formulas, let's talk about surprise. Imagine you flip a fair coin. Heads or tails — you're roughly equally surprised either way. Now imagine a coin that lands heads 99% of the time. When it lands heads, you shrug. When it lands tails, you're genuinely shocked. <strong>Entropy</strong> captures this idea: it's the <em>average surprise</em> you experience when observing outcomes from a random process.</p>
+<p>Let's start with something concrete. Imagine you're building a tiny weather app for a city where it's sunny 364 days a year. Every morning you predict "sunny." When you're right — which is almost always — there's no surprise. It was sunny yesterday, sunny the day before, sunny the day before that. But on that one rainy day? That's a genuine shock. That one outcome carries a lot of <strong>information</strong>, precisely because it was so unlikely.</p>
 
-<p>Claude Shannon formalized this in 1948. For a discrete random variable X with possible outcomes x₁, x₂, …, xₙ and probabilities p(xᵢ), the entropy is:</p>
+<p>This is the core insight that everything else builds on: <em>unlikely events carry more information than likely ones</em>. Shannon formalized "surprise" for a single event with probability p as:</p>
+
+<p><code>surprise(x) = -log₂(p(x))</code></p>
+
+<p>When p = 1 (certainty), surprise is zero — you already knew what would happen. When p is tiny, surprise is large. The negative sign is there because log of a number between 0 and 1 is negative, and we want surprise to be positive.</p>
+
+<p>Now, <strong>entropy</strong> is the <em>average surprise</em> across all possible outcomes, weighted by how likely each one is:</p>
 
 <p><code>H(X) = -Σ p(xᵢ) log₂ p(xᵢ)</code></p>
 
-<p>Why log base 2? Because Shannon was thinking about communication channels that transmit binary digits. One bit is the information content of a single fair coin flip. A fair coin has entropy H = 1 bit. That biased coin (99% heads) has H ≈ 0.08 bits — almost no surprise on average, because you can almost always predict the outcome. A fair six-sided die has H ≈ 2.58 bits. More possible outcomes, more surprise, more bits needed to encode the result.</p>
+<p>Back to our weather app. If this city has sunshine 99% of the time and rain 1% of the time, the entropy is about 0.08 bits. Almost no surprise on average — you can predict the weather with barely any information. A city where it's sunny half the time and rainy half the time has entropy of 1 bit — maximum uncertainty for two outcomes. And a city with three equally likely weather states (sunny, rainy, cloudy) hits about 1.58 bits. More possible outcomes, more uncertainty, more bits needed to describe what happened.</p>
 
-<p>The key intuition: entropy is maximized when all outcomes are equally likely (maximum uncertainty), and minimized when one outcome is certain (zero uncertainty). This shows up everywhere in ML.</p>
+<p>The pattern: entropy is maximized when all outcomes are equally likely and minimized when one outcome is certain. Think of it like a filing cabinet. A cabinet where every folder is in perfect order — one labeled "A," and everything goes in it — has zero entropy. A cabinet where documents are scattered randomly across dozens of folders? High entropy. You need a lot of information to describe where anything is.</p>
+
+<h3>Why Logarithms?</h3>
+
+<p>I'll be honest — the log base was the thing that tripped me up for years. Why log at all? Why not some other function that's big for small numbers and small for big numbers?</p>
+
+<p>The reason is that logarithms make information <strong>additive</strong>. If you flip two independent fair coins, you want the total information to be 1 bit + 1 bit = 2 bits, not some weird product. Logarithms are the only function that turns multiplication into addition, and since joint probabilities of independent events multiply (P(A and B) = P(A) × P(B)), logs turn that into a sum. That's it. That's the whole reason.</p>
+
+<p>As for the base — log base 2 gives you bits, log base e (natural log) gives you <strong>nats</strong>, log base 10 gives you <strong>hartleys</strong>. In ML we usually see nats because natural logs play nicely with calculus and gradients. The choice of base is a unit conversion, like Celsius vs Fahrenheit. The underlying physics doesn't change.</p>
 
 <h3>Differential Entropy</h3>
 
-<p>When your random variable is continuous rather than discrete, you replace the sum with an integral to get <strong>differential entropy</strong>: <code>h(X) = -∫ p(x) log p(x) dx</code>. A Gaussian with variance σ² has differential entropy <code>½ log(2πeσ²)</code>. Unlike discrete entropy, differential entropy can be negative — a very peaked distribution concentrates so much probability in a tiny region that the "average surprise" dips below zero. This quirk rarely causes practical problems, but it's worth knowing so you don't panic when you see a negative value.</p>
+<p>When your random variable is continuous, you replace the sum with an integral: <code>h(X) = -∫ p(x) log p(x) dx</code>. A Gaussian with variance σ² has differential entropy <code>½ log(2πeσ²)</code> — wider Gaussians have higher entropy, which makes sense: more spread means more uncertainty about where a sample will land.</p>
+
+<p>One oddity: unlike discrete entropy, differential entropy can be <strong>negative</strong>. A very peaked distribution concentrates so much probability in a tiny region that the average surprise dips below zero. This tripped me up the first time I computed it, but it rarely causes practical problems. It's a quirk of the continuous formulation, not a sign that something went wrong.</p>
 
 <h3>Conditional and Joint Entropy</h3>
 
-<p><strong>Conditional entropy</strong> H(Y|X) measures how much uncertainty remains about Y after you observe X. If X completely determines Y, then H(Y|X) = 0 — no leftover surprise. If X tells you nothing about Y, then H(Y|X) = H(Y). This is exactly the concept behind decision tree splitting: you pick the feature X that minimizes H(Y|X), because that's the feature that reduces your uncertainty about the label Y the most.</p>
+<p>Back to our weather app. Suppose we add a barometer reading to our system. <strong>Conditional entropy</strong> H(weather | barometer) measures how much uncertainty remains about the weather <em>after</em> you've read the barometer. If the barometer perfectly predicts the weather, conditional entropy is zero — no leftover surprise. If the barometer is broken and gives random readings, knowing the barometer tells you nothing, so H(weather | barometer) = H(weather).</p>
 
-<p><strong>Joint entropy</strong> H(X, Y) measures the total uncertainty in both variables together. The chain rule ties everything together elegantly: <code>H(X, Y) = H(X) + H(Y|X)</code>. The total uncertainty is the uncertainty in X plus whatever uncertainty remains in Y after you know X. This decomposition is not just mathematically pretty — it's the foundation of how we think about information flow in pipelines.</p>
+<p><strong>Joint entropy</strong> H(weather, barometer) captures the total uncertainty in both variables together. The chain rule connects them: <code>H(X, Y) = H(X) + H(Y|X)</code>. The total uncertainty equals the uncertainty in X plus whatever uncertainty remains in Y once you know X. This decomposition isn't decoration — it's the engine behind how decision trees choose splits.</p>
 
-<div class="callout callout-info">
-  <div class="callout-label">Key Insight</div>
-  <p>In decision trees, the "information gain" used for splitting is literally <code>H(Y) - H(Y|X)</code> — the reduction in entropy of the target variable Y when you split on feature X. ID3, C4.5, and similar algorithms are doing information theory at every node.</p>
-</div>
+<h3>Entropy in the Wild</h3>
 
-<p>Entropy also appears as a regularizer. In reinforcement learning, adding an entropy bonus to the policy's objective encourages exploration — a policy with higher entropy tries a wider range of actions rather than collapsing to a single deterministic choice too early. This is the core idea behind Soft Actor-Critic (SAC) and entropy-regularized policy gradient methods.</p>
+<p>Here's where entropy stops being abstract. In decision trees, the "information gain" at every split node is <code>H(Y) - H(Y|X)</code> — the reduction in target entropy when you split on feature X. ID3, C4.5, and their descendants are doing information theory at every single node. The feature that gives you the most information gain is the one that most reduces your uncertainty about the label. That's the one the tree picks.</p>
 
-<h2>Cross-Entropy and KL Divergence</h2>
+<p>Entropy also shows up as a regularizer in reinforcement learning. In Soft Actor-Critic (SAC), an entropy bonus is added to the policy's objective. A policy with higher entropy tries a wider variety of actions instead of collapsing prematurely to a single deterministic choice. The entropy term literally quantifies "how much is this policy exploring?" and the algorithm optimizes for a balance between reward and exploration.</p>
 
-<p>Here's where information theory becomes the backbone of modern ML training. Suppose you have a true distribution P (the real data) and a model distribution Q (your neural network's predictions). <strong>Cross-entropy</strong> measures how many bits you'd need, on average, to encode samples from P using a code optimized for Q:</p>
+<pre><code>import numpy as np
+
+# Our weather app: three cities with different predictability
+# City A: almost always sunny
+city_a = np.array([0.99, 0.005, 0.005])
+# City B: equal chance of anything
+city_b = np.array([1/3, 1/3, 1/3])
+# City C: usually sunny, sometimes rainy, rarely cloudy
+city_c = np.array([0.7, 0.2, 0.1])
+
+def entropy(probs):
+    # Filter zeros to avoid log(0)
+    probs = probs[probs > 0]
+    return -np.sum(probs * np.log2(probs))
+
+for name, p in [("Predictable", city_a), ("Chaotic", city_b), ("Realistic", city_c)]:
+    print(f"{name} city: H = {entropy(p):.3f} bits")
+# Predictable city: H = 0.080 bits
+# Chaotic city:     H = 1.585 bits
+# Realistic city:   H = 1.157 bits
+</code></pre>
+
+<p>The predictable city barely needs any bits to describe its weather. The chaotic city needs the most. Our filing cabinet analogy holds: the messier the distribution, the more information you need to pin down the outcome.</p>
+
+<h2>Cross-Entropy: Measuring How Wrong Your Model Is</h2>
+
+<p>Entropy tells us about a distribution's inherent uncertainty. But in ML we care about something different: we have the <em>true</em> distribution P (the real data) and a <em>model</em> distribution Q (our neural network's predictions). How do we measure how wrong Q is?</p>
+
+<p>Imagine our weather app predicts sunny 90%, rainy 8%, cloudy 2%. But the real weather is sunny 70%, rainy 20%, cloudy 10%. Our model is overconfident about sunshine and underestimates rain. <strong>Cross-entropy</strong> quantifies this mismatch:</p>
 
 <p><code>H(P, Q) = -Σ p(x) log q(x)</code></p>
 
-<p>If Q perfectly matches P, cross-entropy equals the entropy of P — you're using the optimal code. If Q is a bad approximation, cross-entropy is higher — you're wasting bits. This is exactly why cross-entropy is <em>the</em> standard classification loss function. When you call <code>nn.CrossEntropyLoss()</code> in PyTorch, you're asking: "How many extra bits does my model waste compared to a perfect encoding of the labels?"</p>
+<p>Think of it this way. Entropy H(P) tells you the minimum average bits needed to encode the weather if you had a perfect model. Cross-entropy H(P, Q) tells you how many bits you actually need when using your imperfect model Q. The difference is waste — bits spent on being wrong.</p>
 
-<p>For binary classification with true label y ∈ {0, 1} and predicted probability q, the binary cross-entropy loss is <code>-[y log(q) + (1-y) log(1-q)]</code>. That formula you've seen a hundred times? Pure information theory.</p>
+<p>If Q perfectly matches P, cross-entropy equals entropy — you're using the optimal encoding. If Q is a bad approximation, cross-entropy is higher. You're like a tourist using a phrasebook for the wrong country. You can sort of communicate, but you're spending way more effort than a local would.</p>
 
-<h3>KL Divergence</h3>
+<p>Here's the thing that clicked for me: when you call <code>nn.CrossEntropyLoss()</code> in PyTorch, you're computing exactly this. The one-hot label is your P (the truth), the softmax output is your Q (the model's belief). The loss measures how many extra bits your model wastes because it doesn't perfectly match reality. For binary classification, it reduces to the formula you've seen everywhere: <code>-[y log(q) + (1-y) log(1-q)]</code>. That formula? Pure information theory.</p>
 
-<p><strong>KL divergence</strong> (Kullback-Leibler divergence) measures the "extra bits" — the overhead of using Q instead of P:</p>
+<p>And here's a connection that took me embarrassingly long to internalize: minimizing cross-entropy loss is equivalent to maximum likelihood estimation. Both are asking "make Q match P as closely as possible." They arrive from different directions — one from information theory, one from statistics — and meet at exactly the same optimization problem.</p>
+
+<h2>KL Divergence: The Exact Cost of Being Wrong</h2>
+
+<p>Cross-entropy bundles two things together: the inherent uncertainty in the data (which you can't reduce) and the penalty for being wrong (which you can). <strong>KL divergence</strong> (Kullback-Leibler divergence) isolates the second part — the pure overhead of using Q instead of P:</p>
 
 <p><code>D_KL(P ‖ Q) = Σ p(x) log [p(x) / q(x)]</code></p>
 
-<p>The fundamental relationship connecting these three quantities is: <code>H(P, Q) = H(P) + D_KL(P ‖ Q)</code>. Since H(P) is a constant (the true data distribution doesn't change during training), minimizing cross-entropy is <em>identical</em> to minimizing KL divergence. This is not a coincidence — it's why cross-entropy loss works.</p>
+<p>The fundamental relationship tying these three quantities together is: <code>H(P, Q) = H(P) + D_KL(P ‖ Q)</code>. Cross-entropy equals the true entropy plus the KL divergence. Since H(P) is a constant — the real data distribution doesn't change during training — minimizing cross-entropy is <em>mathematically identical</em> to minimizing KL divergence. This is not a coincidence or an approximation. It's an identity. It's why cross-entropy loss works.</p>
 
-<p>KL divergence has two important properties. First, it's <strong>non-negative</strong> — you can never do better than the true distribution's own entropy. This is called Gibbs' inequality. Second, it's <strong>asymmetric</strong>: D_KL(P ‖ Q) ≠ D_KL(Q ‖ P). This asymmetry matters in practice. D_KL(P ‖ Q) — called the "forward KL" — penalizes Q heavily wherever P has mass but Q doesn't (Q must cover all of P). D_KL(Q ‖ P) — the "reverse KL" — penalizes Q for placing mass where P doesn't (Q avoids regions P considers unlikely). Variational inference uses the reverse KL, which tends to produce distributions that are too narrow rather than too broad.</p>
+<p>KL divergence is always non-negative. You can never do better than the true distribution's own entropy. This fact, called Gibbs' inequality, means the best possible cross-entropy loss is H(P) — and you achieve it only when Q = P exactly.</p>
 
-<div class="callout callout-warning">
-  <div class="callout-label">Watch Out</div>
-  <p>KL divergence is not a true distance metric — it violates symmetry and the triangle inequality. Don't say "the KL distance between P and Q." Say "the KL divergence from P to Q" to make the direction explicit. The direction matters for your model's behavior.</p>
-</div>
+<h3>Forward vs Reverse KL</h3>
 
-<h3>ML Applications of KL Divergence</h3>
+<p>Here's where it gets subtle, and I'll be honest — I mixed forward and reverse KL up repeatedly before the distinction finally stuck.</p>
 
-<p>KL divergence is the workhorse behind several major ML techniques. In <strong>Variational Autoencoders (VAEs)</strong>, the loss function (the ELBO) includes a KL term that pushes the encoder's approximate posterior toward a standard Gaussian prior. In <strong>knowledge distillation</strong>, you minimize KL divergence between the teacher's soft outputs and the student's predictions. In <strong>policy optimization</strong> (PPO, TRPO), a KL penalty or constraint prevents the new policy from straying too far from the old one, keeping training stable.</p>
+<p>KL divergence is <strong>asymmetric</strong>: D_KL(P ‖ Q) ≠ D_KL(Q ‖ P). This isn't a minor technicality. The direction you choose fundamentally changes your model's behavior.</p>
 
-<p>The <strong>Jensen-Shannon divergence</strong> (JSD) fixes the asymmetry problem: <code>JSD(P ‖ Q) = ½ D_KL(P ‖ M) + ½ D_KL(Q ‖ M)</code>, where M = ½(P + Q). It's symmetric, bounded between 0 and 1 (with log base 2), and its square root is a proper metric. GANs originally used a loss function closely related to JSD — the discriminator's loss implicitly estimates the Jensen-Shannon divergence between real and generated data.</p>
+<p><strong>Forward KL</strong>, D_KL(P ‖ Q), penalizes Q heavily wherever P has mass but Q doesn't. The model thinks "I must cover everything the data might produce." The result is <em>mode-covering</em> — Q spreads out to blanket all of P, even if it means assigning probability to regions between modes where P has little mass. This is what maximum likelihood estimation does.</p>
+
+<p><strong>Reverse KL</strong>, D_KL(Q ‖ P), penalizes Q for placing mass where P is near zero. The model thinks "I must not put probability anywhere the data wouldn't go." The result is <em>mode-seeking</em> — Q locks onto one mode of P and ignores the others. This is what variational inference does.</p>
+
+<p>Picture a target distribution P that has two peaks — say, two clusters of weather patterns. If Q can only be a single Gaussian, forward KL will stretch Q across both peaks (covering both but fitting neither well). Reverse KL will collapse Q tightly onto one peak (fitting that peak well but completely ignoring the other). Neither is "right" — it depends on whether missing a mode (reverse) or being imprecise everywhere (forward) is worse for your application.</p>
+
+<p>This is why variational inference tends to produce posteriors that are too narrow. It uses reverse KL. The approximate posterior would rather be confidently wrong about some modes than risk placing probability where the true posterior is low.</p>
+
+<p>Let's see this concretely with our weather app:</p>
 
 <pre><code>import numpy as np
 
-# True distribution (e.g., one-hot label smoothed slightly)
-P = np.array([0.9, 0.05, 0.05])
+# True weather distribution (two distinct seasonal patterns blended)
+P = np.array([0.4, 0.35, 0.25])  # sunny, rainy, cloudy
 
-# Model's predicted distribution
-Q = np.array([0.7, 0.2, 0.1])
+# Model A: spreads probability broadly (mode-covering behavior)
+Q_cover = np.array([0.33, 0.34, 0.33])
 
-# Cross-entropy H(P, Q)
-cross_entropy = -np.sum(P * np.log(Q))
-print(f"Cross-entropy H(P,Q): {cross_entropy:.4f} nats")
+# Model B: locks onto the dominant mode (mode-seeking behavior)
+Q_seek = np.array([0.7, 0.2, 0.1])
 
-# Entropy H(P)
-entropy_P = -np.sum(P * np.log(P))
-print(f"Entropy H(P): {entropy_P:.4f} nats")
+def kl_divergence(p, q):
+    # Only where p > 0
+    mask = p > 0
+    return np.sum(p[mask] * np.log(p[mask] / q[mask]))
 
-# KL divergence D_KL(P || Q)
-kl_div = np.sum(P * np.log(P / Q))
-print(f"KL divergence D_KL(P||Q): {kl_div:.4f} nats")
-
-# Verify the relationship: H(P,Q) = H(P) + D_KL(P||Q)
-print(f"H(P) + D_KL: {entropy_P + kl_div:.4f} nats")
-
-# Jensen-Shannon divergence
-M = 0.5 * (P + Q)
-jsd = 0.5 * np.sum(P * np.log(P / M)) + 0.5 * np.sum(Q * np.log(Q / M))
-print(f"JSD(P||Q): {jsd:.4f} nats")
+print(f"Forward KL(P || Q_cover): {kl_divergence(P, Q_cover):.4f} nats")
+print(f"Forward KL(P || Q_seek):  {kl_divergence(P, Q_seek):.4f} nats")
+print(f"Reverse KL(Q_cover || P): {kl_divergence(Q_cover, P):.4f} nats")
+print(f"Reverse KL(Q_seek || P):  {kl_divergence(Q_seek, P):.4f} nats")
+# Notice: the two directions rank the models differently
 </code></pre>
 
-<h2>Mutual Information</h2>
+<p>KL divergence is <em>not</em> a distance metric — it violates both symmetry and the triangle inequality. Say "KL divergence <em>from</em> P <em>to</em> Q," never "KL distance <em>between</em> P and Q." The direction encodes a design decision about your model's behavior.</p>
 
-<p>Sometimes you don't want to know how well Q approximates P. You want to know how much two variables <em>share</em>. <strong>Mutual information</strong> I(X; Y) quantifies exactly this: how much does knowing X reduce your uncertainty about Y?</p>
+<p>Where does KL divergence show up in practice? Everywhere. In <strong>VAEs</strong>, the ELBO loss includes a KL term pushing the encoder's approximate posterior toward a standard Gaussian prior. In <strong>knowledge distillation</strong>, you minimize KL divergence between the teacher's soft outputs and the student's predictions. In <strong>PPO</strong> and <strong>TRPO</strong>, a KL penalty prevents the new policy from straying too far from the old one, keeping training stable. Each of these uses KL divergence as a leash — "don't let Q wander too far from the reference."</p>
 
-<p><code>I(X; Y) = H(X) - H(X|Y) = H(Y) - H(Y|X) = H(X) + H(Y) - H(X, Y)</code></p>
+<h3>Jensen-Shannon Divergence</h3>
 
-<p>The symmetry is beautiful: X tells you as much about Y as Y tells you about X. If X and Y are independent, I(X; Y) = 0 — knowing one tells you nothing about the other. If X completely determines Y, I(X; Y) = H(Y) — you've eliminated all uncertainty.</p>
+<p>The asymmetry of KL divergence is sometimes a problem. <strong>Jensen-Shannon divergence</strong> (JSD) fixes it by averaging both directions through a midpoint distribution M = ½(P + Q):</p>
 
-<p>Think of it like a Venn diagram. H(X) and H(Y) are two overlapping circles of uncertainty. The overlap is mutual information — the shared knowledge. Joint entropy H(X, Y) is the total area of both circles combined. Conditional entropy H(Y|X) is the part of Y's circle that doesn't overlap with X.</p>
+<p><code>JSD(P ‖ Q) = ½ D_KL(P ‖ M) + ½ D_KL(Q ‖ M)</code></p>
 
-<h3>ML Uses of Mutual Information</h3>
+<p>JSD is symmetric, always bounded between 0 and 1 (with log base 2), and its square root is a proper metric. The original GAN's discriminator loss implicitly estimates JSD between real and generated data. That's elegant, but there's a practical problem: when the real and generated distributions don't overlap (common early in training), JSD saturates and provides no useful gradient. This is exactly why Wasserstein GANs were invented — the Wasserstein distance provides meaningful gradients even when distributions are disjoint.</p>
 
-<p>For <strong>feature selection</strong>, mutual information beats correlation because it captures nonlinear relationships. A feature might have zero Pearson correlation with the target but high mutual information — think of Y = X² where X is symmetric around zero. Scikit-learn's <code>mutual_info_classif</code> and <code>mutual_info_regression</code> use this directly.</p>
+<p>Our phrasebook analogy from earlier extends nicely here. KL divergence is like measuring how much harder it is for you (speaking model-Q-language) to communicate in country-P. JSD is like sitting both speakers at a table and measuring the total miscommunication in both directions. Wasserstein distance asks a different question entirely: how much physical effort would it take to rearrange one language into the other?</p>
 
-<p>In <strong>InfoGAN</strong>, the generator is trained to maximize mutual information between a subset of latent codes and the generated output, encouraging those codes to capture interpretable, disentangled factors of variation. In <strong>contrastive learning</strong>, the InfoNCE loss (used in SimCLR, CPC, and CLIP) is a lower bound on mutual information between different views of the same data point. When you train CLIP to align image and text embeddings, you're maximizing mutual information between visual and linguistic representations.</p>
+<h2 style="background: linear-gradient(135deg, #e8f5e9, #f1f8e9); padding: 1.2em; border-radius: 8px; margin-top: 2em;">Rest Stop</h2>
 
-<p>The <strong>Information Bottleneck</strong> method formalizes a fundamental tradeoff: compress the input X into a representation T that retains as much information as possible about the target Y while discarding everything else. Formally, you minimize <code>I(X; T) - β · I(T; Y)</code>, where β controls the tradeoff between compression and prediction. Some researchers argue this is what deep networks learn to do naturally — each layer progressively strips away irrelevant details while preserving the signal needed for the task.</p>
+<p>Congratulations on making it this far. You can stop here if you want.</p>
+
+<p>You now have a mental model that covers the three most important ideas in information theory for ML: entropy measures uncertainty, cross-entropy measures how wrong your model is, and KL divergence isolates the pure cost of being wrong. You know that every time you train with cross-entropy loss, you're minimizing KL divergence from the true data distribution. You know the difference between forward and reverse KL and why it matters for variational inference. That's a genuinely useful toolkit.</p>
+
+<p>It doesn't tell the whole story, though. We haven't talked about what to do when you want to measure the relationship between two variables (not just compare two distributions). We haven't talked about the fundamental limits of what any model can learn from processed data. And we haven't talked about why deep networks seem to naturally compress their representations.</p>
+
+<p>The short version: mutual information captures shared knowledge between variables, the data processing inequality says you can never create information by transforming data, and the information bottleneck suggests that deep learning is fundamentally about learning the right compression. There. You're 80% of the way there.</p>
+
+<p>But if the discomfort of not knowing what's underneath is nagging at you, read on.</p>
+
+<h2>Mutual Information: What Do These Variables Share?</h2>
+
+<p>So far we've been comparing a model Q to the truth P. But sometimes the question is different. You have two variables — say, barometer readings and tomorrow's weather — and you want to know: how much does one tell you about the other?</p>
+
+<p><strong>Mutual information</strong> I(X; Y) answers exactly this: how much does knowing X reduce your uncertainty about Y?</p>
+
+<p><code>I(X; Y) = H(Y) - H(Y|X)</code></p>
+
+<p>That's it. Start with your uncertainty about Y. Subtract the uncertainty that remains after observing X. The difference is the information that X provides about Y. There are equivalent ways to write this: <code>I(X; Y) = H(X) + H(Y) - H(X, Y)</code>. The symmetry is real and beautiful: X tells you as much about Y as Y tells you about X.</p>
+
+<p>If X and Y are independent, I(X; Y) = 0 — knowing one tells you nothing about the other. A broken barometer has zero mutual information with the weather. If X completely determines Y, then I(X; Y) = H(Y) — all uncertainty is eliminated. A perfect barometer has mutual information equal to the weather's entropy.</p>
+
+<p>The Venn diagram picture is the one that finally made it click for me. Draw two overlapping circles: H(X) and H(Y). The overlap is mutual information — the shared uncertainty. The total area of both circles is joint entropy H(X, Y). The part of Y's circle that doesn't overlap with X is the conditional entropy H(Y|X). Every information-theoretic relationship becomes a statement about areas of those circles.</p>
+
+<h3>Feature Selection That Actually Works</h3>
+
+<p>Here's why mutual information matters for practical ML work. Pearson correlation measures <em>linear</em> relationships. If Y = X², and X is symmetric around zero, Pearson correlation between X and Y is exactly zero — it sees no relationship at all. Mutual information sees the full picture because it captures <em>any</em> statistical dependency, linear or not.</p>
+
+<p>Scikit-learn's <code>mutual_info_classif</code> and <code>mutual_info_regression</code> exploit this directly. They estimate mutual information between each feature and the target, giving you a feature importance score that works for nonlinear relationships where correlation fails silently.</p>
 
 <pre><code>import numpy as np
 from sklearn.feature_selection import mutual_info_classif
-from sklearn.datasets import make_classification
 
-# Create a dataset with some informative and some useless features
-X, y = make_classification(
-    n_samples=1000, n_features=10,
-    n_informative=3, n_redundant=2,
-    n_useless=5, random_state=42
-)
+# Feature X1: linearly related to target
+# Feature X2: nonlinearly related (X2 determines target, but nonlinearly)
+# Feature X3: pure noise
+np.random.seed(42)
+n = 1000
+X1 = np.random.randn(n)
+X2 = np.random.randn(n)
+X3 = np.random.randn(n)
 
-# Estimate mutual information between each feature and the target
-mi_scores = mutual_info_classif(X, y, random_state=42)
+# Target depends on X1 linearly and X2 quadratically
+y = (X1 > 0).astype(int) ^ (X2**2 > 1).astype(int)
 
-print("Mutual Information scores per feature:")
-for i, score in enumerate(mi_scores):
-    label = "informative" if score &gt; 0.1 else "weak/useless"
-    print(f"  Feature {i}: MI = {score:.3f} ({label})")
+X = np.column_stack([X1, X2, X3])
+mi = mutual_info_classif(X, y, random_state=42)
 
-# Select top-k features
-k = 3
-top_features = np.argsort(mi_scores)[::-1][:k]
-print(f"\nTop {k} features by MI: {top_features}")
+# Pearson correlation for comparison
+corr = [np.abs(np.corrcoef(X[:, i], y)[0, 1]) for i in range(3)]
+
+print("Feature | Mutual Info | |Correlation|")
+for i, name in enumerate(["Linear", "Nonlinear", "Noise"]):
+    print(f"  {name:10s} | {mi[i]:.3f}       | {corr[i]:.3f}")
+# MI catches the nonlinear feature. Correlation misses it.
 </code></pre>
 
-<h2>Data Processing Inequality</h2>
+<p>The estimation is the hard part. Computing mutual information exactly requires knowing the true joint distribution, which we never have. In practice, k-nearest-neighbor estimators (the Kraskov method) approximate it from samples. These work reasonably well in low dimensions but struggle as dimensionality grows — the curse of dimensionality hits MI estimation hard.</p>
 
-<p>Here's one of the most profound results in information theory, and it takes just one line to state. If X → Y → Z form a Markov chain (Z depends on X only through Y), then:</p>
+<h3>Contrastive Learning and InfoNCE</h3>
+
+<p>Modern contrastive learning (SimCLR, CPC, CLIP) has an elegant information-theoretic interpretation. The <strong>InfoNCE loss</strong>, introduced by van den Oord et al. in 2018, is a lower bound on mutual information between two "views" of the same data point. When you train CLIP to align image and text embeddings, you're maximizing mutual information between visual and linguistic representations of the same concept.</p>
+
+<p>In <strong>InfoGAN</strong>, the generator maximizes mutual information between a subset of latent codes and the generated output. The result: those latent codes learn to control interpretable, disentangled factors — rotation, thickness, style — because high mutual information means the code actually <em>determines</em> the variation.</p>
+
+<h2>The Data Processing Inequality</h2>
+
+<p>Here's one of the most profound results in information theory, and it fits in one line. If X → Y → Z form a chain (Z depends on X only through Y), then:</p>
 
 <p><code>I(X; Z) ≤ I(X; Y)</code></p>
 
-<p>In words: <strong>processing data can only destroy information, never create it</strong>. Every transformation, every function, every layer in your neural network can only lose information about the original input. If your first convolutional layer throws away some detail from the raw pixels, no subsequent layer can recover it.</p>
+<p><strong>Processing data can only destroy information, never create it.</strong> Every transformation, every function, every layer in your neural network can only lose information about the original input. If your preprocessing step throws away some detail from the raw signal, no model downstream can recover it. Ever.</p>
 
-<p>This sounds depressing, but it's actually liberating. A good neural network is not trying to preserve all information — it's trying to throw away the <em>right</em> information. The pixels of a cat photo contain information about the lighting, camera sensor noise, JPEG compression artifacts, and the cat's breed. A classifier should retain the breed information and discard the rest. The <strong>data processing inequality</strong> tells you that each layer must be a strategic bottleneck, keeping what matters and forgetting what doesn't.</p>
+<p>This sounds bleak, but it's actually the key insight that makes deep learning make sense. A good neural network isn't trying to preserve all information. It's trying to throw away the <em>right</em> information. A photo of a dog contains information about the breed, the lighting, the camera sensor noise, the JPEG compression artifacts, and the precise shade of the background wall. A breed classifier should keep the breed information and aggressively discard everything else.</p>
 
-<p>This connects to <strong>rate-distortion theory</strong>, which quantifies the fundamental tradeoff between compression and fidelity. Given a distortion budget (how much error you'll tolerate), rate-distortion theory tells you the minimum number of bits needed to represent your data. Lossy compression codecs (JPEG, MP3) operate near the rate-distortion bound. Similarly, a neural network's hidden layers are performing lossy compression of the input, preserving just enough to keep prediction error low. The information bottleneck view of deep learning argues that training has two phases: first the network learns to fit the data (increasing mutual information with the target), then it compresses (decreasing mutual information with the input).</p>
+<p>Think of our filing cabinet again. You have a massive cabinet full of every document ever generated (the raw input). Your job isn't to build a bigger cabinet — it's to build a smaller one that keeps the documents you need for your task and shreds the rest. Each layer of a neural network is a clerk deciding what to keep and what to shred. The data processing inequality says the clerk can never un-shred a document.</p>
 
-<div class="callout callout-info">
-  <div class="callout-label">Key Insight</div>
-  <p>The data processing inequality explains why feature engineering matters. If you feed raw, noisy data into a pipeline, every downstream component is bounded by the information in that noisy input. Cleaning data and extracting good features up front raises the ceiling on what any model can achieve.</p>
-</div>
+<p>This has a practical consequence that's easy to overlook: <strong>feature engineering sets the ceiling</strong>. If you feed noisy, poorly processed data into a pipeline, the data processing inequality guarantees that no model — no matter how sophisticated — can exceed the information present in that noisy input. Cleaning data and extracting good features up front raises the ceiling for everything downstream. The fanciest architecture in the world can't compensate for information that was destroyed before it arrived.</p>
+
+<p>Skip connections in ResNets make intuitive sense through this lens. By providing a direct path from earlier layers to later ones, skip connections let information bypass potentially destructive transformations. They raise the information floor of deep networks.</p>
+
+<h2>The Information Bottleneck</h2>
+
+<p>Naftali Tishby and colleagues formalized a beautiful idea: the goal of a learned representation is to <strong>compress the input while preserving what matters about the target</strong>. Given input X, representation T, and target Y, the information bottleneck objective minimizes:</p>
+
+<p><code>I(X; T) - β · I(T; Y)</code></p>
+
+<p>The first term says "compress — reduce how much T remembers about X." The second says "but keep the parts that predict Y." The parameter β controls the tradeoff. High β means "prioritize prediction accuracy." Low β means "prioritize compression."</p>
+
+<p>In 2017, Shwartz-Ziv and Tishby proposed that deep network training has two distinct phases, visible on an "information plane" that plots I(T; X) vs I(T; Y) for each layer across training. First a <strong>fitting phase</strong>: mutual information with the target Y increases as the network learns to predict. Then a <strong>compression phase</strong>: mutual information with the input X decreases as the network learns to forget irrelevant details.</p>
+
+<p>I'm still developing my intuition for whether this compression phase is truly universal. The evidence is compelling for networks with saturating activations like tanh, where gradient noise naturally drives compression. For ReLU networks, the story is murkier — some studies find compression, others don't. The information bottleneck remains one of the most beautiful theoretical lenses for understanding deep learning, but the debate about its universality is genuine and ongoing.</p>
+
+<p>What's not debatable is the principle itself: good representations compress. An embedding that preserves everything about the input is useless (it's the input). An embedding that throws away everything is also useless (it's a constant). The sweet spot — retaining what matters for the task and discarding the rest — is exactly what the information bottleneck formalizes.</p>
 
 <h2>Fisher Information</h2>
 
-<p>Shannon entropy and its friends measure properties of distributions. <strong>Fisher information</strong> measures something different: how sensitive a distribution is to changes in its parameters. Formally, for a distribution p(x; θ) parameterized by θ, the Fisher information is:</p>
+<p>Everything we've discussed so far — entropy, cross-entropy, KL divergence, mutual information — measures properties of distributions. <strong>Fisher information</strong> asks a different question: how sensitive is a distribution to changes in its parameters?</p>
 
 <p><code>I(θ) = E[(∂/∂θ log p(x; θ))²]</code></p>
 
-<p>This is the expected squared gradient of the log-likelihood — or equivalently, the negative expected second derivative (the curvature) of the log-likelihood. High Fisher information means the log-likelihood surface has sharp curvature near θ: the data is very informative about the parameter value, and small changes in θ produce large changes in the likelihood.</p>
+<p>This is the expected squared gradient of the log-likelihood. Equivalently, it's the negative expected second derivative — the <strong>curvature</strong> of the log-likelihood surface. High Fisher information at a parameter value θ means the likelihood landscape has sharp curvature there: the data is very informative about θ, and small changes in θ produce large changes in how the data looks.</p>
 
-<p>The <strong>Cramér-Rao bound</strong> (which you may have seen in the statistics section) says that no unbiased estimator of θ can have variance lower than 1/I(θ). More Fisher information means tighter bounds on estimation accuracy. This is the theoretical limit on how well you can learn a parameter from data.</p>
+<p>I haven't figured out a great way to visualize Fisher information, but here's a crude attempt. Imagine you're standing at a point on a hilly landscape. Fisher information tells you how steep the hills are around you. If the terrain is sharply curved (high Fisher information), you can pinpoint your position precisely — a small step in any direction puts you at a noticeably different altitude. If the terrain is flat (low Fisher information), you could wander a long way without the view changing — the data can't tell you much about exactly where you are.</p>
 
-<p>In deep learning, Fisher information shows up in <strong>natural gradient descent</strong>. Ordinary gradient descent treats parameter space as Euclidean — a step of size 0.01 in any direction is "the same." But parameter space isn't flat. A small change to a weight in one layer might barely affect the output, while the same-sized change in another layer could be catastrophic. The <strong>Fisher information matrix</strong> (the multivariate extension) captures this geometry. Natural gradient descent multiplies the gradient by the inverse of the Fisher information matrix, so the effective step size is measured in terms of how much the model's output distribution changes — not how much the raw parameters change. This is the idea behind K-FAC and similar second-order optimizers. Elastic Weight Consolidation (EWC), a technique for mitigating catastrophic forgetting in continual learning, uses the diagonal of the Fisher information matrix to identify which parameters are "important" for previously learned tasks and penalizes changes to them.</p>
+<p>The <strong>Cramér-Rao bound</strong> makes this precise: no unbiased estimator of θ can have variance lower than 1/I(θ). More Fisher information means tighter bounds on how accurately you can estimate a parameter. This is the fundamental limit on learning from data — not a weakness of your algorithm, but a property of the problem itself.</p>
 
-<h2>Connections to ML: The Bigger Picture</h2>
+<p>In deep learning, Fisher information powers <strong>natural gradient descent</strong>. Ordinary gradient descent treats parameter space as flat — a step of size 0.01 means the same thing everywhere. But parameter space isn't flat. Nudging a weight in one layer might barely affect the output, while the same nudge in another layer could be catastrophic. The Fisher information matrix captures this curved geometry. Natural gradient descent adjusts the gradient by the inverse Fisher information matrix, so step sizes are measured in terms of how much the model's <em>output distribution</em> changes, not how much the raw parameters move. This is the idea behind K-FAC and similar second-order optimizers.</p>
 
-<p>Let's step back and see how all these pieces fit together, because information theory isn't just a chapter in a math textbook — it's the theoretical language that ML speaks, often without practitioners realizing it.</p>
+<p><strong>Elastic Weight Consolidation</strong> (EWC) takes this further. When training on task B after task A, EWC uses the diagonal of the Fisher information matrix from task A to identify which parameters were "important" — high Fisher information means the data was very sensitive to that parameter. Those important parameters get penalized for changing during task B training: <code>L_EWC = L_B + (λ/2) Σ Fᵢ(θᵢ - θ*ᵢ)²</code>. Parameters the old task didn't care about (low Fᵢ) are free to change. Parameters the old task depended on (high Fᵢ) are held in place. It's a principled solution to catastrophic forgetting, grounded in information geometry.</p>
 
-<p>We've already seen that minimizing <strong>cross-entropy loss is equivalent to minimizing KL divergence</strong> from the true data distribution. This isn't a loose analogy; it's a mathematical identity. Every time you train a classifier with cross-entropy loss, you're doing information-theoretic optimization.</p>
+<h2>The Bigger Picture: Why ML Speaks Information Theory</h2>
 
-<h3>Regularization as Compression</h3>
+<p>If you're still with me, thank you. I hope it was worth it.</p>
 
-<p>The <strong>Minimum Description Length (MDL)</strong> principle says: the best model is the one that compresses the data most efficiently. A model's total description cost is the bits needed to describe the model itself plus the bits needed to describe the data given the model. A complex model (many parameters) is expensive to describe but encodes the data cheaply. A simple model is cheap to describe but may encode the data poorly. MDL says to minimize the sum. This is exactly the bias-variance tradeoff, stated in information-theoretic terms. L1/L2 regularization, dropout, and pruning all reduce model complexity — they're all compressing the model description.</p>
+<p>We started with surprise — the observation that unlikely events carry more information than likely ones. From there we built entropy (average surprise), cross-entropy (the cost of a wrong model), and KL divergence (the pure waste from being wrong). We discovered that the loss function you use every day is an information-theoretic quantity. We moved on to mutual information (shared knowledge between variables), the data processing inequality (you can never un-destroy information), the information bottleneck (good representations compress intelligently), and Fisher information (how sensitive your model is to parameter changes).</p>
 
-<h3>Variational Inference</h3>
+<p>These aren't separate tools that happen to share a mathematical heritage. They're different faces of a single insight: <strong>learning is compression</strong>. A model that generalizes well has found a compact description of the patterns in data — keeping the signal, discarding the noise.</p>
 
-<p><strong>Variational inference</strong> reframes Bayesian computation as optimization: find the distribution q(z) in some tractable family that minimizes D_KL(q(z) ‖ p(z|x)), the KL divergence from the approximate posterior to the true posterior. Since the true posterior is intractable, we maximize the Evidence Lower Bound (ELBO) instead, which is equivalent. This powers VAEs, and recent extensions (normalizing flows, diffusion models) can be understood as making q(z) more flexible to reduce this KL gap.</p>
+<p>The <strong>Minimum Description Length</strong> (MDL) principle makes this explicit: the best model is the one that compresses the data most efficiently. The total cost is bits for the model description plus bits for the data given the model. A complex model (many parameters) is expensive to describe but encodes the data cheaply. A simple model is cheap to describe but may encode data poorly. MDL says minimize the sum. This is the bias-variance tradeoff, restated in bits. L1/L2 regularization, dropout, pruning — they're all reducing the model's description length.</p>
 
-<h3>Information-Theoretic Generalization</h3>
+<p><strong>Variational inference</strong> is KL divergence turned into a computational tool. Find the distribution q(z) that minimizes D_KL(q(z) ‖ p(z|x)) — make your approximate posterior as close as possible to the true posterior. Since the true posterior is intractable, we maximize the Evidence Lower Bound (ELBO) instead, which is mathematically equivalent. This powers VAEs. Normalizing flows and diffusion models can be understood as making q(z) more flexible to reduce this KL gap.</p>
 
-<p>Recent theoretical work uses mutual information to bound generalization error. The intuition: if a learning algorithm's output hypothesis has high mutual information with the specific training set it saw, it has likely memorized training-set-specific details and will generalize poorly. Formally, the expected generalization gap is bounded by the mutual information between the training data and the learned model parameters. This gives a clean, assumption-light explanation for why techniques that reduce memorization (data augmentation, dropout, noise injection) improve generalization.</p>
+<p>Recent theoretical work even uses mutual information to bound generalization error. The intuition: if a learning algorithm's output has high mutual information with the specific training set it saw, it has memorized training-specific noise and will generalize poorly. Data augmentation, dropout, and noise injection all work in part because they reduce this memorization, lowering the mutual information between the learned model and the particular training examples.</p>
+
+<p>My hope is that the next time you see a KL divergence term in a loss function, or hear someone mention "information gain" in a decision tree, or wonder why your cross-entropy loss plateaus at some non-zero value, instead of nodding politely and moving on, you'll recognize the information-theoretic machinery underneath — and have a pretty solid mental model of what it's doing and why.</p>
 
 <pre><code>import numpy as np
 from scipy.stats import entropy as sp_entropy
 
-def estimate_entropy_discrete(labels):
-    """Estimate entropy from observed labels (plug-in estimator)."""
-    _, counts = np.unique(labels, return_counts=True)
-    probs = counts / counts.sum()
-    return sp_entropy(probs, base=2)  # in bits
+def entropy_bits(probs):
+    """Entropy in bits."""
+    return sp_entropy(probs, base=2)
 
-def information_gain(parent_labels, left_labels, right_labels):
-    """Compute information gain for a binary split (decision tree style)."""
-    n = len(parent_labels)
-    n_left, n_right = len(left_labels), len(right_labels)
+def cross_entropy(p, q):
+    """Cross-entropy H(P, Q) in nats."""
+    return -np.sum(p * np.log(q))
 
-    h_parent = estimate_entropy_discrete(parent_labels)
-    h_left = estimate_entropy_discrete(left_labels)
-    h_right = estimate_entropy_discrete(right_labels)
+def kl_div(p, q):
+    """KL divergence D_KL(P || Q) in nats."""
+    mask = p > 0
+    return np.sum(p[mask] * np.log(p[mask] / q[mask]))
 
-    # Weighted average of child entropies
-    h_children = (n_left / n) * h_left + (n_right / n) * h_right
-    return h_parent - h_children
+def jsd(p, q):
+    """Jensen-Shannon divergence in nats."""
+    m = 0.5 * (p + q)
+    return 0.5 * kl_div(p, m) + 0.5 * kl_div(q, m)
 
-# Example: splitting animals by "has_wings" to predict "can_fly"
-labels = np.array([1, 1, 1, 0, 0, 0, 0, 0])  # 3 flyers, 5 non-flyers
-left = np.array([1, 1, 1, 0])     # has_wings group
-right = np.array([0, 0, 0, 0])    # no_wings group
+def info_gain(parent, left, right):
+    """Information gain for a binary split (decision tree)."""
+    n = len(parent)
+    h_parent = entropy_bits(np.bincount(parent) / n)
+    h_left = entropy_bits(np.bincount(left) / len(left))
+    h_right = entropy_bits(np.bincount(right) / len(right))
+    return h_parent - (len(left)/n * h_left + len(right)/n * h_right)
 
-ig = information_gain(labels, left, right)
-print(f"Parent entropy: {estimate_entropy_discrete(labels):.3f} bits")
-print(f"Information gain from split: {ig:.3f} bits")
-print(f"Remaining entropy: {estimate_entropy_discrete(labels) - ig:.3f} bits")
+# --- Demo: the full information theory toolkit ---
+
+P = np.array([0.7, 0.2, 0.1])    # true weather distribution
+Q = np.array([0.5, 0.3, 0.2])    # model's prediction
+
+print("=== Core Quantities ===")
+print(f"Entropy H(P):           {sp_entropy(P):.4f} nats")
+print(f"Cross-entropy H(P,Q):   {cross_entropy(P, Q):.4f} nats")
+print(f"KL divergence D(P||Q):  {kl_div(P, Q):.4f} nats")
+print(f"Verify H(P,Q) = H(P) + KL: {sp_entropy(P) + kl_div(P, Q):.4f} nats")
+print(f"JSD(P, Q):              {jsd(P, Q):.4f} nats")
+
+print("\n=== Decision Tree Split ===")
+labels = np.array([0, 0, 0, 0, 0, 1, 1, 1])  # 5 sunny, 3 rainy
+left = np.array([1, 1, 1, 0])   # high-humidity group
+right = np.array([0, 0, 0, 0])  # low-humidity group
+print(f"Information gain: {info_gain(labels, left, right):.3f} bits")
 </code></pre>
-
-<div class="callout callout-info">
-  <div class="callout-label">Key Insight</div>
-  <p>Information theory provides the "right" language for ML because learning <em>is</em> compression. A model that generalizes well has found a compact description of the patterns in data — keeping the signal, discarding the noise. Entropy, cross-entropy, KL divergence, and mutual information aren't just mathematical tools; they're the natural units of measurement for what machine learning systems actually do.</p>
-</div>
-
-
-
-<h2>✅ What You Should Now Be Able To Do</h2>
-<ul>
-  <li>Explain entropy as "average surprise" and compute it for a discrete distribution</li>
-  <li>Show that minimizing cross-entropy loss = minimizing KL divergence from the true distribution</li>
-  <li>Explain the asymmetry of KL divergence and its implications for variational inference vs MLE</li>
-  <li>Compute mutual information and explain why it beats Pearson correlation for feature selection</li>
-  <li>State the data processing inequality and explain why feature engineering matters</li>
-  <li>Describe how information gain powers decision tree splitting</li>
-  <li>Explain the information bottleneck view of deep learning</li>
-  <li>Connect Fisher information to the Cramér-Rao bound and natural gradient descent</li>
-  <li>Implement cross-entropy, KL divergence, and Jensen-Shannon divergence in NumPy</li>
-</ul>
 
       <div class="page-nav">
         <a href="s05.html">
