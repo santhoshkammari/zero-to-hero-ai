@@ -296,410 +296,416 @@
 <h1>Diffusion Models</h1>
 <div class="chapter-meta">
   <span class="tag">Chapter 15: Generative Models</span>
-  <span class="tag">10 subtopics</span>
-</div>
-
-<div class="tldr">
-  <div class="tldr-label">TL;DR</div>
-  <p>Slowly destroy an image with noise, then train a neural network to reverse that process. That is the entire idea behind diffusion models — and it is how Stable Diffusion, DALL·E, Midjourney, and nearly every state-of-the-art image generator works. The forward process adds Gaussian noise step by step until the image is pure static. A U-Net learns to predict and remove that noise, one step at a time, guided by text through cross-attention and classifier-free guidance. Running diffusion in a compressed latent space (Latent Diffusion) makes the whole thing practical. The result: training is dead simple (one MSE loss, no adversarial games), quality surpasses GANs, and the framework extends to video, audio, 3D, and molecular design.</p>
+  <span class="tag">14 subtopics</span>
 </div>
 
 <!-- ============================================================ -->
-<h2>The Core Idea</h2>
+<!-- PHASE 1: OPENING -->
+<!-- ============================================================ -->
 
-<p>Destroying information is easy. Reconstructing it is hard. Diffusion models exploit exactly this asymmetry.</p>
+<p>I avoided diffusion models for longer than I'd like to admit. Every time someone mentioned "denoising score matching" or "the forward process is a Markov chain with a Gaussian kernel," I'd nod politely and change the subject. GANs I understood — two networks fighting, one fakes, one detects. Intuitive. Adversarial. Dramatic. But diffusion? Adding noise a thousand times and then learning to undo it? That felt like the strangest possible way to build an image generator. Finally the discomfort of not knowing what Stable Diffusion actually does under the hood grew too great for me. Here is that dive.</p>
 
-<p>Take a photograph. Sprinkle a little Gaussian noise on every pixel. The image gets slightly grainy but still recognizable. Sprinkle more. And more. After a thousand rounds, you are staring at pure static — random samples from a standard normal distribution, indistinguishable from TV snow. That progressive corruption is the <strong>forward process</strong>. It requires zero learning. It is pure math.</p>
+<p>Diffusion models are a family of generative models first proposed by Sohl-Dickstein et al. in 2015 and brought to prominence by the DDPM paper (Ho, Jain, &amp; Abbeel, 2020). They power Stable Diffusion, DALL·E, Midjourney, Imagen, and nearly every state-of-the-art image generator as of 2024. The core idea is disarmingly simple: destroy data with noise, then train a neural network to reverse the destruction.</p>
 
-<p>Now, here is the insight that launched a thousand startups: if you could learn to <em>undo</em> each tiny corruption step, you could start from pure noise and walk backward to a photorealistic image. A model that can reverse one step of noise addition has, implicitly, learned something deep about what real images look like — it has learned the data distribution. That reversal is the <strong>reverse process</strong>, and it is the only part that involves a neural network.</p>
+<p>Before we start, a heads-up. We're going to be working through probability distributions, Gaussian math, and some neural network architecture. But you don't need to know any of it beforehand. We'll add the concepts we need one at a time, with explanation.</p>
 
-<pre><code>Forward (fixed — no learning):
-  x₀ ──→ x₁ ──→ x₂ ──→  ...  ──→ x_T
-  clean    slightly    more           pure
-  image    noisy      noisy          noise
-
-Reverse (learned neural network):
-  x_T ──→ x_{T-1} ──→  ...  ──→ x₁ ──→ x₀
-  pure     slightly               almost   clean
-  noise    less noisy             clean    image</code></pre>
-
-<p>Compared to GANs — which need two networks in a delicate adversarial dance — diffusion is almost anticlimactic. One network. One MSE loss. Stable gradients. And the images it produces are <em>better</em>.</p>
+<p>This isn't a short journey, but I hope you'll be glad you came.</p>
 
 <!-- ============================================================ -->
-<h2>The Forward Process (q)</h2>
-
-<p>The forward process is a Markov chain that gradually adds Gaussian noise to the data. At each timestep t, given the previous state x<sub>t−1</sub>, the next state is:</p>
-
-<pre><code>q(xₜ | xₜ₋₁) = N(xₜ;  √(1 - βₜ) · xₜ₋₁,  βₜ · I)</code></pre>
-
-<p>Unpack this: you scale the signal down by √(1 − β<sub>t</sub>) and inject Gaussian noise with variance β<sub>t</sub>. The parameter β<sub>t</sub> is the <strong>noise schedule</strong> — a predefined, monotonically increasing sequence, typically from β₁ = 0.0001 to β<sub>T</sub> = 0.02 over T = 1000 steps. At any single step, the change is barely perceptible. Over a thousand steps, the original signal is completely obliterated.</p>
-
-<p>But here is the property that makes training tractable. You do <strong>not</strong> need to run the chain sequentially. Define:</p>
-
-<pre><code>αₜ = 1 − βₜ
-ᾱₜ = α₁ · α₂ · ... · αₜ  =  ∏ₛ₌₁ᵗ (1 − βₛ)</code></pre>
-
-<p>Then you can <strong>jump directly</strong> from the clean image x₀ to any arbitrary timestep t in a single operation:</p>
-
-<pre><code>q(xₜ | x₀) = N(xₜ;  √ᾱₜ · x₀,  (1 − ᾱₜ) · I)
-
-Equivalently:   xₜ  =  √ᾱₜ · x₀  +  √(1 − ᾱₜ) · ε     where ε ~ N(0, I)</code></pre>
-
-<p>This is the reparameterization trick in action. √ᾱ<sub>t</sub> controls how much of the original signal remains. √(1 − ᾱ<sub>t</sub>) controls how much noise has accumulated. At t = 0, ᾱ₀ ≈ 1, so x₀ is basically the clean image. At t = T, ᾱ<sub>T</sub> ≈ 0, so x<sub>T</sub> is pure noise.</p>
-
-<p>Why does this matter practically? During training, you need to create noisy versions of images at random timesteps. Without the closed-form jump, you would need to run 500 sequential noise additions to get x₅₀₀. With it, you compute x₅₀₀ in a single line. This turns training from O(T) per sample into O(1).</p>
-
+<!-- PHASE 2: TABLE OF CONTENTS -->
 <!-- ============================================================ -->
-<h2>The Reverse Process (p)</h2>
 
-<p>The reverse process goes from noisy to clean. The true reverse of the forward process is also Gaussian (when β<sub>t</sub> is small enough), so the model learns:</p>
-
-<pre><code>p_θ(xₜ₋₁ | xₜ) = N(xₜ₋₁;  μ_θ(xₜ, t),  σₜ² · I)</code></pre>
-
-<p>The network needs to parameterize the mean μ<sub>θ</sub>. You could have it directly predict x₀, or predict the mean, or predict the <em>noise</em> ε that was added. The DDPM paper (Ho et al., 2020) showed that <strong>predicting the noise</strong> works best. The network ε<sub>θ</sub>(x<sub>t</sub>, t) takes in the noisy image and the timestep and outputs its best guess of the noise that was added.</p>
-
-<p>Given the noise prediction, the reverse step mean becomes:</p>
-
-<pre><code>μ_θ(xₜ, t)  =  (1 / √αₜ) · (xₜ  −  (βₜ / √(1 − ᾱₜ)) · ε_θ(xₜ, t))</code></pre>
-
-<p>And the loss simplifies to something almost comically simple:</p>
-
-<pre><code>L  =  E_{x₀, ε, t}[ ‖ε − ε_θ(xₜ, t)‖² ]</code></pre>
-
-<p>That is it. Mean squared error between the actual noise and the predicted noise. No adversarial objectives. No KL divergence balancing act. No mode collapse. Just a regression problem, and the model trains with the same stability as any supervised learning task.</p>
-
-<div class="callout">
-<strong>Why predict noise instead of the clean image?</strong> You could train to predict x₀ directly — the math is equivalent. But the noise ε has zero mean and unit variance regardless of the image content, so the prediction target is well-behaved across all timesteps. Predicting x₀ would mean wildly different magnitudes at t = 1 (barely noisy, easy) vs. t = 999 (pure noise, nearly impossible). The noise parameterization keeps the loss scale uniform.
+<div class="toc" style="margin:2em 0; padding:1.2em 1.5em; border-left:3px solid var(--accent, #4f8cff); background: var(--bg-card, #f6f8fa); border-radius:8px;">
+  <p style="margin:0 0 0.5em; font-weight:600;">Contents</p>
+  <div style="margin-left:1em; line-height:2;">
+    Kicking over the sand castle<br>
+    The forward process — noise by numbers<br>
+    The closed-form shortcut<br>
+    The reverse process — learning to denoise<br>
+    Noise prediction vs. score prediction<br>
+    The training loop<br>
+    <em>Rest Stop</em><br>
+    DDPM sampling — the slow walk back<br>
+    DDIM — taking the highway<br>
+    Classifier-free guidance — the magic dial<br>
+    Latent diffusion — Stable Diffusion from the inside<br>
+    ControlNet — giving the model a skeleton<br>
+    Consistency models — one giant step<br>
+    Flow matching and rectified flows — the next chapter<br>
+    Wrap-up<br>
+    Resources
+  </div>
 </div>
 
 <!-- ============================================================ -->
-<h2>The Training Algorithm</h2>
+<!-- PHASE 3: THE BUILD-UP -->
+<!-- ============================================================ -->
 
-<p>The training loop is remarkably compact. Here it is in full:</p>
+<h2>Kicking Over the Sand Castle</h2>
+
+<p>Imagine a child on a beach spends an hour building an elaborate sand castle — turrets, a moat, a drawbridge made from a popsicle stick. Now imagine a second child walks over and kicks it. The castle is rubble in two seconds. Destruction took no skill, no understanding of architecture, no creativity. It was free.</p>
+
+<p>Rebuilding that castle from rubble? That requires knowing what castles look like. Knowing where the turrets go. Knowing what sand at the right moisture level feels like. The reconstruction demands understanding that the destruction did not.</p>
+
+<p>That asymmetry — destruction is trivial, reconstruction requires knowledge — is the entire foundation of diffusion models. We're going to build an image generator by formalizing this idea into precise math. The destruction is Gaussian noise. The reconstruction is a neural network that learns what images look like by learning to undo tiny amounts of damage.</p>
+
+<p>Let's make this concrete with a toy example. Take a tiny 2×2 grayscale image — four pixels, nothing more. Maybe the pixel values are [0.8, 0.3, 0.5, 0.9]. That's our sand castle. Now we add a small amount of random noise to every pixel. The values shift to something like [0.82, 0.27, 0.53, 0.86]. Still recognizable. We add more noise. [0.91, 0.14, 0.68, 0.72]. Getting rougher. After a thousand rounds of noise-adding, the pixel values are something like [−0.42, 1.13, 0.07, −0.88] — random draws from a bell curve, with no trace of the original image. Pure static. Rubble.</p>
+
+<p>That progressive corruption is called the <strong>forward process</strong>. It requires zero learning. It is pure math. The question that makes diffusion models interesting: can we train a neural network to look at the rubble and work out how to reverse each tiny noise step, eventually walking all the way back to a clean image?</p>
+
+<p>It turns out we can. And the result surpasses GANs in image quality, trains with the stability of supervised learning, and requires nothing more exotic than mean squared error as a loss function. But I'm getting ahead of myself.</p>
+
+<!-- ============================================================ -->
+
+<h2>The Forward Process — Noise by Numbers</h2>
+
+<p>Let's formalize the sand-kicking. We start with a clean data sample — call it x₀. It could be a photograph, a piece of audio, anything with numerical pixel values. We're going to corrupt it over T timesteps, where T is typically 1000.</p>
+
+<p>At each step t, we take the current state x<sub>t−1</sub> and produce x<sub>t</sub> by scaling the signal down slightly and adding a small dose of Gaussian noise:</p>
+
+<pre><code>q(xₜ | xₜ₋₁) = 𝒩(xₜ;  √(1 − βₜ) · xₜ₋₁,  βₜ · I)</code></pre>
+
+<p>This notation means: x<sub>t</sub> is drawn from a Gaussian (normal) distribution whose mean is √(1 − β<sub>t</sub>) · x<sub>t−1</sub> and whose variance is β<sub>t</sub>. In plain language: shrink the signal a little, add noise proportional to β<sub>t</sub>.</p>
+
+<p>The parameter β<sub>t</sub> is the <strong>noise schedule</strong>. It's a predefined, monotonically increasing sequence — a dial that we turn up gradually. In the original DDPM, β₁ starts at 0.0001 (a whisper of noise) and β<sub>T</sub> ends at 0.02 (still a small number, but after a thousand applications, the cumulative effect is devastating). No single step changes the image much. A thousand steps obliterate it entirely.</p>
+
+<p>Going back to our sand castle analogy: each step is one grain of sand getting displaced. Barely noticeable. But after a thousand rounds of displacement, you've got a flat beach. The key property is that this is a <strong>Markov chain</strong> — each step depends only on the previous state, not the entire history. The chain has no memory. It doesn't need any.</p>
+
+<p>There's a subtlety in the scaling factor √(1 − β<sub>t</sub>) that tripped me up initially. Why not add noise without scaling? Because we need the variance to stay bounded. If we kept adding noise without ever shrinking the signal, the total variance would grow without bound — the numbers would explode. The scaling keeps the distribution well-behaved: at every step, the total variance stays at 1. This is a property called <strong>variance preservation</strong>, and it's what makes the math work out so cleanly.</p>
+
+<!-- ============================================================ -->
+
+<h2>The Closed-Form Shortcut</h2>
+
+<p>Here's where the math becomes genuinely beautiful, and where training becomes practical.</p>
+
+<p>If we needed to create a noisy version of an image at timestep 500, we'd have to run the forward chain 500 times — applying noise, step by step, from x₀ to x₁ to x₂ all the way to x₅₀₀. For training a neural network that needs millions of noisy examples at random timesteps, this would be catastrophically slow.</p>
+
+<p>But there's a shortcut. Define two quantities:</p>
+
+<pre><code>αₜ  =  1 − βₜ
+
+ᾱₜ  =  α₁ · α₂ · … · αₜ  =  ∏ (1 − βₛ)  for s = 1 to t</code></pre>
+
+<p>α<sub>t</sub> (alpha) is how much of the signal survives one step. ᾱ<sub>t</sub> (alpha-bar) is the cumulative product — how much of the original signal survives after t steps. When t is small, ᾱ<sub>t</sub> is close to 1 (most signal survives). When t is large, ᾱ<sub>t</sub> is close to 0 (almost no signal remains).</p>
+
+<p>With these definitions, we can jump from the clean image x₀ directly to any timestep t in a single operation:</p>
+
+<pre><code>q(xₜ | x₀) = 𝒩(xₜ;  √ᾱₜ · x₀,  (1 − ᾱₜ) · I)
+
+Which means:  xₜ  =  √ᾱₜ · x₀  +  √(1 − ᾱₜ) · ε     where ε ~ 𝒩(0, I)</code></pre>
+
+<p>Read that formula out loud: "The noisy image at step t equals the clean image scaled by √ᾱ<sub>t</sub>, plus pure random noise scaled by √(1 − ᾱ<sub>t</sub>)." The two scaling factors are complementary — they sum to 1 in a variance-preserving way. At t = 0, we get almost all signal. At t = T, we get almost all noise.</p>
+
+<p>This is called the <strong>reparameterization trick</strong> — writing a sample from a distribution as a deterministic function of its parameters plus independent noise. It's the same trick used in VAEs, and here it has the same benefit: it lets gradients flow through the sampling process during training.</p>
+
+<p>The practical payoff is enormous. Instead of chaining 500 noise steps to create x₅₀₀, we compute it in a single line: scale the original image, add scaled noise, done. Training goes from O(T) per sample to O(1). That's the difference between a training run that finishes in days and one that never finishes at all.</p>
+
+<p>Let's trace through our 2×2 toy image to make this concrete. Say our clean image is x₀ = [0.8, 0.3, 0.5, 0.9]. At t = 250, suppose ᾱ₂₅₀ = 0.5. Then √ᾱ₂₅₀ ≈ 0.707, and √(1 − ᾱ₂₅₀) ≈ 0.707 as well. We draw random noise ε = [0.1, −0.6, 0.3, −0.2] and compute x₂₅₀ = 0.707 · [0.8, 0.3, 0.5, 0.9] + 0.707 · [0.1, −0.6, 0.3, −0.2] = [0.64, −0.21, 0.57, 0.49]. Half signal, half noise — a very foggy version of the original. At t = 999, ᾱ would be nearly 0, and x₉₉₉ would be indistinguishable from random Gaussian noise. The sand castle is a flat beach.</p>
+
+<!-- ============================================================ -->
+
+<h2>The Reverse Process — Learning to Denoise</h2>
+
+<p>We've formalized destruction. Now comes reconstruction.</p>
+
+<p>The key mathematical insight is this: when each individual noise step is small enough, the reverse of a Gaussian corruption step is also Gaussian. This means that if we can learn the parameters of that reverse Gaussian — specifically its mean — we can undo the noise, one step at a time.</p>
+
+<p>We parameterize the reverse process as:</p>
+
+<pre><code>p_θ(xₜ₋₁ | xₜ) = 𝒩(xₜ₋₁;  μ_θ(xₜ, t),  σₜ² · I)</code></pre>
+
+<p>The variance σ<sub>t</sub>² is typically set to β<sub>t</sub> (a fixed value from the noise schedule). The mean μ<sub>θ</sub> is the part the neural network has to learn. The subscript θ signals that this is parameterized by learnable weights.</p>
+
+<p>Now, there are three different things we could train the network to predict. Each one gives us the mean μ<sub>θ</sub> through a different formula, but they're mathematically equivalent — the same information in different packaging:</p>
+
+<p><strong>Option 1: Predict x₀.</strong> The network looks at the noisy image x<sub>t</sub> and directly guesses what the clean image was. Intuitive, but the difficulty of this prediction varies wildly with t. At t = 5, the input is almost clean — easy. At t = 999, the input is pure noise — nearly impossible. The loss scale across timesteps is all over the place.</p>
+
+<p><strong>Option 2: Predict the mean μ.</strong> Directly output the reverse step mean. This is what the math naturally suggests, but in practice it's the least common.</p>
+
+<p><strong>Option 3: Predict the noise ε.</strong> The network ε<sub>θ</sub>(x<sub>t</sub>, t) takes in the noisy image and the timestep, and guesses which specific noise pattern was added. This is what Ho et al. chose in DDPM, and it turned out to be the winning parameterization. The reason: the noise ε always has zero mean and unit variance, regardless of timestep or image content. The prediction target is well-behaved and uniform across all t, so the loss scale stays stable throughout training.</p>
+
+<p>Given the noise prediction, we can recover the reverse step mean:</p>
+
+<pre><code>μ_θ(xₜ, t)  =  (1 / √αₜ) · (xₜ − (βₜ / √(1 − ᾱₜ)) · ε_θ(xₜ, t))</code></pre>
+
+<p>And here is the punchline — the loss that trains the whole thing:</p>
+
+<pre><code>L  =  𝔼[ ‖ε − ε_θ(xₜ, t)‖² ]</code></pre>
+
+<p>Mean squared error between the actual noise that was added and the noise the network predicted. That's it. No adversarial objectives. No KL divergence balancing act. No mode collapse. No training instability. A regression problem, and it trains with the same reliability as predicting house prices from square footage.</p>
+
+<p>I'll be honest — when I first saw this, I didn't believe it. An MSE loss that produces photorealistic images? After years of struggling with GAN training — mode collapse, discriminator oscillation, hyperparameter sensitivity — this felt too easy. But that simplicity is real, and it's the main reason diffusion models won.</p>
+
+<!-- ============================================================ -->
+
+<h2>Noise Prediction vs. Score Prediction</h2>
+
+<p>There's a parallel universe of diffusion research that arrived at essentially the same algorithm from a completely different starting point. It's worth understanding both, because the terminology bleeds across papers and you'll encounter both frames in the wild.</p>
+
+<p>In the <strong>noise prediction</strong> frame (DDPM), the network predicts ε — the noise that was added to create x<sub>t</sub> from x₀. We covered this above.</p>
+
+<p>In the <strong>score prediction</strong> frame (Song &amp; Ermon, 2019), the network predicts the <strong>score function</strong> — defined as the gradient of the log probability of the data: ∇<sub>x</sub> log p(x). In plain language, the score points in the direction where data becomes more probable. If you're at a noisy image, the score tells you which way to nudge it to make it look more like a real image.</p>
+
+<p>Here's the connection that took me an embarrassingly long time to see: for Gaussian noise, these two things are the same, up to a scaling factor. The score function at timestep t is related to the noise by:</p>
+
+<pre><code>∇_{xₜ} log p(xₜ)  =  −ε / √(1 − ᾱₜ)</code></pre>
+
+<p>So predicting the noise and predicting the score are equivalent — they contain the same information, packaged differently. The score is the noise, divided by the noise standard deviation and flipped in sign. A network trained to do one can trivially do the other with a single rescaling.</p>
+
+<p>This equivalence has a name: it falls out of <strong>Tweedie's formula</strong>, a result from the 1950s that tells you the best estimate of the original signal given noisy observations. Tweedie says: your best guess of x₀ given x<sub>t</sub> is x<sub>t</sub> plus the noise variance times the score. The diffusion model community essentially rediscovered a seventy-year-old statistical result and built the most powerful generative models in history on top of it.</p>
+
+<p>In practice, most production systems use noise prediction (the DDPM framing) because the implementation is more straightforward. But the score-based framing gives deeper theoretical insight — it connects diffusion models to stochastic differential equations (SDEs), which opens the door to the ODE-based samplers we'll see shortly.</p>
+
+<!-- ============================================================ -->
+
+<h2>The Training Loop</h2>
+
+<p>Everything we've built so far collapses into a training loop that fits on one screen. Here it is:</p>
 
 <pre><code>import torch
 import torch.nn.functional as F
 
-# Precompute noise schedule quantities
 T = 1000
-betas = torch.linspace(1e-4, 0.02, T)           # linear schedule
+betas = torch.linspace(1e-4, 0.02, T)
 alphas = 1.0 - betas
-alpha_bar = torch.cumprod(alphas, dim=0)         # ᾱₜ
+alpha_bar = torch.cumprod(alphas, dim=0)
 
 def train_step(model, x0, optimizer):
-    """One training step for a diffusion model."""
     batch_size = x0.shape[0]
 
-    # 1. Sample random timesteps
+    # Pick a random timestep for each image in the batch
     t = torch.randint(0, T, (batch_size,), device=x0.device)
 
-    # 2. Sample random noise
+    # Draw fresh noise
     epsilon = torch.randn_like(x0)
 
-    # 3. Create noisy image (forward process — one-shot)
+    # Jump to timestep t in one shot (the closed-form shortcut)
     ab_t = alpha_bar[t].view(-1, 1, 1, 1).to(x0.device)
     x_t = torch.sqrt(ab_t) * x0 + torch.sqrt(1.0 - ab_t) * epsilon
 
-    # 4. Predict the noise
+    # Ask the network: what noise was added?
     epsilon_pred = model(x_t, t)
 
-    # 5. MSE loss between actual and predicted noise
+    # MSE between real noise and predicted noise
     loss = F.mse_loss(epsilon_pred, epsilon)
 
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
+    return loss.item()</code></pre>
 
-    return loss.item()
+<p>Five lines of real logic. Sample a random timestep. Draw noise. Create the noisy image in one shot using the closed-form formula. Feed it to the network. Penalize the difference between real noise and predicted noise.</p>
 
-# Full training loop
-model = UNet(...)  # your noise-prediction network
-optimizer = torch.optim.Adam(model.parameters(), lr=2e-4)
+<p>The network itself — a U-Net, which we'll explore later — receives two inputs: the noisy image x<sub>t</sub> and the timestep t (so it knows which noise level it's dealing with). It outputs a tensor the same shape as x<sub>t</sub>, representing its best guess of ε. The architecture is important, but the training objective is what makes diffusion models tick, and the training objective is this five-line loop.</p>
 
-for epoch in range(num_epochs):
-    for images in dataloader:          # images normalized to [-1, 1]
-        loss = train_step(model, images, optimizer)</code></pre>
-
-<p>Five lines of actual logic: sample t, sample ε, compute x<sub>t</sub>, predict ε, take gradient. Every other generative model wishes its training loop were this clean.</p>
+<p>Compare this to a GAN training loop: two networks, two losses, a minimax game, careful balancing of generator vs. discriminator updates, mode collapse diagnostics, gradient penalty terms. The diffusion training loop doesn't even need a second network. It's one-player solitaire.</p>
 
 <!-- ============================================================ -->
-<h2>Sampling (Inference)</h2>
+<!-- PHASE 4: REST STOP -->
+<!-- ============================================================ -->
 
-<p>Sampling is where diffusion gets expensive. You start from pure noise x<sub>T</sub> ~ N(0, I) and iterate the reverse process for T steps. Each step runs a full forward pass through the U-Net.</p>
+<div class="callout" style="border-left: 4px solid #4f8cff; padding: 1.2em 1.5em; margin: 2em 0; background: var(--bg-card, #f0f4f8); border-radius: 8px;">
+<p><strong>Rest stop.</strong> Congratulations on making it this far. You can stop here if you want.</p>
+
+<p>You now have a working mental model of diffusion: the forward process destroys data by adding Gaussian noise over many steps. The reverse process trains a neural network to predict and remove that noise, one step at a time. Training is stable, the loss is MSE, and the closed-form shortcut makes it practical. You could implement a basic diffusion model on MNIST right now with what you know.</p>
+
+<p>This doesn't tell the complete story, though. We haven't talked about how to actually generate images (sampling is its own adventure), how to make text control what gets generated (classifier-free guidance), how to make the whole thing fast enough to ship as a product (latent diffusion), or where the field is heading next (flow matching). Those pieces are coming.</p>
+
+<p>But if you're at a dinner party and someone says "diffusion models," you can now hold your own. The short version: add noise until the image is static, train a network to predict the noise at every level, then run the process in reverse to create images from nothing. There. You're 70% of the way there.</p>
+
+<p>But if the discomfort of not knowing what's underneath is nagging at you, read on.</p>
+</div>
+
+<!-- ============================================================ -->
+
+<h2>DDPM Sampling — The Slow Walk Back</h2>
+
+<p>Training teaches the network to denoise. Sampling is where we actually use it to create images from scratch. Start with pure random noise — a flat beach — and apply the learned reverse process step by step until a sand castle emerges.</p>
 
 <pre><code>@torch.no_grad()
 def ddpm_sample(model, shape, device):
-    """DDPM sampling: start from noise, denoise T steps."""
-    x = torch.randn(shape, device=device)          # pure noise
+    x = torch.randn(shape, device=device)   # start from pure noise
 
     for t in reversed(range(T)):
         t_batch = torch.full((shape[0],), t, device=device, dtype=torch.long)
-        eps_pred = model(x, t_batch)                # predict noise
+        eps_pred = model(x, t_batch)
 
         alpha_t = alphas[t]
         ab_t = alpha_bar[t]
 
-        # Reverse step: remove predicted noise
+        # Remove predicted noise, scaled by the schedule
         x = (1.0 / torch.sqrt(alpha_t)) * (
             x - (betas[t] / torch.sqrt(1.0 - ab_t)) * eps_pred
         )
 
-        # Add stochasticity (except at t=0)
+        # Inject fresh randomness (except at the final step)
         if t > 0:
-            z = torch.randn_like(x)
-            x = x + torch.sqrt(betas[t]) * z
-
-    return x   # denoised image in [-1, 1]</code></pre>
-
-<p>DDPM with T = 1000 means a thousand sequential neural network forward passes per image. On an A100, that can mean 10–30 seconds for a single 512×512 image. For a product serving millions of users, this is a non-starter. The race for faster sampling has been one of the most productive areas in diffusion research.</p>
-
-<h3>DDIM — Deterministic, Fewer Steps</h3>
-
-<p><strong>DDIM</strong> (Denoising Diffusion Implicit Models, Song et al. 2020) reinterprets the reverse process as an <strong>ordinary differential equation (ODE)</strong> rather than a stochastic process. The key result: you can skip timesteps. Instead of denoising 1000 → 999 → 998 → ..., you jump 1000 → 980 → 960 → ..., using a subsequence of only 50–100 steps. DDIM is also <strong>deterministic</strong> — same starting noise, same output — which enables interpolation in the noise space and consistent editing.</p>
-
-<h3>DPM-Solver — High-Order ODE Solvers</h3>
-
-<p><strong>DPM-Solver</strong> (Lu et al. 2022) applies the same insight but uses high-order ODE solvers (analogous to Runge-Kutta methods from numerical analysis). DPM-Solver++ achieves excellent results in <strong>10–20 steps</strong>, making real-time diffusion applications genuinely feasible.</p>
-
-<h3>Progressive Distillation</h3>
-
-<p>A different approach entirely: train a <strong>student model</strong> to match the output of two teacher steps in a single step. After one round, the student takes 500 steps. Distill again: 250. Again: 125. A few rounds later, you have a 4-step or even 1-step model that approximates the original 1000-step teacher. This is how systems like SDXL Turbo achieve near-instant generation.</p>
-
-<table>
-<thead>
-<tr><th>Sampler</th><th>Steps</th><th>Stochastic?</th><th>Quality</th><th>Speed</th></tr>
-</thead>
-<tbody>
-<tr><td>DDPM</td><td>1000</td><td>Yes</td><td>Reference</td><td>Slow (~30s)</td></tr>
-<tr><td>DDIM</td><td>50–100</td><td>No (deterministic)</td><td>Near-DDPM</td><td>~5× faster</td></tr>
-<tr><td>DPM-Solver++</td><td>10–20</td><td>Configurable</td><td>Near-DDPM</td><td>~50× faster</td></tr>
-<tr><td>Distilled</td><td>1–4</td><td>No</td><td>Slightly lower</td><td>~250× faster</td></tr>
-</tbody>
-</table>
-
-<!-- ============================================================ -->
-<h2>Classifier-Free Guidance (CFG)</h2>
-
-<p>This is THE technique that made text-to-image work. Without it, conditional diffusion models produce images that vaguely relate to the prompt. With it, they produce images that <em>nail</em> the prompt.</p>
-
-<p>The earlier approach, <strong>classifier guidance</strong> (Dhariwal &amp; Nichol, 2021), trained a separate classifier on noisy images and used its gradients to steer diffusion toward a target class. It worked but required maintaining a separate model and only supported class labels, not free-form text.</p>
-
-<p><strong>Classifier-free guidance</strong> (Ho &amp; Salimans, 2022) is simpler and far more powerful. The trick: during training, randomly drop the conditioning (the text prompt) some fraction of the time — typically 10–20% — replacing it with a null/empty embedding. This forces the model to learn <em>both</em> conditional and unconditional generation in a single network.</p>
-
-<p>At inference, you run the model <strong>twice</strong> per denoising step:</p>
-
-<pre><code># Two forward passes per step
-ε_uncond = model(x_t, t, cond=∅)         # unconditional: no text
-ε_cond   = model(x_t, t, cond=prompt)    # conditional: with text
-
-# Guided prediction: amplify the difference
-ε_guided = ε_uncond + w · (ε_cond − ε_uncond)</code></pre>
-
-<p>The <strong>guidance scale w</strong> controls how much the model exaggerates features that distinguish "with prompt" from "without prompt." Think of it as a confidence amplifier:</p>
-
-<table>
-<thead>
-<tr><th>Guidance scale w</th><th>Behavior</th></tr>
-</thead>
-<tbody>
-<tr><td>w = 1.0</td><td>Standard conditional generation (no guidance)</td></tr>
-<tr><td>w = 3–5</td><td>Mild guidance — diverse, occasionally off-prompt</td></tr>
-<tr><td>w = 7–12</td><td>Sweet spot for most applications (Stable Diffusion default: 7.5)</td></tr>
-<tr><td>w = 15–30</td><td>Strong guidance — very faithful to prompt, reduced diversity</td></tr>
-<tr><td>w > 30</td><td>Oversaturated, artifacted — model tries too hard</td></tr>
-</tbody>
-</table>
-
-<p>The tradeoff is <strong>fidelity vs. diversity</strong>. High w means every image strongly matches the prompt, but they all start looking similar. Low w gives variety but weaker adherence. This is directly analogous to the temperature parameter in language models.</p>
-
-<pre><code>@torch.no_grad()
-def sample_cfg(model, prompt_emb, null_emb, shape, device, w=7.5):
-    """Full sampling loop with classifier-free guidance."""
-    x = torch.randn(shape, device=device)
-
-    for t in reversed(range(T)):
-        t_batch = torch.full((shape[0],), t, device=device, dtype=torch.long)
-
-        # Two forward passes
-        eps_uncond = model(x, t_batch, cond=null_emb)
-        eps_cond   = model(x, t_batch, cond=prompt_emb)
-
-        # CFG formula
-        eps = eps_uncond + w * (eps_cond - eps_uncond)
-
-        # Standard reverse step
-        alpha_t = alphas[t]
-        ab_t = alpha_bar[t]
-        x = (1 / torch.sqrt(alpha_t)) * (
-            x - (betas[t] / torch.sqrt(1 - ab_t)) * eps
-        )
-        if t > 0:
-            x += torch.sqrt(betas[t]) * torch.randn_like(x)
+            x = x + torch.sqrt(betas[t]) * torch.randn_like(x)
 
     return x</code></pre>
 
-<div class="callout">
-<strong>Negative prompts</strong> fall out of CFG for free. Instead of using the null embedding for ε<sub>uncond</sub>, substitute the embedding of things you want to <em>avoid</em> ("blurry, low quality, deformed hands"). The guidance formula then pushes the output away from the negative prompt and toward the positive one. This is why negative prompts sharpen outputs — it is not a hack, it is a direct consequence of the math.
-</div>
+<p>Each iteration asks the network: "given this somewhat-noisy image at timestep t, what noise was added?" The code then subtracts a scaled version of that predicted noise, nudging x<sub>t</sub> toward x<sub>t−1</sub>. At each step (except the last), we add a small amount of fresh randomness — this stochasticity is what gives DDPM its diversity, producing different images from different random seeds.</p>
+
+<p>The problem is speed. T = 1000 means a thousand sequential neural network forward passes. On an A100 GPU, that's 10–30 seconds for a single 512×512 image. For a product serving millions of requests, this is a non-starter. The race for faster sampling has been one of the most productive areas in all of generative AI.</p>
+
+<p>Think of it this way: if the forward process is kicking over the sand castle (instantaneous), the reverse process as DDPM implements it is rebuilding it grain by grain. We need to find a way to place whole handfuls at a time.</p>
 
 <!-- ============================================================ -->
-<h2>Latent Diffusion / Stable Diffusion</h2>
 
-<p>A 512×512 RGB image has 786,432 dimensions. Running a thousand U-Net forward passes in that space requires enormous compute and memory. This is the gap between "cool research paper" and "product that ships."</p>
+<h2>DDIM — Taking the Highway</h2>
 
-<p><strong>Latent Diffusion Models (LDM)</strong> (Rombach et al. 2022) solve this with a beautifully simple two-stage approach:</p>
+<p><strong>DDIM</strong> — Denoising Diffusion Implicit Models (Song, Meng, &amp; Ermon, 2020) — offers a different perspective on the same problem. The insight: the reverse process doesn't have to be stochastic. We can rewrite it as a deterministic <strong>ordinary differential equation (ODE)</strong>.</p>
 
-<ol>
-<li><strong>Stage 1: Train an autoencoder.</strong> A VQ-VAE or KL-regularized VAE compresses images into a much smaller <strong>latent space</strong>. A 512×512×3 image becomes a 64×64×4 latent tensor — a 48× reduction in dimensionality. Train this once, then freeze it.</li>
-<li><strong>Stage 2: Run diffusion in latent space.</strong> The entire noise/denoise pipeline operates on 64×64×4 tensors instead of 512×512×3 pixels. Same algorithm, massively cheaper compute.</li>
-</ol>
+<p>Here's the intuition. DDPM's reverse process is like a hiker taking a winding, random path down a mountain — sometimes going left, sometimes right, always trending downhill. DDIM replaces that with a straight road. Same starting point, same destination, but no randomness along the way. Given the same starting noise, DDIM always produces the same output image.</p>
 
-<pre><code>Latent Diffusion Pipeline:
+<p>The mathematical trick: DDIM defines a family of reverse processes parameterized by η (eta). When η = 1, you get DDPM (fully stochastic). When η = 0, you get a fully deterministic mapping. The beautiful thing is that all of these processes produce samples from the same distribution — they arrive at the same mountain village via different roads.</p>
+
+<p>Because the path is deterministic and smooth, you can take bigger steps. Instead of stepping through every one of 1000 timesteps, you pick a subsequence — say, [1000, 950, 900, …, 50, 0] — and skip between them. In practice, 50–100 DDIM steps produce quality close to 1000 DDPM steps, a 10–20× speedup for essentially free.</p>
+
+<p>There's a bonus. Deterministic sampling means the mapping from noise to image is invertible. Given an image, you can run DDIM forward to find its noise code, edit the noise, and run DDIM backward to get a modified image. This is how many image editing tools (inpainting, style transfer) work under the hood: they operate in the noise space and let the deterministic ODE handle the translation back to pixel space.</p>
+
+<p>Higher-order ODE solvers push this even further. <strong>DPM-Solver++</strong> (Lu et al. 2022) applies second- and third-order numerical methods — think Runge-Kutta, the same techniques used for simulating physical systems — to the diffusion ODE. The result: 10–20 steps with quality that rivals 1000-step DDPM. This is what made real-time diffusion applications feasible.</p>
+
+<!-- ============================================================ -->
+
+<h2>Classifier-Free Guidance — The Magic Dial</h2>
+
+<p>Everything so far generates random images. They're valid samples from the data distribution, but we can't control <em>what</em> they depict. Saying "I want a cat astronaut on the moon" requires conditioning — feeding the model some information about what to generate. Making that conditioning work well was the breakthrough that launched the text-to-image revolution.</p>
+
+<p>The first attempt was <strong>classifier guidance</strong> (Dhariwal &amp; Nichol, 2021). Train a separate image classifier on noisy images. During sampling, use the classifier's gradient to nudge the diffusion process toward a target class. It worked, but it required a separately trained classifier, only supported class labels (not free-form text), and the classifier had to be robust to every noise level — an awkward engineering burden.</p>
+
+<p><strong>Classifier-free guidance</strong> (Ho &amp; Salimans, 2022) threw all that away with a shockingly elegant trick. During training, randomly drop the conditioning 10–20% of the time, replacing the text prompt with an empty placeholder. This forces the single model to learn both conditional generation ("an astronaut cat") and unconditional generation ("any image at all") in the same set of weights.</p>
+
+<p>At inference, we run the model twice per denoising step:</p>
+
+<pre><code>ε_uncond = model(x_t, t, cond=∅)          # "what would any random image look like?"
+ε_cond   = model(x_t, t, cond=prompt)     # "what would THIS image look like?"
+
+ε_guided = ε_uncond + w · (ε_cond − ε_uncond)</code></pre>
+
+<p>The term (ε<sub>cond</sub> − ε<sub>uncond</sub>) isolates the signal that comes purely from the text conditioning — the features that distinguish "cat astronaut" from "generic image." The guidance scale <strong>w</strong> amplifies that signal. Think of w as a volume dial on a radio. At w = 1, you're hearing the music as recorded — standard conditional generation. Crank it to w = 7.5 (Stable Diffusion's default), and the distinctive features of the prompt get amplified — the image strongly matches the text. Push it past w = 20, and you're cranking the dial so far that the music distorts — oversaturated colors, artifacts, the model trying too hard.</p>
+
+<p>The tradeoff maps cleanly to one in language models: high guidance scale is like low temperature. You get sharper, more prompt-faithful results, but less diversity. Low guidance scale is like high temperature — more creative, more varied, but sometimes off-prompt. Production systems typically land between w = 5 and w = 12.</p>
+
+<p>There's a delightful consequence that falls out of the math for free: <strong>negative prompts</strong>. Instead of comparing against the null embedding, substitute the embedding of things you want to avoid — "blurry, low quality, deformed hands." The guidance formula then pushes the output <em>away</em> from the negative prompt and toward the positive one. This isn't a hack. It's a direct consequence of how the linear extrapolation works. Every Stable Diffusion user who types a negative prompt is, without realizing it, doing arithmetic in noise-prediction space.</p>
+
+<!-- ============================================================ -->
+
+<h2>Latent Diffusion — Stable Diffusion from the Inside</h2>
+
+<p>A 512×512 RGB image has 786,432 dimensions. Running a U-Net a thousand times — or even fifty times — on tensors that large requires enormous compute and memory. Research labs could afford it. Nobody else could. This was the gap between "impressive paper" and "product that works on a laptop."</p>
+
+<p><strong>Latent Diffusion Models</strong> (Rombach et al. 2022) closed that gap with a two-stage design so clean it's hard to believe nobody thought of it sooner. (People had thought of it sooner, but the Rombach team made it work reliably.)</p>
+
+<p><strong>Stage 1: Compress.</strong> Train an autoencoder — specifically a KL-regularized VAE — that compresses 512×512×3 images into 64×64×4 latent tensors. That's a 48× reduction in dimensionality. The encoder squeezes an image into a compact code, the decoder reconstructs it. Train this once with a combination of pixel loss, perceptual loss (comparing VGG features), and a KL penalty that keeps the latent distribution close to a standard normal. Then freeze it.</p>
+
+<p><strong>Stage 2: Diffuse in latent space.</strong> Run the entire noise-and-denoise pipeline on 64×64×4 latents instead of 512×512×3 pixels. Same math, same training loop, same MSE loss. Everything is 48× smaller.</p>
+
+<pre><code>Stable Diffusion pipeline (end to end):
 
   "A cat astronaut on the moon, oil painting"
-      │
-      ▼
-  ┌──────────────────┐
-  │ Text Encoder      │  (CLIP ViT-L/14, frozen)
-  │ → 77 × 768 tokens │
-  └────────┬─────────┘
-           │ cross-attention
-           ▼
-  z_T ──→ ┌─────────────────────┐ ──→ z₀
-  noise    │  U-Net Denoiser      │     clean latent
-  64×64×4  │  (self-attn + cross- │     64×64×4
-           │   attn + time emb)   │
-           └─────────────────────┘
-                                        │
-                                        ▼
-                               ┌──────────────┐
-                               │ VAE Decoder   │  (frozen)
-                               │ 64×64×4 → 512×512×3 │
-                               └──────┬───────┘
-                                      │
-                                      ▼
-                              512 × 512 RGB image</code></pre>
+       │
+       ▼
+  ┌──────────────────────┐
+  │ CLIP Text Encoder     │   (frozen, 77 × 768 token embeddings)
+  └──────────┬───────────┘
+             │ cross-attention at every U-Net layer
+             ▼
+  z_T ──→  U-Net Denoiser  ──→ z₀
+  noise     (self-attention      clean latent
+  64×64×4    + cross-attention   64×64×4
+             + timestep embed)
+                                  │
+                                  ▼
+                          ┌──────────────┐
+                          │  VAE Decoder  │  (frozen)
+                          │  64×64×4 →    │
+                          │  512×512×3    │
+                          └──────┬───────┘
+                                 │
+                                 ▼
+                         512×512 RGB image</code></pre>
 
-<p>The compute savings are dramatic. Diffusing a 64×64×4 latent is 48× fewer dimensions than a 512×512×3 image. The U-Net is smaller. Memory fits on consumer GPUs. Training time drops from "months on a cluster" to "days on 8 A100s." This is what turned diffusion from a research curiosity into a deployable technology.</p>
+<p>Three components, each doing one thing well. The <strong>CLIP text encoder</strong> converts text into a sequence of embedding vectors — 77 tokens, each a 768-dimensional vector. It was trained by OpenAI on 400 million image-text pairs to learn a shared embedding space where images and text that describe the same thing land near each other. In Stable Diffusion, it's frozen — its weights never change during diffusion training.</p>
 
-<p>The VAE is trained with a combination of pixel-level reconstruction loss, a perceptual loss (comparing VGG features of the original and reconstruction), and a KL penalty to keep the latent distribution close to a standard normal. A patch discriminator adds sharpness. The resulting latent space captures semantically meaningful features rather than raw pixel statistics — edges, textures, shapes live in this compressed representation.</p>
+<p>The <strong>U-Net denoiser</strong> is the only component that gets trained. It's a classic encoder-decoder architecture with skip connections (borrowed from image segmentation), enhanced with three key ingredients for diffusion. <strong>Timestep embeddings</strong>: the integer t gets mapped through sinusoidal encoding (like Transformer positional encoding) and an MLP, then injected into every residual block through adaptive group normalization — so the network knows whether it's denoising heavy static or polishing fine details. <strong>Self-attention layers</strong>: let distant spatial locations attend to each other, giving the model global coherence. <strong>Cross-attention layers</strong>: image features form the queries, text embeddings form the keys and values. This is how the word "cat" tells a particular spatial region to generate fur, and "moon" tells the background to be grey and cratered.</p>
 
-<p><strong>Stable Diffusion</strong> is Latent Diffusion made concrete and shipped to the world. Released by CompVis, Stability AI, and Runway in August 2022, it put high-quality image generation on consumer hardware. SD v1.5 uses CLIP ViT-L/14 as the text encoder (~77 × 768 embeddings), an 860M-parameter U-Net operating at 64×64×4 latent resolution, and generates 512×512 images. SDXL (2023) scales this to dual text encoders (CLIP ViT-L + OpenCLIP ViT-bigG), a 2.6B U-Net, and 1024×1024 output resolution.</p>
+<p>The <strong>VAE decoder</strong> upsamples the clean 64×64×4 latent back to a 512×512×3 pixel image. Also frozen after Stage 1 training.</p>
 
-<!-- ============================================================ -->
-<h2>The U-Net Architecture for Diffusion</h2>
-
-<p>Why U-Net? The classic encoder-decoder architecture from image segmentation turns out to be almost perfectly designed for denoising. Here is what makes it work for diffusion:</p>
-
-<p><strong>Skip connections</strong> preserve spatial detail. The encoder compresses the image into a low-resolution bottleneck (good for global reasoning), while skip connections carry fine-grained details directly from the encoder to the decoder (good for textures and edges). For denoising, you need both: global understanding of what the image should look like and local precision to place every pixel.</p>
-
-<p><strong>Timestep embeddings</strong> tell the model which noise level it is dealing with. The integer timestep t is mapped to a vector using sinusoidal positional embeddings (borrowed from Transformers), then projected through an MLP. This vector is injected into every residual block via adaptive group normalization — the block scales and shifts its features based on the timestep. At t = 999, the model knows the input is nearly pure noise and should hallucinate global structure. At t = 5, it knows the input is almost clean and should focus on fine details.</p>
-
-<p><strong>Cross-attention layers</strong> inject text conditioning. At each spatial resolution in the U-Net, there are cross-attention layers where image features form the <strong>queries</strong> and text embeddings form the <strong>keys and values</strong>. This is exactly how language tells each spatial location what to generate. When the prompt says "red hat," the cross-attention at the hat's spatial location attends strongly to the "red" and "hat" tokens.</p>
-
-<pre><code>U-Net for Latent Diffusion (simplified):
-
-  Input: z_t (64×64×4) + timestep t + text embedding c
-
-  ┌──────────────────────────────────────────────┐
-  │ Encoder                    Decoder            │
-  │                                                │
-  │ 64×64 ── ResBlock+SA ──── skip ──→ ResBlock+SA│
-  │          ↓ downsample             ↑ upsample  │
-  │ 32×32 ── ResBlock+CA ──── skip ──→ ResBlock+CA│
-  │          ↓ downsample             ↑ upsample  │
-  │ 16×16 ── ResBlock+CA ──── skip ──→ ResBlock+CA│
-  │          ↓ downsample             ↑ upsample  │
-  │  8×8  ── ResBlock+CA ────────────→ ResBlock+CA│
-  │               │                                │
-  │         ┌─────┴──────┐                         │
-  │         │  Bottleneck │                         │
-  │         │  ResBlock+SA│                         │
-  │         └────────────┘                         │
-  └──────────────────────────────────────────────┘
-
-  SA = Self-Attention    CA = Cross-Attention (to text)
-  Every ResBlock receives timestep embedding via AdaGN
-
-  Output: predicted noise ε (64×64×4)</code></pre>
-
-<p>Self-attention at the highest resolution (64×64) is expensive — that is 4096 tokens attending to each other. Production U-Nets typically use self-attention only at lower resolutions (32×32 and below), where it is computationally tractable and the model benefits most from global context. Cross-attention to the text embedding (77 tokens) is cheap at all resolutions since the key/value sequence length is small.</p>
+<p>The compute savings are not incremental — they're transformational. Stable Diffusion v1.5 (860M parameters in the U-Net) runs on a consumer GPU with 8GB of VRAM. SDXL (2023) scales to dual text encoders, a 2.6B U-Net, and 1024×1024 outputs. Stable Diffusion 3 (2024) goes further: it replaces the U-Net with a <strong>Diffusion Transformer (DiT)</strong> — a plain Vision Transformer operating on patchified latent tokens — and adopts flow matching instead of traditional diffusion, which we'll get to at the end.</p>
 
 <!-- ============================================================ -->
-<h2>Noise Schedules</h2>
 
-<p>The noise schedule — the sequence of β<sub>t</sub> values — has an outsized impact on sample quality. Think of it as the curriculum for your denoiser.</p>
+<h2>ControlNet — Giving the Model a Skeleton</h2>
 
-<p>The original DDPM used a <strong>linear schedule</strong>: β increases linearly from 0.0001 to 0.02 across 1000 steps. The problem? It destroys too much information too quickly in the early-to-middle steps. By step 400–500, the image is already nearly indistinguishable from pure noise. The model wastes half its capacity on the boring task of denoising near-identical noise distributions.</p>
+<p>Text is a surprisingly imprecise language for describing images. "A person standing with arms raised" says nothing about exactly where the arms are, or the person's height, or the camera angle. For applications that need spatial precision — fashion, architecture, animation — text prompts are not enough.</p>
 
-<p>The <strong>cosine schedule</strong> (Nichol &amp; Dhariwal, 2021) fixes this by defining ᾱ<sub>t</sub> as a cosine curve, ensuring signal-to-noise ratio drops smoothly rather than falling off a cliff:</p>
+<p><strong>ControlNet</strong> (Zhang &amp; Agrawala, 2023) solved this by adding structural conditioning: pose skeletons, depth maps, edge maps, segmentation masks. The architecture is clever. It clones the entire encoder half of the frozen Stable Diffusion U-Net, creates a trainable copy, and connects the copy back to the frozen original through <strong>zero convolutions</strong> — convolutional layers whose weights are initialized to all zeros.</p>
 
-<pre><code>import math
+<p>Why zero initialization? Because it means the ControlNet contributes nothing to the output at the start of training. The frozen base model works exactly as before. As training progresses, the zero-initialized connections gradually learn to incorporate the spatial signal — edges, poses, depth — into the generation process. The base model's generative knowledge is preserved perfectly; the ControlNet layer learns only to steer it.</p>
 
-def cosine_alpha_bar(t, T, s=0.008):
-    """Cosine schedule: ᾱₜ follows a shifted cosine."""
-    f_t = math.cos(((t / T) + s) / (1 + s) * math.pi / 2) ** 2
-    f_0 = math.cos((s / (1 + s)) * math.pi / 2) ** 2
-    return f_t / f_0</code></pre>
+<p>Back to our sand castle: if text conditioning is like telling the child "build a castle," ControlNet is like giving the child a blueprint. The child still uses their knowledge of sand and architecture (the frozen base model), but now they know exactly where each turret goes (the spatial conditioning).</p>
 
-<p>The small offset s = 0.008 prevents β<sub>t</sub> from being too small near t = 0. With this schedule, the model spends roughly equal capacity learning to denoise at every noise level, from nearly-clean to nearly-noise.</p>
-
-<p>A good way to reason about schedules is through the <strong>signal-to-noise ratio (SNR)</strong>: SNR(t) = ᾱ<sub>t</sub> / (1 − ᾱ<sub>t</sub>). A well-designed schedule has log-SNR that decreases roughly linearly from +∞ (clean) to −∞ (noise). Some recent work learns the schedule as part of training, parameterizing it as a small monotonic neural network.</p>
-
-<table>
-<thead>
-<tr><th>Schedule</th><th>Behavior</th><th>Best for</th></tr>
-</thead>
-<tbody>
-<tr><td>Linear</td><td>Destroys information too fast in middle steps</td><td>High-res images (512+) where early destruction is less harmful</td></tr>
-<tr><td>Cosine</td><td>Smooth, gradual signal decay</td><td>Low/medium resolution (32–256), more balanced training</td></tr>
-<tr><td>Learned</td><td>Adapts to data distribution</td><td>Research settings, can squeeze out extra quality</td></tr>
-</tbody>
-</table>
+<p>In practice, the training data is pairs: (conditioning signal, target image). For edge-based ControlNet, run a Canny edge detector on real images, and train the ControlNet copy to reconstruct the images given the edges plus the original text prompt. For pose, use an off-the-shelf pose estimator to extract skeletons, and train on (skeleton, image) pairs. The approach is modular — you can train ControlNets for any spatial signal, and swap them at inference time.</p>
 
 <!-- ============================================================ -->
-<h2>Production Considerations</h2>
 
-<p>Getting diffusion models from notebooks into products introduces challenges you do not face in research.</p>
+<h2>Consistency Models — One Giant Step</h2>
 
-<h3>Inference Cost</h3>
+<p>Even with DDIM and DPM-Solver++, diffusion requires at least 10–20 neural network forward passes per image. For interactive applications — real-time image editing, video generation, game textures — even that is too many. The dream: generate a quality image in a single forward pass, like a GAN, but without the training instability.</p>
 
-<p>Every image generation requires 20–50 forward passes through a multi-billion-parameter U-Net. At scale, this means GPU-seconds per image. Compare to GANs, which need a single forward pass. The cost is the primary reason diffusion models are expensive to serve. Mitigation strategies: faster samplers (DPM-Solver++), model distillation (SDXL Turbo, LCM), smaller architectures, quantization (INT8 U-Net), and batching across users.</p>
+<p><strong>Consistency Models</strong> (Song et al. 2023) take a fundamentally different approach. Instead of training the network to reverse one noise step, they train it to map any point on the entire diffusion trajectory directly to x₀ — the clean image. The defining property is <strong>self-consistency</strong>: the model's output should be the same whether it starts from heavy noise or light noise, as long as both points lie on the same trajectory.</p>
 
-<h3>Distillation for Speed</h3>
+<p>Formally, if f<sub>θ</sub>(x<sub>t</sub>, t) is the consistency model's output at timestep t, then for any two timesteps t and t' on the same trajectory: f<sub>θ</sub>(x<sub>t</sub>, t) = f<sub>θ</sub>(x<sub>t'</sub>, t'). Every point on the path maps to the same destination. This means you can start from pure noise and reach the clean image in one step — or, if you want higher quality, take 2–4 steps by applying the model repeatedly at decreasing noise levels.</p>
 
-<p><strong>Consistency Models</strong> (Song et al. 2023) learn to map any point on the diffusion trajectory directly to x₀, enabling single-step generation. <strong>Latent Consistency Models (LCM)</strong> apply this to latent diffusion, achieving good quality in 2–4 steps. <strong>SDXL Turbo</strong> uses adversarial distillation to produce quality images in 1–4 steps. These approaches trade slight quality degradation for 50–250× speedup.</p>
+<p>There are two ways to train consistency models. <strong>Consistency distillation</strong> starts from a pre-trained diffusion model and distills the trajectory-to-x₀ mapping. <strong>Consistency training</strong> learns the self-consistency property directly from data, without needing a teacher model. The distillation route typically produces better results (since it starts from a strong model), and <strong>Latent Consistency Models (LCM)</strong> apply this to the latent diffusion framework, achieving impressive quality in 2–4 steps.</p>
 
-<h3>ControlNet for Spatial Conditioning</h3>
-
-<p>Text alone cannot specify spatial layout. <strong>ControlNet</strong> (Zhang et al. 2023) adds structural control — pose skeletons, depth maps, edge maps, segmentation masks. It clones the encoder half of the U-Net, trains the clone on paired data (e.g., edges → images), and connects it back to the frozen original via zero-initialized convolutions. The frozen model retains all generative knowledge; the trainable copy learns to incorporate the spatial signal. Because connections start at zero, training begins from a working model.</p>
-
-<h3>Img2Img and Inpainting</h3>
-
-<p>The <strong>img2img pipeline</strong> starts from an existing image instead of pure noise. Encode the input into latent space, add noise up to a chosen timestep (controlled by a "strength" parameter, 0.0–1.0), then denoise with text guidance. Low strength ≈ minor edits. High strength ≈ the model reimagines the composition. <strong>Inpainting</strong> masks a region and only denoises within the mask, keeping surrounding pixels intact.</p>
-
-<h3>Fine-Tuning and Personalization</h3>
-
-<p><strong>LoRA</strong> (Low-Rank Adaptation) inserts small trainable matrices (rank 4–64) alongside each attention layer. A LoRA adapter is 10–100 MB — small enough to swap at inference time. You can combine multiple LoRAs (one for style, one for character) with weighted merging. <strong>DreamBooth</strong> fine-tunes the full U-Net on 3–5 images of a specific subject with a prior preservation loss. <strong>Textual Inversion</strong> only learns a new text embedding vector — lightweight (a few KB) but limited.</p>
-
-<h3>Architectural Evolution: U-Net → Transformer</h3>
-
-<p>The latest generation of diffusion models replaces U-Net with a <strong>Diffusion Transformer (DiT)</strong> — a plain Vision Transformer operating on patchified latent tokens. DALL·E 3, Stable Diffusion 3, and Sora all use Transformer-based backbones. The benefits: Transformers scale more predictably (scaling laws apply), attention across all patches gives global coherence, and the ecosystem of Transformer optimization tricks (FlashAttention, KV caching, tensor parallelism) translates directly.</p>
+<p>I'm still developing my intuition for why this works as well as it does. In principle, you're asking a single forward pass to do what 1000 sequential passes used to do. That's a 1000× compression of information processing. Yet the quality is surprisingly close to the multi-step version, especially with 4 steps. My best understanding is that the network learns to leverage the trajectory structure — nearby points on the same trajectory carry nearly the same information about x₀, so the consistency constraint is less punishing than it might seem.</p>
 
 <!-- ============================================================ -->
-<h2>What You Should Now Be Able To Do</h2>
 
-<ul>
-<li>Explain the forward diffusion process mathematically and derive the closed-form q(x<sub>t</sub>|x₀) using ᾱ<sub>t</sub></li>
-<li>Write a diffusion training loop from scratch — sample x₀, t, ε, compute x<sub>t</sub>, predict noise, take MSE loss</li>
-<li>Write a DDPM sampling loop that starts from pure noise and iteratively denoises</li>
-<li>Explain why predicting noise ε is preferred over predicting x₀ or the mean μ</li>
-<li>Compare DDPM, DDIM, and DPM-Solver and choose the right sampler for your latency budget</li>
-<li>Implement classifier-free guidance and explain the effect of the guidance scale w on fidelity vs. diversity</li>
-<li>Describe the Latent Diffusion architecture end-to-end: VAE encoder → latent U-Net with cross-attention → VAE decoder</li>
-<li>Explain why the U-Net's skip connections, timestep embeddings, and cross-attention layers each matter for diffusion</li>
-<li>Choose between linear and cosine noise schedules and reason about their effect through the SNR lens</li>
-<li>Identify the right production strategy for inference speed (distillation, LCM, faster samplers) and spatial control (ControlNet, img2img, inpainting)</li>
+<h2>Flow Matching and Rectified Flows — The Next Chapter</h2>
+
+<p>Everything we've discussed so far treats generation as reversing a noise process — adding noise step by step, then learning to undo it. <strong>Flow matching</strong> (Lipman et al. 2023, Albergo &amp; Vanden-Eijnden, 2023) asks: what if we skip the whole noise-then-reverse framework and instead train a model to transport noise to data along straight lines?</p>
+
+<p>The idea is startlingly direct. Define a path from every noise sample z to its target data sample x as a simple linear interpolation: x<sub>t</sub> = (1 − t) · z + t · x. At t = 0, you're at the noise sample. At t = 1, you're at the data. The path is a straight line through the space of images.</p>
+
+<p>A neural network learns the <strong>velocity field</strong> — the direction and speed to move at any point along this path. The training objective is: given x<sub>t</sub> at time t, predict the velocity v = x − z. That's it. No noise schedules, no β<sub>t</sub>, no ᾱ<sub>t</sub>, no reparameterization tricks. The loss is MSE between the predicted velocity and the true velocity.</p>
+
+<p>Going back to our mountain hiking analogy: diffusion models trace a winding path down a mountainside, shaped by the noise schedule and the stochastic reverse process. Flow matching says: forget the mountain path. Draw a straight line from the summit to the village and learn to walk it.</p>
+
+<p><strong>Rectified flows</strong> (Liu et al. 2023) take this further. After training a flow matching model, they "straighten" the learned trajectories through a distillation process: sample pairs (noise, generated image) from the trained model, then retrain on these pairs to make the paths even straighter. Straighter paths mean fewer ODE steps to traverse them, because a numerical ODE solver can cover a straight line in fewer steps than a curved one. After one or two rounds of rectification, the paths are straight enough for 1–4 step generation.</p>
+
+<p>This is what Stable Diffusion 3 uses under the hood. Instead of the traditional DDPM forward-reverse framework, SD3 uses a flow matching objective. The result is simpler training, faster sampling, and — according to Stability AI's benchmarks — better image quality. The field is increasingly moving in this direction, and I wouldn't be surprised if "diffusion model" becomes a historical term, replaced by "flow model," within a few years. Though I've been wrong about these predictions before.</p>
+
+<!-- ============================================================ -->
+<!-- PHASE 5: WRAP-UP -->
+<!-- ============================================================ -->
+
+<h2>Wrap-Up</h2>
+
+<p>If you're still with me, thank you. I hope it was worth it.</p>
+
+<p>We started with a sand castle and a child kicking it over — the observation that destruction is free but reconstruction requires knowledge. We formalized that into the forward process, adding Gaussian noise step by step until data becomes static. We discovered the closed-form shortcut that makes training practical. We built the reverse process — a neural network that predicts the noise, trained with nothing more than MSE loss. We walked through DDPM sampling and sped it up with DDIM's deterministic highway. We added text control through classifier-free guidance, compressed everything into latent space to make it shippable, gave the model spatial blueprints through ControlNet, compressed the 1000-step walk into a single leap with consistency models, and finally saw the field evolving toward the straight-line elegance of flow matching.</p>
+
+<p>My hope is that the next time you use Stable Diffusion, or read about DALL·E 3's architecture, or see "CFG scale" in a generation interface, instead of treating it as a magic black box, you'll have a pretty darn good mental model of what's happening under the hood. The sand castle is being rebuilt, grain by grain — or, increasingly, in one confident motion — from pure noise, guided by learned knowledge of what real images look like.</p>
+
+<!-- ============================================================ -->
+<!-- PHASE 6: RESOURCES -->
+<!-- ============================================================ -->
+
+<h2>Resources</h2>
+
+<p>A curated set of things I found genuinely helpful on this journey:</p>
+
+<ul style="list-style:none; padding-left:0;">
+  <li style="margin-bottom:0.8em;"><strong>The DDPM paper</strong> — Ho, Jain, &amp; Abbeel (2020). The O.G. paper that made diffusion work. The math is dense but the algorithm section is gold. <a href="https://arxiv.org/abs/2006.11239">arxiv.org/abs/2006.11239</a></li>
+  <li style="margin-bottom:0.8em;"><strong>Lilian Weng's "What are Diffusion Models?"</strong> — Wildly helpful blog post that walks through the math with more patience than any paper. If you read one thing beyond this section, read this. <a href="https://lilianweng.github.io/posts/2021-07-11-diffusion-models/">lilianweng.github.io</a></li>
+  <li style="margin-bottom:0.8em;"><strong>The Latent Diffusion paper</strong> — Rombach et al. (2022). The paper that became Stable Diffusion. Insightful on why latent space makes everything better. <a href="https://arxiv.org/abs/2112.10752">arxiv.org/abs/2112.10752</a></li>
+  <li style="margin-bottom:0.8em;"><strong>The Classifier-Free Guidance paper</strong> — Ho &amp; Salimans (2022). Short paper, outsized impact. The guidance formula is one of those results that feels obvious in hindsight. <a href="https://arxiv.org/abs/2207.12598">arxiv.org/abs/2207.12598</a></li>
+  <li style="margin-bottom:0.8em;"><strong>The Consistency Models paper</strong> — Song et al. (2023). One-step generation without adversarial training. The self-consistency property is an elegant idea. <a href="https://arxiv.org/abs/2303.01469">arxiv.org/abs/2303.01469</a></li>
+  <li style="margin-bottom:0.8em;"><strong>Yang Song's blog on score-based models</strong> — The clearest explanation of the score-matching perspective I've found. Connects everything to SDEs in a way that actually clicks. <a href="https://yang-song.net/blog/2021/score/">yang-song.net/blog/2021/score</a></li>
 </ul>
 
 
