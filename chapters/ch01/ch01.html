@@ -119,21 +119,6 @@
   <span class="tag">Bits &amp; Bytes · Objects · Data Structures · DataLoader · Overloading · Context Managers</span>
 </div>
 
-<div class="tldr">
-  <div class="tldr-label">Section Overview</div>
-  <p>A ground-up exploration of how Python actually works — from raw bits in memory to PyObject structs, hash tables, DataLoader internals, and PyTorch context managers. Built for engineers who want to understand what's happening under the hood.</p>
-</div>
-
-
-<!-- ═══════════ Opening ═══════════ -->
-
-<p>I avoided truly understanding Python for longer than I'd care to admit. I could write it — training loops, data pipelines, deployment scripts — but if someone asked me <em>why</em> <code>b = a</code> on a list doesn't copy the list, or what exactly a <code>float</code> looks like in binary, or how a <code>set</code> checks membership in O(1), I'd mumble something about references and hash tables and change the subject. I knew Python the way you know a car you drive every day but have never opened the hood of. Finally, the discomfort of not knowing what's really happening under the hood grew too great for me. Here is that dive.</p>
-
-<p>Python was created by Guido van Rossum and first released in 1991. It became the dominant language for machine learning and AI not because it's the fastest — it isn't, not by a long shot — but because it's the most effective <em>glue</em>. OpenAI, Google DeepMind, every major ML lab writes research code, training orchestration, data pipelines, and experiment management in Python. The heavy computation happens in C++ and CUDA kernels underneath, but the entire orchestration layer — the layer <em>you</em> write — is Python. Understanding it deeply matters.</p>
-
-<p>Before we start, a heads-up. We're going to go deep — from raw bits in memory to how Python objects actually work at the C level, through data structures, DataLoaders, and PyTorch context managers. You don't need to know any of it beforehand. We'll add the concepts we need one at a time, with explanation.</p>
-
-<p>This isn't a short journey, but I hope you'll be glad you came.</p>
 
 <!-- ═══════════ Table of Contents ═══════════ -->
 <div style="margin: 2em 0; padding-left: 1.5em; border-left: 3px solid var(--accent, #666); line-height: 2;">
@@ -145,54 +130,122 @@
   Functions Are Objects<br>
   Closures — Captured State<br>
   Context Managers — PyTorch's Train, Eval, and No-Grad<br>
+  UTF-8 — How Text Becomes Bytes<br>
   Wrap-Up<br>
   Resources
 </div>
 
-<!-- ═══════════ Running Example Setup ═══════════ -->
-
-<p>To ground everything, we'll build a tiny running example throughout this section: a small experiment tracker. Every ML engineer needs one — something that records which hyperparameters you tried, what score you got, and when. We'll start with something embarrassingly simple and let it grow as we need new concepts.</p>
-
-<pre><code>results = []
-results.append({"lr": 0.01, "epochs": 10, "accuracy": 0.82})
-results.append({"lr": 0.001, "epochs": 20, "accuracy": 0.91})
-results.append({"lr": 0.01, "epochs": 50, "accuracy": 0.89})</code></pre>
-
-<p>Three experiments. A list of dictionaries. That's our tracker, version one. It will get better.</p>
-
-<p>But before we start building anything, we need to understand the ground we're building on. Not Python, not yet — something lower. The raw material that every program on every computer is made of.</p>
-
-
 <!-- ═══════════════════════════════════════════════════════════ -->
-<!-- BITS, BYTES, AND HOW YOUR COMPUTER REMEMBERS THINGS       -->
+<!-- UTF-8 — HOW TEXT BECOMES BYTES                             -->
 <!-- ═══════════════════════════════════════════════════════════ -->
-<h2>Bits, Bytes, and How Your Computer Remembers Things</h2>
+<h2>UTF-8 — How Text Becomes Bytes</h2>
 
-<p>I'll be honest — I went years writing Python without thinking about what a <code>float</code> actually <em>is</em> in memory. Then I ran into a training run that produced <code>NaN</code> losses, and someone mentioned "float16 overflow," and I realized I was debugging hardware behavior I didn't understand. So let's start at the absolute bottom.</p>
+<p>We've spent time with integers and floats — numbers the CPU handles natively. Text is different. A character isn't a number in any hardware sense; the CPU has no idea what an "A" is. Everything is bytes, so at some point every character has to be mapped to a sequence of bytes. The encoding that rules the modern internet — and that you will encounter constantly in ML preprocessing, file I/O, and tokenizer code — is <strong>UTF-8</strong>.</p>
 
-<p>A <strong>bit</strong> is the smallest unit of information a computer can store. It's a switch that's either off or on, 0 or 1. That's it. One bit, two possible states. If you have two bits, you get four possible states: <code>00</code>, <code>01</code>, <code>10</code>, <code>11</code>. Three bits give you eight states. The pattern is 2<sup>n</sup> — n bits give you 2<sup>n</sup> distinct combinations. This is the root of <em>everything</em>.</p>
+<h3>The Problem: 256 Slots Aren't Enough</h3>
 
-<p>Eight bits grouped together form a <strong>byte</strong>. Why eight? Historically, early computers experimented with 5-bit, 6-bit, 7-bit groupings. ASCII characters needed 7 bits (128 characters). IBM's System/360 in the 1960s standardized on 8 bits — 256 possible values — which was enough for ASCII plus extra room. The industry followed. It's not a law of physics. It's a convention that won.</p>
+<p><strong>ASCII</strong> (1963) solved the original problem: map the English alphabet, digits, and control characters to 7-bit codes. That's 128 slots — plenty for a teletype machine. Extended ASCII stretched to 8 bits (256 slots) to fit Western European accented characters. Then the world showed up: Arabic, Chinese, Japanese, Korean, Cyrillic, emoji, mathematical symbols. There are over 140,000 characters in use today. One byte cannot hold them.</p>
 
-<p>One byte (8 bits) gives you 2<sup>8</sup> = 256 possible values. That's enough to represent a number from 0 to 255 (unsigned), or from -128 to 127 (signed, using one bit for the sign). That's the range of a C <code>uint8_t</code> or <code>int8_t</code>.</p>
+<p>The solution is <strong>Unicode</strong> — a universal catalog that assigns every character a <em>code point</em>: an integer in the range U+0000 to U+10FFFF (roughly 1.1 million possible slots, about 150,000 currently assigned). Unicode answers the question "what number does this character get?" It does not answer "how do I store that number in memory?" That's where <strong>UTF-8</strong> comes in.</p>
 
-<h3>How Integers Live in Memory</h3>
+<h3>UTF-8: Variable-Width Encoding</h3>
 
-<p>When your computer stores the number 42, it converts it to binary: <code>00101010</code>. Each position represents a power of two, right to left: 0×2<sup>0</sup> + 1×2<sup>1</sup> + 0×2<sup>2</sup> + 1×2<sup>3</sup> + 0×2<sup>4</sup> + 1×2<sup>5</sup> = 2 + 8 + 32 = 42. That pattern of 8 bits gets written into 1 byte of memory.</p>
+<p>UTF-8 (designed by Ken Thompson and Rob Pike in 1992, on a placemat in a New Jersey diner) encodes each code point as 1 to 4 bytes using a clever self-describing bit pattern. The key insight: the first byte tells you how many bytes the character uses.</p>
 
-<p>But what if you need a number bigger than 255? You use more bytes. Here's where the standard <strong>integer types</strong> come from:</p>
-
-<table>
-<tr><th>Type</th><th>Bytes</th><th>Bits</th><th>Unsigned Range</th><th>Signed Range</th></tr>
-<tr><td><code>int8</code></td><td>1</td><td>8</td><td>0 to 255</td><td>-128 to 127</td></tr>
-<tr><td><code>int16</code></td><td>2</td><td>16</td><td>0 to 65,535</td><td>-32,768 to 32,767</td></tr>
-<tr><td><code>int32</code></td><td>4</td><td>32</td><td>0 to ~4.3 billion</td><td>-2.1B to 2.1B</td></tr>
-<tr><td><code>int64</code></td><td>8</td><td>64</td><td>0 to ~18.4 quintillion</td><td>-9.2Q to 9.2Q</td></tr>
+<figure style="margin: 2em 0; overflow-x: auto;">
+<table style="border-collapse: collapse; font-family: 'JetBrains Mono', monospace; font-size: 0.88em; min-width: 560px;">
+  <thead>
+    <tr style="background: var(--bg-secondary, #f5f5f5);">
+      <th style="padding: 8px 14px; text-align: left; border-bottom: 2px solid var(--accent, #888);">Code point range</th>
+      <th style="padding: 8px 14px; text-align: left; border-bottom: 2px solid var(--accent, #888);">Byte pattern</th>
+      <th style="padding: 8px 14px; text-align: left; border-bottom: 2px solid var(--accent, #888);">Payload bits</th>
+      <th style="padding: 8px 14px; text-align: left; border-bottom: 2px solid var(--accent, #888);">Example</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td style="padding: 7px 14px; border-bottom: 1px solid var(--border, #ddd);">U+0000 – U+007F</td>
+      <td style="padding: 7px 14px; border-bottom: 1px solid var(--border, #ddd);"><code>0xxxxxxx</code></td>
+      <td style="padding: 7px 14px; border-bottom: 1px solid var(--border, #ddd);">7 bits</td>
+      <td style="padding: 7px 14px; border-bottom: 1px solid var(--border, #ddd);">'A' → <code>0x41</code></td>
+    </tr>
+    <tr style="background: var(--bg-secondary, #f9f9f9);">
+      <td style="padding: 7px 14px; border-bottom: 1px solid var(--border, #ddd);">U+0080 – U+07FF</td>
+      <td style="padding: 7px 14px; border-bottom: 1px solid var(--border, #ddd);"><code>110xxxxx 10xxxxxx</code></td>
+      <td style="padding: 7px 14px; border-bottom: 1px solid var(--border, #ddd);">11 bits</td>
+      <td style="padding: 7px 14px; border-bottom: 1px solid var(--border, #ddd);">'é' → <code>0xC3 0xA9</code></td>
+    </tr>
+    <tr>
+      <td style="padding: 7px 14px; border-bottom: 1px solid var(--border, #ddd);">U+0800 – U+FFFF</td>
+      <td style="padding: 7px 14px; border-bottom: 1px solid var(--border, #ddd);"><code>1110xxxx 10xxxxxx 10xxxxxx</code></td>
+      <td style="padding: 7px 14px; border-bottom: 1px solid var(--border, #ddd);">16 bits</td>
+      <td style="padding: 7px 14px; border-bottom: 1px solid var(--border, #ddd);">'€' → <code>0xE2 0x82 0xAC</code></td>
+    </tr>
+    <tr style="background: var(--bg-secondary, #f9f9f9);">
+      <td style="padding: 7px 14px;">U+10000 – U+10FFFF</td>
+      <td style="padding: 7px 14px;"><code>11110xxx 10xxxxxx 10xxxxxx 10xxxxxx</code></td>
+      <td style="padding: 7px 14px;">21 bits</td>
+      <td style="padding: 7px 14px;">'😀' → <code>0xF0 0x9F 0x98 0x80</code></td>
+    </tr>
+  </tbody>
 </table>
+<figcaption style="margin-top: 0.6em; font-size: 0.82em; color: var(--text-muted, #888); text-align: center;">UTF-8 encoding table. The number of leading 1s in byte 1 tells you the total byte count. Continuation bytes always start with <code>10</code>.</figcaption>
+</figure>
 
-<p>Every one of those sizes is a power of 2 bytes. That's not arbitrary — CPUs are designed with data buses that are powers of 2 bits wide. A 64-bit CPU can fetch 8 bytes in a single operation. Aligning your data to these boundaries means the CPU can grab it in one gulp instead of two. Misaligned access is slower on most architectures and illegal on some.</p>
+<p>The bit pattern is self-synchronizing by design. If you land in the middle of a UTF-8 stream (say, at a random offset in a file), you can always tell whether you're looking at a start byte or a continuation byte: <strong>start bytes</strong> begin with <code>0</code> (ASCII) or <code>11</code>; <strong>continuation bytes</strong> always begin with <code>10</code>. You can scan backwards from any position to find the character boundary. UTF-16, by contrast, lacks this property for sequences that span two 16-bit code units — one of many reasons UTF-8 won.</p>
 
-<p>Python integers are different from C integers in one remarkable way: they have <em>no size limit</em>. You can compute <code>2**10000</code> and Python will happily give you the exact result, thousands of digits long. Under the hood, CPython represents integers as arrays of 30-bit "digits" (on 64-bit systems). Small integers (roughly -5 to 256) are pre-allocated singletons that get reused — Python creates them once at startup and hands out references, which is why <code>a = 5; b = 5; a is b</code> returns <code>True</code>. Larger integers get freshly allocated on the heap.</p>
+<p>Let's trace through a concrete example. The Euro sign <strong>€</strong> has code point U+20AC (decimal 8364). In binary: <code>0010 0000 1010 1100</code> — that's 14 significant bits, which falls in the 3-byte range. Packing those 14 bits into the <code>1110xxxx 10xxxxxx 10xxxxxx</code> template:</p>
+
+<pre><code>Code point:  U+20AC = 0010 0000 1010 1100
+Split:       xxxx = 0010 | xxxxxx = 000010 | xxxxxx = 101100
+Bytes:       1110 0010 | 10 000010 | 10 101100
+             = 0xE2     | 0x82      | 0xAC</code></pre>
+
+<p>Peel off the framing bits (<code>1110</code>, <code>10</code>, <code>10</code>) and you recover the original code point. This is all your text editor, HTTP server, and Python runtime are doing under the hood every time they handle non-ASCII text.</p>
+
+<h3>Python: str Is Not Bytes</h3>
+
+<p>Python 3 made a clean separation that Python 2 famously bungled: <code>str</code> is a sequence of Unicode <em>code points</em> (abstract characters). <code>bytes</code> is a sequence of raw octets. They are completely different types. To move between them, you <strong>encode</strong> (str → bytes) or <strong>decode</strong> (bytes → str), always specifying an encoding.</p>
+
+<pre><code class="language-python">s = "café"          # str: 4 code points — U+0063 U+0061 U+0066 U+00E9
+b = s.encode("utf-8")
+print(b)            # b'caf\xc3\xa9'   — 5 bytes (é is 2 bytes in UTF-8)
+print(len(s))       # 4  (code points)
+print(len(b))       # 5  (bytes)
+
+# Decode back
+print(b.decode("utf-8"))   # 'café'
+
+# Wrong encoding → garbage or error
+b.decode("latin-1")        # 'cafÃ©'  — bit pattern reinterpreted incorrectly
+b.decode("ascii")          # UnicodeDecodeError: byte 0xc3 out of range</code></pre>
+
+<p>The <code>len()</code> discrepancy — 4 characters but 5 bytes — is the source of a class of bugs in ML text preprocessing. A naive <code>text[:max_len]</code> truncation operates on bytes, not characters, and can cut a multi-byte sequence in half, producing an invalid UTF-8 stream. Always decode to <code>str</code> first, operate on code points, then encode back if needed.</p>
+
+<div class="callout callout-warning" style="margin: 1.5em 0;">
+  <div class="callout-label">BOM and UTF-16</div>
+  <p style="margin: 0;">You'll sometimes see files with a BOM (Byte Order Mark) — a magic header of 2–3 bytes that signals encoding and byte order. UTF-8 BOM is <code>0xEF 0xBB 0xBF</code> and is almost never needed (UTF-8 has no endianness issue) but Windows tools love to emit it. Read files with <code>encoding='utf-8-sig'</code> in Python to silently strip it. UTF-16 <em>requires</em> a BOM (or you must specify <code>utf-16-le</code> / <code>utf-16-be</code> explicitly) because each character is 2 bytes and byte order matters. UTF-8 is the right default for all new work.</p>
+</div>
+
+<h3>Why This Matters for ML</h3>
+
+<p>In practice you will hit UTF-8 in three places. First, <strong>reading data</strong>: always open text files with <code>open(path, encoding='utf-8')</code> (Python's default is locale-dependent on Windows — a silent disaster on cloud servers with different locale settings). Second, <strong>tokenizers</strong>: BPE tokenizers like GPT-2's operate on UTF-8 bytes, not characters. The vocabulary maps byte sequences to token IDs. When you see a tokenizer config with <code>"byte_level": true</code>, it is working at the UTF-8 byte level — the 256 possible byte values become the base vocabulary. Third, <strong>string length heuristics</strong>: if you're comparing string lengths, measuring tokens, or slicing context windows, always know whether you're counting code points or bytes.</p>
+
+<pre><code class="language-python">import json
+
+# Reading a dataset — always specify encoding
+with open("dataset.jsonl", encoding="utf-8") as f:
+    records = [json.loads(line) for line in f]
+
+# Counting characters correctly
+text = "こんにちは"   # 5 Japanese characters
+print(len(text))                    # 5  (correct: code points)
+print(len(text.encode("utf-8")))    # 15 (3 bytes each in UTF-8)
+
+# Byte-level BPE: each byte is a valid "token" slot
+vocab_base = {bytes([i]): i for i in range(256)}   # 256-entry base vocab</code></pre>
+
+<p>UTF-8 is one of those things you can use for years without thinking about it — until the day a user submits text with an emoji, or you try to concatenate a <code>str</code> and a <code>bytes</code>, or your carefully crafted 512-token context window silently truncates a Japanese sentence mid-character. Once you understand the bit layout, none of this is mysterious. It's just bytes with a well-defined framing scheme.</p>
 
 <h3>Floating-Point — Where Things Get Weird</h3>
 
