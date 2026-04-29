@@ -52,15 +52,46 @@
     }, { passive: true });
   }
 
-  /* ── Highlight active sidebar link ── */
+  /* ── Collapsible sidebar sections ── */
+  document.querySelectorAll('.nav-chapter').forEach(ch => {
+    const arrow = ch.querySelector('.ch-arrow');
+    if (arrow) {
+      arrow.addEventListener('click', e => {
+        e.preventDefault();
+        e.stopPropagation();
+        const sections = ch.nextElementSibling;
+        if (sections && sections.classList.contains('nav-sections')) {
+          ch.classList.toggle('expanded');
+          sections.classList.toggle('open');
+        }
+      });
+      arrow.style.cursor = 'pointer';
+    }
+  });
+
+  /* ── Highlight active sidebar link & auto-expand ── */
   function setActive() {
     const loc = window.location.pathname;
     document.querySelectorAll('.nav-chapter').forEach(el => {
       el.classList.remove('active');
     });
+    document.querySelectorAll('.nav-section').forEach(el => {
+      el.classList.remove('active');
+    });
     document.querySelectorAll('.nav-chapter').forEach(el => {
       const dh = el.getAttribute('data-href');
       if (dh && loc.includes('/' + dh + '/')) {
+        el.classList.add('active');
+        el.classList.add('expanded');
+        const sections = el.nextElementSibling;
+        if (sections && sections.classList.contains('nav-sections')) {
+          sections.classList.add('open');
+        }
+      }
+    });
+    document.querySelectorAll('.nav-section').forEach(el => {
+      const dh = el.getAttribute('data-href');
+      if (dh && loc.includes(dh)) {
         el.classList.add('active');
       }
     });
