@@ -330,32 +330,8 @@
 
 <p><strong>Quantization</strong> is the practice of representing model weights (and sometimes activations) in fewer bits &mdash; going from 16-bit or 32-bit floating point down to 8-bit integers, 4-bit integers, or even lower. The first practical 4-bit methods for LLMs appeared in 2022&ndash;2023 (GPTQ, AWQ), and they&rsquo;ve become the standard way large models actually get deployed. <strong>Parameter-Efficient Fine-Tuning (PEFT)</strong> is a family of techniques that customize a model&rsquo;s behavior by training only a small fraction of its parameters &mdash; often less than 1%. LoRA (2021) is the dominant method, and QLoRA (2023) married quantization with LoRA to let you fine-tune a 65B model on a single GPU.</p>
 
-<p>Before we start, a heads-up. We&rsquo;re going to be working through some arithmetic about memory, touching on matrix decompositions, and writing actual training code. You don&rsquo;t need to know any of it beforehand. We&rsquo;ll add what we need, one piece at a time.</p>
-
-<p>This isn&rsquo;t a short journey, but I hope you&rsquo;ll be glad you came.</p>
 
 <!-- TABLE OF CONTENTS -->
-<div class="toc">
-  <h3>Contents</h3>
-  <ul>
-    <li>The suitcase problem</li>
-    <li>What quantization actually does to a number</li>
-    <li>Symmetric vs asymmetric quantization</li>
-    <li>Granularity: how many numbers share a ruler</li>
-    <li>Post-training quantization: GPTQ, AWQ, and GGUF</li>
-    <li>SmoothQuant: taming the outliers</li>
-    <li>Quantization-aware training</li>
-    <li>Rest stop</li>
-    <li>The fine-tuning memory wall</li>
-    <li>LoRA: the low-rank insight</li>
-    <li>LoRA in practice: initialization, scaling, and rank</li>
-    <li>QLoRA: quantized base, full-precision adapters</li>
-    <li>The rest of the PEFT family</li>
-    <li>Choosing your method</li>
-    <li>Wrap-up</li>
-    <li>Resources</li>
-  </ul>
-</div>
 
 <!-- ═══════════════════════════════════════════ -->
 <!-- THE SUITCASE PROBLEM -->
@@ -577,24 +553,6 @@ Q8_0          8.0 bits       ~7.2 GB     Near-lossless</code></pre>
 <p>Recent work like EfficientQAT (2024) has made this more accessible &mdash; training a 2-bit 70B model on a single A100 in about 41 hours, with less than 3% accuracy degradation. And on the frontier, researchers at Microsoft have demonstrated <strong>BitNet</strong> &mdash; models trained from scratch in 1-bit (ternary: -1, 0, +1) &mdash; which would fundamentally change the hardware requirements for inference. I&rsquo;m still developing my intuition for whether 1-bit models will become practical for mainstream use, but the direction is fascinating.</p>
 
 <!-- ═══════════════════════════════════════════ -->
-<!-- REST STOP -->
-<!-- ═══════════════════════════════════════════ -->
-
-<div class="info-box" style="background: linear-gradient(135deg, #f0f9ff 0%, #e8f5e9 100%); border-left: 4px solid #4caf50;">
-<h3 style="margin-top: 0;">Rest Stop</h3>
-
-<p>Congratulations on making it this far. Seriously &mdash; you can stop here if you want.</p>
-
-<p>You now have a solid mental model of model compression. You understand that quantization is controlled rounding, that the granularity of the scale factors matters enormously, that GPTQ compensates for errors, AWQ protects salient weights, GGUF enables CPU inference, and SmoothQuant smooths activations for W8A8 deployment. That suitcase analogy we started with? You now know five different ways to pack it.</p>
-
-<p>Here&rsquo;s the short version for those who want to bail: for GPU serving, use AWQ 4-bit with vLLM. For laptop inference, use GGUF Q4_K_M with Ollama. You&rsquo;re 80% of the way to being effective in production. There. Done.</p>
-
-<p>What we haven&rsquo;t covered yet is the other half of the problem: <em>customizing</em> the model. Our three clients each want different behavior, and full fine-tuning is impossibly expensive. The techniques that follow &mdash; LoRA, QLoRA, and the broader PEFT family &mdash; are how the industry actually solves this. They&rsquo;re also some of the most elegant ideas in modern ML.</p>
-
-<p>If the discomfort of not knowing how to efficiently customize a 7B model for three different clients is nagging at you, read on.</p>
-</div>
-
-<!-- ═══════════════════════════════════════════ -->
 <!-- THE FINE-TUNING MEMORY WALL -->
 <!-- ═══════════════════════════════════════════ -->
 
@@ -747,7 +705,7 @@ QLoRA                  ~35 GB    ~0.2 GB    ~0.8 GB     ~36 GB  &larr; one A100!
 
 <p>Our running scenario: we can now fine-tune all three client-specific adapters on a single A100, one after the other. Each run takes a few hours and costs $10&ndash;50 in cloud GPU time. That $2,400 weekly bill is a distant memory.</p>
 
-<pre><code>from transformers import BitsAndBytesConfig
+<pre><code>from transformers import AutoModelForCausalLM, BitsAndBytesConfig, TrainingArguments
 import torch
 
 # Load the base model in 4-bit NF4
@@ -837,8 +795,6 @@ training_args = TrainingArguments(
 <!-- ═══════════════════════════════════════════ -->
 
 <h2>Wrap-Up</h2>
-
-<p>If you&rsquo;re still with me, thank you. I hope it was worth the trip.</p>
 
 <p>We started with a suitcase problem: a model too large to fit on a GPU, too expensive to fine-tune, and too monolithic to customize for different clients. We learned that quantization &mdash; controlled rounding with smart scale factors &mdash; can compress a 14 GB model to 3.5 GB with surprisingly little damage. We walked through GPTQ&rsquo;s error compensation, AWQ&rsquo;s saliency protection, GGUF&rsquo;s CPU-friendly format, and SmoothQuant&rsquo;s elegant activation smoothing. Then we crossed into fine-tuning territory, where LoRA&rsquo;s low-rank insight lets us customize a model by training 0.3% of its parameters, and QLoRA pushes the base model itself into 4-bit so the whole operation fits on hardware that would have been laughably inadequate for full fine-tuning.</p>
 

@@ -325,33 +325,12 @@
 <!--  OPENING                                                           -->
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 
-<p>I avoided the details of LLM serving for an embarrassingly long time. I could fine-tune models, run inference notebooks, even build RAG pipelines&mdash;but every time someone asked me <em>&ldquo;how would you actually serve this at scale?&rdquo;</em> in an interview, I&rsquo;d mumble something about &ldquo;put vLLM in front of it&rdquo; and change the subject. The gap between &ldquo;I can generate tokens on my laptop&rdquo; and &ldquo;I can serve 500 concurrent users at 20 tokens per second each without bankrupting my company&rdquo; is enormous. Finally the discomfort of not understanding what&rsquo;s actually happening between a user hitting Enter and a token arriving on their screen grew too great for me. Here is that dive.</p>
+<p>The gap between &ldquo;I can generate tokens on my laptop&rdquo; and &ldquo;I can serve 500 concurrent users at 20 tokens per second each without bankrupting my company&rdquo; is enormous. Understanding what actually happens between a user hitting Enter and a token arriving on their screen requires digging into GPU memory, batching strategies, and infrastructure choices. Here is that dive.</p>
 
 <p>LLM serving is the engineering discipline of running large language model inference in production&mdash;handling real users, real latency requirements, and very real GPU bills. It grew into its own specialty around 2023, when the gap between &ldquo;model works in a notebook&rdquo; and &ldquo;model works for a million users&rdquo; became the bottleneck for most AI teams. The core challenge: autoregressive generation is fundamentally different from serving a classification model, and every optimization in this space flows from that difference.</p>
 
-<p>Before we start, a heads-up. We&rsquo;re going to cover memory bandwidth arithmetic, virtual memory concepts, some light systems engineering, and a fair amount of back-of-envelope cost math. You don&rsquo;t need to know any of it beforehand. We&rsquo;ll add the concepts we need one at a time, with explanation.</p>
-
-<p>This isn&rsquo;t a short journey, but I hope you&rsquo;ll be glad you came.</p>
 
 <!-- Table of Contents -->
-<div class="toc">
-  <h3>What We&rsquo;ll Cover</h3>
-  <ul>
-    <li>The restaurant that serves one dish at a time</li>
-    <li>Why autoregressive generation changes everything</li>
-    <li>The KV cache: your most expensive memory hog</li>
-    <li>Continuous batching: the conveyor belt upgrade</li>
-    <li>Rest stop and an off-ramp</li>
-    <li>PagedAttention: virtual memory for attention</li>
-    <li>Speculative decoding: writing a rough draft first</li>
-    <li>Tensor parallelism for serving</li>
-    <li>The serving framework landscape</li>
-    <li>Streaming and API design</li>
-    <li>The money: token economics and cost optimization</li>
-    <li>Guardrails in production</li>
-    <li>Resources and credits</li>
-  </ul>
-</div>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 <!--  THE RESTAURANT ANALOGY                                            -->
@@ -453,22 +432,6 @@ Time step 5: [Req D (token 1), Req B (token 5), Req E (prefill)]</code></pre>
 <p>Our restaurant has upgraded from a sit-down dinner format to a conveyor belt sushi bar. Seats are always full. When a customer leaves, the next one sits down instantly. The chef never idles.</p>
 
 <p>There&rsquo;s a subtlety I glossed over: notice that in time step 4, Request D is doing its <em>prefill</em> (processing its full prompt) while Requests B and C are doing <em>decode</em> (generating one token each). These two operations have very different computational profiles&mdash;prefill is compute-heavy, decode is memory-heavy. Modern serving engines carefully schedule these together to maximize utilization of both compute and memory bandwidth simultaneously. Getting this balance right is an art, and I&rsquo;m still developing my intuition for when the scheduler makes which tradeoff.</p>
-
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  REST STOP                                                         -->
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-
-<h2>Rest Stop and an Off-Ramp</h2>
-
-<p>Congratulations on making it this far. You can stop here if you want.</p>
-
-<p>You now have a solid mental model for how LLM serving works: autoregressive generation is memory-bandwidth-bound during decode, the KV cache stores key-value vectors for all prior tokens and grows with sequence length, and continuous batching keeps your GPU utilization high by scheduling at the iteration level. That&rsquo;s enough to have a meaningful conversation about LLM infrastructure, understand why serving costs what it does, and evaluate serving solutions at a high level.</p>
-
-<p>It doesn&rsquo;t tell the complete story, though. We haven&rsquo;t talked about how to manage KV cache memory efficiently (PagedAttention), how to speed up the inherently sequential decode step (speculative decoding), how to split a model across multiple GPUs for serving (tensor parallelism), or how to reason about the economics of it all. These are the things that separate someone who <em>uses</em> a serving framework from someone who <em>chooses and configures</em> one wisely.</p>
-
-<p>The short version: PagedAttention eliminates KV cache memory waste, speculative decoding gets you 2&ndash;3x speedup on decode, and your cloud bill depends more on how well you batch than how fast your single-request latency is. There. You&rsquo;re 60% of the way.</p>
-
-<p>But if the discomfort of not knowing what&rsquo;s underneath is nagging at you, read on.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 <!--  PAGEDATTENTION                                                    -->
@@ -665,8 +628,6 @@ $0.03 &times; 8,000 = $240/day &asymp; $7,200/month</code></pre>
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 
 <h2>Bringing It All Together</h2>
-
-<p>If you&rsquo;re still with me, thank you. I hope it was worth the journey through GPU memory hierarchies, restaurant analogies, and cost spreadsheets.</p>
 
 <p>We started with the fundamental insight that autoregressive generation makes LLM serving memory-bandwidth-bound, not compute-bound. We discovered that the KV cache&mdash;storing key-value vectors for every prior token at every layer&mdash;dominates the memory budget. We upgraded from static to continuous batching, turning our sit-down restaurant into a conveyor belt that never has empty seats. We borrowed virtual memory from operating systems to build PagedAttention, eliminating KV cache waste. We deployed a small draft model alongside the big target model for speculative decoding, cheating the sequential bottleneck. We split models across GPUs with tensor parallelism, navigated the framework landscape, designed streaming APIs, and stared at the real cost arithmetic of running these systems at scale.</p>
 
