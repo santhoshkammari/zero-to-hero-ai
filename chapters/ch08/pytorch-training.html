@@ -329,18 +329,14 @@
       <!-- ============================================================ -->
       <h2>The Confession</h2>
 
-      <p>I avoided writing a real training loop for longer than I'd like to admit. Every time someone showed me PyTorch code, I'd nod along, copy-paste the loop from a tutorial, change the model class, and pray it worked. When it didn't, I'd stare at the loss curve and wiggle hyperparameters. I didn't understand what <code>zero_grad()</code> actually cleared, or why the graph vanished after <code>.backward()</code>, or what <code>pin_memory</code> was pinning. Finally the discomfort of not understanding the machinery I depended on every day grew unbearable. Here is that dive.</p>
+      <p>PyTorch won because it's honest about what it is — no <code>.fit()</code> hiding the machinery. You write the loop. But that means understanding what <code>zero_grad()</code> actually clears, why the graph vanishes after <code>.backward()</code>, and what <code>pin_memory</code> is pinning. Here is that dive.</p>
 
       <p>PyTorch was released by Facebook AI Research in 2016, building on the Lua-based Torch library. It introduced a radical idea for its time: build the computation graph dynamically as your Python code runs, instead of pre-declaring a static graph. That idea — <strong>define-by-run</strong> — turned out to be what researchers and engineers actually wanted. PyTorch now dominates arXiv, powers Hugging Face, and is increasingly the default in production via TorchServe, ONNX export, and <code>torch.compile</code>.</p>
-
-      <p>Before we start, a heads-up. We're going to walk through tensors, automatic differentiation, multiprocessing, GPU memory management, and even some compiler internals. You don't need to know any of it beforehand. We'll add what we need, one piece at a time.</p>
-
-      <p>This isn't a short journey, but I hope you'll be glad you came.</p>
 
       <!-- ============================================================ -->
       <h2>What We'll Cover</h2>
 
-      <p>Tensors: The Thing That Remembers · Autograd: The Tape Recorder · The Training Loop — Seven Lines That Run the World · Dataset and DataLoader: The Data Pipeline · nn.Module: The Building Block That Registers Itself · Device Management: The Same-Room Rule · Saving and Loading: Checkpoints Done Right · Inference: Two Switches, Not One · Rest Stop · The Patterns That Matter: Gradient Accumulation · Mixed Precision: Two Number Systems · Gradient Checkpointing: Trading Compute for Memory · torch.compile: The JIT That Actually Works · Distributed Training: DDP and FSDP · The Gotchas That Will Eat Your Afternoon · Putting It All Together</p>
+      <p>Tensors: The Thing That Remembers · Autograd: The Tape Recorder · The Training Loop — Seven Lines That Run the World · Dataset and DataLoader: The Data Pipeline · nn.Module: The Building Block That Registers Itself · Device Management: The Same-Room Rule · Saving and Loading: Checkpoints Done Right · Inference: Two Switches, Not One · The Patterns That Matter: Gradient Accumulation · Mixed Precision: Two Number Systems · Gradient Checkpointing: Trading Compute for Memory · torch.compile: The JIT That Actually Works · Distributed Training: DDP and FSDP · The Gotchas That Will Eat Your Afternoon · Putting It All Together</p>
 
       <!-- ============================================================ -->
       <h2>Tensors: The Thing That Remembers</h2>
@@ -679,19 +675,6 @@ with torch.inference_mode():              # switch 2: disable gradient tracking
       <p>After evaluation, remember to switch back: <code>model.train()</code>. Otherwise your next training epoch runs with dropout disabled.</p>
 
       <!-- ============================================================ -->
-      <h2>Rest Stop</h2>
-
-      <p>Congratulations on making it this far. You can stop here if you want.</p>
-
-      <p>You now have a complete mental model of PyTorch training: tensors that record their history, autograd that rewinds the tape, the seven-line training loop, Dataset/DataLoader for feeding data, <code>nn.Module</code> for building models, device management, checkpointing, and inference. This is enough to write a working training pipeline for most projects.</p>
-
-      <p>But it doesn't tell the whole story. Real training runs hit GPU memory limits, take hours or days, run across multiple GPUs, and need every bit of speed the hardware can offer. The next sections cover the patterns that address these realities: gradient accumulation, mixed precision, gradient checkpointing, <code>torch.compile</code>, and distributed training.</p>
-
-      <p>The short version: gradient accumulation simulates larger batches without more memory, mixed precision runs most operations in float16 for 2× speed, gradient checkpointing trades compute for memory by recomputing activations during backward, <code>torch.compile</code> JIT-compiles your model for 15-40% speedup, and DDP/FSDP scale training across GPUs. There. You're 70% of the way.</p>
-
-      <p>But if the discomfort of not knowing what's underneath is nagging at you, read on.</p>
-
-      <!-- ============================================================ -->
       <h2>The Patterns That Matter: Gradient Accumulation</h2>
 
       <p>You want a batch size of 256 but your GPU can only fit 64 samples. The typical advice is "use gradient accumulation." But what does that actually mean, mechanically?</p>
@@ -811,7 +794,8 @@ torch.compile(model, mode='max-autotune')     # benchmarks multiple kernel varia
 
       <p>DDP is the workhorse. Each GPU gets a complete copy of the model and a different slice of the data. After each backward pass, DDP synchronizes gradients across all GPUs using an <strong>all-reduce</strong> operation — typically a ring all-reduce via NCCL, where each GPU communicates only with its two neighbors in a ring topology, passing chunks of gradient tensors in N-1 steps for N GPUs. The clever part: DDP overlaps this communication with the backward pass. It groups gradients into <strong>buckets</strong>, and as soon as a bucket's gradients are ready, the all-reduce starts while the rest of backward continues. The GPU is computing and communicating simultaneously.</p>
 
-<pre><code class="language-python">import torch.distributed as dist
+<pre><code class="language-python">import os
+import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 dist.init_process_group(backend='nccl')
@@ -931,8 +915,6 @@ for epoch in range(20):
             'val_loss': avg_val,
         }, 'best_model.pt')
 </code></pre>
-
-      <p>If you're still with me, thank you. I hope it was worth it.</p>
 
       <p>We started with three hardcoded tensors and a five-line loop. We learned how autograd records a computation graph like a tape recorder and then erases the tape during backward. We built the canonical training loop and understood why each of its seven lines exists. We saw how DataLoader orchestrates parallel workers, pinned memory, and prefetching to keep the GPU fed. We opened up <code>nn.Module</code> and found the hidden <code>__setattr__</code> that auto-registers parameters. And we covered the patterns that make real training fast: mixed precision, gradient accumulation, checkpointing, compilation, and distribution.</p>
 
