@@ -323,38 +323,13 @@
 <!-- OPENING — Personal confession                    -->
 <!-- ════════════════════════════════════════════════ -->
 
-<p>I put off building a RAG system for an embarrassingly long time. Every time someone asked me why their chatbot was making up facts, I'd mutter something about "grounding" and "retrieval pipelines" and then quietly change the subject. I knew the rough shape — search some documents, stuff them into the prompt — but I didn't actually understand what was happening under the hood. Why did some chunks retrieve well and others didn't? What was a vector database actually doing? Why did reranking make such a dramatic difference? Finally the discomfort of not knowing grew too great for me. Here is that dive.</p>
-
-<p>Retrieval-Augmented Generation — RAG — was introduced by Lewis et al. in a 2020 paper that combined a neural retriever with a seq2seq generator, trained end-to-end. The core idea is deceptively straightforward: before asking a language model to answer a question, first go find the relevant documents and hand them over. The model reads the documents instead of guessing from memory. In practice today, most production RAG systems use off-the-shelf embedding models and separate LLMs, and the real engineering challenge is everything in between.</p>
-
-<p>Before we start, a heads-up. We're going to be talking about embeddings, similarity metrics, approximate nearest-neighbor search, and some information retrieval theory, but you don't need to know any of it beforehand. We'll add what we need, one piece at a time.</p>
-
-<p>This isn't a short journey, but I hope you'll be glad you came.</p>
+<p>RAG — Retrieval-Augmented Generation — solves a fundamental problem: language models hallucinate because they guess from memory instead of reading source documents. The fix is conceptually simple — search relevant documents first, then hand them to the model — but the real engineering challenge is everything in between.</p>
 
 <!-- ════════════════════════════════════════════════ -->
 <!-- TABLE OF CONTENTS                                -->
 <!-- ════════════════════════════════════════════════ -->
 
-<div style="margin: 2em 0; padding: 1.2em 1.5em; border-left: 3px solid var(--accent, #6c63ff); background: var(--bg-alt, #f8f9fa); border-radius: 4px;">
-  <strong>The journey ahead</strong><br><br>
-  Why LLMs hallucinate<br>
-  The retrieve-then-generate idea<br>
-  Our running example: the company wiki bot<br>
-  Turning documents into numbers<br>
-  Similarity: cosine, dot product, and the geometry of meaning<br>
-  Keyword search and why it still matters<br>
-  Hybrid search: getting the best of both<br>
-  Chopping documents into chunks<br>
-  Vector databases and the HNSW trick<br>
-  Rest stop<br>
-  The reranking stage: bi-encoders vs. cross-encoders<br>
-  Building the prompt with retrieved context<br>
-  Advanced RAG: HyDE, Self-RAG, and Corrective RAG<br>
-  Evaluating RAG: the RAGAS framework<br>
-  Production realities: latency, cost, and freshness<br>
-  Wrap-up<br>
-  Resources
-</div>
+
 
 <!-- ════════════════════════════════════════════════ -->
 <!-- WHY LLMs HALLUCINATE                             -->
@@ -370,7 +345,7 @@
 
 <p>There are three specific flavors of hallucination that matter for practical systems. First, <strong>knowledge cutoff</strong>: the model was trained on data up to some date, and everything after that is invisible. Second, <strong>knowledge confusion</strong>: the model has seen similar-looking facts about different entities and blurs them together — it might give you Microsoft's revenue when you asked about Acme's. Third, <strong>confabulation</strong>: when the model has no relevant knowledge at all, it generates plausible-sounding fiction, sometimes even fabricating citations to papers that don't exist.</p>
 
-<p>I'll be honest — the first time I saw a model invent a citation with a fake DOI, real-looking author names, and a plausible journal title, it shook me. That's when I realized this wasn't a minor nuisance. It was a fundamental architectural limitation.</p>
+<p>A model inventing a citation with a fake DOI, real-looking author names, and a plausible journal title isn't a minor nuisance — it's a fundamental architectural limitation.</p>
 
 <!-- ════════════════════════════════════════════════ -->
 <!-- THE RETRIEVE-THEN-GENERATE IDEA                  -->
@@ -497,7 +472,7 @@ print(f"Euclidean:    {euclidean:.4f}") # Lower = closer
 
 <p>For our wiki bot, BM25 would match "money back" to the refund page because those exact words appear there. It would match "ERR-4072" to whatever document contains that exact string. The weakness? BM25 can't handle synonyms or paraphrases. "Reimbursement" and "refund" are the same concept, but BM25 treats them as completely unrelated tokens because they share no characters.</p>
 
-<p>I'll be honest — when I first started building RAG systems, I dismissed BM25 as a relic. "We have neural embeddings now, why would anyone count words?" It took a production failure involving part numbers and error codes to teach me that exact-match retrieval isn't optional. It's complementary.</p>
+<p>BM25 might look like a relic in the age of neural embeddings, but exact-match retrieval isn't optional — it's complementary. Production failures involving part numbers and error codes prove that keyword search handles cases where semantic search can't.</p>
 
 <pre><code>from rank_bm25 import BM25Okapi
 
@@ -624,31 +599,18 @@ for i, c in enumerate(chunks):
 
 <p><strong>Qdrant</strong> is open-source, written in Rust, and focuses on performance. It supports filtering during search (e.g., "find the nearest vector, but only among documents from the last 30 days"), which is useful in production where you often need metadata filters alongside similarity.</p>
 
-<p>I'll share something that took me too long to internalize: the choice of vector database matters far less than the quality of your embeddings and chunks. I've seen teams spend weeks evaluating databases and then use a default chunking strategy that lost them more retrieval quality than any database choice would recover. Get the fundamentals right first.</p>
+<p>A key insight: the choice of vector database matters far less than the quality of your embeddings and chunks. Teams that spend weeks evaluating databases but use a default chunking strategy lose more retrieval quality than any database choice would recover. Get the fundamentals right first.</p>
 
 <!-- ════════════════════════════════════════════════ -->
 <!-- REST STOP                                        -->
 <!-- ════════════════════════════════════════════════ -->
 
-<h2>Rest Stop</h2>
-
-<p>Congratulations on making it this far. You can stop here if you want.</p>
-
-<p>Here's the mental model you now have: a RAG system takes a user's question, converts it to a vector, searches a database of pre-embedded document chunks for the most similar ones, and hands those chunks to a language model as context for generating an answer. You understand that dense retrieval (embeddings) catches semantic matches, BM25 catches exact keyword matches, and hybrid search combines both. You know that documents get split into chunks so each chunk's embedding is focused, and that vector databases use HNSW to search millions of chunks in milliseconds.</p>
-
-<p>That mental model is genuinely useful. You could build a working RAG system with what you know so far, and it would handle the majority of straightforward Q&A use cases.</p>
-
-<p>It doesn't tell the complete story, though. The chunks that the retriever returns aren't always the best ones — they're the ones with the closest embeddings, which isn't the same thing. There's a technique called reranking that dramatically improves retrieval quality, and there are advanced patterns that make RAG systems self-correcting. There's also the uncomfortable question of how you evaluate whether any of this is working.</p>
-
-<p>But if the discomfort of not knowing what's underneath is nagging at you, read on.</p>
-
-<!-- ════════════════════════════════════════════════ -->
 <!-- RERANKING                                        -->
 <!-- ════════════════════════════════════════════════ -->
 
 <h2>The Reranking Stage: Bi-Encoders vs. Cross-Encoders</h2>
 
-<p>Here's a limitation of the retrieval approach we've built so far that bothered me for a while before I understood what was going on.</p>
+<p>There's a fundamental limitation in the retrieval approach we've built so far.</p>
 
 <p>Our embedding model is a <strong>bi-encoder</strong>. It encodes the query and each document independently — they never "see" each other during encoding. The query becomes a vector. The document becomes a vector. We compare the two vectors with a dot product. This is what makes retrieval fast: we can pre-compute all the document vectors offline and only compute one query vector at search time.</p>
 
@@ -830,8 +792,6 @@ evaluation_sample = {
 <!-- ════════════════════════════════════════════════ -->
 
 <h2>Wrap-Up</h2>
-
-<p>If you're still with me, thank you. I hope it was worth it.</p>
 
 <p>We started with a deceptively straightforward problem — language models guess when they should look things up — and built the entire retrieval-augmented generation pipeline from that single observation. We converted documents to embeddings, measured similarity with cosine and dot product, searched with both keywords and neural vectors, merged results with RRF, chopped documents into focused chunks, indexed them in vector databases using HNSW, refined results with cross-encoder reranking, constructed prompts that keep the model grounded, explored advanced patterns like HyDE and Corrective RAG for handling edge cases, evaluated the whole system with RAGAS metrics that isolate exactly what's failing, and confronted the production realities of latency, cost, and freshness.</p>
 

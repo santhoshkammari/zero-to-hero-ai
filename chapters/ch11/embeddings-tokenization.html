@@ -320,39 +320,11 @@
 <!-- ═══════════ End Table of Contents ═══════════ -->
 <!-- ═══════════ OPENING ═══════════ -->
 
-<p>I avoided thinking about word embeddings for an embarrassingly long time. Every time I saw a diagram of vectors floating in space with arrows labeled "king − man + woman = queen," I'd nod, say "neat," and move on without actually understanding how raw text becomes a list of numbers that a neural network can chew on. I told myself the details didn't matter — that I could treat embeddings as a black box and tokenizers as someone else's problem. Finally the discomfort of not knowing what's happening between "the user typed a sentence" and "the model saw a tensor" grew too great for me. Here is that dive.</p>
+<p>Understanding how raw text becomes a list of numbers that a neural network can process is essential — embeddings and tokenization form the front door of every language model. Nothing else works until they do.</p>
 
 <p>Word embeddings are dense numerical representations of words — compact vectors, typically 100 to 1,024 dimensions, where geometric proximity encodes semantic similarity. The idea traces back to distributional semantics in the 1950s, but the modern revolution started in 2013 with Word2Vec and never really stopped. Tokenization is the less glamorous sibling: the process of deciding where to cut a string of text into pieces before handing those pieces to an embedding layer. Together, embeddings and tokenization form the front door of every language model. Nothing else works until they do.</p>
 
-<p>Before we start, a heads-up. We're going to build everything from scratch — one-hot vectors, prediction tasks, co-occurrence matrices, merge algorithms — but you don't need to know any of it beforehand. We'll add what we need, one piece at a time.</p>
 
-<p>This isn't a short journey, but I hope you'll be glad you came.</p>
-
-<!-- ═══════════ TABLE OF CONTENTS ═══════════ -->
-
-<div class="callout callout-info" style="background: var(--bg-secondary); border-left-color: var(--accent);">
-  <div class="callout-label">What We'll Cover</div>
-  <p style="margin:0; line-height:1.9;">
-    One-hot encoding and why it fails<br>
-    The distributional hypothesis<br>
-    Word2Vec: Skip-gram and CBOW<br>
-    The softmax bottleneck and negative sampling<br>
-    GloVe: the global co-occurrence view<br>
-    FastText: subword-aware embeddings<br>
-    Cosine similarity and embedding geometry<br>
-    <em>Rest Stop</em><br>
-    The polysemy problem<br>
-    ELMo: context enters the picture<br>
-    From ELMo to BERT: contextual embeddings arrive<br>
-    The vocabulary problem and why tokenization matters<br>
-    Byte Pair Encoding (BPE)<br>
-    WordPiece<br>
-    Unigram and SentencePiece<br>
-    Byte-level BPE<br>
-    Vocabulary size and embedding dimension tradeoffs<br>
-    Positional embeddings: giving order to orderless models<br>
-  </p>
-</div>
 
 <!-- ═══════════ ONE-HOT ENCODING ═══════════ -->
 
@@ -449,7 +421,7 @@
 
 <p>Each training step now touches k + 1 words instead of 100,000. That's a reduction from O(V) to O(k), where k is typically 5 to 15. Larger datasets need fewer negative samples (k = 5 works well); smaller datasets benefit from more (k = 15).</p>
 
-<p>One subtle detail: the negative words aren't sampled uniformly. They're sampled proportional to their frequency raised to the 3/4 power. I'll be honest — I'm still developing my intuition for why 3/4 specifically. Mikolov's team tried several exponents and 3/4 won empirically. The effect is to slightly flatten the frequency distribution: common words like "the" still get sampled more often as negatives (which makes sense — they provide useful contrast), but rare words get sampled more than raw frequency would suggest (which helps their embeddings train faster). The exponent 3/4 isn't theoretically derived; it's an empirical sweet spot that has proven robust across many settings.</p>
+<p>One subtle detail: the negative words aren't sampled uniformly. They're sampled proportional to their frequency raised to the 3/4 power. Mikolov's team tried several exponents and 3/4 won empirically. The effect is to slightly flatten the frequency distribution: common words like "the" still get sampled more often as negatives (which makes sense — they provide useful contrast), but rare words get sampled more than raw frequency would suggest (which helps their embeddings train faster). The exponent 3/4 isn't theoretically derived; it's an empirical sweet spot that has proven robust across many settings.</p>
 
 <p>One more trick worth mentioning: <strong>subsampling frequent words</strong>. Words like "the" and "is" appear in nearly every context window. They contribute very little information — "movie" appearing near "the" tells us nothing — but they dominate the training data. Word2Vec randomly discards high-frequency words during training, with a drop probability that increases with word frequency. This speeds up training and, counterintuitively, <em>improves</em> embedding quality because the remaining pairs are more informative.</p>
 
@@ -549,17 +521,6 @@
 <p>Why cosine instead of Euclidean distance? Because cosine ignores magnitude and focuses on direction. This matters because embedding magnitude tends to correlate with word frequency — common words often have larger norms. We don't want "the" to be "similar" to everything; we want direction to carry the semantic signal. Cosine factors out the length.</p>
 
 <p>Here's a result that trips people up: "good" and "bad" typically have moderate-to-high cosine similarity, around 0.5 to 0.7. That feels wrong — they're antonyms! But distributional similarity means "used in similar contexts," and antonyms fill identical syntactic slots: "the food was ___," "that was a ___ idea," "how ___ was it?" The model can't distinguish "similar meaning" from "similar usage." If you need a model that separates sentiment polarity, raw word embeddings aren't enough. You'll need a task-specific layer on top.</p>
-
-<!-- ═══════════ REST STOP ═══════════ -->
-
-<div class="callout callout-warning" style="border-left-color: var(--accent);">
-  <div class="callout-label">🛑 Rest Stop</div>
-  <p>Congratulations on making it this far. You can stop here if you want.</p>
-  <p>You now have a solid mental model of static word embeddings: one-hot vectors are wasteful and meaning-blind. Word2Vec learns dense vectors by predicting which words appear near which, using negative sampling to make it tractable. GloVe achieves similar results by factorizing a global co-occurrence matrix. FastText extends the idea to sub-word character n-grams, handling misspellings and rare words gracefully. Cosine similarity measures how much two embeddings point in the same direction.</p>
-  <p>This model doesn't tell the complete story. Every method we've seen assigns exactly <strong>one</strong> vector per word, regardless of context. "Bank" gets the same embedding whether it means a financial institution or the side of a river. For many tasks, this ceiling is real and painful.</p>
-  <p>The short version of what comes next: contextual embeddings (ELMo, BERT) generate different vectors for the same word depending on the surrounding sentence. Then we'll tackle tokenization — how text gets chopped into pieces before embeddings ever enter the picture. There. You're 60% of the way through.</p>
-  <p>But if the discomfort of not knowing what's underneath is nagging at you, read on.</p>
-</div>
 
 <!-- ═══════════ CONTEXTUAL EMBEDDINGS ═══════════ -->
 
@@ -759,8 +720,6 @@
 <!-- ═══════════ WRAP-UP ═══════════ -->
 
 <h2>The Full Picture</h2>
-
-<p>If you're still with me, thank you. I hope it was worth it.</p>
 
 <p>We started with one-hot vectors — wasteful, enormous, and meaning-blind. We learned that distributional context is all you need to discover word meaning, and built that insight into Skip-gram and CBOW. We tamed the softmax bottleneck with negative sampling, saw GloVe take a global view through co-occurrence matrices, and watched FastText break words into character n-grams so that no word is ever truly unknown. We hit the ceiling of static embeddings, where every word gets one vector regardless of context, and watched ELMo and BERT shatter that ceiling by making representations dynamic — shaped by the full sentence. Then we turned to the less glamorous but equally critical question of tokenization: BPE merging character pairs bottom-up, WordPiece choosing merges by likelihood, Unigram pruning top-down, and byte-level BPE eliminating unknown tokens forever. We closed with the quiet but powerful choices of vocabulary size, embedding dimension, and positional encodings.</p>
 
