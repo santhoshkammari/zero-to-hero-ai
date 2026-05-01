@@ -325,33 +325,6 @@
 
 <p>Data quality and preparation is the unglamorous machinery that sits between raw data and a trained model. It encompasses everything from how labels are created and validated, to how training examples are synthetically expanded, to how you catch silent data corruption before it poisons a production system. The field has matured rapidly — tools like Snorkel, Cleanlab, Great Expectations, and Evidently AI have turned what used to be ad-hoc scripts into principled frameworks.</p>
 
-<p>Before we start, a heads-up. We'll be writing Python, computing some statistics, and working with a few libraries you may not have seen before. You don't need to know any of them beforehand. We'll add what we need, one piece at a time.</p>
-
-<p>This isn't a short journey, but I hope you'll be glad you came.</p>
-
-<!-- ═══════════ Table of Contents ═══════════ -->
-
-<div class="tldr">
-  <div class="tldr-label">What We'll Cover</div>
-  <p style="white-space:pre-line">
-    The Labeling Problem
-    Writing Annotation Guidelines That Actually Work
-    Measuring Annotator Agreement
-    Weak Supervision — When You Can't Afford to Label Everything
-    Active Learning — Labeling the Examples That Matter Most
-    Finding Bad Labels After the Fact
-    Data Augmentation — Manufacturing Training Signal
-    Mixing Strategies and Text Augmentation
-    Test-Time Augmentation
-    Rest Stop
-    Data Validation — Unit Tests for DataFrames
-    Drift Detection — When Production Stops Looking Like Training
-    Data Contracts
-    Wrap-Up
-    Resources
-  </p>
-</div>
-
 <!-- ═══════════ The Labeling Problem ═══════════ -->
 <h2>The Labeling Problem</h2>
 
@@ -534,22 +507,16 @@ train_transform = T.Compose([
 
 <pre><code>import torch
 
-predictions = []
-for _ in range(5):
-    augmented = train_transform(image)
-    pred = model(augmented.unsqueeze(0))
-    predictions.append(pred)
-final_pred = torch.stack(predictions).mean(dim=0)</code></pre>
+model.eval()
+with torch.no_grad():
+    predictions = []
+    for _ in range(5):
+        augmented = train_transform(image)
+        pred = model(augmented.unsqueeze(0))
+        predictions.append(pred)
+    final_pred = torch.stack(predictions).mean(dim=0)</code></pre>
 
 <p>Each pass through the loop applies a different random augmentation. The five predictions represent the model's judgment from five slightly different perspectives, and averaging them cancels out noise. The tradeoff is inference latency — five forward passes take five times as long. Use TTA when accuracy matters more than speed, like in medical diagnosis or competition submissions.</p>
-
-<!-- ═══════════ Rest Stop ═══════════ -->
-<div class="callout callout-info">
-  <div class="callout-label">Rest Stop</div>
-  <p>Congratulations on making it this far. If you want to stop here, you can. You now understand labeling strategies (manual, weak supervision, active learning), how to audit label quality with Cleanlab, and how data augmentation manufactures training signal. That's a solid mental model for data preparation, and it covers about 70% of what you'll use in practice.</p>
-  <p>What we haven't covered yet is what happens after you deploy. Your data is clean today, but production data changes. Columns shift format, distributions drift, upstream providers alter their schemas. The remaining sections cover how to catch these problems before they poison your model. The short version: write automated checks for your data the same way you write unit tests for your code.</p>
-  <p>But if the thought of silent data corruption nagging at you in production is uncomfortable, read on.</p>
-</div>
 
 <!-- ═══════════ Data Validation ═══════════ -->
 <h2>Data Validation — Unit Tests for DataFrames</h2>
@@ -563,6 +530,7 @@ final_pred = torch.stack(predictions).mean(dim=0)</code></pre>
 <pre><code>import great_expectations as gx
 
 context = gx.get_context()
+validator = context.sources.pandas_default.read_dataframe(df)
 
 # Each expectation is a single assertion about your data
 validator.expect_column_values_to_not_be_null("user_id")
@@ -649,8 +617,6 @@ report.save_html("drift_report.html")</code></pre>
 
 <!-- ═══════════ Wrap-Up ═══════════ -->
 <h2>Wrap-Up</h2>
-
-<p>If you're still with me, thank you. I hope it was worth the journey.</p>
 
 <p>We started with a question that sounds trivial — how do you attach a label to a piece of data? — and ended up building an entire defense system. We wrote annotation guidelines, measured annotator agreement with Cohen's Kappa, used Snorkel's labeling functions to scale labeling without scaling humans, deployed active learning to spend our annotation budget where it matters most, audited existing labels with Cleanlab, manufactured training signal through augmentation, and set up validation gates and drift detection to protect production systems from silent data corruption.</p>
 

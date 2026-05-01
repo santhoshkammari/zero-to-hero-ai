@@ -310,38 +310,21 @@
   Defining contracts with Abstract Base Classes and Protocols<br>
   When to use inheritance (frameworks) vs composition (your own designs)<br>
   Template Method, Strategy, Observer, and Registry patterns in ML code<br>
-  Key dunder methods: __call__, __len__, __getitem__, __enter__, __exit__<br>
+  Key dunder methods: __call__, __len__, __getitem__, __enter__, __exit__, __iter__<br>
+  @property, @classmethod, @staticmethod — the method decorators you use daily<br>
   Dataclasses for boilerplate-free configs and Protocols for static typing<br>
   Anti-patterns that destroy codebases: God Classes, deep hierarchies, global state
 </nav>
 <!-- ═══════════ End Table of Contents ═══════════ -->
 <!-- ═══════════════ PHASE 1: OPENING ═══════════════ -->
 
-<p>I avoided taking OOP seriously for longer than I'd like to admit. For years, I wrote Python the way most data scientists do — functions, global variables, scripts that grew to 800 lines, and a vague feeling that classes were for "software engineers," not people who train models. Every time someone mentioned design patterns, my eyes glazed over. Then I tried to add a second model variant to a training pipeline I'd built, and the whole thing collapsed like a house of cards. Not because the math was wrong, but because I had no structure. Functions called other functions that mutated shared state. One change broke three things. Here is that dive.</p>
+<p>I tried to add a second model variant to a training pipeline and the whole thing collapsed. Not because the math was wrong, but because I had no structure — functions calling functions that mutated shared state. One change broke three things. That experience taught me why OOP exists.</p>
 
-<p>Object-oriented programming has been around since the 1960s, popularized by Smalltalk and later C++ and Java. In the Python ML world, it's the skeleton beneath every framework you touch — scikit-learn, PyTorch, HuggingFace Transformers, LangChain, even the OpenAI SDK. You interact with it every time you write <code>model.fit(X, y)</code> or <code>model(input)</code>. But the real reason OOP matters in production ML isn't about syntax. It's about what happens when ten engineers need to extend the same system without breaking each other's work.</p>
+<p>OOP is the skeleton beneath every ML framework you touch — scikit-learn, PyTorch, HuggingFace Transformers, LangChain, the OpenAI SDK. You interact with it every time you write <code>model.fit(X, y)</code> or <code>model(input)</code>. The real reason it matters in production ML: ten engineers need to extend the same system without breaking each other's work.</p>
 
-<p>Before we start, a heads-up. We're going to be building a tiny training framework from scratch, and along the way we'll encounter inheritance, composition, design patterns, and some Python internals. You don't need to know any of it beforehand. We'll add the concepts we need one at a time, with explanation.</p>
-
-<p>This isn't a short journey, but I hope you'll be glad you came.</p>
+<p>We'll build a tiny training framework from scratch, adding concepts one at a time — encapsulation, contracts, inheritance, composition, patterns, and Python internals.</p>
 
 <!-- ═══════════════ PHASE 2: TOC ═══════════════ -->
-
-<div class="callout-info" style="background: var(--bg-secondary); border-left-color: var(--accent-primary);">
-  <p style="margin:0; line-height:1.9;">
-    The spaghetti script<br>
-    The first class — encapsulation as self-defense<br>
-    The contract — why interfaces matter<br>
-    Inheritance: when the framework says so<br>
-    Composition: when you're building your own thing<br>
-    Rest stop<br>
-    The patterns you'll actually see in production<br>
-    The dunder methods that earn their keep<br>
-    The modern toolkit — dataclasses and protocols<br>
-    The anti-patterns that kill codebases<br>
-    Resources
-  </p>
-</div>
 
 <!-- ═══════════════ THE SPAGHETTI SCRIPT ═══════════════ -->
 <h2>The Spaghetti Script</h2>
@@ -352,6 +335,7 @@
 
 # globals everywhere
 train_data = None
+targets = None
 model_weights = None
 learning_rate = 0.01
 history = []
@@ -375,9 +359,7 @@ def evaluate():
     return np.mean((preds - targets) ** 2)
 </code></pre>
 
-<p>This works. For a single experiment, on a single machine, by a single person, it works fine. The pain begins when you try to do anything beyond that. Want to train two models with different learning rates at the same time? You can't — they share the same globals. Want a colleague to add a different optimizer? They have to read every function to understand what state exists. Want to test the training logic without loading real data? Good luck — everything is wired to everything.</p>
-
-<p>I'll be honest — I wrote code like this for a couple of years. It felt productive. And then it didn't.</p>
+<p>This works for a single experiment, by a single person. The pain begins when you try to extend it. Two models with different learning rates? They share the same globals. A colleague adding a different optimizer? They must read every function to understand what state exists. Testing training logic without real data? Everything is wired to everything.</p>
 
 <!-- ═══════════════ THE FIRST CLASS ═══════════════ -->
 <h2>The First Class — Encapsulation as Self-Defense</h2>
@@ -479,7 +461,7 @@ def evaluate(model: Predictor, X_test, y_test):
 # mypy will catch it if LinearModel is missing predict().
 </code></pre>
 
-<p>I'm still developing my intuition for when ABC vs Protocol is the right call. The rule of thumb I've landed on: use ABC when you need runtime <code>isinstance()</code> checks or when your base class provides default method implementations. Use Protocol when you want maximum flexibility, especially with third-party classes you can't modify. In newer codebases, I find myself reaching for Protocol more often.</p>
+<p><strong>ABC vs Protocol rule of thumb:</strong> Use ABC when you need runtime <code>isinstance()</code> checks or when your base class provides default implementations. Use Protocol when you want maximum flexibility, especially with third-party classes you can't modify. In newer codebases, Protocol is increasingly the default.</p>
 
 <!-- ═══════════════ INHERITANCE ═══════════════ -->
 <h2>Inheritance: When the Framework Says So</h2>
@@ -569,7 +551,32 @@ print(D.__mro__)
 # (D, B, C, A, object)
 </code></pre>
 
-<p>Every class appears exactly once in the MRO, and a class always appears before its parents. When you see <code>class SGDClassifier(BaseSGD, ClassifierMixin)</code> in sklearn's source, this is the machinery that makes it work without ambiguity. I still occasionally sketch the MRO on paper for complex hierarchies. It's one of those things where the algorithm is well-defined but the intuition takes a while to internalize.</p>
+<p>Every class appears exactly once in the MRO, and a class always appears before its parents. When you see <code>class SGDClassifier(BaseSGD, ClassifierMixin)</code> in sklearn's source, this is the machinery that makes it work without ambiguity.</p>
+
+<h3>Writing Cooperative super() Correctly</h3>
+
+<p>The MRO only works smoothly if every class in the chain cooperates — accepting and forwarding arguments it doesn't recognize. The pattern: accept <code>**kwargs</code>, use what you need, forward the rest.</p>
+
+<pre><code class="language-python">class Loggable:
+    def __init__(self, verbose=False, **kwargs):
+        super().__init__(**kwargs)   # forward remaining kwargs
+        self.verbose = verbose
+
+class Serializable:
+    def __init__(self, save_path=None, **kwargs):
+        super().__init__(**kwargs)
+        self.save_path = save_path
+
+class MyModel(Loggable, Serializable):
+    def __init__(self, hidden_size, **kwargs):
+        super().__init__(**kwargs)   # passes verbose, save_path through chain
+        self.hidden_size = hidden_size
+
+# All kwargs find their target class in the MRO
+model = MyModel(hidden_size=256, verbose=True, save_path="/tmp/model.pt")
+</code></pre>
+
+<p>Without <code>**kwargs</code> forwarding, adding a mixin to an existing class breaks <code>__init__</code> chains. This is the most common cooperative multi-inheritance bug — a class that swallows keyword arguments instead of forwarding them.</p>
 
 <!-- ═══════════════ COMPOSITION ═══════════════ -->
 <h2>Composition: When You're Building Your Own Thing</h2>
@@ -635,21 +642,10 @@ trainer_adam = Trainer(AdamOptimizer(lr=0.001))
 
 <p>Here's the rule of thumb I use: inherit when a framework gives you a base class with real functionality behind it. Compose when you're building your own system and need flexibility. In four years of production ML work, the ratio has been roughly 20% inheritance, 80% composition.</p>
 
-<!-- ═══════════════ REST STOP ═══════════════ -->
-<h2>Rest Stop</h2>
-
-<p>Congratulations on making it this far. You can stop here if you want.</p>
-
-<p>At this point, you have a mental model that covers the foundation: classes as sealed envelopes for state, interfaces as contracts, inheritance for extending frameworks, and composition for building your own systems. That's genuinely enough for most day-to-day ML work. If someone asks you in an interview why you'd use composition over inheritance, you can point to our minitrainer example and explain the combinatorial explosion that inheritance creates.</p>
-
-<p>The short version of what's left: design patterns are the recurring shapes you'll see when reading framework source code; dunder methods are the hooks Python gives you to make objects behave like built-in types; dataclasses and protocols are the modern tools that reduce boilerplate; and anti-patterns are the traps that turn codebases into unmaintainable messes. There — you're 60% of the way through.</p>
-
-<p>But if the discomfort of not knowing what's underneath is nagging at you, read on.</p>
-
 <!-- ═══════════════ DESIGN PATTERNS ═══════════════ -->
 <h2>The Patterns You'll Actually See in Production</h2>
 
-<p>I used to think design patterns were an enterprise Java thing — abstract factories and visitor patterns and twenty classes to print "hello world." Then I started reading PyTorch and HuggingFace source code, and I realized I'd been using these patterns all along. I was living in the design patterns house without knowing the names of the rooms.</p>
+<p>Design patterns sound like enterprise Java, but you're already using them — every <code>nn.Module</code> subclass is a Template Method, every optimizer you pass in is a Strategy. Let's name what you already know.</p>
 
 <h3>Template Method</h3>
 
@@ -691,7 +687,6 @@ hook = model.net[0].register_forward_hook(log_activations)
 
 <p>OpenAI's Python SDK uses the same idea. Every API resource — completions, files, models — is a class inheriting from a base <code>APIResource</code>. <code>ChatCompletion.create()</code> is a classmethod (a factory) that handles HTTP, auth, serialization, and error handling behind a clean interface. You call one method; an entire orchestra of networking code plays behind the curtain.</p>
 
-<p>The limitation of all these patterns is that they have to be <em>recognized</em> to be useful. If you don't know the template method pattern exists, PyTorch's <code>__call__</code>-wraps-<code>forward()</code> trick looks like arbitrary framework magic. Once you see the pattern, the magic dissolves into a sensible design decision. That's the whole point of naming patterns — not to create jargon, but to make the architecture legible.</p>
 
 <!-- ═══════════════ DUNDER METHODS ═══════════════ -->
 <h2>The Dunder Methods That Earn Their Keep</h2>
@@ -738,7 +733,108 @@ class Timer:
 
 <p><strong><code>__repr__</code></strong> is for debugging. It controls what you see when you type an object's name in the REPL or print it. Sklearn auto-generates these from <code>get_params()</code>, which is why printing a model shows <code>RandomForestClassifier(n_estimators=100, ...)</code> instead of <code>&lt;sklearn.ensemble._forest.RandomForestClassifier object at 0x...&gt;</code>. If you define only one string method on your class, make it <code>__repr__</code>.</p>
 
-<p>That's the core set. There are others — <code>__eq__</code> and <code>__hash__</code> for making objects work as dict keys, <code>__iter__</code> for making objects iterable — but you can look those up when you need them. The ones above are the ones that show up in framework source code daily.</p>
+<p><strong><code>__iter__</code> and <code>__next__</code></strong> make objects iterable — essential for streaming datasets that don't fit in memory.</p>
+
+<pre><code class="language-python">class BatchIterator:
+    def __init__(self, X, y, batch_size=32):
+        self.X, self.y = X, y
+        self.batch_size = batch_size
+        self.idx = 0
+
+    def __iter__(self):
+        self.idx = 0
+        return self
+
+    def __next__(self):
+        if self.idx >= len(self.X):
+            raise StopIteration
+        sl = slice(self.idx, self.idx + self.batch_size)
+        self.idx += self.batch_size
+        return self.X[sl], self.y[sl]
+
+# for X_batch, y_batch in BatchIterator(X, y, batch_size=64):
+#     train_step(X_batch, y_batch)
+</code></pre>
+
+<!-- ═══════════════ PROPERTY AND CLASSMETHODS ═══════════════ -->
+<h2>@property, @classmethod, @staticmethod</h2>
+
+<p><strong><code>@property</code></strong> turns a method into a read-only attribute. This is everywhere in ML — <code>model.device</code>, <code>dataset.num_classes</code>, <code>tokenizer.vocab_size</code>. Use it for computed attributes that feel like data but need logic behind them.</p>
+
+<pre><code class="language-python">class Dataset:
+    def __init__(self, X, y):
+        self._X = X
+        self._y = y
+
+    @property
+    def num_classes(self):
+        return len(set(self._y))
+
+    @property
+    def shape(self):
+        return self._X.shape
+
+ds = Dataset(X_train, y_train)
+ds.num_classes   # no parentheses — looks like an attribute
+# ds.num_classes = 5  → AttributeError (read-only by default)
+</code></pre>
+
+<p>Add a <code>@name.setter</code> if you need write access with validation:</p>
+
+<pre><code class="language-python">class Trainer:
+    def __init__(self, lr=0.01):
+        self._lr = lr
+
+    @property
+    def learning_rate(self):
+        return self._lr
+
+    @learning_rate.setter
+    def learning_rate(self, value):
+        if value <= 0:
+            raise ValueError("Learning rate must be positive")
+        self._lr = value
+</code></pre>
+
+<p><strong><code>@classmethod</code></strong> receives the class (not instance) as first argument. The canonical use: alternative constructors. Every <code>from_pretrained()</code>, <code>from_config()</code>, <code>from_dict()</code> you've ever called is a classmethod.</p>
+
+<pre><code class="language-python">import json
+
+class ModelConfig:
+    def __init__(self, hidden_size, num_layers, dropout):
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.dropout = dropout
+
+    @classmethod
+    def from_json(cls, path):
+        with open(path) as f:
+            data = json.load(f)
+        return cls(**data)   # cls, not ModelConfig — works with subclasses
+
+    @classmethod
+    def small(cls):
+        return cls(hidden_size=128, num_layers=2, dropout=0.1)
+
+# ModelConfig.from_json("config.json")
+# ModelConfig.small()
+</code></pre>
+
+<p>Why <code>cls</code> instead of hardcoding the class name? Because subclasses inherit the classmethod and <code>cls</code> will be the subclass — making factories work across hierarchies.</p>
+
+<p><strong><code>@staticmethod</code></strong> is just a plain function namespaced inside a class. No <code>self</code>, no <code>cls</code>. Use it for utility logic that belongs conceptually to the class but doesn't need instance or class state.</p>
+
+<pre><code class="language-python">class Metrics:
+    @staticmethod
+    def mse(y_true, y_pred):
+        return np.mean((y_true - y_pred) ** 2)
+
+    @staticmethod
+    def rmse(y_true, y_pred):
+        return np.sqrt(Metrics.mse(y_true, y_pred))
+</code></pre>
+
+<p><strong>When to use which:</strong> regular method when you need <code>self</code>, classmethod when you need the class (alternative constructors, factory patterns), staticmethod when you need neither but want the function logically grouped with the class. If in doubt, make it a regular method or a module-level function.</p>
 
 <!-- ═══════════════ MODERN TOOLKIT ═══════════════ -->
 <h2>The Modern Toolkit — Dataclasses and Protocols</h2>
@@ -790,18 +886,12 @@ cfg == cfg2  # True — __eq__ compares all fields automatically
 
 <h3>Premature Abstraction</h3>
 
-<p>This is the subtlest anti-pattern, and the one I still struggle with. You build one model, and you immediately abstract it into a <code>BaseModel</code> with three abstract methods and a factory pattern — before you know whether you'll ever build a second model. The abstraction adds complexity with no payoff. The rule I try to follow: wait until you have two or three concrete implementations before extracting a shared interface. Let the pattern emerge from the code, rather than imposing it upfront.</p>
-
-<p>No one fully agrees on the right level of abstraction, by the way. I've seen teams with too little structure (everything is functions) and teams with too much (seven layers of interfaces before any real logic). Finding the middle ground is a judgment call that gets better with experience but never becomes automatic.</p>
+<p>This is the subtlest anti-pattern. You build one model and immediately abstract it into a <code>BaseModel</code> with three abstract methods and a factory pattern — before you know whether you'll ever build a second model. The rule: wait until you have two or three concrete implementations before extracting a shared interface. Let the pattern emerge from code, rather than imposing it upfront.</p>
 
 <!-- ═══════════════ WRAP-UP ═══════════════ -->
 <h2>Wrapping Up</h2>
 
-<p>If you're still with me, thank you. I hope it was worth it.</p>
-
-<p>We started with a spaghetti script full of global variables, felt the pain of shared mutable state, and discovered that classes are sealed envelopes — a way to keep state and behavior together. We built contracts with ABCs and Protocols, learned that inheritance is for extending framework kitchens while composition is for building our own systems, and recognized the design patterns hiding in plain sight inside PyTorch and HuggingFace. We looked at the dunder methods that make Python objects behave like built-in types, the modern tools that eliminate boilerplate, and the anti-patterns that turn codebases into unmaintainable tangles.</p>
-
-<p>My hope is that the next time you open PyTorch's <code>nn.Module</code> source or HuggingFace's <code>AutoModel</code> registry, instead of feeling like you're reading someone else's inscrutable magic, you'll recognize the template methods, the strategies, the hooks, and the factories — having a pretty good mental model of what's going on under the hood. And the next time you're designing a system that ten people will work on, you'll reach for composition first, inherit when the framework asks you to, and resist the urge to build a five-level class hierarchy that felt clean at the time.</p>
+<p>The mental model: classes as sealed envelopes for state, interfaces as contracts (ABCs for runtime checks, Protocols for static typing), inheritance for framework extension, composition for everything you build yourself (80/20 ratio in practice). Design patterns are the recurring shapes in framework source. Dunder methods are the hooks that make objects behave like built-ins. Dataclasses kill config boilerplate. And if you find yourself building a God class or a 5-level hierarchy — stop and decompose.</p>
 
 <!-- ═══════════════ RESOURCES ═══════════════ -->
 <h2>Resources</h2>
