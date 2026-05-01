@@ -324,34 +324,11 @@
 <!-- ════════════════════════════════════════════════════════ -->
 <!-- OPENING -->
 
-<p>I avoided evaluation metrics for an embarrassingly long time. Every project, I'd train a model, call <code>accuracy_score</code>, see a comforting number like 98.7%, and pat myself on the back. Then one day I deployed a fraud detector that scored 99% accuracy in testing. In production, it caught zero fraud. Zero. It had learned to predict "not fraud" for every single transaction, and because only 1% of transactions were actually fraudulent, that was enough to look brilliant on paper. That was the day the number I trusted betrayed me, and I finally sat down to understand what it was actually measuring. Here is that dive.</p>
+<p>I deployed a fraud detector that scored 99% accuracy in testing. In production, it caught zero fraud. It had learned to predict "not fraud" for every transaction — and because only 1% of transactions were fraudulent, that was enough to look brilliant on paper. That's when I sat down to understand what accuracy was actually measuring.</p>
 
 <p><strong>Evaluation metrics</strong> are the scorecards we use to judge how well a model performs. They date back to signal detection theory in the 1940s (radar operators trying to distinguish enemy planes from flocks of birds), and they've been refined across medicine, information retrieval, and machine learning ever since. The core question hasn't changed: how do we measure whether our predictions are any good?</p>
 
-<p>Before we start, a heads-up. We're going to be building up from a two-by-two table all the way to calibration curves, ranking metrics, and the hard-earned wisdom of what breaks in production. We'll talk about some formulas, but you don't need any of them memorized in advance. We'll construct each one from scratch, and by the time we write it down, it'll feel obvious. We'll add what we need, one piece at a time.</p>
 
-<p>This isn't a short journey, but I hope you'll be glad you came.</p>
-
-<!-- TOC -->
-
-<div style="margin: 1.5em 0 2em 1.5em; line-height: 2;">
-The Four Buckets<br>
-The Accuracy Trap<br>
-Precision — The Courtroom Standard<br>
-Recall — The Cancer Screening Standard<br>
-The Smoke Detector Dial<br>
-F1 and the Harmonic Mean Trick<br>
-Rest Stop<br>
-Threshold Selection — The Dial You Actually Turn<br>
-ROC-AUC — Ranking Quality Across All Thresholds<br>
-PR-AUC — When Positives Are Rare<br>
-Log Loss — Punishing Overconfidence<br>
-MCC — The Metric That's Hard to Game<br>
-Calibration — When Probabilities Need to Mean Something<br>
-The Regression Scoreboard<br>
-Ranking Metrics — When Order Is Everything<br>
-When Metrics Go Wrong in Production<br>
-</div>
 
 <!-- ════════════════════════════════════════════════════════ -->
 <h2>The Four Buckets</h2>
@@ -398,7 +375,7 @@ cm = confusion_matrix(y_true, y_pred)
 
 <p>In our fraud scenario: (85 + 9850) / 10000 = 99.35%. That sounds fantastic. And here's where the trap snaps shut. A model that does <em>absolutely nothing</em> — one that prints <code>return "not fraud"</code> for every single transaction, a model that literally has no idea what fraud looks like — scores 99.0%. Our "good" model's improvement over total ignorance is 0.35 percentage points.</p>
 
-<p>I'll be honest — the first time I actually worked through this arithmetic, I felt like I'd been lied to for years. All those accuracy numbers I'd been reporting in meetings suddenly felt hollow. The problem is structural: accuracy treats every correct prediction as equally important. Getting a legitimate transaction right and catching a fraud are both worth one point. But in a world where 99% of transactions are legitimate, being right about the majority class drowns out everything that matters.</p>
+<p>The problem is structural: accuracy treats every correct prediction as equally important. Getting a legitimate transaction right and catching a fraud are both worth one point. But in a world where 99% of transactions are legitimate, being right about the majority class drowns out everything that matters.</p>
 
 <p>Think of it like a courtroom where the judge always says "not guilty." In a world where 99% of defendants are innocent, that judge has 99% accuracy. That judge is useless. Accuracy works when the classes are roughly balanced — cats versus dogs at 50/50. The moment one class dominates, accuracy becomes a metric that rewards laziness. We need something better.</p>
 
@@ -479,20 +456,7 @@ cm = confusion_matrix(y_true, y_pred)
 
 <p>The β parameter controls the leaning. β = 2 makes recall twice as important as precision — good for fraud detection and medical screening. β = 0.5 makes precision twice as important — good for spam filters and content moderation. F1 is F-beta with β = 1. The way to think about β² is that it's the ratio of how much you care about recall relative to precision.</p>
 
-<p>The limitation of F1 (and all the F-beta family) is that it completely ignores true negatives. It doesn't care how well you classify the majority class. For most imbalanced problems, that's fine — you already know the model can identify legitimate transactions. But it does mean F1 can sometimes tell an incomplete story, and that gap is what motivates the next metric we'll meet after our rest stop.</p>
-
-<!-- ════════════════════════════════════════════════════════ -->
-<h2>Rest Stop</h2>
-
-<p>Congratulations on making it this far. You can stop here if you want.</p>
-
-<p>You now have a solid mental model of evaluation: a confusion matrix with four cells, accuracy and its trap, precision for when false alarms are expensive, recall for when misses are dangerous, the tradeoff between them (the smoke detector dial), and F1 as a single-number summary. That's genuinely useful. You can walk into most data science conversations and hold your own with what you know right now.</p>
-
-<p>It doesn't tell the complete story, though. We haven't talked about what happens when you need to compare models across all possible thresholds (ROC and PR curves). We haven't talked about what happens when your model's confidence scores are lies (calibration). We haven't talked about regression, ranking, or the sneaky way metrics break in production. And we haven't talked about the one metric that's hardest to game — MCC.</p>
-
-<p>The short version, if you want to bail: use F1 for balanced-cost binary classification, PR-AUC for imbalanced data, RMSE for regression where big misses matter, and always connect the metric back to what it costs when the model is wrong. There. You're 80% of the way there.</p>
-
-<p>But if the discomfort of not knowing what's underneath is nagging at you, read on.</p>
+<p>The limitation of F1 (and all the F-beta family) is that it completely ignores true negatives. It doesn't care how well you classify the majority class. For most imbalanced problems, that's fine — you already know the model can identify legitimate transactions. But it does mean F1 can sometimes tell an incomplete story, and that gap is what motivates the next metric.</p>
 
 <!-- ════════════════════════════════════════════════════════ -->
 <h2>Threshold Selection — The Dial You Actually Turn</h2>
@@ -505,6 +469,10 @@ cm = confusion_matrix(y_true, y_pred)
 
 <pre><code>from sklearn.metrics import precision_recall_curve
 import numpy as np
+
+# Example: model outputs suspicion scores for 500 transactions
+y_true = np.array([0]*475 + [1]*25)          # 5% fraud rate
+y_scores = np.random.rand(500)               # replace with your model's scores
 
 # Find the threshold that gives at least 90% recall
 precisions, recalls, thresholds = precision_recall_curve(y_true, y_scores)
@@ -725,8 +693,6 @@ print(f"MAPE:  {mean_absolute_percentage_error(y_true_reg, y_pred_reg)*100:.1f}%
 
 <!-- ════════════════════════════════════════════════════════ -->
 <h2>Wrap-Up</h2>
-
-<p>If you're still with me, thank you. I hope it was worth it.</p>
 
 <p>We started with four cells in a confusion matrix and the unsettling discovery that accuracy lies when classes are imbalanced. We built precision and recall as two opposing philosophies — the courtroom versus the cancer ward — and watched them fight over the smoke detector's sensitivity dial. We compressed that tradeoff into F1, learned when to break the symmetry with F-beta, and then stepped back from individual thresholds to see the full picture with ROC and PR curves. We confronted what it means for a model's probabilities to be honest (calibration), met the metric that's hardest to game (MCC), crossed into regression's different scoreboard (MAE, RMSE, R², MAPE), measured the quality of ranked lists (MRR, MAP, NDCG), and ended with the humbling realization that the best offline metric is still a proxy for what actually matters in the real world.</p>
 

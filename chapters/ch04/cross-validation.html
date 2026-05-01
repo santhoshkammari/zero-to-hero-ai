@@ -323,34 +323,13 @@
 <!-- OPENING — PERSONAL CONFESSION                       -->
 <!-- ═══════════════════════════════════════════════════ -->
 
-<p>I avoided thinking deeply about cross-validation for an embarrassingly long time. I knew what it was — split, train, average the scores, move on. Every time a colleague mentioned "nested CV" or debated k=5 versus k=10, I'd nod along and quietly change the subject. I had this nagging feeling that I was treating it as a magic incantation rather than understanding what it was actually doing for me. Finally the discomfort of not knowing what's really happening under the hood grew too great. Here is that dive.</p>
-
-<p><strong>Cross-validation</strong> is a family of techniques for estimating how well a model will perform on data it hasn't seen. The core idea dates back to the 1930s (Larson, 1931), but the version most of us use — K-Fold — was formalized by Geisser and Stone in the 1970s. It has since become the standard way to evaluate models, compare algorithms, and tune hyperparameters in both research and industry.</p>
-
-<p>Before we start, a heads-up. We're going to build cross-validation from scratch, work through the mechanics by hand on tiny examples, and eventually get into subtleties like temporal leakage, group contamination, and the nested CV trick. You don't need to know any of it beforehand. We'll add what we need, one piece at a time.</p>
-
-<p>This isn't a short journey, but I hope you'll be glad you came.</p>
+<p><strong>Cross-validation</strong> is a family of techniques for estimating how well a model will perform on unseen data. The core idea dates back to the 1930s (Larson, 1931), but the version most of us use — K-Fold — was formalized by Geisser and Stone in the 1970s. It has since become the standard way to evaluate models, compare algorithms, and tune hyperparameters in both research and industry.</p>
 
 <!-- ═══════════════════════════════════════════════════ -->
 <!-- TABLE OF CONTENTS                                   -->
 <!-- ═══════════════════════════════════════════════════ -->
 
-<div class="callout callout-info">
-  <div class="callout-label">What we'll cover</div>
-  <p>
-    The trust problem with a single split<br>
-    Building K-Fold by hand<br>
-    Choosing k — the bias-variance tradeoff of the estimate itself<br>
-    Stratified K-Fold — why class balance matters<br>
-    A rest stop<br>
-    Time Series Split — when shuffling is a crime<br>
-    Group K-Fold — when your data has families<br>
-    The preprocessing trap<br>
-    Nested CV — honest scores when you're also tuning<br>
-    Comparing models on the same folds<br>
-    Reading the tea leaves — what fold scores actually tell you
-  </p>
-</div>
+
 
 <!-- ═══════════════════════════════════════════════════ -->
 <!-- THE TRUST PROBLEM                                   -->
@@ -454,12 +433,7 @@ print(f"Mean accuracy: {scores.mean():.4f} ± {scores.std():.4f}")
 <!-- REST STOP                                           -->
 <!-- ═══════════════════════════════════════════════════ -->
 
-<div class="callout callout-info">
-  <div class="callout-label">🛑 Rest Stop</div>
-  <p>If you've made it this far, congratulations. You can stop here if you want. You now have a solid mental model: cross-validation rotates through multiple train/test splits, averages the scores, and gives you a much more trustworthy estimate than a single split ever could. Stratified K-Fold preserves class balance. k=5 or k=10 for the fold count. Report mean <em>and</em> standard deviation.</p>
-  <p>That mental model will serve you well for 80% of practical situations. The short version of everything that follows is: temporal data needs special splits that respect time, grouped data needs splits that respect groups, hyperparameter tuning needs an extra layer of nesting, and preprocessing must happen inside the fold loop or you'll leak information. There. You're 80% of the way there.</p>
-  <p>But if the discomfort of not knowing what lies underneath is nagging at you, read on.</p>
-</div>
+
 
 <!-- ═══════════════════════════════════════════════════ -->
 <!-- TIME SERIES SPLIT                                   -->
@@ -512,10 +486,12 @@ for i, (train_idx, test_idx) in enumerate(tscv.split(np.arange(n_samples))):
 import numpy as np
 
 # 100 samples from 20 users (5 emails each)
+X = np.random.randn(100, 10)   # placeholder features
+y = np.random.randint(0, 2, 100)
 groups = np.repeat(np.arange(20), 5)
 
 gkf = GroupKFold(n_splits=5)
-for i, (train_idx, test_idx) in enumerate(gkf.split(X[:100], y[:100], groups)):
+for i, (train_idx, test_idx) in enumerate(gkf.split(X, y, groups)):
     train_groups = set(groups[train_idx])
     test_groups = set(groups[test_idx])
     assert train_groups.isdisjoint(test_groups)
@@ -536,10 +512,15 @@ for i, (train_idx, test_idx) in enumerate(gkf.split(X[:100], y[:100], groups)):
 <pre><code># THE WRONG WAY — don't do this
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import cross_val_score
+from sklearn.linear_model import LogisticRegression
+import numpy as np
+
+X = np.random.randn(200, 10)
+y = np.random.randint(0, 2, 200)
 
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(X)  # fits on ALL data, including future test folds
-scores = cross_val_score(model, X_scaled, y, cv=5)</code></pre>
+scores = cross_val_score(LogisticRegression(), X_scaled, y, cv=5)</code></pre>
 
 <p>The scaler learned the mean and standard deviation from <em>all</em> the data — including the examples that will later become the test fold. Every test fold has been subtly contaminated. The model's features were computed using information it shouldn't have had access to.</p>
 
@@ -551,6 +532,11 @@ scores = cross_val_score(model, X_scaled, y, cv=5)</code></pre>
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import cross_val_score
+import numpy as np
+
+X = np.random.randn(200, 10)
+y = np.random.randint(0, 2, 200)
 
 pipe = make_pipeline(StandardScaler(), LogisticRegression(max_iter=5000))
 scores = cross_val_score(pipe, X, y, cv=5, scoring='accuracy')</code></pre>
@@ -740,8 +726,6 @@ print(f"Paired t-test: t={t_stat:.3f}, p={p_value:.4f}")</code></pre>
 <!-- WRAP-UP                                             -->
 <!-- ═══════════════════════════════════════════════════ -->
 <h2>Wrap-Up</h2>
-
-<p>If you're still with me, thank you. I hope it was worth it.</p>
 
 <p>We started with a simple observation — that a single train/test split gives you a number that depends more on the luck of the shuffle than on the quality of the model. We built K-Fold from scratch on ten emails. We explored why k=5 and k=10 are the standard choices, saw why stratification matters for classification, and then ventured into the places where standard CV breaks down: temporal data that demands respect for the arrow of time, grouped data where sources must not be split, preprocessing that must happen inside the fold loop, and the nested CV trick for honest reporting when you're also tuning.</p>
 
