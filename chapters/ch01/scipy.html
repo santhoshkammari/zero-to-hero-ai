@@ -318,29 +318,11 @@
 <!-- ═══════════ End Table of Contents ═══════════ -->
 <!-- ═══════════════════ OPENING ═══════════════════ -->
 
-<p>I avoided looking under the hood of SciPy for an embarrassingly long time. I'd call <code>scipy.optimize.minimize</code>, watch it spit out a result, and move on without asking how. When someone at work used <code>csr_matrix</code> in a pipeline and I couldn't explain why it was faster, I smiled and nodded. When a senior engineer asked me in an interview what ARPACK was, I fumbled. Finally the discomfort of treating SciPy as a black box grew too great. Here is that dive.</p>
+<p>SciPy wraps decades of battle-tested numerical code — LAPACK, BLAS, ARPACK — behind a Python API. Understanding what's underneath turns it from a black box into a transparent tool. Here is that dive.</p>
 
 <p>SciPy — short for Scientific Python — was born in the early 2000s to solve a specific problem: decades of battle-tested numerical code existed in FORTRAN libraries like LAPACK (linear algebra), BLAS (basic matrix operations), and ARPACK (eigenvalue problems), but calling them from Python was painful. SciPy became the translator — a Python wrapper around these FORTRAN veterans, giving you access to algorithms that entire careers were spent perfecting, through a single <code>import</code>. NumPy gives you the arrays. SciPy gives you the algorithms that operate on them.</p>
 
-<p>Before we start, a heads-up. We're going to touch on matrix decompositions, optimization landscapes, and statistical testing, but you don't need to know any of that beforehand. We'll build each concept from scratch, one piece at a time, with explanation.</p>
-
-<p>This isn't a short journey, but I hope you'll be glad you came.</p>
-
 <!-- ═══════════════ TABLE OF CONTENTS ═══════════════ -->
-
-<div style="margin:1.5em 0 2em 1.5em; line-height:2;">
-  Standing on FORTRAN shoulders<br>
-  Sparse matrices — when your data is mostly nothing<br>
-  Inside CSR — how three arrays replace a giant matrix<br>
-  Truncated SVD — extracting signal from sparse chaos<br>
-  Rest stop<br>
-  Optimization — navigating a landscape blindfolded<br>
-  Statistical testing — is your model improvement real?<br>
-  Spatial search — finding neighbors, and knowing when to stop<br>
-  Signal processing and the rest of the toolbox<br>
-  Where SciPy stops<br>
-  Resources
-</div>
 
 <!-- ═══════════════ FORTRAN SHOULDERS ═══════════════ -->
 <h2>Standing on FORTRAN Shoulders</h2>
@@ -441,18 +423,6 @@ print(np.round(predicted, 1))
 
 <p>The limitation that pushes us forward: truncated SVD treats all zeros equally. But in a recommendation matrix, zero might mean "the user hated it so much they didn't finish" or "the user never saw it." Those aren't the same. More sophisticated approaches (like matrix factorization with regularization) handle this distinction. But the SciPy version is where the intuition begins, and in practice, it works surprisingly well as a baseline.</p>
 
-<!-- ═══════════════ REST STOP ═══════════════ -->
-<h2>Rest Stop</h2>
-
-<p>Congratulations on making it this far. You can stop here if you want.</p>
-
-<p>You now understand something that most people who use SciPy daily don't bother to learn: that it's a translation layer over FORTRAN libraries, that sparse matrices store three arrays instead of a giant grid of zeros, and that truncated SVD via ARPACK can extract meaningful patterns from matrices too large to decompose fully. That's enough to build a working recommendation engine, a document similarity system, or a dimensionality reduction pipeline.</p>
-
-<p>It doesn't tell the complete story. We haven't talked about optimization — the engine that powers model calibration, hyperparameter tuning, and curve fitting. We haven't covered statistical testing — the thing that tells you whether your new model is actually better or you're fooling yourself. And we haven't hit the spatial module, which matters until it doesn't (and knowing where that boundary falls is an interview question in disguise).</p>
-
-<p>But if the discomfort of not knowing what's underneath is nagging at you, read on.</p>
-
-<!-- ═══════════════ OPTIMIZATION ═══════════════ -->
 <h2>Optimization — Navigating a Landscape Blindfolded</h2>
 
 <p>Picture a loss function as a physical landscape — hills, valleys, ridges. Your job is to find the lowest valley. The catch: you're blindfolded. You can feel the slope under your feet (that's the gradient), and you can sense how the slope is changing (that's the curvature), but you can't see the whole terrain. That's optimization.</p>
@@ -479,17 +449,21 @@ print(result.nit)     # number of iterations it took
 <p>Another pattern that shows up in production: <strong>probability calibration</strong>. Many classifiers (SVMs, random forests, even neural nets) output scores that aren't true probabilities. Platt scaling fixes this by fitting a sigmoid curve to map raw scores to calibrated probabilities, and <code>scipy.optimize.curve_fit</code> can do that fitting.</p>
 
 <pre><code class="language-python">from scipy.optimize import curve_fit
+import numpy as np
 
 def sigmoid(x, a, b):
     return 1 / (1 + np.exp(a * x + b))
 
 # raw_scores: model outputs, true_labels: 0 or 1
 # curve_fit learns a and b to map scores → probabilities
+raw_scores = np.array([0.2, 0.5, 0.8, 1.2, 1.8, 2.5])
+true_labels = np.array([0, 0, 0, 1, 1, 1])
+
 params, _ = curve_fit(sigmoid, raw_scores, true_labels)
-calibrated = sigmoid(new_scores, *params)
+calibrated = sigmoid(raw_scores, *params)
 </code></pre>
 
-<p>I'm still developing my intuition for when to use <code>Nelder-Mead</code> (a gradient-free method that works on non-differentiable functions) versus <code>L-BFGS-B</code> versus <code>trust-constr</code> (for problems with complex constraints). The honest answer is: start with L-BFGS-B. If it doesn't converge, check your gradients. If your function isn't smooth, switch to Nelder-Mead. If you have equality and inequality constraints, use <code>trust-constr</code> or <code>SLSQP</code>. I've seen experienced engineers go through this same sequence every time.</p>
+<p>The practical rule for choosing an optimizer: start with L-BFGS-B. If it doesn't converge, check your gradients. If your function isn't smooth, switch to Nelder-Mead (gradient-free). If you have equality and inequality constraints, use <code>trust-constr</code> or <code>SLSQP</code>.</p>
 
 <p>The limitation that matters: everything in <code>scipy.optimize</code> runs on CPU, on a single core, on data that fits in memory. For training neural networks with millions of parameters on GPU, this is the wrong tool entirely — that's PyTorch and Adam territory. SciPy optimization is for problems where the parameter count is modest (thousands, not millions) and the objective function is smooth.</p>
 
@@ -599,11 +573,9 @@ smoothed = fftconvolve(signal, kernel, mode='same')
 <!-- ═══════════════ WRAP-UP ═══════════════ -->
 <h2>Wrapping Up</h2>
 
-<p>If you're still with me, thank you. I hope it was worth the journey.</p>
-
 <p>We started with the surprising fact that SciPy is mostly a Python-speaking facade over decades-old FORTRAN code. We built a tiny recommendation engine using sparse matrices and saw how three arrays replace a matrix of mostly zeros. We decomposed that matrix with truncated SVD, powered by ARPACK. We navigated optimization landscapes with L-BFGS-B, tested model improvements with paired t-tests, detected data drift with Kolmogorov-Smirnov, and learned where KDTree breaks and FAISS begins.</p>
 
-<p>My hope is that the next time you see <code>scipy.optimize.minimize</code> in a pipeline, or <code>csr_matrix</code> in a feature engineering step, or <code>ks_2samp</code> in a monitoring job, instead of treating it as a magic incantation, you'll know exactly what's happening underneath — which FORTRAN subroutine is doing the work, why the data format was chosen, and when the whole approach stops being the right one.</p>
+<p>The next time you see <code>scipy.optimize.minimize</code> in a pipeline, or <code>csr_matrix</code> in a feature engineering step, or <code>ks_2samp</code> in a monitoring job, you'll know which FORTRAN subroutine is doing the work, why the data format was chosen, and when the whole approach stops being the right one.</p>
 
 <!-- ═══════════════ RESOURCES ═══════════════ -->
 <h2>Resources</h2>

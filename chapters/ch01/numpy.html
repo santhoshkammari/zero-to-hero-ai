@@ -320,31 +320,13 @@
 <!-- PHASE 1: OPENING -->
 <!-- ════════════════════════════════════════════ -->
 
-<p>I avoided looking under NumPy's hood for years. I used it every day — <code>np.array</code>, <code>.reshape()</code>, broadcasting with a prayer — but whenever something broke, I'd stare at the shape mismatch error, try random transposes until it worked, and move on. I told myself the internals didn't matter. That the API was all I needed. But every time I hit a bug I couldn't explain, or watched someone write a vectorized operation in one line that would have taken me twenty, the discomfort of not really understanding what was happening underneath grew a little more unbearable. Here is that dive.</p>
+<p>I used NumPy every day — <code>np.array</code>, <code>.reshape()</code>, broadcasting with a prayer — but whenever something broke, I'd try random transposes until it worked and move on. Every time I hit a bug I couldn't explain, or watched someone write a vectorized operation in one line that would have taken me twenty, the discomfort of not understanding what was happening underneath grew. Here is that dive.</p>
 
 <p>NumPy — short for Numerical Python — was created by Travis Oliphant in 2005 by unifying two earlier array libraries. It provides a single data structure, the <strong>ndarray</strong>, that stores numbers in a contiguous block of memory and operates on them in compiled C. Every major ML library — Pandas, scikit-learn, PyTorch, TensorFlow — is built on top of it. When you call <code>model.fit(X)</code>, when you compute a loss, when you normalize a feature matrix, you're using NumPy whether you realize it or not.</p>
-
-<p>Before we start, a heads-up. We're going to look at memory layouts, byte-level strides, C code, and BLAS libraries. You don't need to know any of that beforehand. We'll add the concepts we need one at a time, with explanation.</p>
-
-<p>This isn't a short journey, but I hope you'll be glad you came.</p>
 
 <!-- ════════════════════════════════════════════ -->
 <!-- PHASE 2: TABLE OF CONTENTS -->
 <!-- ════════════════════════════════════════════ -->
-
-<div class="toc" style="margin: 2em 0; padding-left: 2em; line-height: 2;">
-  Why arrays exist at all<br>
-  The four ingredients of an ndarray<br>
-  Strides — the trick that makes everything work<br>
-  Views and copies — the consequence of strides<br>
-  Broadcasting from scratch<br>
-  Why NumPy is fast — the assembly line under the hood<br>
-  Rest stop and an off-ramp<br>
-  Reshaping and the stride connection<br>
-  einsum — the universal tensor language<br>
-  Production patterns and the gotchas that bite<br>
-  Resources and credits
-</div>
 
 <!-- ════════════════════════════════════════════ -->
 <!-- WHY ARRAYS EXIST -->
@@ -409,7 +391,7 @@ print(ratings.data)     # &lt;memory at 0x...&gt;</code></pre>
 
 <h2>Strides — The Trick That Makes Everything Work</h2>
 
-<p>I'll be honest — when I first saw strides in a NumPy tutorial, I skipped right past them. They looked like an implementation detail. It took me an embarrassingly long time to realize that strides are <em>the</em> central idea that makes views, broadcasting, transpose, and reshape all work without copying data.</p>
+<p>Strides are <em>the</em> central idea that makes views, broadcasting, transpose, and reshape all work without copying data.</p>
 
 <p>Here's what strides mean. Our ratings array is stored as 12 numbers, side by side, in memory:</p>
 
@@ -445,7 +427,7 @@ print(np.shares_memory(alice, ratings))  # True — same data!</code></pre>
 
 <p>Alice's ratings live inside the same memory block as the full ratings array. NumPy adjusted the starting pointer (to the beginning of row 0) and the shape (just 4 elements now). Modifying <code>alice[0]</code> will modify <code>ratings[0, 0]</code>. They're the same bytes.</p>
 
-<p>I've been bitten by this more times than I'd like to admit. You slice an array, modify the slice thinking you have your own copy, and then wonder why the original array changed. The fix is straightforward — use <code>.copy()</code> when you need independence.</p>
+<p>This is a common source of bugs. You slice an array, modify the slice thinking you have your own copy, and then wonder why the original array changed. The fix is straightforward — use <code>.copy()</code> when you need independence.</p>
 
 <pre><code class="language-python">alice_copy = ratings[0].copy()   # independent data
 alice_copy[0] = 999
@@ -470,7 +452,7 @@ print(np.shares_memory(ratings, ratings.T))  # True — same data, different str
 
 <h2>Broadcasting from Scratch</h2>
 
-<p>Broadcasting confused me for a long time. Not the rules — the rules fit on an index card. What confused me was <em>how</em> it worked without copying data. Now that we understand strides, we can see the trick.</p>
+<p>Now that we understand strides, we can see how broadcasting works without copying data.</p>
 
 <p>Back to our recommendation engine. We have our 3×4 ratings matrix, and we want to center each user's ratings — subtract their mean so that a 3.5 becomes 0.0, a 5 becomes +1.5, and so on. This is a common preprocessing step.</p>
 
@@ -515,7 +497,7 @@ adjusted = ratings + bonus
 
 <p>Here's where it gets dangerous. Shapes like <code>(1000, 1)</code> and <code>(1, 5000)</code> are broadcast-compatible. Both dimensions are 1, so both stretch. The result is <code>(1000, 5000)</code> — five million elements materialized from two small arrays. I've seen this silently allocate gigabytes in production code when someone forgot a <code>keepdims=True</code> and the shapes accidentally aligned.</p>
 
-<p>I still print shapes compulsively. <code>print(a.shape, b.shape)</code> before any binary operation. It's the single most effective debugging habit I've picked up in years of NumPy work.</p>
+<p>Print shapes before any binary operation: <code>print(a.shape, b.shape)</code>. It's the single most effective debugging habit for NumPy work.</p>
 
 <!-- ════════════════════════════════════════════ -->
 <!-- WHY NUMPY IS FAST -->
@@ -530,8 +512,6 @@ adjusted = ratings + bonus
 <p>NumPy is an assembly line. When you write <code>a + b</code> on two arrays, Python makes <em>one</em> call into C. The C function knows the type (no checking needed — every element has the same dtype), knows the memory layout (contiguous, predictable), and blasts through the data in a tight loop. Modern CPUs can even use <strong>SIMD instructions</strong> — Single Instruction, Multiple Data — to add 4 or 8 float32 values in a single CPU cycle. The assembly line doesn't stop and inspect each item. It processes them in bulk, on a conveyor belt.</p>
 
 <p>For matrix operations — <code>A @ B</code>, <code>np.linalg.solve</code>, <code>np.linalg.svd</code> — NumPy goes even further. It delegates to <strong>BLAS</strong> (Basic Linear Algebra Subprograms) and <strong>LAPACK</strong> (Linear Algebra Package). These are libraries that have been optimized for decades, with hand-tuned assembly code for specific CPU architectures. OpenBLAS and Intel's MKL use cache-blocking strategies, multi-threaded execution, and instruction-level parallelism that no Python code could ever touch.</p>
-
-<p>My favorite thing about BLAS is that, aside from the high-level algorithmic ideas (like Strassen's algorithm and cache-oblivious blocking), nobody is completely certain why the fastest implementations are <em>quite</em> as fast as they are. The hand-tuned assembly in something like GotoBLAS was written by one person who understood a specific CPU's pipeline deeply enough to squeeze out the last few percent. It's part science, part craft.</p>
 
 <p>Let's make the speed tangible with our movie ratings example. Suppose we scale up to 10,000 users and 5,000 movies. We want each user's average rating.</p>
 
@@ -560,18 +540,6 @@ means = big_ratings.mean(axis=1)
 <!-- ════════════════════════════════════════════ -->
 <!-- REST STOP -->
 <!-- ════════════════════════════════════════════ -->
-
-<h2>Rest Stop and an Off-Ramp</h2>
-
-<p>Congratulations on making it this far. You can stop here if you want.</p>
-
-<p>You now have a mental model of what a NumPy array actually is: a raw block of memory, plus four pieces of metadata (pointer, shape, strides, dtype) that tell NumPy how to interpret that block. You understand that views share memory, that broadcasting works by manipulating strides, and that the speed comes from delegating tight loops to compiled C and BLAS. That model is genuinely useful — it will help you debug shape errors, understand why <code>.T</code> is free, and write vectorized code that doesn't fight the library.</p>
-
-<p>It doesn't tell the complete story. We haven't talked about how reshape connects to strides, how <code>einsum</code> can express any tensor operation in one line, or the production gotchas that separate working code from fast code. But the core mental model? You have it.</p>
-
-<p>The short version of everything that follows: reshape changes strides without copying when it can; <code>einsum</code> is a compact language for saying "contract these tensor axes"; and in production, watch your dtypes, avoid appending in loops, and use in-place operations when memory matters. There. You're 80% of the way there.</p>
-
-<p>But if the discomfort of not knowing what's underneath is nagging at you, read on.</p>
 
 <!-- ════════════════════════════════════════════ -->
 <!-- RESHAPING -->
@@ -612,7 +580,7 @@ centered = ratings - user_means_col</code></pre>
 
 <h2>einsum — The Universal Tensor Language</h2>
 
-<p>For a long time I avoided <code>np.einsum</code>. It looked like hieroglyphics. Then I watched someone rewrite five separate operations — transpose, batch matrix multiply, trace, outer product — each in a single einsum call, and I realized I'd been doing things the hard way.</p>
+<p><code>np.einsum</code> can express transpose, batch matrix multiply, trace, and outer product — each in a single call.</p>
 
 <p><code>einsum</code> stands for Einstein summation. The idea is that you label each axis of each input tensor with a letter, and the letters that appear in the output are kept. Letters that appear only in the input get summed over. That's the entire language.</p>
 
@@ -718,11 +686,9 @@ batch = mmap[1000:2000]   # only loads these 1000 rows from disk</code></pre>
 
 <h2>Wrap-Up</h2>
 
-<p>If you're still with me, thank you. I hope it was worth it.</p>
-
 <p>We started from the question of why Python lists are too slow for numerical work and discovered that the answer is a single contiguous block of memory, interpreted by four pieces of metadata. We saw how strides let NumPy create views, transposes, and broadcasts without copying data. We followed the call from Python down into C and BLAS to understand where the 100× speedup actually comes from. We used einsum to express tensor contractions in a language that reads like a recipe. And we looked at the production patterns that separate code that works from code that works at scale.</p>
 
-<p>My hope is that the next time you see a broadcasting error, or a mysterious shape mismatch, or a training loop that's slower than it should be, instead of trying random transposes until something works, you'll check the strides, print the shapes, and trace the path from your Python call down to the contiguous memory underneath — having a pretty darn good mental model of what's going on under the hood.</p>
+<p>When you see a broadcasting error, mysterious shape mismatch, or a training loop that's slower than it should be, check the strides, print the shapes, and trace the path from your Python call down to the contiguous memory underneath.</p>
 
 <!-- ════════════════════════════════════════════ -->
 <!-- RESOURCES -->

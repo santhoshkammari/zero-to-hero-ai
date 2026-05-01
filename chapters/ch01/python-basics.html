@@ -495,7 +495,7 @@ print(x)  # tensor(inf) — overflowed
 y = torch.tensor(1e38, dtype=torch.bfloat16)
 print(y)  # tensor(1.0000e+38) — same range as float32, no overflow</code></pre>
 
-<p>I'm still developing my intuition for when to use which precision type. The general rule in 2024-era ML: train in <code>bfloat16</code> or mixed precision (<code>float32</code> master weights, <code>bfloat16</code> forward/backward), accumulate gradients in <code>float32</code>, and quantize to <code>int8</code> or <code>int4</code> for inference. But the optimal recipe changes with every new GPU architecture.</p>
+<p>The general rule in 2024-era ML: train in <code>bfloat16</code> or mixed precision (<code>float32</code> master weights, <code>bfloat16</code> forward/backward), accumulate gradients in <code>float32</code>, and quantize to <code>int8</code> or <code>int4</code> for inference. The optimal recipe changes with every new GPU architecture.</p>
 
 <h3>How Bytes Sit in Memory</h3>
 
@@ -632,7 +632,7 @@ print(best_run is alias)          # True — 'is' checks identity, not equality<
 
 <h3>Why This Design? Why Not Boxes?</h3>
 
-<p>This is the question I wish someone had answered for me earlier. In C, a variable <em>is</em> a box — a named region of memory at a fixed address with a fixed size. <code>int x = 5;</code> allocates 4 bytes on the stack, labels them <code>x</code>, and writes the bit pattern for 5 directly into those bytes. Assignment <code>y = x</code> copies the 4 bytes. This is fast and memory-efficient, but it means the type and size are frozen at compile time.</p>
+<p>In C, a variable <em>is</em> a box — a named region of memory at a fixed address with a fixed size. <code>int x = 5;</code> allocates 4 bytes on the stack, labels them <code>x</code>, and writes the bit pattern for 5 directly into those bytes. Assignment <code>y = x</code> copies the 4 bytes. This is fast and memory-efficient, but it means the type and size are frozen at compile time.</p>
 
 <p>Python made a different choice. By making everything a heap-allocated <code>PyObject</code> referenced by name, you get: dynamic typing (the name <code>x</code> can point to an integer now and a string later, because the type is stored in the object, not the name), automatic memory management (when the reference count hits zero, the object gets freed — no <code>free()</code> calls), and the ability for everything to be first-class (functions, classes, modules are all objects you can pass around). The cost is overhead — every integer carries a 28+ byte wrapper — but for an orchestration language that delegates heavy computation to C and CUDA, that tradeoff is worth it.</p>
 
@@ -662,7 +662,7 @@ print(id(s))       # 0x7f5... — DIFFERENT address. New string created.</code><
 <!-- ═══════════════════════════════════════════════════════════ -->
 <h2>Data Structures — What's Actually Happening Inside the Four Containers</h2>
 
-<p>Python gives us four core container types, and the choice between them isn't stylistic — it has real performance consequences rooted in how each one is built at the C level. I avoided learning these internals for years, treating Big-O notation as something to memorize for interviews. Then I had a data pipeline that took 14 hours and a colleague brought it down to 20 minutes by swapping a list membership check for a set. That's when I realized: the performance isn't magic. It's architecture.</p>
+<p>Python gives us four core container types, and the choice between them isn't stylistic — it has real performance consequences rooted in how each one is built at the C level. Understanding these internals is the difference between a 14-hour pipeline and a 20-minute one — swapping a list membership check for a set isn't magic. It's architecture.</p>
 
 <figure style="margin:2.5em 0;text-align:center">
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 620 375" width="620" style="max-width:100%;height:auto" role="img" aria-label="Python container types: list, dict, set, tuple">
@@ -825,7 +825,7 @@ print((0.01, 10) in tried)  # True, O(1) lookup</code></pre>
 <!-- ═══════════════════════════════════════════════════════════ -->
 <h2>PyTorch DataLoader — How Your Training Loop Actually Loads Data</h2>
 
-<p>I'll be honest — I used <code>DataLoader</code> for over a year before I opened its source code. I knew you pass it a dataset, it gives you batches, and <code>num_workers > 0</code> makes it faster. That was my entire mental model. Then I ran into a deadlock in a multiprocessing DataLoader on a shared cluster, and I realized I had no idea what was happening under the hood. So let's build it up from scratch.</p>
+<p>Most developers use <code>DataLoader</code> with a surface-level mental model: pass it a dataset, get batches, and <code>num_workers > 0</code> makes it faster. But understanding what actually happens under the hood is crucial for debugging production deadlocks and bottlenecks. Let's build it up from scratch.</p>
 
 <p>The core idea is lazy iteration. Instead of loading your entire 50GB dataset into memory, you load one batch at a time. Each iteration of your training loop fetches 32 (or 64, or 128) samples, processes them, and discards them before fetching the next batch. Memory usage stays constant at O(batch_size), not O(dataset_size). That's the fundamental trick.</p>
 
@@ -1162,7 +1162,7 @@ model.eval()    # sets self.training = False on model and ALL submodules
 
 <p>A common mistake: calling <code>model.eval()</code> but forgetting <code>torch.no_grad()</code>. They do <em>different things</em>. <code>model.eval()</code> changes layer behavior (dropout, batchnorm). <code>torch.no_grad()</code> disables gradient computation. You almost always want both during validation:</p>
 
-<pre><code>def validate(model, val_loader):
+<pre><code>def validate(model, val_loader, criterion):
     model.eval()                          # change layer behavior
     total_loss = 0.0
     with torch.no_grad():                 # stop recording gradients
@@ -1222,6 +1222,7 @@ with eval_mode(model) as m:
 
 <pre><code>from torch.amp import autocast, GradScaler
 
+# Assumes model, optimizer, criterion, and train_loader are already defined
 scaler = GradScaler()
 
 for features, targets in train_loader:
