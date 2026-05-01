@@ -33,7 +33,6 @@
     <a class="nav-section" href="../ch01/scipy.html" data-href="ch01/scipy.html">SciPy</a>
     <a class="nav-section" href="../ch01/data-visualization.html" data-href="ch01/data-visualization.html">Data Visualization</a>
     <a class="nav-section" href="../ch01/version-control-with-git.html" data-href="ch01/version-control-with-git.html">Version Control with Git</a>
-    <a class="nav-section" href="../ch01/scikit-learn.html" data-href="ch01/scikit-learn.html">Scikit-learn</a>
     <a class="nav-section" href="../ch01/python-under-the-hood.html" data-href="ch01/python-under-the-hood.html">Python Under the Hood</a>
     <a class="nav-section" href="../ch01/algorithms-and-data-structures-for-ml.html" data-href="ch01/algorithms-and-data-structures-for-ml.html">Algorithms and Data Structures for ML</a>
     <a class="nav-section" href="../ch01/nice-to-know.html" data-href="ch01/nice-to-know.html">Nice to Know</a>
@@ -78,6 +77,7 @@
     <a class="nav-section" href="../ch04/evaluation-metrics.html" data-href="ch04/evaluation-metrics.html">Evaluation Metrics</a>
     <a class="nav-section" href="../ch04/model-selection.html" data-href="ch04/model-selection.html">Model Selection</a>
     <a class="nav-section" href="../ch04/ml-optimization.html" data-href="ch04/ml-optimization.html">ML Optimization</a>
+    <a class="nav-section" href="../ch04/scikit-learn.html" data-href="ch04/scikit-learn.html">Scikit-learn</a>
     <a class="nav-section" href="../ch04/nice-to-know.html" data-href="ch04/nice-to-know.html">Nice to Know</a>
   </div>
   <div class="nav-part">Classical Machine Learning</div>
@@ -478,29 +478,10 @@ def occlusion_map(model, img_tensor, target_class, patch=32, stride=8):
 
 <p>But here's why occlusion still matters: when Grad-CAM and occlusion sensitivity agree — when both methods highlight the same region — your confidence that the model is genuinely using that region goes way up. Gradient-based methods can sometimes be misleading (more on that later), but occlusion can't lie. If covering up a region tanks the prediction, that region <em>was</em> carrying the signal. Period.</p>
 
-<!-- ═══════════════════════════════════════════════════════════ -->
-<h2>LIME — Explaining Without Seeing the Weights</h2>
-
-<p>Occlusion sensitivity is model-agnostic but gives you a heatmap, not an explanation in natural terms. <strong>LIME</strong> — Local Interpretable Model-agnostic Explanations (Ribeiro et al., 2016) — takes the black-box idea further by building an entire interpretable model around a single prediction.</p>
-
-<p>For images, LIME works like this. First, it segments the image into <strong>superpixels</strong> — coherent blobs of similar color, typically 50–150 of them, using an algorithm called SLIC. Each superpixel becomes a "feature." Then LIME generates hundreds of perturbed versions of the image, randomly turning superpixels on (visible) or off (greyed out). Each perturbed image is run through the model, and the prediction is recorded.</p>
-
-<p>Now comes the clever bit: LIME fits a simple weighted linear regression. The features are which superpixels were on/off (a binary vector), and the target is the model's predicted probability. Perturbations closer to the original image get higher weight. The resulting coefficients tell you how much each superpixel contributed to the prediction. The top positive coefficients are highlighted as the explanation.</p>
-
-<p>For DermNet, LIME might show that superpixels covering the dark, asymmetric core of a lesion are the most important for the melanoma prediction, while the surrounding healthy skin contributes nothing. That's an explanation a dermatologist can evaluate — "the model focused on the dark irregular region" is actionable in a way that "pixel (147, 203) has gradient 0.003" is not.</p>
-
-<p>The limitation is stability. Run LIME twice on the same image, and you might get slightly different explanations, because the random perturbations differ. For deployment scenarios where you need reproducible explanations, pin the random seed or consider SHAP.</p>
-
-<!-- ═══════════════════════════════════════════════════════════ -->
-<h2>SHAP for Images — Game Theory Meets Pixels</h2>
-
-<p>The instability of LIME bothered researchers, and the fix came from an unexpected direction: cooperative game theory. <strong>SHAP</strong> — SHapley Additive exPlanations (Lundberg &amp; Lee, 2017) — computes the <strong>Shapley value</strong> for each feature, a concept from the 1950s that asks: "If every possible coalition of features were tried, what's the average marginal contribution of this particular feature?"</p>
-
-<p>For images, computing exact Shapley values for every pixel is intractable — with 150,528 pixels, you'd need to evaluate more coalitions than there are atoms in the universe. So SHAP uses the same superpixel trick as LIME: segment the image, treat each superpixel as a player in a cooperative game. <strong>DeepSHAP</strong> goes further by exploiting the network's layer structure to approximate Shapley values efficiently using a technique called DeepLIFT propagation rules.</p>
-
-<p>What makes SHAP special is its theoretical foundation. Shapley values are the <em>only</em> attribution method satisfying three properties simultaneously: if a feature doesn't affect the output at all, it gets zero attribution; if two models produce the same output, they produce the same attributions; and the attributions for all features sum to the difference between the model's output and the baseline. No other attribution method satisfies all three.</p>
-
-<p>The practical trade-off is compute. Even with DeepSHAP's approximations, generating SHAP explanations for a batch of images is significantly slower than Grad-CAM. In my workflow, I use Grad-CAM for fast iteration and pull out SHAP when I need attributions I can defend in front of a regulatory body or a skeptical clinician.</p>
+<div class="callout callout-info">
+  <div class="callout-label">📍 Cross-Reference</div>
+  <p>For model-agnostic explanation methods (SHAP, LIME, PDP, counterfactuals), see <a href="../ch16/interpretability-and-explainability.html">Chapter 16: Interpretability and Explainability</a> which covers these techniques comprehensively across all model types.</p>
+</div>
 
 
 <!-- ═══════════════════════════════════════════════════════════ -->
@@ -561,16 +542,7 @@ attn_map = cls_attn.reshape(grid, grid) # spatial map
 
 <p>I still use Grad-CAM as my first tool. But after the Adebayo paper, I always corroborate with at least one other method before making claims about what the model "learned." That extra five minutes has caught problems more than once.</p>
 
-<!-- ═══════════════════════════════════════════════════════════ -->
-<h2>Mechanistic Interpretability — The Frontier</h2>
 
-<p>Everything we've covered so far treats the network as something to be probed from the outside — we poke at it with inputs and watch what happens to outputs. <strong>Mechanistic interpretability</strong> is an entirely different philosophy: reverse-engineer the network from the inside, neuron by neuron, circuit by circuit, until you understand <em>how</em> it computes what it computes.</p>
-
-<p>The challenge is a phenomenon called <strong>superposition</strong>. In an ideal world, each neuron would represent one clean, interpretable feature. In practice, networks learn to pack far more concepts into their neurons than they have dimensions — a single neuron might encode "striped texture," "diagonal edge at 45 degrees," and "part of a boat" simultaneously, in different activation contexts. This makes individual neurons hard to interpret.</p>
-
-<p>Anthropic's research (2023–2025) pioneered a promising approach: train <strong>sparse autoencoders</strong> on a layer's activations. The autoencoder has many more output dimensions than the layer has neurons, forcing a sparse, overcomplete representation. Each output dimension tends to correspond to a single, human-interpretable concept — disentangling the superposition. Researchers have used this to identify features in large language models that correspond to specific concepts, and the same ideas are being applied to vision models.</p>
-
-<p>I'm still developing my intuition for where mechanistic interpretability is heading. It's the most exciting work in the field, but it's also the least mature. For production CNN debugging today, Grad-CAM and SHAP are your workhorses. But five years from now, mechanistic tools might let us make guarantees like "this network <em>cannot</em> use background color as a feature" — not by testing, but by inspecting the circuit directly. That would change everything about how we trust models.</p>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <h2>The Debugging Playbook</h2>
@@ -617,7 +589,7 @@ attn_map = cls_attn.reshape(grid, grid) # spatial map
 <ul class="checklist">
   <li><strong>Generate and interpret a Grad-CAM heatmap</strong> — hook into the last conv layer, compute gradient-weighted feature maps, overlay the result on the input image, and explain whether the model is focusing on the right region for the right reason.</li>
   <li><strong>Compute saliency maps and know their limits</strong> — use vanilla gradients for a quick look, SmoothGrad for noise reduction, and Integrated Gradients when you need theoretically grounded attributions. Know that baseline choice matters.</li>
-  <li><strong>Apply model-agnostic methods</strong> — use occlusion sensitivity to verify gradient-based results, LIME to produce superpixel-level explanations, and SHAP when you need Shapley-value guarantees.</li>
+  <li><strong>Apply model-agnostic checks</strong> — use occlusion sensitivity to verify gradient-based results, and know when to reach for LIME or SHAP (covered in <a href="../ch16/interpretability-and-explainability.html">Chapter 16</a>) for deeper model-agnostic analysis.</li>
   <li><strong>Visualize what neurons have learned</strong> — use activation maximization to see what individual neurons respond to, and TCAV to test whether the model uses specific human-defined concepts.</li>
   <li><strong>Debug with a multi-method workflow</strong> — never trust a single attribution method. Corroborate with at least two, and always check for the Clever Hans problem before deploying to production.</li>
   <li><strong>Evaluate attribution quality</strong> — understand why the Adebayo sanity checks matter, what parameter randomization tests reveal, and why visually pretty explanations aren't necessarily faithful ones.</li>

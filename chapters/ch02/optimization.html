@@ -33,7 +33,6 @@
     <a class="nav-section" href="../ch01/scipy.html" data-href="ch01/scipy.html">SciPy</a>
     <a class="nav-section" href="../ch01/data-visualization.html" data-href="ch01/data-visualization.html">Data Visualization</a>
     <a class="nav-section" href="../ch01/version-control-with-git.html" data-href="ch01/version-control-with-git.html">Version Control with Git</a>
-    <a class="nav-section" href="../ch01/scikit-learn.html" data-href="ch01/scikit-learn.html">Scikit-learn</a>
     <a class="nav-section" href="../ch01/python-under-the-hood.html" data-href="ch01/python-under-the-hood.html">Python Under the Hood</a>
     <a class="nav-section" href="../ch01/algorithms-and-data-structures-for-ml.html" data-href="ch01/algorithms-and-data-structures-for-ml.html">Algorithms and Data Structures for ML</a>
     <a class="nav-section" href="../ch01/nice-to-know.html" data-href="ch01/nice-to-know.html">Nice to Know</a>
@@ -78,6 +77,7 @@
     <a class="nav-section" href="../ch04/evaluation-metrics.html" data-href="ch04/evaluation-metrics.html">Evaluation Metrics</a>
     <a class="nav-section" href="../ch04/model-selection.html" data-href="ch04/model-selection.html">Model Selection</a>
     <a class="nav-section" href="../ch04/ml-optimization.html" data-href="ch04/ml-optimization.html">ML Optimization</a>
+    <a class="nav-section" href="../ch04/scikit-learn.html" data-href="ch04/scikit-learn.html">Scikit-learn</a>
     <a class="nav-section" href="../ch04/nice-to-know.html" data-href="ch04/nice-to-know.html">Nice to Know</a>
   </div>
   <div class="nav-part">Classical Machine Learning</div>
@@ -312,28 +312,17 @@
 <!-- ═══════════ End Table of Contents ═══════════ -->
 <div class="tldr">
   <div class="tldr-label">TL;DR</div>
-  <p>Optimization is finding the lowest point in a landscape. Gradient descent is a blindfolded hiker feeling the slope underfoot. Convex problems are the friendly ones — a single valley, and any downhill path leads to the bottom. Non-convex problems are deep learning's wilderness, full of saddle points and deceptive valleys, where SGD plus momentum navigate by harnessing noise as a feature. Adam adapts learning rates per-parameter by tracking first and second moments. Learning rate schedules control the pace — warmup for transformers, cosine annealing for smooth convergence. Saddle points, not local minima, are the real enemy in high dimensions. Constrained optimization adds guardrails via Lagrangians and KKT conditions; duality is why SVMs work. Second-order methods use curvature but rarely survive the cost of computing the Hessian.</p>
+  <p>This section covers the mathematical theory of optimization. Convex problems have a single valley where any downhill path leads to the global minimum — this is why linear regression, logistic regression, and SVMs are so reliable. Non-convex problems are deep learning's wilderness. Constrained optimization adds guardrails via Lagrangians and KKT conditions; duality is why SVMs and kernel methods work. Second-order methods use curvature information (the Hessian) for faster convergence but rarely survive the cost at scale. For practical ML optimization algorithms — gradient descent, SGD, momentum, Adam, learning rate schedules — see <a href="../ch04/ml-optimization.html">Chapter 4: ML Optimization</a>.</p>
 </div>
 
-<p>For years I treated the optimizer as a black box — pick Adam, set the learning rate to 3e-4, and move on. Then the loss plateaued, the gradients exploded, and I had no vocabulary for diagnosing what went wrong.</p>
+<p>Optimization, at its core, is the study of finding the best answer — the lowest loss, the tightest fit, the widest margin. Every ML model you've ever trained was doing optimization under the hood. Linear regression minimizes squared error. SVMs maximize a margin. Neural networks minimize a loss function over millions of parameters. The math changes, but the question is always the same: where is the bottom of this landscape?</p>
 
-<p>Here's the orientation. Optimization, at its core, is the study of finding the best answer — the lowest loss, the tightest fit, the widest margin. Every ML model you've ever trained was doing optimization under the hood. Linear regression minimizes squared error. SVMs maximize a margin. Neural networks minimize a loss function over millions of parameters. The math changes, but the question is always the same: where is the bottom of this landscape?</p>
-
-<p>We start with what optimization means, then build gradient descent from the ground up with a toy example you can trace by hand. We'll wrestle with the learning rate dilemma, learn why convex problems are easy, and face the harsh reality of non-convex landscapes. Momentum and mini-batch SGD will be our first tools for navigating the wilderness. Then we push into adaptive methods like Adam, the surprisingly contentious SGD-vs-Adam debate, learning rate schedules, saddle points, loss landscapes, constrained optimization with Lagrangians and KKT conditions, and finally a brief tour of second-order methods.</p>
+<p>This section focuses on the mathematical foundations: the shape of optimization landscapes (convex vs. non-convex), constrained optimization with Lagrangians and KKT conditions, duality theory, and second-order methods. These are the theoretical tools that underpin everything from SVMs to variational inference.</p>
 
 <h3>Table of Contents</h3>
 <div style="margin-left: 1.5em; line-height: 2;">
   <a href="#what-optimization-is">What Optimization Is</a><br>
-  <a href="#gradient-descent-from-scratch">Gradient Descent from Scratch</a><br>
-  <a href="#the-learning-rate-dilemma">The Learning Rate Dilemma</a><br>
   <a href="#convex-vs-non-convex">Convex vs. Non-Convex</a><br>
-  <a href="#momentum">Momentum</a><br>
-  <a href="#mini-batch-sgd">Mini-Batch SGD</a><br>
-  <a href="#adaptive-methods">Adaptive Methods: RMSprop and Adam</a><br>
-  <a href="#sgd-vs-adam">The SGD vs. Adam Debate</a><br>
-  <a href="#learning-rate-schedules">Learning Rate Schedules</a><br>
-  <a href="#saddle-points">Saddle Points</a><br>
-  <a href="#loss-landscapes">Loss Landscapes</a><br>
   <a href="#constrained-optimization">Constrained Optimization</a><br>
   <a href="#second-order-methods">Second-Order Methods</a><br>
   <a href="#wrap-up">Wrap-Up</a><br>
@@ -348,95 +337,9 @@
 
 <p>The fundamental tool is the <strong>gradient</strong>, written ∇f(x). It's a vector that points in the direction of steepest ascent, and its magnitude tells you how steep. To go downhill, you walk opposite to the gradient. That's the entire intuition behind gradient-based optimization, and most of what follows is about doing this more cleverly.</p>
 
-<h2 id="gradient-descent-from-scratch">Gradient Descent from Scratch</h2>
-
-<p>Let's make this concrete with the smallest possible example. Consider the function f(x) = (x − 3)². This is a parabola — a U-shape with its bottom at x = 3. We know the answer, but let's pretend we don't and find it by feeling the slope.</p>
-
-<p>The gradient (just the derivative in 1D) is f'(x) = 2(x − 3). At any point x, this tells us the slope. If x is less than 3, the slope is negative — the hill goes down to the right, so we should move right. If x is greater than 3, the slope is positive — downhill is to the left. The update rule is:</p>
-
-<pre><code>x_new = x_old - α · f'(x_old)</code></pre>
-
-<p>That α is the <strong>learning rate</strong> — how big a step we take. It's a number we choose. Let's walk through this by hand. Suppose we start at x = 10 with α = 0.1.</p>
-
-<p>Step 1: f'(10) = 2(10 − 3) = 14. So x_new = 10 − 0.1 × 14 = 8.6. We moved toward 3.</p>
-
-<p>Step 2: f'(8.6) = 2(8.6 − 3) = 11.2. So x_new = 8.6 − 0.1 × 11.2 = 7.48. Still moving toward 3, but the step got smaller because the slope got gentler.</p>
-
-<p>Step 3: f'(7.48) = 2(7.48 − 3) = 8.96. So x_new = 7.48 − 0.1 × 8.96 = 6.584.</p>
-
-<p>You see the pattern. Each step, we get closer to 3 and the steps shrink because the slope is flattening out. After enough steps, we'll be so close to 3 that the gradient is effectively zero and we stop. That's gradient descent. The whole thing.</p>
-
-<pre><code>import numpy as np
-
-# Gradient descent on f(x) = (x - 3)^2
-# Gradient: f'(x) = 2*(x - 3)
-# Minimum: x = 3, f(3) = 0
-
-x = 10.0        # starting point
-lr = 0.1        # learning rate
-history = [x]
-
-for step in range(50):
-    grad = 2 * (x - 3)        # compute the slope
-    x = x - lr * grad          # step opposite to the gradient
-    history.append(x)
-
-print(f"After 50 steps: x = {x:.6f}")   # 3.000000 (essentially)
-print(f"f(x) = {(x - 3)**2:.10f}")       # ~0.0
-
-# Watch how the steps shrink:
-# Step 0: x=10.0 → 8.6  (big step, steep slope)
-# Step 5: x=5.37 → 4.90 (medium step)
-# Step 20: x=3.001 → 3.001 (tiny step, nearly flat)</code></pre>
-
-<p>In multiple dimensions, the idea is identical. Instead of a single derivative, we compute the gradient vector — the vector of partial derivatives with respect to each parameter. Each parameter gets updated independently, all moved in the direction that most steeply decreases the loss. A neural network with 10 million parameters does this exact thing, 10 million updates at once, on every training step. The math is the same; the scale is different.</p>
-
-<p>Why does this work? There's a formal reason. Gradient descent is doing something called <strong>steepest descent</strong>: among all directions you could step, the negative gradient direction decreases f the most per unit of distance traveled. For small enough step sizes, every step is guaranteed to decrease the loss (on smooth functions). The method isn't clever or creative — it's greedy. It always goes maximally downhill from where it stands. And for a surprising range of problems, greedy is good enough.</p>
-
-<h2 id="the-learning-rate-dilemma">The Learning Rate Dilemma</h2>
-
-<p>I still sometimes pick a learning rate that's off by a factor of ten. It's the single most important hyperparameter in all of deep learning, and there's no formula for getting it right on the first try.</p>
-
-<p>Here's the dilemma. If the learning rate is too large, you overshoot. Our hiker feels a steep slope and takes a huge leap, sailing right past the valley floor and landing on the opposite hillside — possibly even higher than where they started. Repeat this and the loss <em>increases</em> instead of decreasing, or oscillates wildly. Set it too high and training diverges entirely — the loss goes to infinity.</p>
-
-<p>If the learning rate is too small, you crawl. Each step is so tiny that you'd need millions of iterations to make meaningful progress. Training technically works, but it takes forever and you might get stuck in a shallow dip that a bolder step would have sailed right through.</p>
-
-<p>The sweet spot is a learning rate just large enough to make progress without overshooting. But "just large enough" depends on the loss landscape, which depends on the model architecture, the data, the batch size, and even the training stage. The ideal learning rate at the start of training (when gradients are large and the landscape is rough) is different from the ideal rate near the end (when you're fine-tuning into a narrow valley).</p>
-
-<p>Let's see this concretely. Take our same f(x) = (x − 3)² but try three different learning rates:</p>
-
-<pre><code>import numpy as np
-
-def gradient_descent_demo(lr, steps=20):
-    x = 10.0
-    path = [x]
-    for _ in range(steps):
-        grad = 2 * (x - 3)
-        x = x - lr * grad
-        path.append(x)
-    return path
-
-# Too small: barely moves
-slow = gradient_descent_demo(lr=0.01)
-print(f"lr=0.01 after 20 steps: x={slow[-1]:.4f}")  # ~6.71, far from 3
-
-# Just right: converges smoothly
-good = gradient_descent_demo(lr=0.1)
-print(f"lr=0.1  after 20 steps: x={good[-1]:.4f}")   # ~3.0001, nailed it
-
-# Too big: oscillates or diverges
-wild = gradient_descent_demo(lr=0.9)
-print(f"lr=0.9  after 20 steps: x={wild[-1]:.4f}")    # oscillates around 3
-
-# Way too big: explodes
-boom = gradient_descent_demo(lr=1.1)
-print(f"lr=1.1  after 20 steps: x={boom[-1]:.4f}")    # diverges!</code></pre>
-
-<p>For this particular quadratic function, the critical threshold is α = 1.0. Above that, the update <em>overcorrects</em> — each step doesn't just miss the target, it ends up farther away on the other side. Below 1.0, it converges, but the speed varies dramatically. Real loss landscapes are far more complex than a parabola, so the critical threshold changes at every point. That's why this is a dilemma, not a problem with a clean solution.</p>
-
-<div class="callout callout-warning">
-  <div class="callout-label">Watch Out</div>
-  <p>A common first response to "my model isn't learning" is to increase the learning rate. A common first response to "my loss is exploding" is to decrease it. Both instincts are correct about 60% of the time, which is just often enough to be dangerous. The other 40% is some other issue entirely — bad data, a bug in the loss function, or vanishing gradients. Always plot the loss curve before blaming the learning rate.</p>
+<div class="callout callout-info">
+  <div class="callout-label">📍 Cross-Reference</div>
+  <p>The practical ML optimization toolkit — gradient descent, learning rate tuning, momentum, SGD, Adam, AdamW, learning rate schedules, and saddle point navigation — is covered in <a href="../ch04/ml-optimization.html">Chapter 4: ML Optimization</a>. This section focuses on the mathematical theory: convexity, constrained optimization, duality, and second-order methods.</p>
 </div>
 
 <h2 id="convex-vs-non-convex">Convex vs. Non-Convex</h2>
@@ -465,193 +368,6 @@ print(f"lr=1.1  after 20 steps: x={boom[-1]:.4f}")    # diverges!</code></pre>
   <div class="callout-label">Key Insight</div>
   <p>If you can prove your loss function is convex, you've essentially solved the hard part. The optimizer becomes a detail — almost any reasonable algorithm will find the answer. The real difficulty in ML is that most interesting models produce non-convex landscapes. Knowing which terrain you're on determines which tools to reach for.</p>
 </div>
-
-<h2 id="momentum">Momentum</h2>
-
-<p>Plain gradient descent has a problem with valleys that are narrow in one direction and shallow in another. The hiker oscillates back and forth across the narrow walls while making painfully slow progress along the valley floor. It's like trying to roll a ball down a half-pipe — the ball bounces side to side instead of rolling smoothly toward the exit.</p>
-
-<p>The fix comes from physics. Instead of stepping based only on the current gradient, we give our hiker <strong>momentum</strong> — the ability to accumulate velocity. If the gradient has been pointing in the same direction for several steps, momentum builds up and the steps get bigger. If the gradient keeps switching signs (oscillating), the positive and negative contributions cancel out and the oscillation dampens. It's exactly how a ball rolling down a hill behaves: it accelerates on consistent slopes and smooths out over bumps.</p>
-
-<p>The update rule for <strong>Polyak momentum</strong> (also called classical momentum or heavy-ball method) introduces a velocity term v:</p>
-
-<pre><code>v_new = β · v_old + ∇f(x)
-x_new = x_old - α · v_new</code></pre>
-
-<p>Here β is the <strong>momentum coefficient</strong>, typically 0.9. On each step, we compute the gradient as usual, but instead of using it directly, we blend it with the previous velocity. The velocity v accumulates gradient history. If the last ten gradients all pointed left, v points strongly left, and we take a big step. If the gradients keep flipping between left and right, v stays small because the contributions cancel.</p>
-
-<p>Think of it this way. Without momentum, the hiker stops at the end of each step, looks at the ground, and takes a fresh step. With momentum, the hiker is <em>sliding</em>. Their past motion carries them forward. They still feel the slope and adjust, but they don't stop between steps.</p>
-
-<p><strong>Nesterov momentum</strong> (Nesterov Accelerated Gradient, or NAG) adds a subtle twist that makes a real difference. Instead of computing the gradient at the current position, you compute it at the position you'd reach if you followed the current velocity — a "look-ahead" gradient. The idea is: if I'm sliding to the left, I should check the slope <em>where I'm about to be</em>, not where I am now. This lets the optimizer slow down before it overshoots.</p>
-
-<pre><code>v_new = β · v_old + ∇f(x_old - α · β · v_old)   # look-ahead gradient
-x_new = x_old - α · v_new</code></pre>
-
-<p>Nesterov showed that this modification achieves the theoretically optimal convergence rate for convex functions — O(1/t²) instead of O(1/t) for plain gradient descent. In practice, the difference between Polyak and Nesterov momentum is often modest, but Nesterov tends to overshoot less.</p>
-
-<p>Momentum helps with more than just narrow valleys. It also helps escape <strong>saddle points</strong>. At a saddle point, the gradient is near zero, so plain gradient descent stalls. But if the optimizer has built up velocity from previous steps, the momentum carries it through the flat region and out the other side. This is one of the less obvious but deeply important benefits of momentum — it turns the optimizer's memory into a saddle-point escape mechanism.</p>
-
-<p>Momentum also helps traverse <strong>flat plateaus</strong>. If a stretch of the loss landscape is nearly flat, the gradient is tiny and progress is glacial. But momentum accumulates even tiny gradients over time, building enough velocity to cross the plateau. Without momentum, you might stall in a flat region for thousands of steps. With it, the ball keeps rolling.</p>
-
-<h2 id="mini-batch-sgd">Mini-Batch SGD</h2>
-
-<p>So far, we've assumed we compute the gradient on the <em>entire</em> training set at each step. For a dataset of a million examples, that means a million forward passes and a million backward passes before a single parameter update. That's <strong>batch gradient descent</strong>, and it's too slow for modern scale.</p>
-
-<p>The alternative is <strong>Stochastic Gradient Descent (SGD)</strong> — compute the gradient on a single randomly chosen example and update immediately. This is noisy. One example gives a crude estimate of the true gradient. But it's fast, and the noise turns out to be a feature, not a bug.</p>
-
-<p>In practice, we use <strong>mini-batch SGD</strong>: compute the gradient on a small random subset (a <strong>mini-batch</strong>) of, say, 32 or 256 examples. This is a compromise. The mini-batch gradient is a noisy estimate of the full-batch gradient, but it's much cheaper to compute, and the noise isn't too wild.</p>
-
-<p>Why is the noise a feature? Think about our hiker analogy. Full-batch gradient descent is the hiker on a clear day, seeing the exact slope everywhere. They walk directly to the nearest valley bottom and stop — even if it's a shallow local minimum with a much deeper valley just over the next ridge. Mini-batch SGD is the hiker in fog and wind. They can feel the general direction of downhill, but there's randomness — gusts that push them sideways, mist that obscures the exact slope. Sometimes those gusts push them <em>out</em> of a shallow minimum and over the ridge into a deeper valley.</p>
-
-<p>The noise from mini-batches has real mathematical consequences. It acts as implicit regularization: the optimizer can't settle into the sharpest, narrowest valleys because the noise bounces it back out. It tends to find <strong>flat minima</strong> — regions where the loss is low and stays low even when parameters are perturbed. There's accumulating evidence that flat minima generalize better than sharp ones, because the flatness means the model's performance is robust to small perturbations in the weights.</p>
-
-<p>Batch size interacts with the learning rate. Larger batches give cleaner gradient estimates, which allows larger learning rates. Smaller batches give noisier estimates, which requires smaller learning rates to avoid instability. A common rule of thumb (the "linear scaling rule") is: if you double the batch size, double the learning rate. This heuristic works reasonably well in practice, though it breaks down at very large batch sizes.</p>
-
-<div class="callout callout-info">
-  <div class="callout-label">Key Insight</div>
-  <p>SGD's noise is one of deep learning's most important features. It helps escape saddle points, avoid sharp local minima, and find solutions that generalize well. Full-batch gradient descent gives exact gradients but often converges to worse solutions. More noise, within reason, leads to better generalization. This counterintuitive fact is one of the central results in modern optimization theory for deep learning.</p>
-</div>
-
-<h2 id="adaptive-methods">Adaptive Methods: RMSprop and Adam</h2>
-
-<p>The learning rate dilemma has a deeper layer we haven't addressed: different parameters might need different learning rates. In a neural network, some parameters see steep gradients (they're in the action) and some see tiny gradients (they're in a quiet corner of the landscape). A single global learning rate that works for the steep parameters is too aggressive for the quiet ones, and a rate that works for the quiet ones is too timid for the steep ones.</p>
-
-<p><strong>Adaptive methods</strong> solve this by giving each parameter its own effective learning rate, adjusted automatically based on the history of gradients that parameter has seen.</p>
-
-<p>The story starts with <strong>AdaGrad</strong> (Duchi et al., 2011). AdaGrad keeps a running sum of squared gradients for each parameter. Parameters that have seen large gradients get their learning rate scaled down; parameters that have seen small gradients get their learning rate scaled up. The update for parameter i is:</p>
-
-<pre><code>s_i = s_i + (grad_i)²
-x_i = x_i - α · grad_i / (√s_i + ε)</code></pre>
-
-<p>The accumulated squared gradient s_i in the denominator shrinks the effective learning rate over time. For sparse problems (like natural language, where most features are zero most of the time), this is brilliant — rare features get larger updates. But for deep learning, there's a fatal flaw: s_i only grows. The learning rate monotonically decreases and eventually becomes so small that learning stops entirely. Training dies of old age.</p>
-
-<p><strong>RMSprop</strong> (Hinton, unpublished but taught in his Coursera lectures, 2012) fixes the accumulation problem with a simple idea: use an exponential moving average instead of a sum. Recent gradients matter more than ancient ones.</p>
-
-<pre><code>s_i = ρ · s_i + (1 - ρ) · (grad_i)²        # exponential average of squared gradients
-x_i = x_i - α · grad_i / (√s_i + ε)</code></pre>
-
-<p>With ρ typically 0.9 or 0.99, RMSprop forgets old gradients and adapts to the current landscape. If a parameter's gradients recently became small, its learning rate increases. If they became large, the learning rate decreases. It's like our hiker adjusting their stride based on the terrain they've been walking through recently, not the terrain from three days ago.</p>
-
-<p>Now we arrive at <strong>Adam</strong> (Kingma and Ba, 2015), probably the most widely used optimizer in deep learning. Adam combines the best of momentum and RMSprop. It tracks two quantities: the <strong>first moment</strong> (mean of gradients, like momentum) and the <strong>second moment</strong> (mean of squared gradients, like RMSprop).</p>
-
-<pre><code>m = β₁ · m + (1 - β₁) · grad          # first moment estimate (momentum-like)
-v = β₂ · v + (1 - β₂) · grad²         # second moment estimate (RMSprop-like)
-m̂ = m / (1 - β₁ᵗ)                     # bias correction
-v̂ = v / (1 - β₂ᵗ)                     # bias correction
-x = x - α · m̂ / (√v̂ + ε)             # update</code></pre>
-
-<p>The default hyperparameters (β₁ = 0.9, β₂ = 0.999, ε = 1e-8) work well across a wide range of problems, which is why Adam is the "set it and forget it" optimizer. But let's understand why each piece is there.</p>
-
-<p>The first moment m is a smoothed estimate of the gradient direction and magnitude — essentially momentum. It keeps the optimizer moving consistently even when individual mini-batch gradients are noisy. The second moment v tracks the <em>scale</em> of recent gradients for each parameter. Dividing by √v normalizes the update: parameters with large gradients get smaller steps, parameters with small gradients get larger steps. Together, m/√v gives you a direction <em>and</em> an appropriate scale.</p>
-
-<p>The <strong>bias correction</strong> terms (dividing by 1 − β^t) are a subtle but important detail. At the start of training, m and v are initialized to zero. After the first step, m = (1 − β₁) · grad, which underestimates the true mean by a factor of about 10 (since β₁ = 0.9). The bias correction inflates the early estimates to account for the zero initialization. Without it, the first few updates are too small. By around step 10-20, the correction terms approach 1 and stop mattering.</p>
-
-<p>Why does Adam work so well? It adapts the learning rate per-parameter (handling the different-scales problem), it has momentum (handling noise and saddle points), and the defaults are robust. For practitioners, this means less hyperparameter tuning than SGD with momentum, which is why Adam became the default for research projects where development speed matters.</p>
-
-<pre><code>import numpy as np
-
-# Adam from scratch on f(x, y) = (x-3)^2 + 10*(y+2)^2
-# The landscape is steep in y, shallow in x — different scales.
-# Adam adapts the learning rate for each parameter independently.
-
-def loss(params):
-    x, y = params
-    return (x - 3)**2 + 10 * (y + 2)**2
-
-def grad(params):
-    x, y = params
-    return np.array([2*(x - 3), 20*(y + 2)])
-
-params = np.array([10.0, 10.0])
-m = np.zeros(2)       # first moment
-v = np.zeros(2)       # second moment
-lr = 0.1
-beta1, beta2, eps = 0.9, 0.999, 1e-8
-
-for t in range(1, 201):
-    g = grad(params)
-    m = beta1 * m + (1 - beta1) * g          # update first moment
-    v = beta2 * v + (1 - beta2) * g**2       # update second moment
-    m_hat = m / (1 - beta1**t)               # bias correction
-    v_hat = v / (1 - beta2**t)               # bias correction
-    params = params - lr * m_hat / (np.sqrt(v_hat) + eps)
-
-print(f"Final: x={params[0]:.4f}, y={params[1]:.4f}")  # ~(3.0, -2.0)
-print(f"Loss:  {loss(params):.6f}")                      # ~0.0</code></pre>
-
-<p>Notice that the y-direction has gradients 10× larger than x, yet Adam handles both smoothly. Plain gradient descent with a single learning rate would either oscillate wildly in y or crawl in x. Adam's per-parameter scaling resolves this automatically.</p>
-
-<h2 id="sgd-vs-adam">The SGD vs. Adam Debate</h2>
-
-<p>I'm still developing my intuition for when to use which optimizer. This is one of those areas where the community hasn't fully converged, and I want to be honest about that.</p>
-
-<p>Here's the tension. Adam converges faster and requires less tuning. SGD with momentum, when carefully tuned, often finds solutions that <strong>generalize better</strong> — lower test loss, not just lower training loss. This pattern has been observed repeatedly in computer vision (ResNets on ImageNet, for instance) and is robust enough that many production image classifiers still use SGD.</p>
-
-<p>The leading explanation involves <strong>sharp vs. flat minima</strong>. Adam's per-parameter learning rates let it navigate into narrow, sharp valleys in the loss landscape. SGD's noise prevents it from settling into sharp valleys — the noise bounces it out — so it ends up in wider, flatter regions. Flat minima correspond to models whose predictions don't change much when the weights are slightly perturbed, and there's both theoretical and empirical evidence that this flatness correlates with better generalization.</p>
-
-<p>Wilson et al. (2017) showed that adaptive methods (Adam, RMSprop, AdaGrad) can converge to solutions with worse generalization than SGD, even when the training loss is lower. The gap is real and measurable on standard benchmarks. This sparked a lot of follow-up work trying to get the best of both worlds.</p>
-
-<p>One important fix is <strong>AdamW</strong> (Loshchilov and Hutter, 2019). The original Adam implementation combined L2 regularization with the adaptive gradient scaling in a way that didn't work as intended — the regularization was scaled down by the same adaptive factor, weakening it for parameters with large gradients. AdamW separates weight decay from the adaptive update, applying it directly to the parameters. This seemingly minor change significantly closes the generalization gap. AdamW is now the default optimizer for training transformers, including the GPT and BERT families.</p>
-
-<p>The rough practical consensus in 2024: use AdamW for transformers and language models. Use SGD with momentum for CNNs and vision tasks if you're willing to tune the learning rate and schedule. Use Adam (or AdamW) if you want fast convergence with less fuss. And always evaluate on held-out data — the optimizer that reaches lower training loss isn't always the one you want.</p>
-
-<div class="callout callout-info">
-  <div class="callout-label">Key Insight</div>
-  <p>The SGD-vs-Adam debate isn't about which is "better" — it's about the generalization properties of the minima they find. SGD's noise acts as implicit regularization, pushing it toward flat minima. Adam converges faster but can land in sharper minima. AdamW largely resolves this for transformers by decoupling weight decay. Know your architecture and your budget before choosing.</p>
-</div>
-
-<h2 id="learning-rate-schedules">Learning Rate Schedules</h2>
-
-<p>So far we've treated the learning rate as a constant. In practice, nearly every serious training run changes the learning rate over time. The intuition is straightforward: early in training, you want to move fast — take big steps to get in the right neighborhood. Late in training, you want to move carefully — take small steps to settle precisely into the minimum without overshooting. A <strong>learning rate schedule</strong> (or <strong>learning rate decay</strong>) codifies this intuition.</p>
-
-<p>The simplest approach is <strong>step decay</strong>: multiply the learning rate by some factor (say 0.1) every N epochs. This was the standard for years — train at 0.1 for 30 epochs, drop to 0.01 for 30 more, drop to 0.001 for the final stretch. It works, but the abrupt drops can cause instabilities, and choosing when to drop is another hyperparameter to tune.</p>
-
-<p><strong>Cosine annealing</strong> (Loshchilov and Hutter, 2017) smoothly decreases the learning rate following a cosine curve from some maximum value down to near zero over the course of training. There are no discontinuities, no sudden drops. The curve starts slow (learning rate barely changes), accelerates in the middle, and slows again at the bottom. Visually, it looks like the first half of a cosine wave. The smoothness turns out to be beneficial — it avoids the instabilities of step decay and tends to give slightly better results.</p>
-
-<p><strong>Warmup</strong> is a more recent addition, driven by transformer training. The idea is to <em>increase</em> the learning rate gradually during the first few hundred or thousand steps before beginning the decay. Why? At initialization, the network's parameters are random. The gradients in early training are large and poorly calibrated — they point "downhill" in a vague sense but can be wildly wrong in magnitude. A large learning rate applied to these initial wild gradients can destabilize training permanently. Warmup starts with a very small learning rate, giving the optimizer a few steps to "calibrate" before ramping up to the target rate.</p>
-
-<p>The combination of warmup followed by cosine decay is now the standard schedule for transformer training. The <strong>one-cycle policy</strong> (Smith, 2018) is a variation that ramps the learning rate up to a maximum and then back down over a single cycle, also varying the momentum inversely. It often achieves competitive results in significantly fewer epochs.</p>
-
-<p>A powerful practical tool is the <strong>learning rate range test</strong> (Smith, 2017). Start with a very small learning rate and gradually increase it over a few hundred steps, plotting the loss along the way. The loss will decrease for a range of learning rates, then start increasing when the rate gets too high. The best learning rate for training is typically somewhere in the middle of the decreasing region — large enough to learn fast, small enough not to diverge. This takes five minutes and saves hours of guessing.</p>
-
-<div class="callout callout-warning">
-  <div class="callout-label">Watch Out</div>
-  <p>Warmup is not optional for large transformers. Without it, the early training steps can push the model into a region of parameter space from which it never recovers. If your transformer loss doesn't decrease after a few thousand steps, the first thing to check is whether you forgot warmup.</p>
-</div>
-
-<h2 id="saddle-points">Saddle Points</h2>
-
-<p>For a long time, the conventional fear about non-convex optimization was local minima — valleys that aren't the deepest but trap the optimizer. It turns out the real enemy in high dimensions is the <strong>saddle point</strong>.</p>
-
-<p>A saddle point is a critical point where the gradient is zero, but it's not a minimum or a maximum. The surface curves upward in some directions and downward in others. Think of an actual horse saddle: if you sit on it, the surface curves up toward the horse's head and tail (you'd roll off the sides) but curves down toward the ground on either side. In two dimensions it's easy to picture. In a million dimensions, saddle points are everywhere.</p>
-
-<p>Here's the key argument, due to Dauphin et al. (2014). At any critical point (where the gradient is zero), the <strong>Hessian matrix</strong> — the matrix of second derivatives — tells you about the curvature in every direction. The diagonal of the Hessian (more precisely, its eigenvalues) can be positive (curving up — minimum-like) or negative (curving down — maximum-like). For a point to be a true local minimum, <em>all</em> eigenvalues must be positive. For a saddle point, you need a mix of positive and negative.</p>
-
-<p>In a model with n parameters, the Hessian has n eigenvalues. If each eigenvalue is positive or negative with roughly equal probability (a simplification, but the argument extends), the probability that all n eigenvalues are positive is about (1/2)^n. For a network with a million parameters, that's (1/2)^1,000,000 — so astronomically small that it essentially never happens. The vast majority of critical points in high-dimensional landscapes are saddle points, not local minima.</p>
-
-<p>This is good news and bad news. The good news: local minima are rare, so the optimizer is unlikely to get permanently trapped in one. The bad news: saddle points can still slow training to a crawl. At a saddle point, the gradient is near zero, so gradient descent moves very slowly. The optimizer doesn't know whether to go left (where the surface curves up) or right (where it curves down). It just sees flatness.</p>
-
-<p>Momentum helps because the velocity carries the optimizer through flat regions. SGD's noise helps because random perturbations in the gradient give the optimizer a "nudge" in the downhill directions. Together, they make saddle points a nuisance rather than a roadblock. But in very high dimensions, no one is completely certain about the full geometry of these landscapes — we have strong empirical evidence and partial theoretical results, but the complete picture is still an open research question.</p>
-
-<p>Dauphin et al. also observed something reassuring: the loss values at different critical points tend to be correlated with the "index" of the critical point (how many negative eigenvalues the Hessian has). High-loss critical points tend to be saddle points with many negative eigenvalues. Low-loss critical points tend to have mostly positive eigenvalues — they're near-minima. So the critical points you actually encounter during training (as the loss decreases) become progressively more minimum-like. The landscape is structured in your favor.</p>
-
-<div class="callout callout-info">
-  <div class="callout-label">Key Insight</div>
-  <p>In high-dimensional optimization, saddle points outnumber local minima by an astronomical margin. A critical point with n parameters needs all n curvature directions to be positive to be a local minimum — the probability is exponentially small. SGD with momentum naturally escapes saddle points through noise and velocity. The real local minima you encounter tend to have similar loss values, so even getting "stuck" usually isn't catastrophic.</p>
-</div>
-
-<h2 id="loss-landscapes">Loss Landscapes</h2>
-
-<p>Talking about "landscapes" with millions of dimensions is inherently hand-wavy. We can't visualize a million-dimensional surface. But researchers have found clever ways to project these surfaces into 2D, and what they found is striking.</p>
-
-<p>Li et al. (2018) introduced <strong>filter-normalized loss landscape visualizations</strong>. The idea: pick two random directions in parameter space, normalize them so the visualization isn't dominated by scale differences between layers, then plot the loss along a 2D slice of the landscape. It's like taking a cross-section of a mountain range — you see one particular view, not the whole thing, but it reveals structure.</p>
-
-<p>What they found was that architecture design dramatically affects the smoothness of the landscape. ResNets with skip connections produce smooth, nearly convex-looking loss surfaces. The same architectures without skip connections produce chaotic, rough surfaces full of sharp valleys and abrupt transitions. Skip connections don't just help gradient flow (the usual explanation) — they literally reshape the optimization terrain into something more navigable.</p>
-
-<p><strong>Mode connectivity</strong> (Garipov et al., 2018) is another fascinating finding. Take two independently trained networks that converge to different local minima. You might expect a ridge of high loss between them — after all, they found different valleys. But Garipov et al. showed that you can often find a <em>path</em> between the two minima along which the loss stays low. The valleys aren't isolated — they're connected by low-loss corridors. This suggests the loss landscape of typical neural networks is less "mountain range with isolated valleys" and more "hilly terrain with connected valley systems."</p>
-
-<p>Draxler et al. (2018) extended this, showing that local minima in neural networks are often connected by paths of nearly constant loss. The landscape, at least for overparameterized networks, seems to have a single, connected low-loss basin with multiple access points. This helps explain why different random initializations and different hyperparameters often reach solutions with similar test performance — they're finding different entrances to the same valley system.</p>
-
-<p>These visualizations and theoretical results have practical implications. If the loss landscape is smooth (as it is for well-designed architectures), gradient-based optimizers navigate it efficiently. If it's rough (as it is for poorly designed architectures), training becomes erratic and sensitive to hyperparameters. When you see someone say "I can't get this architecture to train," the landscape itself might be the problem — not the optimizer or the learning rate.</p>
 
 <h2 id="constrained-optimization">Constrained Optimization</h2>
 
@@ -769,29 +485,19 @@ print(f"Distance squared: {result.fun:.2f}")  # 8.0</code></pre>
 
 <p>The bottom line is this: first-order methods dominate deep learning because the Hessian is too expensive to compute, and the noise in mini-batch gradients undermines the accuracy of second-order approximations anyway. Adam is, in a sense, a cheap second-order approximation — its second-moment estimate v tracks the diagonal of the Hessian (roughly: the curvature in each parameter direction independently). It captures the most important curvature information at negligible cost. The dream of practical second-order deep learning optimization remains open.</p>
 
-<h2 id="wrap-up">Wrap-Up</h2>
+<p>We started with the simplest possible picture: a blindfolded hiker feeling the slope, stepping downhill. We saw that convex landscapes are the friendly ones — one valley, guaranteed convergence — while non-convex landscapes are full of deceptive structure. Jensen's inequality connected convexity to probabilistic bounds used across ML.</p>
 
-<p>We started with the simplest possible picture: a blindfolded hiker feeling the slope, stepping downhill. That's gradient descent. We wrestled with the learning rate — that maddening single number that controls everything. We saw that convex landscapes are the friendly ones (one valley, guaranteed convergence) and that deep learning's non-convex landscapes are full of saddle points and deceptive valleys.</p>
+<p>Constrained optimization gave us Lagrangians, KKT conditions, duality, and the kernel trick that makes SVMs work. Second-order methods showed us what we're missing (curvature information) and why we can't afford it (the Hessian is too big).</p>
 
-<p>Momentum gave our hiker inertia — the ability to build speed on consistent slopes and coast through flat regions. Mini-batch SGD added beneficial noise, turning our hiker's blurry vision into a feature that helps find flat, generalizable minima. Adam combined momentum with per-parameter learning rates, and AdamW fixed a subtle bug that made Adam worse at generalizing than SGD.</p>
-
-<p>We explored learning rate schedules (warmup for transformers, cosine annealing for smooth convergence), the surprising dominance of saddle points over local minima in high dimensions, and what loss landscapes actually look like when you project them into 2D. Constrained optimization gave us Lagrangians, KKT conditions, duality, and a connection to SVMs. Second-order methods showed us what we're missing (curvature information) and why we can't afford it (the Hessian is too big).</p>
-
-<p>My hope is that the next time your training run goes sideways — the loss plateaus, the gradients explode, the model won't converge — you'll have the vocabulary and the mental models to diagnose what's happening. Not just "try a different learning rate" but "is this a saddle point problem? A curvature problem? A sharp-minima problem?" That's the difference between tuning and understanding.</p>
+<p>For the practical optimization algorithms that power ML training — gradient descent, momentum, Adam, learning rate schedules, and strategies for navigating saddle points — continue to <a href="../ch04/ml-optimization.html">Chapter 4: ML Optimization</a>.</p>
 
 <h2 id="resources">Resources</h2>
 
-<p><strong>Ruder's overview of gradient descent optimizers</strong> — Sebastian Ruder wrote the definitive blog-post-length survey. It covers SGD, momentum, AdaGrad, RMSprop, Adam, and their variants, with animations that make the differences visceral. Start here if you want a broader view than this section provides.</p>
-
-<p><strong>"Visualizing the Loss Landscape of Neural Nets" (Li et al., 2018)</strong> — The paper that introduced filter-normalized visualizations. The figures alone are worth the read. Seeing a ResNet's smooth landscape next to a VGG's chaotic one drives the point home better than any argument.</p>
-
-<p><strong>"Identifying and attacking the saddle point problem in high-dimensional non-convex optimization" (Dauphin et al., 2014)</strong> — The paper that shifted the community's attention from local minima to saddle points. Dense but rewarding. The argument about random matrix theory and the index of critical points is beautifully constructed.</p>
-
 <p><strong>Boyd and Vandenberghe, "Convex Optimization" (2004)</strong> — The bible of convex optimization, and it's free online. Heavier than what most ML practitioners need, but chapters 1-5 give you the theoretical foundation for everything in the constrained optimization section above. The exercises are genuinely enlightening.</p>
 
-<p><strong>"Decoupled Weight Decay Regularization" (Loshchilov and Hutter, 2019)</strong> — The AdamW paper. Short, clear, and practically important. Understanding the difference between L2 regularization and weight decay — and why they're not the same in adaptive optimizers — is one of those details that matters more than it seems.</p>
+<p><strong>Nocedal and Wright, "Numerical Optimization" (2006)</strong> — The standard reference for both first-order and second-order methods. Covers Newton's method, quasi-Newton methods, and L-BFGS in rigorous detail. Essential if you want to understand why these methods converge and when they fail.</p>
 
-<p><strong>"Super-Convergence" (Smith and Topin, 2018)</strong> — The one-cycle learning rate policy paper. Less theoretical, more practical. If you want to train models faster with less tuning, the techniques here are directly applicable.</p>
+<p><strong>Bertsekas, "Nonlinear Programming" (1999)</strong> — Deep coverage of KKT conditions, duality theory, and Lagrangian relaxation. More theoretical than Boyd and Vandenberghe but covers non-convex constrained optimization more thoroughly.</p>
 
       <div class="page-nav">
         <a href="probability-statistics.html">
