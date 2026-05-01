@@ -319,32 +319,15 @@
 <!-- Opening: Personal Confession                -->
 <!-- ═══════════════════════════════════════════ -->
 
-<p>I avoided thinking seriously about model development process for longer than I'd like to admit. I could train models. I could get decent accuracy. But every few weeks I'd find myself staring at a folder full of checkpoints named <code>model_final.pt</code>, <code>model_final_v2.pt</code>, <code>model_ACTUALLY_final.pt</code>, and I couldn't tell you which one was best, what hyperparameters produced it, or whether the data it trained on was even the same data I had now. I'd re-run experiments I'd already run, because I had no record of the results. I'd ship a model, and when someone asked "why did you pick this one over the alternatives?" I'd mumble something unconvincing. Finally the discomfort of building on quicksand grew too great for me. Here is that dive.</p>
+<p>Every few weeks I'd find myself staring at a folder full of checkpoints named <code>model_final.pt</code>, <code>model_final_v2.pt</code>, <code>model_ACTUALLY_final.pt</code>, unable to tell which one was best, what hyperparameters produced it, or whether the data it trained on was even the same data I had now. Building on quicksand is no way to ship models. Here is that dive.</p>
 
 <p>Model development — the actual practice of going from "I have data and a problem" to "I have a model I'm confident enough to ship" — is the messy middle of machine learning. It's the part between the clean diagrams in textbooks and the polished metrics in blog posts. It involves experiment tracking, reproducibility, hyperparameter optimization, model registries, versioning, A/B testing, offline evaluation, baseline models, and documentation. Each of these sounds like a separate topic. In practice, they're all woven into a single loop that you run dozens or hundreds of times before you ship anything.</p>
-
-<p>Before we start, a heads-up. We're going to be working through a concrete example — building a churn prediction model for a subscription service — and we'll use it as a vehicle to touch every part of this lifecycle. You don't need prior experience with any specific tool. We'll add what we need, one piece at a time.</p>
-
-<p>This isn't a short journey, but I hope you'll be glad you came.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <!-- Table of Contents                           -->
 <!-- ═══════════════════════════════════════════ -->
 
-<div style="margin: 2em 0; padding: 1em 1.5em; border-left: 3px solid var(--accent, #6c63ff); background: var(--bg-alt, #f8f9fa); border-radius: 4px;">
-  <p style="margin: 0 0 0.5em; font-weight: 600;">The map for this journey:</p>
-  <p style="margin: 0.3em 0; padding-left: 1em;">The Baseline Nobody Wants to Build</p>
-  <p style="margin: 0.3em 0; padding-left: 1em;">Experiment Tracking: The Lab Notebook You Wish You'd Started Earlier</p>
-  <p style="margin: 0.3em 0; padding-left: 1em;">Reproducibility: Same Code, Same Data, Different Results</p>
-  <p style="margin: 0.3em 0; padding-left: 1em;">Hyperparameter Optimization: Searching Smarter</p>
-  <p style="margin: 0.3em 0; padding-left: 1em;">Rest Stop</p>
-  <p style="margin: 0.3em 0; padding-left: 1em;">The Model Registry: Where Models Go to Grow Up</p>
-  <p style="margin: 0.3em 0; padding-left: 1em;">Offline Evaluation: Measuring What Matters Before Anyone Sees It</p>
-  <p style="margin: 0.3em 0; padding-left: 1em;">A/B Testing: Letting Users Vote</p>
-  <p style="margin: 0.3em 0; padding-left: 1em;">Model Cards and Documentation: The README for Your Model</p>
-  <p style="margin: 0.3em 0; padding-left: 1em;">The Full Lifecycle</p>
-  <p style="margin: 0.3em 0; padding-left: 1em;">Resources and Credits</p>
-</div>
+
 
 <!-- ═══════════════════════════════════════════ -->
 <!-- Baseline Models                             -->
@@ -396,6 +379,8 @@ print(f"Baseline F1: {f1_score(y_val, y_pred):.3f}")
 
 <pre><code>import mlflow
 import mlflow.sklearn
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import f1_score, precision_score, recall_score
 
 mlflow.set_experiment("tunekeeper-churn")
 
@@ -531,6 +516,8 @@ ENTRYPOINT ["python3", "train.py"]</code></pre>
 <p>Here's what it looks like for TuneKeep:</p>
 
 <pre><code>import optuna
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.metrics import f1_score
 
 def objective(trial):
     params = {
@@ -565,23 +552,6 @@ print(f"Best params: {study.best_params}")</code></pre>
 <p>The "asynchronous" part means trials don't have to wait for each other. If trial 17 finishes its first 5 epochs while trial 3 is still on epoch 2, ASHA can immediately decide trial 17's fate. This keeps GPU utilization high and avoids the idle time that plagues synchronous approaches.</p>
 
 <p>One subtlety that tripped me up: ASHA assumes that relative ranking between trials is stable across training. If model A is worse than model B after 5 epochs, ASHA assumes A will still be worse after 50 epochs. This is usually true for the same architecture with different hyperparameters, but it can break when comparing architectures with very different learning dynamics. A large model might start slow and overtake a small model later. I haven't found a universal rule for when to trust early stopping and when to let everything run to completion — it depends on how much the learning curves cross over in your specific domain.</p>
-
-<!-- ═══════════════════════════════════════════ -->
-<!-- REST STOP                                   -->
-<!-- ═══════════════════════════════════════════ -->
-<div style="margin: 2.5em 0; padding: 1.5em; border: 2px solid var(--accent, #6c63ff); border-radius: 8px; background: var(--bg-alt, #f8f9fa);">
-<h2 id="rest-stop" style="margin-top: 0;">Rest Stop</h2>
-
-<p>Congratulations on making it this far. You can stop here if you want.</p>
-
-<p>You now have a mental model for the core development loop: start with a baseline, track every experiment with MLflow or W&amp;B, pin your seeds and environment for reproducibility, and use Optuna or Ray Tune to search hyperparameters instead of guessing. For our TuneKeep churn model, we went from a 0.583 baseline to 0.74 through tracked, reproducible experiments with automated hyperparameter search.</p>
-
-<p>That's a solid workflow for building models on your own machine. It doesn't tell the full story, though. Once a model is good enough to show other people — teammates, stakeholders, production systems — we need infrastructure for versioning it, evaluating it against real users, and documenting what it does and doesn't do well. That's the bridge between "I trained a good model" and "we deployed a reliable system."</p>
-
-<p>The short version of what comes next: model registries give you version control for trained models (like Git for weights), offline evaluation strategies tell you whether improvements are real before you expose users to them, A/B testing lets users vote on which model is better, and model cards document the model for everyone who will touch it after you.</p>
-
-<p>But if the discomfort of not knowing what's underneath is nagging at you, read on.</p>
-</div>
 
 <!-- ═══════════════════════════════════════════ -->
 <!-- Model Registry                              -->
@@ -742,8 +712,6 @@ def paired_bootstrap(y_true, preds_a, preds_b, metric_fn, n_boot=10000):
 <!-- Wrap-up                                     -->
 <!-- ═══════════════════════════════════════════ -->
 <h2 id="wrap-up">Wrap-Up</h2>
-
-<p>If you're still with me, thank you. I hope it was worth it.</p>
 
 <p>We started with a folder of unlabeled checkpoints and no way to tell which model was best. We built baselines to anchor our expectations, set up experiment tracking so no result was ever lost, pinned every source of randomness for reproducibility, used TPE and ASHA to search hyperparameters without wasting compute, registered models in a versioned registry with promotion stages, evaluated them with temporal splits and bootstrap tests, tested them against real users with shadow deployments and A/B tests, and documented everything in model cards so the next person wouldn't have to start from scratch.</p>
 
