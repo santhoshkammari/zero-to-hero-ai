@@ -2,9 +2,19 @@
 """Generate Zero to Hero AI book as PDF.
 
 Features:
-  - Parallel chapter rendering across all CPU cores
-  - Anthropic/Claude brand theme
-  - Automatic PDF merging
+  - Parallel chapter rendering across all CPU cores (multiprocessing.Pool)
+  - Anthropic/Claude brand theme (Terra Cotta #D97757, Pampas #F4F3EE, etc.)
+  - Automatic PDF merging via pypdf
+
+Fonts:
+  - Headings/UI : SF Pro Display (fallback: SF Pro → Inter)
+  - Body text   : SF Pro Text    (fallback: SF Pro → Inter)
+  - Code blocks : JetBrains Mono (fallback: Fira Code → SF Mono)
+
+Font sizes:
+  - Body: 12pt | h1: 22pt | h2: 18pt | h3: 15pt | h4: 13pt
+  - Cover title: 48pt | Chapter title: 28pt | Section: 17pt
+  - Code: 9.5pt | Tables: 10.5pt
 """
 
 import os
@@ -67,8 +77,8 @@ BOOK_CSS = r"""
     margin: 2.5cm 2cm 2.5cm 2.5cm;
     @top-center {
         content: "ZERO TO HERO AI";
-        font-family: 'Helvetica Neue', Arial, sans-serif;
-        font-size: 7.5pt;
+        font-family: 'SF Pro Display', 'SF Pro', 'Inter', sans-serif;
+        font-size: 8pt;
         color: #B1ADA1;
         letter-spacing: 2px;
     }
@@ -81,8 +91,8 @@ BOOK_CSS = r"""
 * { box-sizing: border-box; }
 
 body {
-    font-family: Georgia, 'Times New Roman', serif;
-    font-size: 10.5pt;
+    font-family: 'SF Pro Text', 'SF Pro', 'Inter', sans-serif;
+    font-size: 12pt;
     line-height: 1.7;
     color: #191918;
     background: #fff;
@@ -106,28 +116,28 @@ body {
 }
 
 .cover-page h1 {
-    font-family: 'Helvetica Neue', Arial, sans-serif;
-    font-size: 44pt; font-weight: 700;
+    font-family: 'SF Pro Display', 'SF Pro', 'Inter', sans-serif;
+    font-size: 48pt; font-weight: 700;
     color: #191918; margin: 0 0 0.15em;
     letter-spacing: -1px; line-height: 1.1;
 }
 
 .cover-page .subtitle {
-    font-family: Georgia, serif;
-    font-size: 13pt; color: #B1ADA1;
+    font-family: 'SF Pro Text', 'SF Pro', 'Inter', sans-serif;
+    font-size: 15pt; color: #B1ADA1;
     font-style: italic; margin-bottom: 2.5em;
 }
 
 .cover-page .stat {
-    font-family: 'Helvetica Neue', Arial, sans-serif;
-    font-size: 10pt; color: #D97757;
+    font-family: 'SF Pro Display', 'SF Pro', 'Inter', sans-serif;
+    font-size: 11pt; color: #D97757;
     font-weight: 600; letter-spacing: 1.5px;
     text-transform: uppercase; margin: 0.4em 0;
 }
 
 .cover-page .meta {
-    font-family: 'Helvetica Neue', Arial, sans-serif;
-    font-size: 8.5pt; color: #B1ADA1;
+    font-family: 'SF Pro Text', 'SF Pro', 'Inter', sans-serif;
+    font-size: 10pt; color: #B1ADA1;
     margin-top: 4em;
 }
 
@@ -144,27 +154,29 @@ body {
 }
 
 .toc-page h2 {
-    font-family: 'Helvetica Neue', Arial, sans-serif;
-    font-size: 20pt; color: #191918; font-weight: 700;
+    font-family: 'SF Pro Display', 'SF Pro', 'Inter', sans-serif;
+    font-size: 24pt; color: #191918; font-weight: 700;
     border-bottom: 2px solid #D97757;
     padding-bottom: 0.3em; margin-bottom: 1.2em;
 }
 
 .toc-part {
-    font-family: 'Helvetica Neue', Arial, sans-serif;
-    font-size: 9pt; font-weight: 700; color: #D97757;
+    font-family: 'SF Pro Display', 'SF Pro', 'Inter', sans-serif;
+    font-size: 10pt; font-weight: 700; color: #D97757;
     text-transform: uppercase; letter-spacing: 1.5px;
     margin-top: 1.4em; margin-bottom: 0.4em;
     padding-top: 0.8em; border-top: 1px solid #E8E6DC;
 }
 
 .toc-chapter {
-    font-size: 11pt; font-weight: bold;
+    font-family: 'SF Pro Text', 'SF Pro', 'Inter', sans-serif;
+    font-size: 12pt; font-weight: bold;
     color: #191918; margin: 0.3em 0 0.1em;
 }
 
 .toc-section {
-    font-size: 9pt; color: #B1ADA1;
+    font-family: 'SF Pro Text', 'SF Pro', 'Inter', sans-serif;
+    font-size: 10pt; color: #B1ADA1;
     margin-left: 1.5em; line-height: 1.6;
 }
 
@@ -178,8 +190,8 @@ body {
 }
 
 .part-divider .part-num {
-    font-family: 'Helvetica Neue', Arial, sans-serif;
-    font-size: 11pt; color: #D97757;
+    font-family: 'SF Pro Display', 'SF Pro', 'Inter', sans-serif;
+    font-size: 13pt; color: #D97757;
     text-transform: uppercase; letter-spacing: 4px;
     font-weight: 600; margin-bottom: 0.6em;
 }
@@ -191,8 +203,8 @@ body {
 }
 
 .part-divider h2 {
-    font-family: Georgia, serif;
-    font-size: 28pt; color: #191918;
+    font-family: 'SF Pro Display', 'SF Pro', 'Inter', sans-serif;
+    font-size: 32pt; color: #191918;
     font-weight: bold; line-height: 1.2;
 }
 
@@ -204,15 +216,15 @@ body {
 }
 
 .chapter-header .ch-label {
-    font-family: 'Helvetica Neue', Arial, sans-serif;
-    font-size: 9pt; color: #D97757;
+    font-family: 'SF Pro Display', 'SF Pro', 'Inter', sans-serif;
+    font-size: 10pt; color: #D97757;
     text-transform: uppercase; letter-spacing: 3px;
     font-weight: 600; margin-bottom: 0.4em;
 }
 
 .chapter-header h2 {
-    font-family: Georgia, serif;
-    font-size: 26pt; color: #191918;
+    font-family: 'SF Pro Display', 'SF Pro', 'Inter', sans-serif;
+    font-size: 28pt; color: #191918;
     margin: 0; line-height: 1.2;
 }
 
@@ -224,22 +236,22 @@ body {
 }
 
 .section-header h3 {
-    font-family: 'Helvetica Neue', Arial, sans-serif;
-    font-size: 15pt; color: #191918;
+    font-family: 'SF Pro Display', 'SF Pro', 'Inter', sans-serif;
+    font-size: 17pt; color: #191918;
     margin: 0; font-weight: 600;
 }
 
 /* ── Typography ─────────────────────────────── */
 h1, h2, h3, h4, h5, h6 {
-    font-family: Georgia, serif;
+    font-family: 'SF Pro Display', 'SF Pro', 'Inter', sans-serif;
     color: #191918; line-height: 1.3;
 }
 
-h1 { font-size: 20pt; margin: 1.2em 0 0.5em; }
-h2 { font-size: 16pt; margin: 1em 0 0.4em; }
-h3 { font-size: 13pt; margin: 0.9em 0 0.3em; }
-h4 { font-size: 11pt; margin: 0.8em 0 0.3em; }
-h5, h6 { font-size: 10.5pt; margin: 0.7em 0 0.2em; }
+h1 { font-size: 22pt; margin: 1.2em 0 0.5em; }
+h2 { font-size: 18pt; margin: 1em 0 0.4em; }
+h3 { font-size: 15pt; margin: 0.9em 0 0.3em; }
+h4 { font-size: 13pt; margin: 0.8em 0 0.3em; }
+h5, h6 { font-size: 12pt; margin: 0.7em 0 0.2em; }
 
 p { margin: 0.5em 0 0.8em; orphans: 3; widows: 3; }
 
@@ -247,8 +259,8 @@ a { color: #C15F3C; text-decoration: none; }
 
 /* ── Code ───────────────────────────────────── */
 code, pre {
-    font-family: 'Courier New', Courier, monospace;
-    font-size: 9pt; background: #F4F3EE;
+    font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+    font-size: 9.5pt; background: #F4F3EE;
     border-radius: 3px;
 }
 
@@ -258,7 +270,7 @@ pre {
     padding: 0.9em 1.1em;
     border-left: 3px solid #D97757;
     overflow-x: auto; white-space: pre-wrap;
-    word-wrap: break-word; line-height: 1.45;
+    word-wrap: break-word; line-height: 1.5;
     margin: 0.8em 0;
 }
 
@@ -271,17 +283,17 @@ li { margin: 0.25em 0; }
 /* ── Tables ─────────────────────────────────── */
 table {
     border-collapse: collapse; width: 100%;
-    margin: 0.8em 0; font-size: 9.5pt;
+    margin: 0.8em 0; font-size: 10.5pt;
 }
 
 th {
     background: #D97757; color: white;
-    padding: 7px 10px; text-align: left;
-    font-family: 'Helvetica Neue', Arial, sans-serif;
-    font-weight: 600; font-size: 9pt;
+    padding: 8px 10px; text-align: left;
+    font-family: 'SF Pro Display', 'SF Pro', 'Inter', sans-serif;
+    font-weight: 600; font-size: 10pt;
 }
 
-td { border: 1px solid #E8E6DC; padding: 5px 10px; }
+td { border: 1px solid #E8E6DC; padding: 6px 10px; }
 
 tr:nth-child(even) td { background: #F4F3EE; }
 
@@ -295,10 +307,10 @@ blockquote {
 
 /* ── Math ───────────────────────────────────── */
 .math, .formula {
-    font-family: 'Courier New', monospace;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
     background: #F4F3EE; padding: 0.5em 1em;
     border-radius: 4px; border-left: 3px solid #D97757;
-    margin: 0.5em 0; font-size: 9.5pt;
+    margin: 0.5em 0; font-size: 10pt;
 }
 
 /* ── Hide UI ────────────────────────────────── */
