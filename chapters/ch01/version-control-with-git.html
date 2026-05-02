@@ -307,12 +307,10 @@
   The object model: blobs, trees, commits, and content-addressable storage<br>
   Three trees — working directory, staging area, and repository explained<br>
   Branches and HEAD are just tiny text files pointing to commit hashes<br>
-  How commits form a Directed Acyclic Graph and why ancestry matters<br>
   Merge vs rebase: fast-forward, three-way merge, and history rewriting tradeoffs<br>
-  Recovery tools: reflog, bisect, cherry-pick, interactive rebase, stash, and reset<br>
+  Recovery tools: reflog, bisect, stash, and reset<br>
   ML-specific Git: .gitignore, DVC for data versioning, Git LFS for large files<br>
-  Writing commit messages that save hours during late-night debugging<br>
-  Packfiles, delta compression, and the 90-day garbage collection safety net
+  Writing commit messages that save hours during late-night debugging
 </nav>
 <!-- ═══════════ End Table of Contents ═══════════ -->
 <p>For a long time, I used Git the way a lot of people use Git: by memorizing a handful of spells. <code>git add .</code>, <code>git commit -m "stuff"</code>, <code>git push</code>. When something went wrong—a merge conflict I didn't understand, a branch that had somehow diverged from reality—I'd stare at the terminal, try a few things from Stack Overflow, and if nothing worked, delete the folder and clone again. I'm not proud of it. But I suspect I'm not alone.</p>
@@ -330,11 +328,9 @@
   <li>The Object Model — blobs, trees, commits, and content-addressable storage</li>
   <li>The Three Trees — working directory, staging area, and repository</li>
   <li>Refs — where branches actually live</li>
-  <li>The DAG — how history actually works</li>
   <li>Merge vs. Rebase — two ways to combine work</li>
-  <li>When Everything Goes Wrong — reflog, bisect, cherry-pick, stash, reset</li>
+  <li>When Everything Goes Wrong — reflog, bisect, stash, reset</li>
   <li>Git for Machine Learning Teams — .gitignore, DVC, Git LFS</li>
-  <li>Packfiles and Garbage Collection</li>
 </ul>
 
 <h2>Snapshots, Not Diffs</h2>
@@ -392,10 +388,6 @@ Add balanced sampling to training loop</code></pre>
 
 <p>That's it. A commit is a small text file with four fields. The content determines the hash, and the hash becomes the commit's identity. Change the message by a single character and the hash changes—it's a completely different commit. This immutability is fundamental to Git's integrity. Every commit forms a cryptographic chain back to the very first one—tampering with any commit in the middle would cascade hash changes all the way forward, making it immediately visible.</p>
 
-<h3>Tags</h3>
-
-<p>An <strong>annotated tag</strong> is a fourth object type—a named pointer to a commit with its own metadata (tagger, date, message). Lightweight tags are just refs (text files containing a hash) with no object of their own. We'll come back to refs in a moment.</p>
-
 <p>So objects give us a content-addressed store of snapshots. But how do we actually navigate between them—how do we know which commit is "current," and what is a branch, really?</p>
 
 <h2>The Three Trees</h2>
@@ -439,25 +431,6 @@ git status         # shows the state of all three trees at once</code></pre>
 <p><strong>Detached HEAD</strong> happens when HEAD points directly to a commit hash instead of a branch name. You're looking at a specific snapshot but not "on" any named branch. Any commits you make will be orphaned—not reachable from any branch—unless you create a new branch before leaving. I still remember the first time I saw "detached HEAD state" in my terminal and genuinely panicked. Now I just run <code>git switch -c new-branch-name</code> and carry on.</p>
 
 <p><strong>Tags</strong> work similarly. Lightweight tags are just ref files in <code>.git/refs/tags/</code>—like branches, but they don't move when you commit. Annotated tags are full objects (the fourth type) with their own hash, author, and message, pointed to by a ref. Both serve as stable, named bookmarks to specific commits—typically for release versions.</p>
-
-<h2>The DAG — How History Actually Works</h2>
-
-<p>Commits form a <strong>Directed Acyclic Graph</strong>, or DAG. Each commit points backward to its parent or parents. "Directed" means the edges go one way—from child to parent, never the reverse. "Acyclic" means there are no loops; you can walk the graph backward but you'll never return to where you started.</p>
-
-<p>Most commits have exactly one parent. The very first commit in a repository has zero parents. Merge commits have two—one for each branch that was merged. That's the entire structure. A few rules, endlessly composed.</p>
-
-<p>Here's a tiny ASCII diagram of a branch and merge:</p>
-
-<pre><code>A --- B --- C --- F   (main)
-             \       /
-              D --- E  (feature)
-</code></pre>
-
-<p>Commits A through C are on main. At C, someone created a feature branch and made commits D and E. Then F is a merge commit with two parents: C (from main) and E (from feature). The graph captures the entire history of how work came together.</p>
-
-<p>This is why <code>git log --graph --oneline</code> draws those branch-and-merge lines. It's rendering the DAG. The DAG is also what makes Git efficient at answering ancestry questions: to find out if commit A is an ancestor of commit B, Git walks the graph backward from B. No need to scan all commits—just traverse the edges.</p>
-
-<p>We now have the full mental model: content-addressed objects (blobs, trees, commits) stored in a DAG, navigated by refs (branches, tags, HEAD), with three trees mediating our daily workflow. That's all of Git, in principle.</p>
 
 <h2>Merge vs. Rebase — Two Ways to Combine Work</h2>
 
@@ -517,22 +490,6 @@ git bisect good             # or: git bisect bad
 git bisect reset            # return to where you started</code></pre>
 
 <p>For ML work, this is invaluable. When your model's validation accuracy mysteriously drops from 0.94 to 0.87 between last week and this week, bisect finds the exact commit that caused it—whether it was a subtle data processing change, a hyperparameter tweak, or a normalization bug.</p>
-
-<h3>Cherry-Pick — Transplanting a Single Commit</h3>
-
-<p><strong>Cherry-pick</strong> applies the changes from a specific commit onto your current branch, creating a new commit with the same diff but a new hash and a new parent. It's surgical: you're not merging entire branches, you're transplanting one specific change.</p>
-
-<pre><code class="language-bash">git cherry-pick a1b2c3d    # apply the changes from that commit here</code></pre>
-
-<p>The classic use case: a critical bug fix lands on the <code>develop</code> branch, but you need it on <code>main</code> right now without pulling in all the other half-finished work on develop. Cherry-pick the fix and ship it.</p>
-
-<h3>Interactive Rebase — Rewriting Recent History</h3>
-
-<p>Interactive rebase, <code>git rebase -i HEAD~5</code>, opens an editor showing your last five commits with one-letter command prefixes. You can reorder them, squash multiple commits into one, reword messages, or drop commits entirely. It's how you turn a branch full of "WIP", "fix", "fix fix", and "ok actually fix" commits into a clean, coherent history before pushing.</p>
-
-<pre><code class="language-bash">git rebase -i HEAD~5</code></pre>
-
-<p>This opens an editor. Change <code>pick</code> to <code>squash</code> (or <code>s</code>) on commits you want folded into the one above them. Change <code>pick</code> to <code>reword</code> (or <code>r</code>) to edit a message. Save and close, and Git does the work. The result is a clean history that looks intentional, even if the reality was messier.</p>
 
 <h3>Stash — A Clipboard for Work in Progress</h3>
 
@@ -641,31 +598,11 @@ git commit -m "Add model checkpoint"</code></pre>
 
 <p>This keeps main always in a known-good state. It lets you run multiple experiments in parallel without clobbering each other's changes. It makes it easy to compare: two branches, two sets of results, pick the better one. And because branches are so cheap in Git—just a 41-byte text file—there's no reason not to make a new one for every experiment. I've worked on teams where people committed directly to main. The first time a bad experiment broke everyone's baseline, the branching habit stuck for good.</p>
 
-<h2>Packfiles and Garbage Collection</h2>
-
-<p>Git starts by storing each object as a separate file in <code>.git/objects/</code>. These are called <strong>loose objects</strong>. As a repository accumulates history—hundreds of commits, thousands of files—the loose object count grows until performance starts to suffer. Git handles this automatically.</p>
-
-<p>Running <code>git gc</code> (garbage collection) packs loose objects into <strong>packfiles</strong>—compressed bundles stored in <code>.git/objects/pack/</code>. Packfiles use <strong>delta compression</strong>: rather than storing each version of a file in full, they store similar objects as diffs against each other. A source file that changed slightly across 50 commits takes up far less space in a packfile than as 50 loose blobs. Git runs <code>git gc</code> automatically in the background when you push or when enough loose objects accumulate.</p>
-
-<p>Unreachable objects—commits orphaned by a hard reset, blobs from a dropped rebase—hang around in the loose object store for the default 90-day window. This is your safety net. If you realize three weeks after a hard reset that you needed something, the reflog and the loose objects still have it. After 90 days, <code>git gc</code> prunes them for real. That's the actual point of no return. Understanding this window—and that it exists at all—transforms how you feel about "dangerous" operations like reset and rebase. They're reversible. Almost everything in Git is reversible, as long as you know where to look.</p>
-
 <h2>Wrapping Up</h2>
 
-<p>We started with the realization that Git isn't a diff tracker—it's a snapshot machine. We built up the object model: blobs that store pure content, trees that give blobs names and hierarchy, commits that tie trees to history and to each other. We saw how those commits form a Directed Acyclic Graph, how branches are just text files pointing to commits, how HEAD is just a pointer to a branch, and how the three trees—working directory, staging area, repository—mediate everything we do each day. We walked through merge strategies and saw why rebase rewrites history. We explored the rescue tools: reflog, bisect, cherry-pick, interactive rebase, stash, and reset. And we looked at what makes ML projects different: the large-file problem, DVC, Git LFS, and the importance of commit messages that tell a story.</p>
+<p>We started with the realization that Git isn't a diff tracker—it's a snapshot machine. We built up the object model: blobs that store pure content, trees that give blobs names and hierarchy, commits that tie trees to history and to each other. We saw how branches are just text files pointing to commits, how HEAD is just a pointer to a branch, and how the three trees—working directory, staging area, repository—mediate everything we do each day. We walked through merge strategies and saw why rebase rewrites history. We explored the rescue tools: reflog, bisect, stash, and reset. And we looked at what makes ML projects different: the large-file problem, DVC, Git LFS, and the importance of commit messages that tell a story.</p>
 
-<p>My hope is that the next time you see "detached HEAD state" in your terminal, or find yourself in the middle of a merge conflict at midnight, instead of panicking and cloning fresh, you'll know exactly what's happening in the graph. You'll know which object contains which content, where HEAD is pointing, and what tool gets you back to safe ground. And you'll fix it with confidence.</p>
-
-<h2>Resources</h2>
-
-<p><strong>Pro Git</strong> (git-scm.com/book) — The definitive reference. Free online. Chapters 1–3 cover the daily workflow; Chapter 10, "Git Internals," is wildly good and covers everything we discussed here in even more depth. Read the internals chapter. You won't regret it.</p>
-
-<p><strong>"Git from the Bottom Up"</strong> by John Wiegley — A short essay that builds Git from the object model upward, the same direction we went here. If this section resonated with you, Wiegley's piece will too. It's available free online and takes about an hour to read.</p>
-
-<p><strong>DVC documentation</strong> (dvc.org) — The best resource for ML-specific version control. Their tutorials are genuinely practical and well-written. Start with "Get Started" and follow the pipeline tutorial—it clicks faster than you'd expect.</p>
-
-<p><strong>"Think Like a Git"</strong> (think-like-a-git.net) — A short, opinionated guide that focuses entirely on the graph model. The sections on reachability are particularly good. Unforgettable once you've read it, because it reframes every Git command as a graph operation.</p>
-
-<p><strong>Oh Shit, Git!?</strong> (ohshitgit.com) — For when everything goes wrong and you don't have time to look at diagrams. Plain English, no judgment, just solutions. Bookmark it. You'll need it eventually.</p>
+<p>My hope is that the next time you see "detached HEAD state" in your terminal, or find yourself in the middle of a merge conflict at midnight, instead of panicking and cloning fresh, you'll know exactly what's happening. You'll know which object contains which content, where HEAD is pointing, and what tool gets you back to safe ground. And you'll fix it with confidence.</p>
 </div>
 
       <div class="page-nav">
