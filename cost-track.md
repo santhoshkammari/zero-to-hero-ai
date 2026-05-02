@@ -18,3 +18,10 @@
 | Cache Write (1hr) | $10.00 / MTok |
 | Cache Hits & Refreshes | $0.50 / MTok |
 | Output | $25.00 / MTok |
+
+------------------
+logs
+
+↑ 4.8m • ↓ 26.8k • 4.7m (cached)
+↑ 17.4m • ↓ 186.1k • 16.2m (cached)
+
