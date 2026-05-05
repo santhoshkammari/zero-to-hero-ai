@@ -461,17 +461,17 @@ answer = llm.generate(prompt)</code></pre>
 
 <h2>Where Naive RAG Breaks Down</h2>
 
-<p>Our AskIntern prototype is live. Employees are using it. And the bug reports are rolling in.</p>
+<p>AskIntern prototype is live. Employees use it. Bug reports roll in.</p>
 
-<p><strong>Failure mode 1: vocabulary mismatch.</strong> An engineer asks &ldquo;how do I revert a deploy?&rdquo; The runbook says &ldquo;roll back a deployment.&rdquo; Dense embeddings might catch this&mdash;&ldquo;revert&rdquo; and &ldquo;roll back&rdquo; are semantically similar. But what if someone asks about &ldquo;PL-7&rdquo;? That&rsquo;s the form number from the parental leave policy. Embeddings have no idea what &ldquo;PL-7&rdquo; means&mdash;it&rsquo;s not a semantic concept, it&rsquo;s a specific term. A keyword search would find it instantly. Dense retrieval fails on exact terms, acronyms, and identifiers.</p>
+<p><strong>Failure mode 1: vocabulary mismatch.</strong> Engineer asks &ldquo;how do I revert a deploy?&rdquo; Runbook says &ldquo;roll back a deployment.&rdquo; Dense embeddings might catch this&mdash;&ldquo;revert&rdquo; and &ldquo;roll back&rdquo; are semantically similar. But &ldquo;PL-7&rdquo; is different. That is form number from parental leave policy. Embeddings do not know what &ldquo;PL-7&rdquo; means&mdash;not semantic concept, specific term. Keyword search finds it instantly. Dense retrieval fails on exact terms, acronyms, and identifiers.</p>
 
-<p><strong>Failure mode 2: wrong chunks, confidently served.</strong> Someone asks &ldquo;Can I split my parental leave?&rdquo; The system retrieves chunks about flexible return-to-work schedules instead of the leave-splitting policy. The cosine similarity scores are high&mdash;both chunks are about parental leave&mdash;but the specific information needed is in a different chunk. The top-K results are semantically similar but not actually relevant.</p>
+<p><strong>Failure mode 2: wrong chunks, confidently served.</strong> Someone asks &ldquo;Can I split my parental leave?&rdquo; System retrieves chunks about flexible return-to-work schedules instead of leave-splitting policy. Cosine similarity scores are high&mdash;both chunks are about parental leave&mdash;but needed fact lives in different chunk. Top-K results are semantically similar, not actually relevant.</p>
 
-<p><strong>Failure mode 3: multi-hop questions.</strong> An employee asks &ldquo;If I take parental leave and then request flexible return, how much total time can I be on a modified schedule?&rdquo; The answer requires combining information from two different sections of the handbook. No single chunk contains the complete answer. Naive RAG retrieves some relevant chunks but misses the connection between them.</p>
+<p><strong>Failure mode 3: multi-hop questions.</strong> Employee asks &ldquo;If I take parental leave and then request flexible return, how much total time can I be on a modified schedule?&rdquo; Answer requires combining information from two handbook sections. No single chunk contains complete answer. Naive RAG retrieves some relevant chunks but misses connection between them.</p>
 
-<p><strong>Failure mode 4: ambiguous queries.</strong> &ldquo;What are the policies?&rdquo; Policies about what? Without context, the system retrieves a random assortment of policy documents. The query is too vague for vector search to disambiguate.</p>
+<p><strong>Failure mode 4: ambiguous queries.</strong> &ldquo;What are the policies?&rdquo; Policies about what? Without context, system retrieves random assortment of policy documents. Query is too vague for vector search to disambiguate.</p>
 
-<p>Each of these failures motivates a specific improvement. Let&rsquo;s work through them.</p>
+<p>Each failure points to specific improvement. Let&rsquo;s work through them.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 <!--  HYBRID RETRIEVAL                                                  -->
@@ -479,13 +479,13 @@ answer = llm.generate(prompt)</code></pre>
 
 <h2>Hybrid Retrieval &mdash; Sparse Meets Dense</h2>
 
-<p>Failure mode 1&mdash;the vocabulary mismatch&mdash;has an elegant fix: don&rsquo;t choose between keyword search and semantic search. Use both.</p>
+<p>Failure mode 1&mdash;vocabulary mismatch&mdash;has elegant fix: don&rsquo;t choose between keyword search and semantic search. Use both.</p>
 
-<p><strong>BM25</strong> is the classic keyword retrieval algorithm. It&rsquo;s been the backbone of search engines since the 1990s. BM25 counts how often query terms appear in a document, adjusted for document length and term rarity. It&rsquo;s excellent at finding exact matches, specific terms, and identifiers. When someone searches for &ldquo;PL-7,&rdquo; BM25 finds it because it literally matches the string. No embeddings needed.</p>
+<p><strong>BM25</strong> is classic keyword retrieval algorithm. Backbone of search engines since 1990s. BM25 counts how often query terms appear in document, adjusted for document length and term rarity. Excellent at exact matches, specific terms, and identifiers. When someone searches for &ldquo;PL-7,&rdquo; BM25 finds it because it literally matches string. No embeddings needed.</p>
 
-<p>Dense retrieval with embeddings is excellent at understanding meaning. &ldquo;Revert a deploy&rdquo; matches &ldquo;roll back a deployment&rdquo; because the embeddings capture semantic equivalence. But it struggles with exact terms and rare identifiers.</p>
+<p>Dense retrieval with embeddings is excellent at understanding meaning. &ldquo;Revert a deploy&rdquo; matches &ldquo;roll back a deployment&rdquo; because embeddings capture semantic equivalence. But it struggles with exact terms and rare identifiers.</p>
 
-<p><strong>Hybrid retrieval</strong> runs both in parallel. You get a ranked list from BM25 and a ranked list from dense search. The question is: how do you combine them? The most common approach is <strong>Reciprocal Rank Fusion (RRF)</strong>. For each document, take its rank in each list, compute 1/(k + rank) for a constant k (typically 60), and sum across lists. Documents that appear high in both lists get the highest combined score. Documents that appear high in one list but not the other still get credit.</p>
+<p><strong>Hybrid retrieval</strong> runs both in parallel. You get ranked list from BM25 and ranked list from dense search. Next question: how do you combine them? Most common approach is <strong>Reciprocal Rank Fusion (RRF)</strong>. For each document, take rank in each list, compute 1/(k + rank) for constant k (typically 60), and sum across lists. Documents high in both lists get highest combined score. Documents high in one list but not other still get credit.</p>
 
 <pre><code># Reciprocal Rank Fusion
 # doc_ranks_bm25 = {"chunk_42": 1, "chunk_17": 2, "chunk_91": 3}
@@ -505,9 +505,9 @@ for doc_id in all_docs:
 # chunk_42: 1/(60+1) + 1/(60+3) = 0.0164 + 0.0159 = 0.0323
 # chunk_55: 0      + 1/(60+2) = 0.0161</code></pre>
 
-<p>In practice, hybrid retrieval with RRF consistently outperforms either BM25 or dense retrieval alone across benchmarks. It&rsquo;s one of those rare free improvements that has almost no downside&mdash;you&rsquo;re adding a BM25 index (which is fast and cheap) and a fusion step (which is trivial). For AskIntern, this means the search for &ldquo;PL-7&rdquo; now works via BM25 even though dense retrieval misses it, and the search for &ldquo;revert a deploy&rdquo; still works via dense retrieval even though BM25 misses it.</p>
+<p>In practice, hybrid retrieval with RRF consistently beats BM25 alone or dense retrieval alone across benchmarks. Rare free improvement. Add BM25 index (fast, cheap) and fusion step (trivial). For AskIntern, search for &ldquo;PL-7&rdquo; now works via BM25 even when dense retrieval misses it, and search for &ldquo;revert a deploy&rdquo; still works via dense retrieval even when BM25 misses it.</p>
 
-<p>The limitation: hybrid retrieval gives you better recall&mdash;more relevant chunks in the top results&mdash;but the ranking within those results can still be noisy. We need a way to re-sort the retrieved chunks by true relevance. That&rsquo;s where reranking comes in.</p>
+<p>Limitation: hybrid retrieval gives better recall&mdash;more relevant chunks in top results&mdash;but ranking inside those results can still be noisy. We need way to re-sort retrieved chunks by true relevance. That&rsquo;s where reranking comes in.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 <!--  RERANKING                                                         -->
@@ -515,11 +515,11 @@ for doc_id in all_docs:
 
 <h2>Reranking with Cross-Encoders</h2>
 
-<p>Here&rsquo;s a nuance that took me a while to internalize. The embedding models we use for retrieval&mdash;the ones that produce vector representations&mdash;are <strong>bi-encoders</strong>. They encode the query and each document independently, then compare using cosine similarity. This is what makes them fast: you can precompute document embeddings offline and only compute the query embedding at search time. But the independence is also a limitation. The bi-encoder never sees the query and document together. It can&rsquo;t reason about their interaction.</p>
+<p>Nuance that took me while to internalize: embedding models used for retrieval&mdash;models producing vector representations&mdash;are <strong>bi-encoders</strong>. They encode query and each document independently, then compare with cosine similarity. That makes them fast: precompute document embeddings offline and compute only query embedding at search time. But independence is limitation. Bi-encoder never sees query and document together. It can&rsquo;t reason about interaction.</p>
 
-<p>A <strong>cross-encoder</strong> takes a different approach. It feeds the query and a document as a single concatenated input into a transformer, which outputs a relevance score directly. Because the model sees both texts at once, it can attend across them&mdash;noticing that &ldquo;split my leave&rdquo; in the query relates to &ldquo;taken consecutively or split into two blocks&rdquo; in the document. Cross-encoders are substantially more accurate than bi-encoders for relevance scoring.</p>
+<p><strong>Cross-encoder</strong> takes different approach. It feeds query and document as one concatenated input into transformer, which outputs relevance score directly. Because model sees both texts at once, it can attend across them&mdash;noticing that &ldquo;split my leave&rdquo; in query relates to &ldquo;taken consecutively or split into two blocks&rdquo; in document. Cross-encoders are substantially more accurate than bi-encoders for relevance scoring.</p>
 
-<p>The catch: cross-encoders are slow. You can&rsquo;t precompute anything because the score depends on the specific (query, document) pair. Running a cross-encoder against 10 million chunks is not feasible. But running it against the top 20 chunks that a fast bi-encoder already retrieved? That takes milliseconds. This is the <strong>retrieve-then-rerank</strong> pattern: use a fast bi-encoder (or hybrid retrieval) to get the top 20&ndash;50 candidates, then use a cross-encoder to re-sort those candidates by true relevance, and take the top 5.</p>
+<p>Catch: cross-encoders are slow. You can&rsquo;t precompute anything because score depends on specific (query, document) pair. Running cross-encoder against 10 million chunks is not feasible. Running it against top 20 chunks from fast bi-encoder? Milliseconds. This is <strong>retrieve-then-rerank</strong> pattern: use fast bi-encoder (or hybrid retrieval) to get top 20&ndash;50 candidates, then use cross-encoder to re-sort candidates by true relevance and keep top 5.</p>
 
 <pre><code># Retrieve-then-rerank pipeline
 candidates = hybrid_search(query, top_k=30)  # fast, broad
@@ -532,9 +532,9 @@ reranked = cross_encoder.rank(
 
 top_chunks = reranked[:5]  # feed these to the LLM</code></pre>
 
-<p>Popular cross-encoder rerankers include Cohere Rerank, <code>cross-encoder/ms-marco-MiniLM-L-6-v2</code> from sentence-transformers, and Jina Reranker. Adding a reranker is consistently the single cheapest accuracy improvement you can make to a RAG pipeline. It typically costs 50&ndash;100ms of latency and no infrastructure changes. For AskIntern, the difference is dramatic: the user asking &ldquo;Can I split my parental leave?&rdquo; now gets the correct chunk about leave splitting ranked first, instead of the vaguely related chunk about flexible schedules.</p>
+<p>Popular cross-encoder rerankers include Cohere Rerank, <code>cross-encoder/ms-marco-MiniLM-L-6-v2</code> from sentence-transformers, and Jina Reranker. Adding reranker is consistently cheapest accuracy improvement you can make to RAG pipeline. Typical cost: 50&ndash;100ms latency, no infrastructure changes. For AskIntern, difference is dramatic: user asking &ldquo;Can I split my parental leave?&rdquo; now gets correct chunk about leave splitting ranked first instead of vaguely related chunk about flexible schedules.</p>
 
-<p>But there&rsquo;s still a spectrum between fast-but-shallow bi-encoders and accurate-but-slow cross-encoders. What if we could find a middle ground?</p>
+<p>Still spectrum between fast-but-shallow bi-encoders and accurate-but-slow cross-encoders. What if we could find middle ground?</p>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 <!--  ColBERT                                                           -->
@@ -542,13 +542,13 @@ top_chunks = reranked[:5]  # feed these to the LLM</code></pre>
 
 <h2>ColBERT and Late Interaction</h2>
 
-<p>I&rsquo;ll be honest&mdash;when I first read about ColBERT, I didn&rsquo;t immediately see why it mattered. We had bi-encoders for speed and cross-encoders for accuracy. What was the gap? The gap, it turns out, is significant at scale.</p>
+<p>When I first read about ColBERT, I didn&rsquo;t immediately see why it mattered. We had bi-encoders for speed and cross-encoders for accuracy. What gap remained? Big gap at scale.</p>
 
-<p><strong>ColBERT</strong> (Contextualized Late Interaction over BERT) was introduced by Omar Khattab in 2020, and it occupies a genuinely interesting middle ground. Instead of compressing an entire document into a single vector (like a bi-encoder) or processing query and document together (like a cross-encoder), ColBERT keeps <strong>per-token embeddings</strong> for both.</p>
+<p><strong>ColBERT</strong> (Contextualized Late Interaction over BERT) came from Omar Khattab in 2020. It occupies interesting middle ground. Instead of compressing whole document into single vector (like bi-encoder) or processing query and document together (like cross-encoder), ColBERT keeps <strong>per-token embeddings</strong> for both.</p>
 
-<p>Here&rsquo;s how it works, step by step. A query with 8 tokens gets encoded into 8 separate vectors. A document with 200 tokens gets encoded into 200 separate vectors. The document token vectors can be precomputed and stored, same as with a bi-encoder. At query time, you compute the 8 query token vectors, then score against each document using a mechanism called <strong>MaxSim</strong>.</p>
+<p>Here&rsquo;s how it works, step by step. Query with 8 tokens becomes 8 separate vectors. Document with 200 tokens becomes 200 separate vectors. Document token vectors can be precomputed and stored, same as bi-encoder. At query time, compute 8 query token vectors, then score each document with mechanism called <strong>MaxSim</strong>.</p>
 
-<p>MaxSim works like this: for each query token, find the document token it&rsquo;s most similar to (maximum cosine similarity). Then sum those maximum similarities across all query tokens.</p>
+<p>MaxSim works like this: for each query token, find document token most similar to it (maximum cosine similarity). Then sum those maximum similarities across all query tokens.</p>
 
 <pre><code>Score(Q, D) = Σ over query tokens qi of: max over doc tokens dj of (qi · dj)
 
@@ -560,9 +560,9 @@ Example with a tiny query ["parental", "leave", "split"]:
 
 Score = 0.92 + 0.89 + 0.85 = 2.66</code></pre>
 
-<p>The beauty of this: every query token independently finds its best match in the document. This means ColBERT captures fine-grained token-level interactions (like a cross-encoder) while still allowing document embeddings to be precomputed (like a bi-encoder). The &ldquo;late&rdquo; in &ldquo;late interaction&rdquo; refers to the fact that query and document tokens only interact at the final scoring step, not during encoding.</p>
+<p>Beauty here: every query token independently finds best match in document. ColBERT captures fine-grained token-level interactions (like cross-encoder) while still allowing document embeddings to be precomputed (like bi-encoder). &ldquo;Late&rdquo; in &ldquo;late interaction&rdquo; means query and document tokens interact only at final scoring step, not during encoding.</p>
 
-<p>I&rsquo;m still developing my intuition for when ColBERT is worth the added complexity versus a bi-encoder plus a cross-encoder reranker. The empirical evidence suggests ColBERT shines when you need both speed and accuracy at large scale&mdash;millions of documents where reranking the top-K is too slow or too expensive. For AskIntern with a few thousand documents, a reranker is probably sufficient. For a customer-facing search engine over millions of pages, ColBERT&rsquo;s approach starts to look very attractive.</p>
+<p>I&rsquo;m still developing intuition for when ColBERT is worth added complexity versus bi-encoder plus cross-encoder reranker. Empirical evidence suggests ColBERT shines when you need both speed and accuracy at large scale&mdash;millions of documents where reranking top-K is too slow or too expensive. For AskIntern with few thousand documents, reranker is probably sufficient. For customer-facing search engine over millions of pages, ColBERT starts to look very attractive.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 <!--  ADVANCED QUERY STRATEGIES                                         -->
@@ -570,17 +570,17 @@ Score = 0.92 + 0.89 + 0.85 = 2.66</code></pre>
 
 <h2>Advanced Query Strategies &mdash; HyDE, Step-Back, Query Rewriting</h2>
 
-<p>We&rsquo;ve been improving the retrieval and ranking side. Now let&rsquo;s improve what we&rsquo;re actually searching for&mdash;the query itself. Failure mode 4 was ambiguous queries. But even non-ambiguous queries can underperform because there&rsquo;s a fundamental asymmetry in RAG: the user&rsquo;s question is short and informal, while the documents are long and formal. Embedding a question doesn&rsquo;t always land near the embedding of its answer.</p>
+<p>We&rsquo;ve been improving retrieval and ranking side. Now improve what we actually search for&mdash;query itself. Failure mode 4 was ambiguous queries. But even non-ambiguous queries can underperform because RAG has fundamental asymmetry: user&rsquo;s question is short and informal, while documents are long and formal. Embedding question doesn&rsquo;t always land near embedding of its answer.</p>
 
-<p><strong>Query rewriting</strong> is the most straightforward fix. Before retrieval, you ask the LLM to reformulate the user&rsquo;s query into something more precise. &ldquo;What about the last CEO?&rdquo; becomes &ldquo;Who was the most recent CEO of the company, and when did they serve?&rdquo; In a conversational system, query rewriting also resolves pronouns: &ldquo;What about their salary?&rdquo; becomes &ldquo;What was the salary of [person from previous turn]?&rdquo; This is cheap&mdash;one quick LLM call&mdash;and it measurably improves retrieval quality.</p>
+<p><strong>Query rewriting</strong> is most straightforward fix. Before retrieval, ask LLM to reformulate user&rsquo;s query into something more precise. &ldquo;What about the last CEO?&rdquo; becomes &ldquo;Who was the most recent CEO of the company, and when did they serve?&rdquo; In conversational system, query rewriting also resolves pronouns: &ldquo;What about their salary?&rdquo; becomes &ldquo;What was the salary of [person from previous turn]?&rdquo; Cost is low&mdash;one quick LLM call&mdash;and retrieval quality improves measurably.</p>
 
-<p><strong>HyDE (Hypothetical Document Embeddings)</strong> takes a more surprising approach. Instead of searching with the query, you ask the LLM to generate a <em>hypothetical answer</em>&mdash;a fake document that <em>would</em> answer the question if it existed. Then you embed that hypothetical answer and search for real documents similar to it.</p>
+<p><strong>HyDE (Hypothetical Document Embeddings)</strong> takes more surprising approach. Instead of searching with query, ask LLM to generate <em>hypothetical answer</em>&mdash;fake document that <em>would</em> answer question if it existed. Then embed that hypothetical answer and search for real documents similar to it.</p>
 
-<p>Why does this work? Because the hypothetical answer lives in &ldquo;document space&rdquo;&mdash;it uses the same vocabulary, structure, and style as the actual documents in your knowledge base. The query &ldquo;What is our parental leave policy?&rdquo; might not embed close to the actual policy document. But a hypothetical answer like &ldquo;Our parental leave policy provides 16 weeks of paid leave for new parents...&rdquo; will embed very close to the real document because it shares vocabulary and structure. Going back to our GPS analogy: HyDE teleports you from &ldquo;question-space&rdquo; to &ldquo;document-space&rdquo; before you start searching.</p>
+<p>Why does this work? Hypothetical answer lives in &ldquo;document space&rdquo;&mdash;it uses same vocabulary, structure, and style as actual documents in knowledge base. Query &ldquo;What is our parental leave policy?&rdquo; might not embed close to actual policy document. But hypothetical answer like &ldquo;Our parental leave policy provides 16 weeks of paid leave for new parents...&rdquo; will embed very close to real document because it shares vocabulary and structure. Back to GPS analogy: HyDE teleports you from &ldquo;question-space&rdquo; to &ldquo;document-space.&rdquo; Then search starts.</p>
 
-<p><strong>Step-back prompting</strong> handles complex questions by decomposing them. Instead of searching for the original question directly, the LLM &ldquo;steps back&rdquo; and asks: what sub-questions do I need to answer first? &ldquo;If I take parental leave and then request flexible return, how much total time can I be on a modified schedule?&rdquo; becomes two sub-questions: &ldquo;How long is parental leave?&rdquo; and &ldquo;How long is the flexible return period?&rdquo; Each sub-question gets its own retrieval pass. The results are combined and the LLM synthesizes the final answer from all retrieved context.</p>
+<p><strong>Step-back prompting</strong> handles complex questions by decomposing them. Instead of searching for original question directly, LLM &ldquo;steps back&rdquo; and asks: what sub-questions do I need first? &ldquo;If I take parental leave and then request flexible return, how much total time can I be on a modified schedule?&rdquo; becomes two sub-questions: &ldquo;How long is parental leave?&rdquo; and &ldquo;How long is the flexible return period?&rdquo; Each sub-question gets its own retrieval pass. Results get combined, and LLM synthesizes final answer from all retrieved context.</p>
 
-<p>These three strategies can be combined. In a sophisticated pipeline, you might rewrite the query for clarity, generate a HyDE document for better embedding, and decompose into sub-queries for complex questions. Each adds one LLM call of latency, so the tradeoff is quality versus speed.</p>
+<p>These three strategies can be combined. In sophisticated pipeline, you might rewrite query for clarity, generate HyDE document for better embedding, and decompose into sub-queries for complex questions. Each adds one LLM call of latency, so tradeoff is quality versus speed.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 <!--  MULTI-HOP RAG                                                     -->
@@ -588,15 +588,15 @@ Score = 0.92 + 0.89 + 0.85 = 2.66</code></pre>
 
 <h2>Multi-Hop RAG</h2>
 
-<p>Step-back prompting decomposes a question into sub-questions <em>before</em> retrieval. Multi-hop RAG is the more general pattern: retrieve, reason, and then decide whether you need to retrieve <em>again</em>.</p>
+<p>Step-back prompting decomposes question into sub-questions <em>before</em> retrieval. Multi-hop RAG is more general pattern: retrieve, reason, then decide whether you need to retrieve <em>again</em>.</p>
 
-<p>Here&rsquo;s a concrete example for AskIntern. An employee asks: &ldquo;Does the parental leave policy apply to contractors in the London office?&rdquo; The first retrieval finds the parental leave policy. But the policy says &ldquo;applies to all full-time employees.&rdquo; Now we need a second question: &ldquo;Are London-based contractors classified as full-time employees?&rdquo; A second retrieval finds the contractor classification document. Now the LLM has both pieces and can answer: &ldquo;No, London-based contractors are classified as part-time consultants and the parental leave policy does not apply to them.&rdquo;</p>
+<p>Concrete example for AskIntern. Employee asks: &ldquo;Does the parental leave policy apply to contractors in the London office?&rdquo; First retrieval finds parental leave policy. But policy says &ldquo;applies to all full-time employees.&rdquo; Now we need second question: &ldquo;Are London-based contractors classified as full-time employees?&rdquo; Second retrieval finds contractor classification document. Now LLM has both pieces and can answer: &ldquo;No, London-based contractors are classified as part-time consultants and the parental leave policy does not apply to them.&rdquo;</p>
 
-<p>This iterative retrieve-reason-retrieve pattern is <strong>multi-hop RAG</strong>. Each &ldquo;hop&rdquo; is a retrieval step informed by what was learned in the previous step. The key insight: the LLM doesn&rsquo;t know what it needs until it sees what it got. The first retrieval reveals a knowledge gap, which triggers the second retrieval.</p>
+<p>This iterative retrieve-reason-retrieve pattern is <strong>multi-hop RAG</strong>. Each &ldquo;hop&rdquo; is retrieval step informed by what previous step learned. Key insight: LLM doesn&rsquo;t know what it needs until it sees what it got. First retrieval reveals knowledge gap, which triggers second retrieval.</p>
 
-<p>Implementation-wise, this is a loop. Retrieve. Feed context to the LLM. Ask the LLM: &ldquo;Do you have enough information to answer, or do you need to look up something else?&rdquo; If it needs more, extract the follow-up query and retrieve again. Repeat until the LLM is satisfied or you hit a maximum hop count (to prevent infinite loops).</p>
+<p>Implementation-wise, this is loop. Retrieve. Feed context to LLM. Ask LLM: &ldquo;Do you have enough information to answer, or do you need to look up something else?&rdquo; If it needs more, extract follow-up query and retrieve again. Repeat until LLM is satisfied or you hit maximum hop count (to prevent infinite loops).</p>
 
-<p>The limitation of multi-hop RAG is latency. Each hop adds a retrieval step plus an LLM inference step. Two hops might add 2&ndash;4 seconds. For time-sensitive applications, you need to decide whether the accuracy improvement is worth the delay. For AskIntern, where employees are willing to wait a few seconds for a thorough answer, multi-hop is usually worth it.</p>
+<p>Limitation of multi-hop RAG is latency. Each hop adds retrieval step plus LLM inference step. Two hops might add 2&ndash;4 seconds. For time-sensitive applications, decide whether accuracy improvement is worth delay. For AskIntern, where employees will wait few seconds for thorough answer, multi-hop is usually worth it.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 <!--  GRAPHRAG                                                          -->
@@ -604,13 +604,13 @@ Score = 0.92 + 0.89 + 0.85 = 2.66</code></pre>
 
 <h2>GraphRAG &mdash; Knowledge Graphs Meet Retrieval</h2>
 
-<p>Vector search treats every chunk as an independent point in embedding space. It has no concept of relationships between chunks. But documents are not isolated&mdash;they reference each other, share entities, and form a web of connected knowledge. Our employee handbook references the contractor classification document, which references the London office guidelines, which references UK employment law. These connections matter.</p>
+<p>Vector search treats every chunk as independent point in embedding space. It has no concept of relationships between chunks. But documents are not isolated&mdash;they reference each other, share entities, and form web of connected knowledge. Employee handbook references contractor classification document, which references London office guidelines, which references UK employment law. These connections matter.</p>
 
-<p><strong>GraphRAG</strong>, introduced by Microsoft Research in 2024, addresses this by building a <strong>knowledge graph</strong> over your documents before retrieval. The offline pipeline extracts entities (people, policies, teams, products) and relationships (references, depends-on, applies-to) from every document, then organizes them into a graph. The graph is further analyzed using community detection algorithms, which cluster related entities into communities. Each community gets a <strong>summary</strong>&mdash;a natural-language description of what that cluster of entities is about.</p>
+<p><strong>GraphRAG</strong>, introduced by Microsoft Research in 2024, addresses this by building <strong>knowledge graph</strong> over your documents before retrieval. Offline pipeline extracts entities (people, policies, teams, products) and relationships (references, depends-on, applies-to) from every document, then organizes them into graph. Graph is further analyzed with community detection algorithms, which cluster related entities into communities. Each community gets <strong>summary</strong>&mdash;natural-language description of what that cluster of entities is about.</p>
 
-<p>At query time, GraphRAG can do two things that naive RAG cannot. For <strong>local queries</strong> (&ldquo;What is the parental leave policy?&rdquo;), it works like standard RAG but with graph-informed retrieval&mdash;fetching not only directly relevant chunks but also connected entities and their context. For <strong>global queries</strong> (&ldquo;What are the main themes across all our HR policies?&rdquo;), it uses the community summaries. No amount of top-K vector search can answer a global query, because the answer isn&rsquo;t in any single chunk&mdash;it&rsquo;s in the relationships between them.</p>
+<p>At query time, GraphRAG can do two things naive RAG cannot. For <strong>local queries</strong> (&ldquo;What is the parental leave policy?&rdquo;), it works like standard RAG but with graph-informed retrieval&mdash;fetching not only directly relevant chunks but also connected entities and their context. For <strong>global queries</strong> (&ldquo;What are the main themes across all our HR policies?&rdquo;), it uses community summaries. No amount of top-K vector search can answer global query, because answer isn&rsquo;t in any single chunk&mdash;it&rsquo;s in relationships between them.</p>
 
-<p>My favorite thing about GraphRAG is that, aside from the high-level intuition I described, no one is completely certain how much the graph structure helps versus naive retrieval across different query types. The Microsoft paper showed dramatic improvements on global questions about datasets like news articles, where relationships between entities are dense. On more straightforward factoid questions, the improvement is smaller. The cost is significant&mdash;building the graph requires many LLM calls during indexing, and the graph adds complexity to maintain. For AskIntern, GraphRAG makes sense if employees frequently ask synthesizing questions like &ldquo;What are the differences between our policies for US and UK employees?&rdquo; For straightforward lookups, it might be overkill.</p>
+<p>Interesting part about GraphRAG: aside from high-level intuition, no one is fully certain how much graph structure helps versus naive retrieval across different query types. Microsoft paper showed dramatic improvements on global questions over datasets like news articles, where relationships between entities are dense. On straightforward factoid questions, improvement is smaller. Cost is significant&mdash;building graph requires many LLM calls during indexing, and graph adds maintenance complexity. For AskIntern, GraphRAG makes sense if employees frequently ask synthesizing questions like &ldquo;What are the differences between our policies for US and UK employees?&rdquo; For straightforward lookups, it might be overkill.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 <!--  AGENTIC RAG                                                       -->
@@ -618,17 +618,17 @@ Score = 0.92 + 0.89 + 0.85 = 2.66</code></pre>
 
 <h2>Agentic RAG</h2>
 
-<p>All the RAG patterns we&rsquo;ve discussed so far follow a fixed pipeline. The developer decides in advance: do hybrid search, rerank, generate. But what if the LLM itself could decide what kind of retrieval to do, how many hops to take, or whether to retrieve at all?</p>
+<p>All RAG patterns we&rsquo;ve discussed so far follow fixed pipeline. Developer decides in advance: do hybrid search, rerank, generate. But what if LLM itself could decide what kind of retrieval to do, how many hops to take, or whether to retrieve at all?</p>
 
-<p>In <strong>agentic RAG</strong>, the LLM acts as the orchestrator. Given a query, it decides: Should I search the vector database? Should I run a SQL query against structured data? Should I call a web API? Should I retrieve more after seeing the initial results? The LLM is not a passive generator waiting to be fed context&mdash;it&rsquo;s an active agent that chooses its own retrieval strategy.</p>
+<p>In <strong>agentic RAG</strong>, LLM acts as orchestrator. Given query, it decides: Should I search vector database? Should I run SQL query against structured data? Should I call web API? Should I retrieve more after seeing initial results? LLM is not passive generator waiting for context&mdash;it&rsquo;s active agent choosing its own retrieval strategy.</p>
 
-<p>Back to our librarian analogy: the naive RAG librarian always walks to the same shelf and pulls the top 5 books. The agentic RAG librarian thinks first. &ldquo;This is a question about recent policy changes&mdash;I should check the latest policy updates section. And since it mentions contractors, I should also check the contractor classification guide. Oh, and the user mentioned &lsquo;London office&rsquo;&mdash;I should verify if UK-specific policies override the global ones.&rdquo; The agent decides the retrieval strategy on the fly.</p>
+<p>Back to librarian analogy: naive RAG librarian always walks to same shelf and pulls top 5 books. Agentic RAG librarian thinks first. &ldquo;This is question about recent policy changes&mdash;I should check latest policy updates section. Since it mentions contractors, I should also check contractor classification guide. User mentioned &lsquo;London office&rsquo;&mdash;I should verify whether UK-specific policies override global ones.&rdquo; Agent decides retrieval strategy on fly.</p>
 
-<p>A related pattern is <strong>self-corrective RAG</strong> (sometimes called CRAG). After generating an answer, the system reflects: &ldquo;Is this answer fully supported by the retrieved context? Did I actually address the user&rsquo;s question?&rdquo; If the self-check fails, it automatically triggers a new retrieval with a reformulated query and regenerates. This loop catches the cases where initial retrieval missed the right chunks&mdash;the system notices its own failure and corrects it.</p>
+<p>Related pattern is <strong>self-corrective RAG</strong> (sometimes called CRAG). After generating answer, system reflects: &ldquo;Is this answer fully supported by retrieved context? Did I actually address user&rsquo;s question?&rdquo; If self-check fails, it automatically triggers new retrieval with reformulated query and regenerates. This loop catches cases where initial retrieval missed right chunks&mdash;system notices its own failure and corrects it.</p>
 
-<p>The frameworks that make this practical include <strong>LangChain</strong> (with its agent executors and tool-calling), <strong>LlamaIndex</strong> (with its query engine abstractions), and more recently, raw function-calling APIs from OpenAI, Anthropic, and Google. The ReAct pattern (Reason + Act) is the most common architecture: the LLM alternates between reasoning (&ldquo;I need to find information about X&rdquo;) and acting (calling a retrieval tool) in a loop.</p>
+<p>Frameworks that make this practical include <strong>LangChain</strong> (with agent executors and tool-calling), <strong>LlamaIndex</strong> (with query engine abstractions), and raw function-calling APIs from OpenAI, Anthropic, and Google. ReAct pattern (Reason + Act) is most common architecture: LLM alternates between reasoning (&ldquo;I need to find information about X&rdquo;) and acting (calling retrieval tool) in loop.</p>
 
-<p>The tradeoff: agentic RAG is more flexible and handles a wider range of queries, but it&rsquo;s less predictable, harder to debug, and more expensive (each agent step is an LLM call). For AskIntern, a good heuristic is: start with a fixed pipeline, add agentic behavior only for the query types where the fixed pipeline consistently fails.</p>
+<p>Tradeoff: agentic RAG is more flexible and handles wider range of queries, but it&rsquo;s less predictable, harder to debug, and more expensive (each agent step is LLM call). For AskIntern, good heuristic is: start with fixed pipeline, add agentic behavior only for query types where fixed pipeline consistently fails.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 <!--  LONG CONTEXT VS RAG                                               -->

@@ -384,11 +384,11 @@ Category:"""</code></pre>
 
 <p>A customer at Shelf &amp; Page writes: "I ordered the hardcover of Project Hail Mary for $24.99 with free shipping. My credit card was charged $52.47. I also had a $5 loyalty discount that wasn't applied. Can you explain the discrepancy?"</p>
 
-<p>If we ask the model to classify and resolve this in one shot, it often gets the arithmetic wrong. It'll say "the charge should have been $19.99" or produce some other number that doesn't add up. The model is pattern-matching to "overcharge → give refund" without actually doing the math.</p>
+<p>If we ask model to classify and resolve this in one shot, arithmetic often breaks. Model may say "the charge should have been $19.99" or some other wrong number. Model pattern-matches "overcharge → give refund" without doing math.</p>
 
-<p>In 2022, Jason Wei and colleagues at Google published a deceptively simple finding: if you make the model show its reasoning step-by-step before giving a final answer, accuracy on reasoning tasks jumps dramatically. They called this <strong>Chain-of-Thought (CoT) prompting</strong>.</p>
+<p>In 2022, Jason Wei and colleagues at Google published simple result: make model show reasoning step by step before final answer, and accuracy on reasoning tasks jumps. Name: <strong>Chain-of-Thought (CoT) prompting</strong>.</p>
 
-<p>Here's how it works with our bookstore example:</p>
+<p>Bookstore example:</p>
 
 <pre><code class="language-python">prompt = """A customer wrote: "I ordered the hardcover of Project Hail
 Mary for $24.99 with free shipping. My credit card was charged $52.47.
@@ -411,26 +411,26 @@ discount). The actual charge of $52.47 represents an overcharge of
 $32.48. This could be a duplicate charge or a pricing error.
 Please escalate to billing."""</code></pre>
 
-<p>That example above is <strong>few-shot CoT</strong> — we showed the model a worked example with explicit reasoning steps. There's an even simpler variant called <strong>zero-shot CoT</strong>. You append a single magic phrase to any prompt:</p>
+<p>Example above is <strong>few-shot CoT</strong> — worked example with explicit reasoning steps. Even simpler variant exists: <strong>zero-shot CoT</strong>. Append one magic phrase to prompt:</p>
 
 <pre><code>Let's think step by step.</code></pre>
 
-<p>That's it. Five words. And accuracy on grade-school math problems jumped from around 18% to 79% in the original experiments. Five words.</p>
+<p>That is all. Five words. Accuracy on grade-school math in original experiments jumped from about 18% to 79%. Five words.</p>
 
-<p>Why does this work? I'll be honest — I don't think anyone has a fully satisfying answer. The best explanation I've found is that by generating intermediate tokens, the model gives itself more computation. Each generated token is a forward pass through the full network. When the model writes "Step 1: the book costs $24.99," it's not doing busywork — it's loading that fact into its working context so subsequent tokens can attend to it. Without the chain, the model has to do all the reasoning in a single forward pass from question to answer, which is like asking someone to solve a multi-step problem in their head without writing anything down. Some people can do it. Most can't, reliably.</p>
+<p>Why work? No fully satisfying answer yet. Best explanation: intermediate tokens give model more computation. Each generated token is full forward pass through network. When model writes "Step 1: the book costs $24.99," it loads fact into working context so later tokens can attend to it. Without chain, model must do whole reasoning process in one forward pass from question to answer — like solving multi-step problem in head without writing anything down. Some people can. Most cannot, reliably.</p>
 
-<p>There's a cooking analogy here too. Standard prompting is like asking a chef to serve a complex dish by thinking through the entire recipe in their head and plating it in one motion. Chain-of-thought is asking them to narrate as they cook: "First I'll sear the protein, then deglaze with wine, then build the sauce from the fond." The narration forces an order of operations and makes errors visible before they propagate.</p>
+<p>Cooking analogy again. Standard prompting asks chef to hold whole recipe in head and plate in one motion. Chain-of-thought asks chef to narrate: "First I'll sear the protein, then deglaze with wine, then build the sauce from the fond." Narration enforces order of operations and exposes errors before they spread.</p>
 
-<p>CoT has limitations. On simple factual lookups — "What is the capital of France?" — it actually hurts. The model wastes tokens pretending to reason about something it already knows. CoT is most valuable when the task involves multiple steps, intermediate calculations, or conditional logic. If a task doesn't require reasoning, don't force the model to perform it.</p>
+<p>CoT has limits. For simple factual lookups — "What is the capital of France?" — it hurts. Model wastes tokens pretending to reason about known fact. CoT matters when task has multiple steps, intermediate calculations, or conditional logic. If task does not need reasoning, do not force it.</p>
 
-<p>But here's a problem. Run the same CoT prompt five times with a bit of sampling randomness, and you might get three correct answers and two wrong ones. The chain-of-thought can start wrong (a bad assumption in step one) and confidently arrive at the wrong conclusion. It's a single path through a reasoning space. What if we could explore multiple paths?</p>
+<p>Problem: run same CoT prompt five times with some sampling randomness and you may get three correct answers and two wrong ones. Chain can start wrong — bad assumption in step one — and still reach wrong conclusion confidently. Single path through reasoning space. What if we explore multiple paths?</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <h2>Self-Consistency: Voting Across Reasoning Paths</h2>
 
-<p>Wang et al. (2022) proposed a beautifully intuitive idea: instead of generating one chain-of-thought, generate many. Sample multiple reasoning paths with some randomness (temperature > 0), extract the final answer from each, and take a majority vote.</p>
+<p>Wang et al. (2022) proposed simple idea: generate many chains-of-thought instead of one. Sample multiple reasoning paths with randomness (temperature > 0), extract final answer from each, then take majority vote.</p>
 
-<p>Let's go back to our bookstore billing dispute. We sample five CoT paths:</p>
+<p>Back to bookstore billing dispute. Sample five CoT paths:</p>
 
 <pre><code>Path 1: $24.99 - $5.00 = $19.99 → overcharge of $32.48  ✓
 Path 2: $24.99 + tax(8%) = $26.99 - $5.00 = $21.99 → overcharge of $30.48
@@ -438,9 +438,9 @@ Path 3: $24.99 - $5.00 = $19.99 → overcharge of $32.48  ✓
 Path 4: $24.99 - $5.00 = $19.99 → overcharge of $32.48  ✓
 Path 5: two copies charged: 2×$24.99 = $49.98 + tax = ~$52.47</code></pre>
 
-<p>Three out of five paths agree on the $32.48 overcharge. That's our answer. Path 2 introduced tax that wasn't mentioned. Path 5 offered a plausible but different explanation. The majority vote filters out the reasoning errors.</p>
+<p>Three of five paths agree on $32.48 overcharge. Use that. Path 2 added tax not mentioned. Path 5 gave plausible but different explanation. Majority vote filters reasoning errors.</p>
 
-<p>The implementation is straightforward:</p>
+<p>Implementation is straightforward:</p>
 
 <pre><code class="language-python">import collections
 
@@ -454,18 +454,18 @@ def self_consistent_answer(prompt, model, n_samples=5, temperature=0.7):
     vote = collections.Counter(answers)
     return vote.most_common(1)[0][0]</code></pre>
 
-<p>The cost is linear — five samples means five API calls, five times the token cost. For production systems, the trade-off is worth it when correctness matters more than latency or cost. For a customer support bot handling a routine greeting? Overkill. For a financial calculation that determines a refund amount? Cheap insurance.</p>
+<p>Cost is linear — five samples means five API calls and 5× token cost. In production, trade-off makes sense when correctness matters more than latency or cost. Customer support bot answering greeting? Overkill. Financial calculation deciding refund? Cheap insurance.</p>
 
-<p>Self-consistency treats reasoning as a single forward chain that might fork at different points. But what about problems where you need to actively explore alternatives, evaluate them, and backtrack?</p>
+<p>Self-consistency treats reasoning like one forward chain with forks. But some problems need active exploration, evaluation, backtracking.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <h2>Tree of Thought: Branching Exploration</h2>
 
-<p>Imagine a Shelf &amp; Page customer asks: "I want a book that's like a mix of Dune's worldbuilding, the pacing of The Martian, and the emotional depth of A Man Called Ove. What would you recommend?"</p>
+<p>Imagine Shelf &amp; Page customer asks: "I want a book that's like a mix of Dune's worldbuilding, the pacing of The Martian, and the emotional depth of A Man Called Ove. What would you recommend?"</p>
 
-<p>This is a creative reasoning task. There isn't one right answer, and the quality depends on exploring multiple possibilities and evaluating them. Chain-of-thought would produce one linear path: "Well, Dune-like worldbuilding suggests sci-fi, Martian pacing suggests humor, A Man Called Ove suggests literary fiction... therefore, Becky Chambers." That's a reasonable chain, but it explored only one route through the reasoning space.</p>
+<p>Creative reasoning task. No single right answer. Quality depends on exploring multiple possibilities and judging them. Chain-of-thought would give one linear path: "Well, Dune-like worldbuilding suggests sci-fi, Martian pacing suggests humor, A Man Called Ove suggests literary fiction... therefore, Becky Chambers." Reasonable chain. Only one route explored.</p>
 
-<p><strong>Tree of Thought (ToT)</strong>, introduced by Yao et al. in 2023, structures reasoning as a tree. At each step, the model generates multiple possible next-thoughts, evaluates which ones are promising, and continues exploring the best branches. Unpromising branches get pruned. It's breadth-first or depth-first search applied to reasoning.</p>
+<p><strong>Tree of Thought (ToT)</strong>, introduced by Yao et al. in 2023, treats reasoning as tree. At each step, model generates multiple possible next-thoughts, evaluates promising ones, and keeps exploring best branches. Weak branches get pruned. Breadth-first or depth-first search for reasoning.</p>
 
 <pre><code>Root: Find a book matching three criteria
 ├── Branch A: Start with worldbuilding → sci-fi genre
@@ -481,9 +481,9 @@ def self_consistent_answer(prompt, model, n_samples=5, temperature=0.7):
     └── C1: Project Hail Mary (pacing ✓, worldbuilding ✓, emotion ✓)
         └── Evaluate: strong on all three → BEST CANDIDATE</code></pre>
 
-<p>Tree of Thought is more computationally expensive than linear CoT — each branch evaluation requires an LLM call, and you might explore dozens of branches. In practice, it's most valuable for problems that have a search-like quality: puzzles, planning, creative tasks where the solution space is large and you need to compare options.</p>
+<p>Tree of Thought costs more than linear CoT — each branch evaluation needs LLM call, and search may touch dozens of branches. Best for search-like problems: puzzles, planning, creative tasks with large solution space where options must be compared.</p>
 
-<p>I should be upfront: for most production prompt engineering tasks, CoT plus self-consistency gets you 90% of the way there. Tree of Thought is the heavy machinery you bring in for genuinely complex reasoning problems. Knowing it exists matters more than using it daily.</p>
+<p>For most production prompt-engineering work, CoT plus self-consistency gets 90% of value. Tree of Thought is heavy machinery for genuinely complex reasoning. Important to know. Rare to use daily.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <h2>System, User, and Assistant: The Role Hierarchy</h2>
