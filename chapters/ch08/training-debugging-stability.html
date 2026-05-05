@@ -303,7 +303,7 @@
 <!-- ═══════════ End Table of Contents ═══════════ -->
       <div class="tldr">
         <div class="tldr-label">TL;DR</div>
-        <p>Training a deep network is 10% architecture design and 90% debugging why the loss is doing something insane. This section covers the systematic toolkit for diagnosing and fixing training failures: loss landscape geometry that explains <em>why</em> optimization is hard, the single-batch overfit test that catches 80% of bugs, a structured debugging flow from data to gradients, NaN warfare, reading loss curves like a cardiologist reads EKGs, reproducibility rituals, monitoring infrastructure, the silent bugs that produce no errors but quietly destroy your model, gradient clipping mechanics, and weight initialization theory. We use a running example — a sentiment classifier on movie reviews — and break it in every way possible so we know how to fix it.</p>
+        <p>Deep network training = 10% architecture, 90% debugging insane loss. Section covers toolkit for training failures: loss landscape geometry for <em>why</em> optimization hurts, single-batch overfit test catching 80% of bugs, debugging flow from data to gradients, NaN fights, reading loss curves like EKGs, reproducibility rituals, monitoring, silent bugs that throw no errors but wreck model, gradient clipping, and weight initialization. We use sentiment classifier on movie reviews, break it many ways, then fix it.</p>
       </div>
 
       <!-- ================================================================== -->
@@ -311,35 +311,35 @@
       <!-- ================================================================== -->
       <h2>The Landscape You're Navigating</h2>
 
-      <p>Before we talk about debugging, we need to understand the terrain. When we train a neural network, we're searching for a good set of parameters — weights and biases — that minimize a loss function. That loss function defines a surface over parameter space. For a network with <em>n</em> parameters, this surface lives in <em>n+1</em> dimensions: <em>n</em> dimensions for the parameters, plus one for the loss value. Our sentiment classifier might have 5 million parameters. That means we're navigating a surface in 5,000,001-dimensional space. I don't know about you, but my spatial intuition breaks down somewhere around dimension 4.</p>
+      <p>Before debugging, understand terrain. Training neural network means searching good parameters — weights and biases — that minimize loss function. Loss function defines surface over parameter space. For network with <em>n</em> parameters, surface lives in <em>n+1</em> dimensions: <em>n</em> for parameters, one for loss. Our sentiment classifier might have 5 million parameters. So we navigate 5,000,001-dimensional space. Spatial intuition dies fast.</p>
 
-      <p>Here's the thing that tripped me up for a long time: I kept imagining loss landscapes as bumpy 2D surfaces with valleys and peaks, like mountain terrain. The intuitions from that picture are mostly wrong for high-dimensional spaces. In two dimensions, a saddle point is a rare curiosity — a mountain pass. In millions of dimensions, saddle points are <em>everywhere</em>. They vastly outnumber local minima.</p>
+      <p>Big trap for me: imagining loss landscapes as bumpy 2D mountains. That picture breaks in high-dimensional space. In two dimensions, saddle point is rare mountain pass. In millions of dimensions, saddle points are <em>everywhere</em>. They vastly outnumber local minima.</p>
 
       <h3>Saddle Points Dominate (And That's Good News)</h3>
 
-      <p>Dauphin et al. (2014) formalized what many practitioners had suspected: in high-dimensional non-convex optimization, the critical points you encounter are overwhelmingly <strong>saddle points</strong>, not local minima. A critical point is any point where the gradient is zero. At a local minimum, the loss curves upward in <em>every</em> direction. At a saddle point, the loss curves upward in some directions and downward in others. Think about it probabilistically. At a random critical point in <em>n</em>-dimensional space, each direction independently has roughly a 50% chance of curving up or down. For that point to be a true local minimum, <em>all n</em> directions must curve upward. The probability of that happening by chance is roughly 2<sup>-n</sup>. For our 5-million-parameter network, that's an astronomically small number. So the critical points we encounter almost always have escape routes — directions where the loss decreases.</p>
+      <p>Dauphin et al. (2014) formalized suspicion many practitioners had: in high-dimensional non-convex optimization, critical points are mostly <strong>saddle points</strong>, not local minima. Critical point means gradient is zero. Local minimum curves upward in <em>every</em> direction. Saddle point curves up in some directions, down in others. Probabilistic view helps. At random critical point in <em>n</em>-dimensional space, each direction has roughly 50% chance of curving up or down. True local minimum needs <em>all n</em> directions curving up. Chance is roughly 2<sup>-n</sup>. For 5-million-parameter network, chance is astronomically small. So critical points almost always have escape routes where loss drops.</p>
 
-      <p>This is genuinely good news. It means SGD doesn't get "trapped" in local minima the way we feared in the early days of neural networks. The real challenge at saddle points is that gradients are small near them, so training slows down. Momentum-based optimizers like Adam help tremendously here because they carry velocity through the low-gradient saddle region.</p>
+      <p>Good news. SGD rarely gets "trapped" in local minima like early neural-net fear said. Real problem at saddle points: gradients get small, training slows. Momentum optimizers like Adam help because velocity carries through low-gradient saddle region.</p>
 
       <h3>Sharp vs Flat Minima: Not All Solutions Are Equal</h3>
 
-      <p>Not all low-loss regions generalize equally well. Keskar et al. (2017) showed that <strong>sharp minima</strong> — regions where the loss changes rapidly when you perturb the weights — tend to generalize poorly. <strong>Flat minima</strong> — regions where you can wiggle the weights substantially without the loss changing much — tend to generalize well. The intuition is elegant: a sharp minimum is "fragile." The training data happens to align in a very specific way at that point, but any slight distribution shift (like moving from training to test data) throws you out of the valley. A flat minimum is "robust." Small perturbations don't matter, which means the solution captures something more fundamental about the data.</p>
+      <p>Low-loss regions do not generalize equally. Keskar et al. (2017) showed <strong>sharp minima</strong> — regions where loss changes fast when weights move — usually generalize poorly. <strong>Flat minima</strong> — regions where weights can wiggle and loss barely moves — usually generalize well. Intuition: sharp minimum is fragile. Training data lines up in one specific way, then small distribution shift throws solution out of valley. Flat minimum is robust. Small perturbations do little, so solution captures something more fundamental in data.</p>
 
-      <p>This connects to a beautiful observation about batch size. Small-batch SGD introduces noise into the gradient estimates. That noise acts as an implicit regularizer, pushing the optimizer away from sharp minima (because the noisy gradient overshoots and escapes) and toward flat minima (because the noise can't push you out). Large-batch training converges to sharper minima because the gradient estimates are more precise and the optimizer settles into whatever narrow valley it finds. This is one reason why naively scaling up batch size often hurts generalization — you lose the regularizing effect of gradient noise.</p>
+      <p>Batch size connects here. Small-batch SGD adds noise to gradient estimates. Noise acts like implicit regularizer: pushes optimizer away from sharp minima, because noisy updates overshoot and escape, and toward flat minima, because noise cannot kick model out. Large-batch training gives more precise gradients, so optimizer settles into narrow valley it finds. Reason naive large-batch scaling often hurts generalization: gradient-noise regularization disappears.</p>
 
       <h3>Skip Connections Reshape the Landscape</h3>
 
-      <p>Li et al. (2018) produced some of the most visually stunning results in deep learning by visualizing loss landscapes. They showed that a plain deep network (like VGG) has an incredibly chaotic loss surface — riddled with sharp peaks, narrow valleys, and large flat regions where the gradient gives you no useful signal. But add skip connections (as in ResNet), and the landscape becomes dramatically smoother. Almost convex-looking, with broad smooth valleys leading to good minima.</p>
+      <p>Li et al. (2018) visualized loss landscapes and got striking result. Plain deep network like VGG has chaotic surface — sharp peaks, narrow valleys, big flat regions with useless gradients. Add skip connections, as in ResNet, and landscape gets much smoother. Almost convex-looking. Broad smooth valleys lead to good minima.</p>
 
-      <p>This is why ResNets are so much easier to train than VGGs of comparable depth. It's not that skip connections give you a "better" architecture in some abstract sense — they literally make the optimization problem easier by reshaping the landscape. When you're debugging a deep network that won't train, adding skip connections isn't a hack. It's a fundamental improvement to the loss surface geometry.</p>
+      <p>Reason ResNets train easier than similar-depth VGGs. Skip connections not merely "better" architecture in abstract sense. They reshape optimization problem and make landscape easier. If deep network will not train, adding skip connections is not hack. It is fundamental improvement to loss-surface geometry.</p>
 
       <h3>Mode Connectivity</h3>
 
-      <p>Here's something that still blows my mind. Garipov et al. (2018) showed that independently trained neural networks — same architecture, same data, different random seeds — converge to solutions that can be connected by simple low-loss paths in parameter space. Train model A, train model B from a different random initialization, and you can find a smooth curve through parameter space connecting A and B along which the loss stays low. This means the set of good solutions isn't a bunch of isolated pockets scattered across parameter space. It's more like a connected manifold. The implications for ensemble methods and model averaging are profound, but for debugging, the takeaway is reassuring: there are many good solutions, and the optimizer can find them from many starting points.</p>
+      <p>Wild result. Garipov et al. (2018) showed independently trained neural networks — same architecture, same data, different random seeds — reach solutions connected by simple low-loss paths in parameter space. Train model A and model B from different initializations, then find smooth curve connecting them while loss stays low. Good solutions are not isolated pockets. More like connected manifold. Debugging takeaway: many good solutions exist, and optimizer can find them from many starts.</p>
 
       <h3>SAM: Explicitly Seeking Flat Minima</h3>
 
-      <p>If flat minima generalize better, why not directly optimize for flatness? That's exactly what <strong>Sharpness-Aware Minimization</strong> (SAM), proposed by Foret et al. (2021), does. Instead of minimizing the loss at the current point, SAM minimizes the worst-case loss in a small neighborhood around the current point. The update has two steps: first, compute the gradient at the current point, take a step in the direction that <em>maximizes</em> loss (finding the worst neighbor), then compute the gradient <em>at that worst neighbor</em> and step in the direction that minimizes it. The effect is that SAM avoids parameters where the loss is low at the exact point but high nearby — the definition of a sharp minimum.</p>
+      <p>If flat minima generalize better, optimize flatness directly. <strong>Sharpness-Aware Minimization</strong> (SAM), from Foret et al. (2021), does that. Instead of minimizing loss at current point, SAM minimizes worst-case loss in small neighborhood around current point. Two steps: compute gradient, step in direction that <em>maximizes</em> loss to find worst neighbor, then compute gradient <em>at worst neighbor</em> and step to minimize it. Effect: SAM avoids parameters with low loss at exact point but high loss nearby — definition of sharp minimum.</p>
 
 <pre><code class="language-python"># SAM optimizer — simplified core logic
 # Standard optimizers minimize L(w). SAM minimizes max_{||e||&lt;=rho} L(w + e)
@@ -383,15 +383,15 @@ class SAM(torch.optim.Optimizer):
         )
         return norm</code></pre>
 
-      <p>The cost is roughly 2x that of standard training (two forward-backward passes per step). But SAM consistently improves generalization, especially on tasks where you're close to the edge of overfitting. For our sentiment classifier, SAM might buy us 0.5-1% accuracy on the test set — not a revolution, but meaningful in competitive settings.</p>
+      <p>Cost: roughly 2x standard training, because each step needs two forward-backward passes. Benefit: better generalization, especially near overfitting edge. For our sentiment classifier, SAM might add 0.5-1% test accuracy. Not revolution. Still useful in competitive settings.</p>
 
       <h3>Learning Rate Warmup: Why Starting High Is Dangerous</h3>
 
-      <p>At initialization, our weights are random. The loss landscape at a random point is chaotic — gradients are large and point in essentially arbitrary directions. If we start with a high learning rate, those large, noisy gradients catapult us far from our starting point into regions of the landscape that may be even worse. The loss spikes, gradients grow even larger, and we enter a death spiral that often ends in NaN. <strong>Learning rate warmup</strong> starts with a very small learning rate and gradually increases it over the first few hundred or thousand steps. This gives the network time to move into a more structured region of the landscape where the gradients carry actual signal before we start taking large steps. It's especially critical for transformers and any architecture without skip connections.</p>
+      <p>At initialization, weights are random. Loss landscape at random point is chaotic — gradients large, directions mostly arbitrary. Start with high learning rate, and those noisy gradients fling model into worse regions. Loss spikes. Gradients grow more. Death spiral. Often ends in NaN. <strong>Learning rate warmup</strong> starts tiny and increases over first few hundred or thousand steps. Network gets time to reach more structured region where gradients carry real signal before steps get large. Especially critical for transformers and architectures without skip connections.</p>
 
       <div class="callout callout-info">
         <div class="callout-label">💡 Key Insight</div>
-        <p>The loss landscape isn't something you're stuck with. Architecture choices (skip connections), optimizer choices (SAM, momentum), and hyperparameter choices (small batch, warmup) all reshape the effective landscape you're navigating. Debugging a network that won't train is often about making the landscape easier to navigate, not about finding a cleverer way to search a terrible landscape.</p>
+        <p>Loss landscape not fixed fate. Architecture choices like skip connections, optimizer choices like SAM or momentum, and hyperparameters like small batch or warmup all reshape effective landscape. Debugging stubborn network often means making landscape easier, not searching bad landscape harder.</p>
       </div>
 
       <!-- ================================================================== -->
@@ -399,9 +399,9 @@ class SAM(torch.optim.Optimizer):
       <!-- ================================================================== -->
       <h2>The Single-Batch Overfit Test: Your First Debugging Move</h2>
 
-      <p>Andrej Karpathy called this "the most important debugging test in deep learning," and I'd go further: it's the equivalent of a segfault check in systems programming. Before you tune a single hyperparameter, before you worry about regularization or data augmentation, you need to verify that your model can memorize a single batch of data. If it can't, you have a fundamental bug — not a hyperparameter problem, not a capacity problem, a <em>bug</em>.</p>
+      <p>Andrej Karpathy called this "most important debugging test in deep learning." Fair. It is like segfault check in systems programming. Before tuning hyperparameters, regularization, or data augmentation, verify model can memorize one batch. If it cannot, problem is fundamental <em>bug</em> — not hyperparameters, not capacity.</p>
 
-      <p>The test is dead simple. Grab one batch from your training set. Feed it to the model repeatedly for 500-1000 steps with a reasonable learning rate (1e-3 for Adam is usually fine). The loss should decrease steadily and approach zero (or near-zero, depending on the task). For our sentiment classifier with 2 classes, the initial loss should be around -log(1/2) = 0.693 (random guessing). After 500 steps on a single batch of 32 samples, it should be below 0.01. If it's not, stop everything. Don't touch the learning rate. Don't add more layers. Fix the bug.</p>
+      <p>Test is simple. Grab one batch from training set. Feed same batch to model for 500-1000 steps with reasonable learning rate; 1e-3 for Adam usually works. Loss should drop steadily toward zero or near-zero, depending on task. For 2-class sentiment classifier, initial loss should be about -log(1/2) = 0.693. After 500 steps on one batch of 32 samples, loss should be below 0.01. If not, stop. Do not touch learning rate. Do not add layers. Fix bug.</p>
 
 <pre><code class="language-python">import torch
 import torch.nn as nn
@@ -446,19 +446,19 @@ for step in range(500):
 
       <h3>What Failure Tells You</h3>
 
-      <p>If the loss doesn't go to near-zero, the failure mode tells you a lot about the bug:</p>
+      <p>Failure mode tells much:</p>
 
-      <p><strong>Loss stuck at initial value (e.g., 0.693 for binary classification).</strong> The model isn't learning anything. The most common causes: gradients aren't flowing (check for detached tensors, wrong dtype, frozen parameters), the optimizer isn't actually connected to the model's parameters, or the loss function doesn't match the model output format.</p>
+      <p><strong>Loss stuck at initial value (e.g., 0.693 for binary classification).</strong> Model learns nothing. Common causes: gradients not flowing, maybe detached tensors, wrong dtype, or frozen parameters; optimizer not connected to model parameters; or loss function mismatched with model output format.</p>
 
-      <p><strong>Loss decreases but plateaus well above zero.</strong> The model has some gradient signal but can't fit the batch. This often means the model's capacity is too low for even 32 examples (unlikely unless your architecture is very small), or more commonly, there's a data preprocessing bug — maybe the labels are shuffled relative to the inputs, or the tokenization is destroying information.</p>
+      <p><strong>Loss decreases but plateaus well above zero.</strong> Model gets some gradient signal but cannot fit batch. Maybe capacity is too low for 32 examples, though that is uncommon unless architecture is tiny. More often reason is data preprocessing bug — labels shuffled against inputs, or tokenization destroys information.</p>
 
-      <p><strong>Loss immediately goes to NaN or infinity.</strong> Numerical instability from the very first step. Check for division by zero in custom layers, log(0) in losses, or a learning rate that's absurdly high. We'll cover NaN debugging in depth shortly.</p>
+      <p><strong>Loss immediately goes to NaN or infinity.</strong> Numerical instability from first step. Check division by zero in custom layers, <code>log(0)</code> in losses, or absurdly high learning rate. NaN debugging comes soon.</p>
 
-      <p><strong>Loss oscillates wildly without converging.</strong> The learning rate is too high for this architecture on this data. Try reducing it by 10x. If it still oscillates, you likely have a data-label mismatch — the labels are wrong or shuffled.</p>
+      <p><strong>Loss oscillates wildly without converging.</strong> Learning rate is too high for this architecture and data. Try 10x lower. If oscillation stays, likely data-label mismatch — wrong labels or shuffled labels.</p>
 
       <div class="callout callout-danger">
         <div class="callout-label">🔥 Hard-Won Lesson</div>
-        <p>I once spent two days tuning hyperparameters for a model that wouldn't converge. Grid search over learning rates, architectures, batch sizes — nothing worked. When I finally ran the single-batch overfit test, the loss was stuck at 2.303 (exactly -log(1/10) for 10-class classification). The model was guessing randomly. Turned out, the DataLoader had <code>shuffle=True</code> but the labels tensor wasn't being shuffled in sync with the inputs. Two days. The overfit test would have caught it in 30 seconds.</p>
+        <p>I once wasted two days tuning hyperparameters for non-converging model. Grid search on learning rates, architectures, batch sizes. Nothing worked. Then single-batch overfit test showed loss stuck at 2.303 — exactly -log(1/10) for 10-class classification. Model guessed randomly. Real bug: DataLoader had <code>shuffle=True</code> but labels tensor was not shuffled with inputs. Two days lost. Overfit test would have caught it in 30 seconds.</p>
       </div>
 
       <!-- ================================================================== -->
@@ -466,11 +466,11 @@ for step in range(500):
       <!-- ================================================================== -->
       <h2>A Systematic Debugging Flow</h2>
 
-      <p>Once the overfit test passes (or when you're trying to figure out why it's failing), we need a systematic approach. I've seen too many people debug training by randomly changing hyperparameters and hoping something works. That's not debugging, that's gambling. Here's the flow I follow, and it's roughly in order of "most likely to be the problem."</p>
+      <p>Once overfit test passes — or while figuring out why it fails — use system, not guessing. Random hyperparameter changes are gambling. Flow below follows rough order of most likely bugs.</p>
 
       <h3>Step 1: Inspect the Data Pipeline</h3>
 
-      <p>Most "model bugs" are data bugs. I know this sounds like a platitude, but I mean it literally. Print what the model actually sees. Not what you think it sees. Not what the data documentation says it should see. Print the actual tensor values going into the forward pass.</p>
+      <p>Most "model bugs" are data bugs. Literal truth. Print what model actually sees. Not what you think it sees. Not what docs say it should see. Print actual tensor values entering forward pass.</p>
 
 <pre><code class="language-python"># ALWAYS do this before anything else
 batch = next(iter(train_loader))
@@ -492,11 +492,11 @@ for i in range(3):
     print(f"Label={label}: {text[:200]}")
     # Does the sentiment match the label? You'd be surprised how often it doesn't.</code></pre>
 
-      <p>For our sentiment classifier, I've caught the following bugs with this check: tokenizer using wrong vocabulary (every word mapped to UNK), padding token not being ignored in the LSTM (polluting the hidden state), labels being 1-indexed instead of 0-indexed (causing CrossEntropyLoss to throw an index error with 2 classes or, worse, silently accepting with 3+ classes but being off by one), and input sequences being truncated to 10 tokens when the average review is 200 tokens.</p>
+      <p>For our sentiment classifier, this check caught: tokenizer using wrong vocabulary so every word became UNK; padding token not ignored in LSTM, polluting hidden state; labels starting at 1 instead of 0, which makes CrossEntropyLoss throw index error with 2 classes or silently go off by one with 3+ classes; and sequences truncated to 10 tokens when average review had 200.</p>
 
       <h3>Step 2: Verify the Expected Initial Loss</h3>
 
-      <p>Before training starts, the model's weights are random, so its predictions should be roughly uniform over classes. For a classification problem with <em>C</em> classes, the expected initial loss with CrossEntropyLoss is:</p>
+      <p>Before training, weights are random, so predictions should be roughly uniform over classes. For classification with <em>C</em> classes, expected initial loss under CrossEntropyLoss is:</p>
 
       <p><code>expected_initial_loss = -log(1/C) = log(C)</code></p>
 
@@ -516,7 +516,7 @@ for i in range(3):
         </tbody>
       </table>
 
-      <p>If your initial loss is wildly different from this, something is wrong. Much lower than expected? Your model has some bias toward certain classes before training — possibly leaking information, or the last layer bias is initialized badly. Much higher? Your loss function is computing something unexpected. I once saw an initial loss of 47.0 for a 10-class problem. Turned out the model output was being passed through a softmax before CrossEntropyLoss, which applies log-softmax internally. The double softmax compressed the probabilities, making the log-probability much more negative than expected.</p>
+      <p>If initial loss is far from this, something is wrong. Much lower? Model has class bias before training — maybe information leak, maybe bad last-layer bias initialization. Much higher? Loss function computes something unexpected. I once saw 47.0 initial loss on 10-class problem. Cause: model output went through softmax before CrossEntropyLoss, which already applies log-softmax internally. Double softmax compressed probabilities and made log-probability far more negative than expected.</p>
 
 <pre><code class="language-python"># Sanity check: initial loss
 model.eval()
@@ -530,7 +530,7 @@ with torch.no_grad():
 
       <h3>Step 3: The Learning Rate Finder</h3>
 
-      <p>Leslie Smith (2017) proposed a brilliant technique: instead of guessing the learning rate, sweep across a wide range and let the data tell you. Start with a tiny learning rate (like 1e-7), and increase it exponentially each batch until it reaches a large value (like 1.0 or 10.0). Record the loss at each step. Plot loss vs learning rate on a log scale. The optimal learning rate is roughly 10x below the point where the loss is lowest before it starts to diverge.</p>
+      <p>Leslie Smith (2017) proposed strong technique: stop guessing learning rate. Sweep wide range and let data answer. Start tiny, like 1e-7. Increase exponentially each batch until large value, like 1.0 or 10.0. Record loss each step. Plot loss vs learning rate on log scale. Good learning rate is roughly 10x below point where loss is lowest before divergence starts.</p>
 
 <pre><code class="language-python">import math
 
@@ -583,11 +583,11 @@ def lr_finder(model, train_loader, criterion, start_lr=1e-7, end_lr=1.0, num_ste
     # Plot lrs (log scale) vs losses
     # Pick LR about 10x below the minimum loss point</code></pre>
 
-      <p>For our sentiment classifier with Adam, the learning rate finder typically shows loss decreasing from around 1e-5, reaching a minimum around 1e-3 to 3e-3, then diverging rapidly above 1e-2. So we'd pick something like 1e-3 to 3e-4. This isn't the final answer — the optimal LR depends on batch size, model size, and warmup schedule — but it gets you in the right ballpark immediately instead of wasting runs on LR=0.1 (diverges) or LR=1e-6 (trains but barely moves).</p>
+      <p>For our sentiment classifier with Adam, learning rate finder usually shows loss falling around 1e-5, bottoming near 1e-3 to 3e-3, then blowing up above 1e-2. So pick around 1e-3 to 3e-4. Not final word — optimal LR still depends on batch size, model size, and warmup — but this gets you near right range fast instead of wasting runs on LR=0.1 or LR=1e-6.</p>
 
       <h3>Step 4: Gradient Health Checks</h3>
 
-      <p>If the model is training but something feels off — loss is stagnant, convergence is glacially slow, or the model isn't learning certain features — it's time to look at the gradients directly.</p>
+      <p>If model trains but something feels wrong — stagnant loss, painfully slow convergence, or missing feature learning — inspect gradients directly.</p>
 
 <pre><code class="language-python">def check_gradient_health(model):
     """Print gradient statistics per layer — the training vital signs."""
@@ -607,13 +607,13 @@ loss.backward()
 check_gradient_health(model)
 optimizer.step()</code></pre>
 
-      <p>What to look for: <strong>NO GRADIENT</strong> on any parameter means that parameter is disconnected from the loss. It's either frozen (<code>requires_grad=False</code>), or there's a computational graph break somewhere — maybe you called <code>.detach()</code> or <code>.item()</code> or <code>.numpy()</code> on an intermediate tensor, severing the autograd chain. <strong>Gradient norms near zero</strong> on early layers but healthy on later layers means vanishing gradients — the signal is dying as it flows backward through the network. <strong>Gradient norms that are wildly different</strong> across layers (e.g., 1e-8 for early layers, 1e+3 for later layers) suggest the network needs better initialization, normalization layers, or gradient clipping.</p>
+      <p>Watch for this: <strong>NO GRADIENT</strong> on any parameter means that parameter is disconnected from loss. Maybe frozen with <code>requires_grad=False</code>, or graph broke because you called <code>.detach()</code>, <code>.item()</code>, or <code>.numpy()</code> on intermediate tensor. <strong>Gradient norms near zero</strong> in early layers but healthy later means vanishing gradients — signal dies on backprop path. <strong>Wildly different gradient norms</strong> across layers, like 1e-8 early and 1e+3 late, suggest need for better initialization, normalization, or gradient clipping.</p>
 
       <h3>Step 5: Architecture Bugs — The Double Softmax Trap</h3>
 
-      <p>This deserves its own subsection because it catches an embarrassing number of people, including experienced practitioners who should know better (I include myself in that group).</p>
+      <p>Own subsection needed. Bug catches many people, including experienced practitioners. Me too.</p>
 
-      <p>PyTorch's <code>nn.CrossEntropyLoss</code> expects <strong>raw logits</strong> — unnormalized scores. Internally, it applies <code>log_softmax</code> and then <code>nll_loss</code>. If your model's forward method ends with <code>nn.Softmax()</code> or <code>F.softmax()</code>, you're applying softmax twice. The first softmax squashes your logits into [0, 1]. The second (inside CrossEntropyLoss) applies log-softmax to those already-squashed values. The resulting loss is mathematically valid — gradients still flow — but the effective optimization landscape is distorted, and training is severely crippled.</p>
+      <p>PyTorch's <code>nn.CrossEntropyLoss</code> expects <strong>raw logits</strong> — unnormalized scores. It applies <code>log_softmax</code> and then <code>nll_loss</code> internally. If model ends with <code>nn.Softmax()</code> or <code>F.softmax()</code>, softmax happens twice. First softmax squashes logits into [0, 1]. Second softmax inside CrossEntropyLoss applies log-softmax to already squashed values. Loss is mathematically valid, gradients still flow, but optimization landscape gets distorted and training becomes badly crippled.</p>
 
 <pre><code class="language-python"># BUG: Double softmax — the model applies softmax, then CrossEntropyLoss applies it again
 class BrokenModel(nn.Module):
@@ -637,11 +637,11 @@ class FixedModel(nn.Module):
     def forward(self, x):
         return self.fc(x)  # Raw logits — let the loss function handle normalization</code></pre>
 
-      <p>The sneaky part is that this bug doesn't crash. It doesn't produce NaN. The model still learns, kind of. It'll converge to maybe 70% accuracy on a task where it should reach 90%. You'll think you need a bigger model or better hyperparameters, and you'll waste days before realizing the loss function was wrong all along.</p>
+      <p>Sneaky bug. No crash. No NaN. Model still learns, sort of. Maybe stops around 70% accuracy on task that should reach 90%. Easy mistake: blame model size or hyperparameters and waste days. Real problem is wrong loss setup.</p>
 
       <h3>Step 6: torch.autograd.detect_anomaly()</h3>
 
-      <p>When you've exhausted the manual checks and something is still producing NaN or unexpected values, PyTorch has a nuclear option: <code>torch.autograd.detect_anomaly()</code>. It instruments every autograd operation to check for NaN and Inf in both forward and backward passes, and when it finds one, it gives you a traceback pointing to the exact operation.</p>
+      <p>When manual checks fail and NaN or strange values remain, PyTorch has nuclear option: <code>torch.autograd.detect_anomaly()</code>. It instruments every autograd op, checks forward and backward for NaN and Inf, and gives traceback to exact bad op.</p>
 
 <pre><code class="language-python"># ONLY use for debugging — this makes training 5-10x slower
 with torch.autograd.detect_anomaly():
@@ -651,11 +651,11 @@ with torch.autograd.detect_anomaly():
     # If any operation produces NaN/Inf, you'll get a RuntimeError
     # with the exact traceback showing which operation is the culprit</code></pre>
 
-      <p>Never leave this on in production training. The overhead is massive. Use it to find the bug, fix it, remove it.</p>
+      <p>Never leave this on in production training. Overhead is huge. Find bug. Fix bug. Remove it.</p>
 
       <div class="callout callout-info">
         <div class="callout-label">💡 Key Insight</div>
-        <p>The debugging flow has a hierarchy: data first, loss second, gradients third, architecture fourth. Most bugs are in the first two. If you jump to tweaking architecture or hyperparameters before verifying data integrity, you're debugging in the dark.</p>
+        <p>Debugging flow has hierarchy: data first, loss second, gradients third, architecture fourth. Most bugs live in first two. Jumping to architecture or hyperparameters before data integrity checks means debugging blind.</p>
       </div>
 
       <!-- ================================================================== -->
@@ -663,17 +663,17 @@ with torch.autograd.detect_anomaly():
       <!-- ================================================================== -->
       <h2>NaN Loss: Causes, Mechanisms, and Fixes</h2>
 
-      <p>NaN in your loss is the training equivalent of a kernel panic. Everything was fine, and then suddenly every number in your model is NaN, and the entire run is irrecoverable. I've had this happen on hour 47 of a 48-hour training run. It's not fun. Let's understand exactly how NaN propagates and how to defend against it.</p>
+      <p>NaN loss is training version of kernel panic. Everything looks fine, then every number in model becomes NaN and run is dead. I have seen this at hour 47 of 48-hour training. Brutal. Need understand how NaN spreads and how to stop it.</p>
 
       <h3>The Chain Reaction</h3>
 
-      <p>NaN rarely starts everywhere at once. It starts in one operation, one layer, one parameter. Then it spreads through the computation graph like an infection. A single NaN gradient updates one weight to NaN. That NaN weight produces NaN activations for every input in the next forward pass. Those NaN activations produce NaN gradients for every other weight. Within one or two steps, every parameter in the model is NaN. Once it starts, there's no recovery without loading a checkpoint.</p>
+      <p>NaN rarely starts everywhere. It starts in one op, one layer, one parameter. Then it spreads through computation graph like infection. One NaN gradient makes one weight NaN. That weight makes NaN activations next forward pass. Those activations make NaN gradients for other weights. In one or two steps, whole model is NaN. Recovery needs checkpoint.</p>
 
-      <p>Here's the typical chain: a particularly adversarial batch (outlier inputs, mislabeled samples) produces an unusually large loss. The large loss produces large gradients. The large gradients produce a huge weight update. The updated weight now holds an extreme value. In the next forward pass, that extreme weight produces an activation that overflows to infinity. Infinity times anything is infinity. Infinity minus infinity is NaN. And NaN times anything is NaN. Game over.</p>
+      <p>Typical chain: bad batch — outlier inputs or mislabeled samples — makes unusually large loss. Large loss makes large gradients. Large gradients make huge weight update. Updated weight becomes extreme. Next forward pass turns that extreme weight into activation overflow, then infinity. Infinity times anything stays infinity. Infinity minus infinity becomes NaN. NaN times anything stays NaN. Game over.</p>
 
       <h3>Float16 Overflow</h3>
 
-      <p>If you're training in mixed precision (which you should be for speed), float16 has a maximum representable value of approximately 65,504. That sounds like a lot until you consider that a squared value of 256 is 65,536 — already overflow. Softmax computes exp(x), which overflows float16 for x &gt; 11.09. Matrix multiplications with large hidden dimensions can easily produce pre-activation values exceeding that range.</p>
+      <p>If you train in mixed precision, float16 max value is about 65,504. Sounds large. Not large. Square 256 and you already hit 65,536 — overflow. Softmax computes <code>exp(x)</code>, which overflows float16 for x &gt; 11.09. Large hidden-dimension matrix multiplies can easily make pre-activations bigger than that.</p>
 
 <pre><code class="language-python"># Float16 range demonstration
 import torch
@@ -694,13 +694,13 @@ print(torch.exp(logits_fp32))  # tensor([162755., 442413., 1202604.]) — fine i
 
       <h3>Common Numerical Instability Sources</h3>
 
-      <p><strong>log(0):</strong> If your model produces an output that's exactly 0.0 (after softmax, or in a probability-output model), and you take the log, you get -inf. Then any arithmetic with -inf can produce NaN. The fix: add an epsilon guard. Use <code>torch.log(x + 1e-8)</code> instead of <code>torch.log(x)</code> in custom loss functions. The built-in <code>CrossEntropyLoss</code> handles this internally via <code>log_softmax</code>, which is numerically stable.</p>
+      <p><strong>log(0):</strong> If model outputs exact 0.0 and you take log, result is -inf. Arithmetic on -inf can become NaN. Fix: add epsilon guard. Use <code>torch.log(x + 1e-8)</code> instead of <code>torch.log(x)</code> in custom losses. Built-in <code>CrossEntropyLoss</code> already handles this through <code>log_softmax</code>.</p>
 
-      <p><strong>sqrt(0) with gradients:</strong> The derivative of sqrt(x) is 1/(2*sqrt(x)). At x=0, that's 1/0 = inf. Even if the forward pass is fine, the backward pass explodes. The fix: <code>torch.sqrt(x + 1e-8)</code>.</p>
+      <p><strong>sqrt(0) with gradients:</strong> Derivative of <code>sqrt(x)</code> is <code>1/(2*sqrt(x))</code>. At x=0, that is infinity. Forward pass may survive. Backward pass explodes. Fix: <code>torch.sqrt(x + 1e-8)</code>.</p>
 
-      <p><strong>exp(large):</strong> exp(x) overflows for x greater than about 88 in float32 (or 11 in float16). This comes up in softmax, Gaussian mixture models, and anything involving probabilities. The standard trick is the log-sum-exp trick: instead of computing exp(x_i) / sum(exp(x_j)), compute exp(x_i - max(x)) / sum(exp(x_j - max(x))). PyTorch's built-in softmax does this automatically.</p>
+      <p><strong>exp(large):</strong> <code>exp(x)</code> overflows above about 88 in float32, or 11 in float16. Common places: softmax, Gaussian mixture models, probability calculations. Standard fix is log-sum-exp trick: instead of <code>exp(x_i) / sum(exp(x_j))</code>, compute <code>exp(x_i - max(x)) / sum(exp(x_j - max(x)))</code>. PyTorch's built-in softmax already does this.</p>
 
-      <p><strong>Division by zero:</strong> Custom normalization layers, attention mechanisms with zero-valued denominators, or any place where you divide by a computed quantity that might be zero. Always add epsilon to denominators.</p>
+      <p><strong>Division by zero:</strong> Common in custom normalization, attention with zero denominator, or any division by computed quantity that might hit zero. Add epsilon to denominators. Always.</p>
 
 <pre><code class="language-python"># Common epsilon guards for numerical stability
 
@@ -730,7 +730,7 @@ attn_weights = torch.softmax(scores, dim=-1)</code></pre>
 
       <h3>GradScaler for Mixed Precision</h3>
 
-      <p>PyTorch's <code>GradScaler</code> is the frontline defense against NaN in mixed-precision training. The core idea is clever: float16 has limited dynamic range, so small gradient values underflow to zero (losing information) while large values overflow to inf. GradScaler addresses this by scaling the loss <em>up</em> before the backward pass, which proportionally scales all gradients up into the representable range of float16. Before the optimizer step, it scales the gradients back <em>down</em> by the same factor. If any gradient is inf or NaN (indicating overflow even with scaling), GradScaler skips the optimizer step entirely and reduces the scale factor for the next iteration.</p>
+      <p>PyTorch's <code>GradScaler</code> is front-line defense against NaN in mixed-precision training. Core idea: float16 has limited dynamic range, so small gradients underflow to zero and large gradients overflow to inf. GradScaler scales loss <em>up</em> before backward pass, which scales gradients into float16's representable range. Before optimizer step, it scales gradients back <em>down</em>. If any gradient is inf or NaN, meaning overflow still happened, GradScaler skips optimizer step and lowers scale factor for next iteration.</p>
 
 <pre><code class="language-python">from torch.amp import autocast, GradScaler
 
@@ -766,11 +766,11 @@ for epoch in range(num_epochs):
         # To monitor: check if steps are being skipped
         # scaler.get_scale() will decrease when inf is detected</code></pre>
 
-      <p>The <code>scaler.update()</code> call at the end adjusts the scale factor dynamically. If the last step was successful (no inf/NaN), it may increase the scale factor to use more of float16's range. If the step was skipped, it decreases the scale factor. This self-tuning behavior means you rarely need to touch the initial scale — the default of 2<sup>16</sup> = 65536 works for most training runs.</p>
+      <p><code>scaler.update()</code> adjusts scale factor dynamically. Successful step with no inf/NaN may increase scale to use more of float16 range. Skipped step decreases scale. Self-tuning behavior means you rarely need to touch initial scale. Default 2<sup>16</sup> = 65536 works for most runs.</p>
 
       <h3>Using detect_anomaly() to Find the Source</h3>
 
-      <p>When NaN appears and you don't know which operation produced it, <code>detect_anomaly</code> is your debugger. But use it strategically — wrap only a few suspicious batches, not your entire training loop.</p>
+      <p>When NaN appears and source is unknown, <code>detect_anomaly</code> becomes debugger. Use it surgically. Wrap a few suspicious batches, not whole training loop.</p>
 
 <pre><code class="language-python"># Strategy: run normally, switch to anomaly detection only when NaN detected
 for step, (inputs, labels) in enumerate(train_loader):
@@ -798,7 +798,7 @@ for step, (inputs, labels) in enumerate(train_loader):
 
       <div class="callout callout-warning">
         <div class="callout-label">⚠️ Warning</div>
-        <p>A common mistake with mixed precision: calling <code>.item()</code> on the scaled loss instead of the unscaled loss for logging. The scaled loss might be 65536x larger than the real loss. Always log <code>loss.item()</code> from the loss computed <em>inside</em> the autocast context, not the scaled version passed to <code>backward()</code>.</p>
+        <p>Common mixed-precision mistake: calling <code>.item()</code> on scaled loss for logging instead of real unscaled loss. Scaled loss may be 65536x larger than truth. Always log <code>loss.item()</code> from loss computed <em>inside</em> autocast context, not scaled version sent to <code>backward()</code>.</p>
       </div>
 
       <!-- ================================================================== -->
@@ -806,47 +806,47 @@ for step, (inputs, labels) in enumerate(train_loader):
       <!-- ================================================================== -->
       <h2>Reading Loss Curves Like a Cardiologist Reads EKGs</h2>
 
-      <p>A loss curve is the EKG of your model's training. Learning to read it — really read it, not glance at it and shrug — is one of the most valuable skills you can develop. Every pathology has a signature. Let's catalog them.</p>
+      <p>Loss curve is model's EKG. Learn to read it, not glance and shrug. Each pathology leaves signature. Catalog time.</p>
 
       <h3>The Healthy Training Curve</h3>
 
-      <p>A healthy training curve for our sentiment classifier looks like this: training loss drops steeply for the first few epochs, then gradually levels off. Validation loss follows the same trajectory but slightly above. The gap between them is small and relatively constant. Both curves eventually flatten. That gap represents the generalization gap — how much the model has memorized training-specific patterns versus learning generalizable features. A small, stable gap means good regularization.</p>
+      <p>Healthy curve for our sentiment classifier looks like this: training loss drops steeply in early epochs, then levels off. Validation loss follows same path, a bit higher. Gap stays small and fairly constant. Both curves eventually flatten. That gap is generalization gap — how much model memorized training-specific patterns instead of learning reusable features. Small stable gap means regularization is working.</p>
 
       <h3>Overfitting: The Crossover</h3>
 
-      <p>The classic overfitting pattern is unmistakable: training loss keeps decreasing smoothly, but at some epoch — the crossover point — validation loss stops decreasing and starts increasing. The model has exhausted the generalizable patterns and is now memorizing noise in the training set. Every additional epoch past the crossover makes the model worse on unseen data.</p>
+      <p>Classic overfitting pattern is clear. Training loss keeps falling smoothly. At some epoch — crossover point — validation loss stops falling and starts rising. Model used up generalizable patterns and now memorizes noise in training set. Each extra epoch after crossover hurts unseen data.</p>
 
-      <p>The fix depends on severity. Mild overfitting (val loss increases slowly): add dropout, increase weight decay, or use early stopping. Severe overfitting (val loss climbs steeply while train loss drops to near-zero): you need more training data, data augmentation, or a smaller model. For our sentiment classifier, switching from a 3-layer LSTM to a 1-layer LSTM, or adding dropout=0.5 between layers, often tames overfitting without sacrificing too much capacity.</p>
+      <p>Fix depends on severity. Mild overfitting, where validation loss rises slowly: add dropout, more weight decay, or early stopping. Severe overfitting, where validation loss climbs fast while train loss nears zero: get more data, add data augmentation, or shrink model. For our sentiment classifier, changing 3-layer LSTM to 1-layer LSTM, or adding dropout=0.5 between layers, often helps without killing too much capacity.</p>
 
       <h3>Underfitting: Both Curves High and Flat</h3>
 
-      <p>When both training and validation loss are high and neither is decreasing meaningfully, the model is underfitting. It doesn't have enough capacity to capture the patterns in the data, or it hasn't trained long enough, or the learning rate is too low. Check the learning rate first — underfitting with a tiny LR looks identical to underfitting with insufficient capacity, but one is fixed in 5 seconds and the other requires architecture changes.</p>
+      <p>If both training and validation loss stay high and barely move, model is underfitting. Maybe capacity is too low. Maybe training time is too short. Maybe learning rate is too low. Check learning rate first. Tiny LR can look exactly like low-capacity underfitting, and one fix takes 5 seconds while other needs architecture changes.</p>
 
       <h3>Double Descent: When More Capacity Gets Worse, Then Better</h3>
 
-      <p>This is one of the most counterintuitive phenomena in modern deep learning, and it directly challenges the classical bias-variance tradeoff that generations of ML students were taught. The <strong>double descent</strong> phenomenon goes like this: as you increase model capacity (more parameters), test error initially follows the classical U-curve — it first decreases (underfitting region), then increases (overfitting region). But if you keep increasing capacity <em>past the interpolation threshold</em> — the point where the model has enough parameters to perfectly fit the training data — test error starts decreasing <em>again</em>. The classical picture predicts that overparameterized models should be terrible. In practice, they're often the best.</p>
+      <p>This phenomenon is deeply counterintuitive and breaks classical bias-variance story many ML students learned. <strong>Double descent</strong> works like this: as model capacity grows, test error first follows classical U-curve — down in underfitting region, then up in overfitting region. But keep increasing capacity <em>past interpolation threshold</em>, where model can fit training data perfectly, and test error starts falling <em>again</em>. Classical view says overparameterized models should be terrible. Practice says they are often best.</p>
 
-      <p>The interpolation threshold is the critical point where the model has exactly enough parameters to achieve zero training loss. At this point, the model is forced into a very specific, often brittle solution — the <em>only</em> configuration of weights that achieves zero training loss. With even more parameters, there are now <em>many</em> configurations that achieve zero training loss, and SGD (with its implicit regularization from noise) tends to find ones that are smooth and generalizable. Think of it like fitting a polynomial to data points: if you have exactly as many polynomial coefficients as data points, the fit is forced and often wild. If you have many more coefficients than data points, there are infinitely many perfect fits, and regularization can select a smooth one.</p>
+      <p>Interpolation threshold is point where model has just enough parameters for zero training loss. There, model gets forced into one specific and often brittle solution — effectively <em>only</em> weight configuration that fits perfectly. Add more parameters and many zero-training-loss solutions appear. SGD, with implicit regularization from noise, tends to find smooth and generalizable ones. Polynomial analogy helps: with exactly as many coefficients as data points, fit is forced and wild. With many more coefficients, infinitely many perfect fits exist, and regularization can pick smooth one.</p>
 
-      <p>Double descent also occurs along the epoch axis: for a fixed-size model, test error may increase during training, then decrease again if you train long enough. This is deeply unsettling to anyone raised on "stop early to avoid overfitting" — but it's been observed consistently across architectures and datasets.</p>
+      <p>Double descent also appears across epochs. For fixed-size model, test error may rise during training, then fall again if you keep training long enough. Unsettling if you learned "stop early to avoid overfitting," but repeatedly observed across architectures and datasets.</p>
 
       <h3>Grokking: The Surprise Generalization</h3>
 
-      <p>Power et al. (2022) described something even stranger: <strong>grokking</strong>, or delayed generalization. The model memorizes the training set quickly — training loss goes to zero, training accuracy hits 100%. But validation performance is no better than random. For thousands of additional training steps, nothing happens. And then, suddenly, validation accuracy jumps from chance level to near-perfect. The model generalizes long, long after it has memorized.</p>
+      <p>Power et al. (2022) described stranger thing: <strong>grokking</strong>, or delayed generalization. Model memorizes training set fast — training loss hits zero, training accuracy hits 100%. Validation stays near random. Then nothing happens for thousands of extra steps. Then validation accuracy suddenly jumps from chance to near-perfect. Model generalizes long after it memorizes.</p>
 
-      <p>Grokking has been observed most dramatically on small algorithmic tasks (like modular arithmetic), but similar phenomena occur in larger settings. The mechanism appears to be related to weight decay: during the memorization phase, the model uses large weights to encode specific input-output mappings. As training continues, weight decay slowly pushes the weights down, and at some point, the model "discovers" that there's a simpler, more generalizable solution that achieves the same training loss with smaller weights. It undergoes a phase transition from a memorization solution to a generalization solution.</p>
+      <p>Grokking shows strongest on small algorithmic tasks like modular arithmetic, but similar behavior appears elsewhere. Mechanism seems tied to weight decay. During memorization phase, model uses large weights to encode specific input-output mappings. As training continues, weight decay slowly shrinks weights until model "discovers" simpler, more generalizable solution with same training loss and smaller weights. Then phase transition happens: memorization solution becomes generalization solution.</p>
 
-      <p>The practical implication is uncomfortable: you can't always trust early stopping. Sometimes the model needs to train much longer than you'd expect to find the generalizable solution. If your loss curves look like grokking — perfect training performance but stagnant validation — increasing weight decay and being patient with training might pay off.</p>
+      <p>Practical lesson is uncomfortable. Early stopping is not always trustworthy. Sometimes model needs much longer training to reach generalizable solution. If curves look like grokking — perfect training, flat validation — try more weight decay and more patience.</p>
 
       <h3>Loss Spikes</h3>
 
-      <p>You're watching the loss curve, and suddenly there's a sharp upward spike — loss jumps from 0.3 to 2.5 in a single step, then (hopefully) recovers within a few steps. What happened? Usually one of two things: a "bad batch" containing outliers, corrupted samples, or mislabeled examples that produce an anomalously large loss, or a sudden change in the effective learning rate (if using a scheduler with warmup restarts, for example).</p>
+      <p>Watch loss curve and sudden sharp spike appears — from 0.3 to 2.5 in one step — then maybe recovers. Common causes: bad batch with outliers, corrupted samples, or wrong labels causing unusually large loss; or sudden effective learning-rate change, maybe from scheduler with warmup restarts.</p>
 
-      <p>If you have gradient clipping enabled, the spike usually recovers because the clipping limits the damage from the anomalous gradient. Without clipping, a single spike can destabilize the optimizer's momentum and it takes many steps to recover — or it never does. This is why gradient clipping is essentially mandatory for any training run longer than a few hours.</p>
+      <p>With gradient clipping, spike often recovers because clipping limits damage from anomalous gradient. Without clipping, one spike can poison optimizer momentum and recovery takes many steps — or never comes. Reason gradient clipping is basically mandatory for long training runs.</p>
 
       <div class="callout callout-info">
         <div class="callout-label">💡 Key Insight</div>
-        <p>Log your loss per-batch, not per-epoch. Epoch-averaged losses smooth over spikes and anomalies that are critical diagnostic information. A single bad batch that spikes the loss by 100x is invisible in the epoch average but might be destabilizing your training. Per-batch logging catches it.</p>
+        <p>Log loss per batch, not per epoch. Epoch averages hide spikes and anomalies that matter for diagnosis. One batch that spikes loss 100x disappears inside epoch average but can still destabilize training. Per-batch logs expose it.</p>
       </div>
 
       <!-- ================================================================== -->
@@ -854,19 +854,19 @@ for step, (inputs, labels) in enumerate(train_loader):
       <!-- ================================================================== -->
       <h2>Reproducibility: Fighting Nondeterminism</h2>
 
-      <p>Reproducibility in deep learning is harder than it should be. You set a random seed, you expect the same results. But there are at least six sources of nondeterminism lurking in a typical PyTorch training pipeline, and if you miss any of them, your results will vary between runs even with the same seed.</p>
+      <p>Reproducibility in deep learning is harder than it should be. Set one random seed and expect same results? Nope. Typical PyTorch training pipeline has at least six sources of nondeterminism. Miss one and runs differ even with same seed.</p>
 
       <h3>The Sources of Chaos</h3>
 
-      <p><strong>Random number generators:</strong> Python's <code>random</code> module, NumPy's <code>numpy.random</code>, and PyTorch's <code>torch.random</code> are three independent RNGs. Setting one doesn't affect the others. Your data augmentation might use NumPy random, your dropout uses PyTorch random, and your shuffling uses Python random. You need to seed all three.</p>
+      <p><strong>Random number generators:</strong> Python <code>random</code>, NumPy <code>numpy.random</code>, and PyTorch <code>torch.random</code> are separate RNGs. Seeding one does nothing to others. Data augmentation might use NumPy, dropout uses PyTorch, shuffling uses Python. Seed all three.</p>
 
-      <p><strong>CUDA atomics:</strong> Operations like <code>scatter_add</code>, <code>index_add</code>, and embedding lookups with duplicate indices use atomic operations on the GPU. Atomic operations on CUDA have non-deterministic ordering because they depend on thread scheduling, which varies between runs. The final result is mathematically identical in exact arithmetic but differs in floating-point arithmetic due to different summation orders (floating-point addition is not associative).</p>
+      <p><strong>CUDA atomics:</strong> Ops like <code>scatter_add</code>, <code>index_add</code>, and embedding lookups with duplicate indices use atomic GPU ops. Atomic ordering on CUDA depends on thread scheduling, so order changes between runs. Exact math says result is same. Floating-point math says different summation order gives different bits, because addition is not associative.</p>
 
-      <p><strong>cuDNN benchmark mode:</strong> By default, PyTorch's cuDNN backend benchmarks multiple convolution algorithms on the first call and picks the fastest. The selected algorithm can change between runs due to hardware state, and different algorithms produce slightly different floating-point results. Additionally, some cuDNN algorithms are inherently non-deterministic.</p>
+      <p><strong>cuDNN benchmark mode:</strong> By default, PyTorch benchmarks several convolution algorithms on first call and keeps fastest. Chosen algorithm can change between runs because hardware state changes, and different algorithms produce slightly different floating-point results. Some cuDNN algorithms are also intrinsically non-deterministic.</p>
 
-      <p><strong>DataLoader workers:</strong> When using <code>num_workers &gt; 0</code>, each worker process gets its own copy of the dataset and its own random state. The default random state for each worker depends on the base seed plus the worker ID, but if you're not careful about how you initialize them, the randomness within each worker can be unpredictable.</p>
+      <p><strong>DataLoader workers:</strong> With <code>num_workers &gt; 0</code>, each worker is separate process with own dataset copy and own random state. Default seed depends on base seed plus worker ID, but worker initialization still needs care or worker randomness becomes unpredictable.</p>
 
-      <p><strong>Python hash randomization:</strong> Python 3 randomizes the hash seed at startup for security reasons. This affects the order of dictionary iteration and set operations. If your data pipeline uses dicts or sets anywhere in a way that affects processing order, results will differ.</p>
+      <p><strong>Python hash randomization:</strong> Python 3 randomizes hash seed at startup for security. That changes dictionary iteration and set order. If data pipeline depends on dict or set order, results change.</p>
 
       <h3>The Seeding Ceremony</h3>
 
@@ -890,11 +890,11 @@ def seed_everything(seed=42):
 
 seed_everything(42)</code></pre>
 
-      <p>The <code>torch.backends.cudnn.deterministic = True</code> flag forces cuDNN to use deterministic convolution algorithms. This comes at a performance cost — sometimes 10-20% slower — because the deterministic algorithms may not be the fastest ones available. The <code>benchmark = False</code> flag disables the algorithm search, which both saves time on the first iteration and removes another source of nondeterminism.</p>
+      <p><code>torch.backends.cudnn.deterministic = True</code> forces deterministic cuDNN convolution algorithms. Cost: performance hit, sometimes 10-20%, because fastest algorithms may be non-deterministic. <code>benchmark = False</code> disables algorithm search, saving first-iteration time and removing another nondeterminism source.</p>
 
       <h3>Worker Initialization</h3>
 
-      <p>DataLoader workers need special attention. Each worker is a separate process with its own copy of the Python random state, NumPy random state, and PyTorch random state. If you don't seed them explicitly, they'll use unpredictable seeds.</p>
+      <p>DataLoader workers need extra care. Each worker has separate Python, NumPy, and PyTorch random states. If you do not seed workers explicitly, they get unpredictable seeds.</p>
 
 <pre><code class="language-python">def worker_init_fn(worker_id):
     """Ensure each DataLoader worker has a unique but deterministic seed."""
@@ -911,11 +911,11 @@ train_loader = torch.utils.data.DataLoader(
     generator=torch.Generator().manual_seed(42)  # Seed the shuffling RNG too
 )</code></pre>
 
-      <p>The <code>generator</code> parameter seeds the RNG used for shuffling. Without it, the shuffle order depends on the global PyTorch RNG state, which might have been modified by model initialization or other operations between when you set the global seed and when the DataLoader starts shuffling.</p>
+      <p><code>generator</code> seeds RNG used for shuffling. Without it, shuffle order depends on global PyTorch RNG state, which model initialization or other ops may have changed between global seeding and DataLoader shuffle start.</p>
 
       <h3>The Strictest Mode</h3>
 
-      <p>PyTorch provides a nuclear option: <code>torch.use_deterministic_algorithms(True)</code>. This is stricter than <code>cudnn.deterministic</code>. It forces <em>every</em> PyTorch operation to use a deterministic implementation, and if an operation doesn't have one, it raises a <code>RuntimeError</code> instead of silently being non-deterministic. This is useful for discovering which operations in your pipeline are non-deterministic, but it can break training if you use operations that don't have deterministic GPU implementations (like certain scatter operations).</p>
+      <p>PyTorch has nuclear option: <code>torch.use_deterministic_algorithms(True)</code>. Stricter than <code>cudnn.deterministic</code>. It forces <em>every</em> PyTorch op to use deterministic implementation. If op has none, PyTorch raises <code>RuntimeError</code> instead of silently accepting nondeterminism. Good for finding nondeterministic ops in pipeline. Can also break training if you use GPU ops without deterministic versions, like some scatter ops.</p>
 
 <pre><code class="language-python"># Strictest reproducibility — will error on any non-deterministic op
 torch.use_deterministic_algorithms(True)
@@ -927,11 +927,11 @@ os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
 
       <h3>The Uncomfortable Truth</h3>
 
-      <p>Even with all seeds set, all deterministic flags enabled, and all workers properly initialized, results can differ between PyTorch versions, CUDA versions, GPU architectures (a V100 and an A100 may give different results), and even between different GPUs of the same model due to manufacturing variations in floating-point units. If your experiment's conclusions depend on the 4th decimal place of accuracy being exactly reproducible across different machines, you have a fragile experiment. Document the exact software and hardware stack, report results with confidence intervals from multiple seeds, and accept that bitwise reproducibility across environments is a losing battle.</p>
+      <p>Even after seeding everything, enabling deterministic flags, and initializing workers carefully, results can still differ across PyTorch versions, CUDA versions, GPU architectures — V100 vs A100 — and even different physical GPUs of same model because floating-point units vary slightly. If conclusions depend on exact 4th decimal place across machines, experiment is fragile. Document exact software and hardware stack. Report confidence intervals across multiple seeds. Accept that bitwise reproducibility across environments is losing battle.</p>
 
       <div class="callout callout-danger">
         <div class="callout-label">🔥 Hard-Won Lesson</div>
-        <p>I once spent a week trying to reproduce results from a paper. My numbers were consistently 0.3% lower. Turned out the paper used PyTorch 1.9 and I was on 1.13. The change in default initialization for <code>nn.MultiheadAttention</code> between those versions was enough to shift the results. The code was identical. The seeds were identical. The library versions weren't.</p>
+        <p>I once spent a week trying to reproduce paper results. My numbers stayed 0.3% lower. Cause was simple: paper used PyTorch 1.9, I used 1.13. Default initialization for <code>nn.MultiheadAttention</code> changed between versions, and that alone shifted results. Code matched. Seeds matched. Library versions did not.</p>
       </div>
 
       <!-- ================================================================== -->
@@ -939,17 +939,17 @@ os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
       <!-- ================================================================== -->
       <h2>Training Monitoring: Your Early Warning System</h2>
 
-      <p>Training a deep network without proper monitoring is like flying a plane without instruments. You might make it, but when something goes wrong, you won't know until you've already crashed. Let's set up the instruments.</p>
+      <p>Training deep network without monitoring is like flying plane without instruments. Maybe you land. When something breaks, you learn only after crash. Set up instruments first.</p>
 
       <h3>What to Log and Why</h3>
 
-      <p><strong>Loss per batch:</strong> Not per epoch. Per batch. Epoch-level averages hide important information — a single catastrophic batch, a gradual drift, periodic oscillations tied to data ordering. Batch-level losses show you the real dynamics of training.</p>
+      <p><strong>Loss per batch:</strong> Not per epoch. Per batch. Epoch averages hide critical signal — catastrophic batch, slow drift, oscillations tied to data order. Batch-level losses show real training dynamics.</p>
 
-      <p><strong>Gradient norms:</strong> The global gradient norm (across all parameters) is the single most useful early warning signal. If it starts creeping up over training, you're heading toward instability. If it suddenly spikes, a bad batch or learning rate change is causing problems. If it drops to near-zero, your model has stopped learning (vanishing gradients, or it's converged).</p>
+      <p><strong>Gradient norms:</strong> Global gradient norm across all parameters is best early warning signal. If it creeps upward over time, instability is coming. Sudden spike means bad batch or learning-rate change. Near-zero norm means model stopped learning — maybe vanishing gradients, maybe convergence.</p>
 
-      <p><strong>Parameter norms:</strong> Track the L2 norm of each layer's weights over training. If parameter norms grow unboundedly, something is wrong — probably a missing weight decay or a feedback loop in the architecture. If they collapse to near-zero, something is aggressively regularizing or the learning signal is absent.</p>
+      <p><strong>Parameter norms:</strong> Track L2 norm of each layer's weights over time. Unbounded growth usually means trouble — missing weight decay or architectural feedback loop. Collapse toward zero means learning signal is absent or regularization is too aggressive.</p>
 
-      <p><strong>Learning rate:</strong> Always log the actual learning rate, especially when using schedulers. It's embarrassingly easy to have a scheduler that you <em>think</em> is doing cosine annealing but is actually stuck at the initial LR because you forgot to call <code>scheduler.step()</code>.</p>
+      <p><strong>Learning rate:</strong> Always log actual LR, especially with schedulers. Easy bug: thinking scheduler is doing cosine annealing while it is stuck at initial LR because <code>scheduler.step()</code> never runs.</p>
 
 <pre><code class="language-python">import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -1004,7 +1004,7 @@ writer.close()</code></pre>
 
       <h3>The Memory Leak Trap: loss vs loss.item()</h3>
 
-      <p>This bug is so common and so insidious that it deserves a spotlight. When you compute <code>loss = criterion(logits, labels)</code>, the <code>loss</code> tensor carries with it the <em>entire computation graph</em> used to compute it — every intermediate tensor, every weight reference, everything needed for <code>.backward()</code>. If you store <code>loss</code> in a list (e.g., <code>losses.append(loss)</code>), you're keeping the entire computation graph alive in memory. After 10,000 batches, you've accumulated 10,000 computation graphs in memory. Your GPU runs out of memory, and the error message says "CUDA out of memory" but doesn't tell you why.</p>
+      <p>Common and nasty bug. Compute <code>loss = criterion(logits, labels)</code>, and <code>loss</code> tensor carries entire computation graph — every intermediate tensor, weight reference, everything needed for <code>.backward()</code>. Store <code>loss</code> in list like <code>losses.append(loss)</code>, and you keep whole graph alive. After 10,000 batches, you keep 10,000 graphs. GPU runs out of memory. Error says CUDA out of memory, but not why.</p>
 
 <pre><code class="language-python"># BUG: This stores the entire computation graph for every batch
 all_losses = []
@@ -1024,11 +1024,11 @@ for inputs, labels in train_loader:
     optimizer.step()
     optimizer.zero_grad()</code></pre>
 
-      <p>The same trap applies to logging: <code>writer.add_scalar('loss', loss, step)</code> is fine because TensorBoard extracts the value, but <code>wandb.log({"loss": loss})</code> might keep a reference depending on the library version. Always use <code>loss.item()</code> when extracting scalar values for logging or accumulation.</p>
+      <p>Same trap hits logging. <code>writer.add_scalar('loss', loss, step)</code> is fine because TensorBoard extracts value, but <code>wandb.log({"loss": loss})</code> may keep reference depending on library version. Use <code>loss.item()</code> whenever extracting scalar for logging or accumulation.</p>
 
       <h3>Per-Layer Gradient Monitoring</h3>
 
-      <p>Global gradient norm tells you the overall health, but per-layer gradient norms tell you <em>where</em> the problems are. In our sentiment classifier, a healthy gradient profile looks like this: the classifier head (last layer) has the largest gradients, the LSTM layers have moderate gradients, and the embedding layer has the smallest gradients. If the embedding layer gradients are zero but everything else is healthy, the embedding weights are frozen (maybe intentionally, maybe not). If the LSTM gradients are orders of magnitude larger than the classifier gradients, there's likely an instability in the recurrent computation.</p>
+      <p>Global gradient norm shows overall health. Per-layer norms show <em>where</em> trouble lives. In our sentiment classifier, healthy profile looks like: classifier head has largest gradients, LSTM layers have medium gradients, embedding layer has smallest. If embedding gradients are zero while rest look healthy, embeddings are frozen — maybe on purpose, maybe bug. If LSTM gradients are orders of magnitude larger than classifier gradients, recurrent computation likely has instability.</p>
 
 <pre><code class="language-python"># Periodic detailed gradient check — run every N steps
 def log_gradient_histogram(model, writer, step):
@@ -1049,7 +1049,7 @@ def log_gradient_histogram(model, writer, step):
 
       <div class="callout callout-info">
         <div class="callout-label">💡 Key Insight</div>
-        <p>The ratio of gradient norm to parameter norm is more informative than either alone. If <code>||grad|| / ||param|| &gt; 1</code>, the update is larger than the parameters themselves — that's a sign of instability. A healthy ratio is typically between 1e-4 and 1e-1. Track this ratio per layer to catch problems early.</p>
+        <p>Ratio of gradient norm to parameter norm tells more than either alone. If <code>||grad|| / ||param|| &gt; 1</code>, update is larger than parameters themselves — instability warning. Healthy ratio is usually 1e-4 to 1e-1. Track ratio per layer and catch trouble early.</p>
       </div>
 
       <!-- ================================================================== -->
@@ -1057,13 +1057,13 @@ def log_gradient_histogram(model, writer, step):
       <!-- ================================================================== -->
       <h2>The Silent Bugs: No Error, No Warning, Quietly Broken</h2>
 
-      <p>These are the bugs I hate most. They don't crash your program. They don't produce NaN. They don't trigger any warning. They sit there quietly, making your model 5-15% worse than it should be, and you have no idea. You tune hyperparameters to compensate, you try bigger models, you collect more data — none of it fully makes up for a fundamental bug in the training loop. I've compiled this list from personal pain and from watching dozens of colleagues hit the same issues.</p>
+      <p>These bugs are worst. No crash. No NaN. No warning. They sit quietly and make model 5-15% worse than it should be. Then you compensate with hyperparameter tuning, bigger models, or more data, and none fully fixes training-loop bug. List below comes from personal pain and many colleagues hitting same traps.</p>
 
       <h3>Forgetting model.eval() During Validation</h3>
 
-      <p>This is probably the single most common silent bug in PyTorch training code. During training, you call <code>model.train()</code> which enables dropout (randomly zeroing neurons) and makes BatchNorm use per-batch statistics. During validation, you should call <code>model.eval()</code> which disables dropout and makes BatchNorm use running statistics accumulated during training.</p>
+      <p>Probably most common silent bug in PyTorch training code. During training, <code>model.train()</code> enables dropout and makes BatchNorm use batch statistics. During validation, <code>model.eval()</code> disables dropout and makes BatchNorm use running statistics from training.</p>
 
-      <p>If you forget <code>model.eval()</code> during validation, two things go wrong. First, dropout randomly zeros out neurons during inference, making your validation predictions noisier and worse than they should be. Second, BatchNorm computes mean and variance from the validation batch instead of using the stable running statistics. If your validation batch is small, these batch statistics are noisy, further degrading performance. The net effect: your validation loss is artificially high and noisy, making it look like the model generalizes worse than it actually does. You might add more regularization in response, which makes the model <em>actually</em> worse.</p>
+      <p>Forget <code>model.eval()</code> during validation and two things break. First, dropout still zeros neurons during inference, so validation predictions get noisier and worse. Second, BatchNorm uses current validation batch mean and variance instead of stable running stats. Small validation batches make those stats noisy and performance worse. Result: validation loss looks artificially high and noisy, model appears to generalize worse than it does, and you may add more regularization and make model <em>actually</em> worse.</p>
 
 <pre><code class="language-python"># THE BUG: No model.eval() during validation
 for epoch in range(num_epochs):
@@ -1097,15 +1097,15 @@ for epoch in range(num_epochs):
 
       <h3>The Inverse: Forgetting model.train() After Evaluation</h3>
 
-      <p>The mirror bug: you correctly call <code>model.eval()</code> for validation, but forget to call <code>model.train()</code> before the next training epoch. Now dropout is disabled during training. The model trains without any dropout regularization, which often leads to overfitting. And because you're looking at the validation loss (which is correctly computed in eval mode), you see overfitting and wonder why your regularization isn't working. It's because you accidentally turned it off.</p>
+      <p>Mirror bug: you call <code>model.eval()</code> for validation, but forget <code>model.train()</code> before next training epoch. Now dropout stays off during training. Model trains without dropout regularization and often overfits. Validation loss, computed correctly in eval mode, shows overfitting, and you wonder why regularization fails. Reason: you accidentally turned it off.</p>
 
       <h3>The Double Softmax Trap (Revisited)</h3>
 
-      <p>We covered this in the debugging flow, but it's worth repeating as a silent bug because of how common it is. If your model ends with <code>nn.Softmax(dim=1)</code> and you use <code>nn.CrossEntropyLoss</code>, you're applying softmax twice. The model trains. It learns. It produces non-random predictions. But the accuracy plateau is significantly lower than it should be — maybe 82% instead of 91%. The double softmax compresses the probability distribution, making it harder for the model to express confident predictions. The gradients are dampened, and the effective loss surface is flattened in the wrong way.</p>
+      <p>We covered this earlier, but repeat it because it is common silent bug. If model ends with <code>nn.Softmax(dim=1)</code> and you use <code>nn.CrossEntropyLoss</code>, softmax runs twice. Model still trains. Model still learns. Predictions are not random. But accuracy ceiling drops — maybe 82% instead of 91%. Double softmax compresses probability distribution, dampens gradients, and flattens loss surface in wrong way.</p>
 
       <h3>Gradient Accumulation + Scheduler Misalignment</h3>
 
-      <p>Gradient accumulation is a technique for simulating larger batch sizes when you can't fit a full large batch in GPU memory. You accumulate gradients over N mini-batches, then do a single optimizer step. The effective batch size is N × mini_batch_size. The bug arises when your learning rate scheduler steps every mini-batch instead of every optimizer step.</p>
+      <p>Gradient accumulation simulates larger batch sizes when full batch does not fit in GPU memory. You accumulate gradients across N mini-batches, then do one optimizer step. Effective batch size is N × mini_batch_size. Bug appears when learning-rate scheduler steps every mini-batch instead of every optimizer step.</p>
 
 <pre><code class="language-python"># BUG: Scheduler steps every mini-batch, not every optimizer step
 accumulation_steps = 4
@@ -1132,11 +1132,11 @@ for step, (inputs, labels) in enumerate(train_loader):
         optimizer.zero_grad()
         scheduler.step()  # Only step when the optimizer steps</code></pre>
 
-      <p>If you're using a cosine annealing scheduler with 1000 optimizer steps, but the scheduler steps 4000 times, it completes its entire cycle in the first quarter of training and spends the remaining 75% at the minimum LR. Your effective learning rate schedule is completely wrong.</p>
+      <p>If cosine annealing scheduler expects 1000 optimizer steps but actually steps 4000 times, it finishes full cycle in first quarter of training and spends remaining 75% at minimum LR. Effective learning-rate schedule is completely wrong.</p>
 
       <h3>Wrong Dtype: Integer Inputs to Floating-Point Operations</h3>
 
-      <p>If you pass a <code>torch.int64</code> tensor where a <code>torch.float32</code> is expected, PyTorch often silently handles it — but gradients don't flow through integer operations. For our sentiment classifier, the input token IDs should be <code>torch.long</code> (for the embedding lookup), but if you accidentally cast the embedding output or some intermediate value to int, gradients die silently.</p>
+      <p>If you pass <code>torch.int64</code> where <code>torch.float32</code> is expected, PyTorch often handles it silently — but gradients do not flow through integer ops. For our sentiment classifier, token IDs should be <code>torch.long</code> for embedding lookup, but if you cast embedding output or another intermediate value to int, gradients die silently.</p>
 
 <pre><code class="language-python"># Subtle dtype bug example
 x = torch.tensor([1.5, 2.7, 3.2], requires_grad=True)
@@ -1147,7 +1147,7 @@ print(x.grad)  # None! The int() cast severed the gradient chain.</code></pre>
 
       <h3>Augmentation on Validation Data</h3>
 
-      <p>Random data augmentation (flips, crops, color jitter, etc.) should be applied ONLY to training data. If you apply random augmentation to validation data, your validation metrics will have unnecessary variance — sometimes a validation sample gets an easy augmentation and is classified correctly, sometimes a hard augmentation makes it fail. The metric bounces around between epochs, making it impossible to tell if the model is genuinely improving. Use deterministic preprocessing (center crop, fixed resize) for validation.</p>
+      <p>Random data augmentation — flips, crops, color jitter, and similar — belongs only on training data. Apply random augmentation to validation data and validation metrics gain useless variance. Some samples get easy augmentations and pass. Some get hard augmentations and fail. Metric jumps around between epochs, so real model improvement is hard to see. Validation should use deterministic preprocessing like center crop and fixed resize.</p>
 
 <pre><code class="language-python"># Correct: separate transforms for train and val
 train_transform = transforms.Compose([
@@ -1166,11 +1166,11 @@ val_transform = transforms.Compose([
 
       <h3>Preprocessing Leakage</h3>
 
-      <p>Computing normalization statistics (mean, standard deviation) on the entire dataset, including the validation and test sets, is a subtle form of data leakage. The model's preprocessing step has "seen" the validation data distribution. In practice, the effect is often tiny — the mean and std don't change much when you add 10-20% more data. But in competitive settings or when your dataset is small, it can inflate your metrics by a measurable amount. The correct approach: compute mean and std on the training set only, apply those same values to normalize both training and validation data.</p>
+      <p>Computing normalization statistics — mean and standard deviation — on whole dataset, including validation and test, is subtle data leakage. Preprocessing has now "seen" validation distribution. Effect is often small because mean and std change little when you add 10-20% more data. But on small datasets or competitive settings, metrics can inflate measurably. Correct move: compute mean and std on training set only, then use same values for both training and validation.</p>
 
       <h3>Frozen Pretrained Layers You Forgot About</h3>
 
-      <p>When fine-tuning a pretrained model (say, BERT for our sentiment classifier), it's common to start by freezing the pretrained layers and training only the classification head. The bug is forgetting to unfreeze them when you're ready for full fine-tuning.</p>
+      <p>When fine-tuning pretrained model, like BERT for our sentiment classifier, common pattern is freezing pretrained layers first and training only classifier head. Bug comes later: forgetting to unfreeze pretrained layers when full fine-tuning should start.</p>
 
 <pre><code class="language-python"># Phase 1: Freeze BERT, train only the classifier head
 for param in model.bert.parameters():
@@ -1188,11 +1188,11 @@ optimizer = torch.optim.AdamW([
     {'params': model.classifier.parameters(), 'lr': 1e-3},  # Larger LR for head
 ])</code></pre>
 
-      <p>If you forget to unfreeze, the model achieves whatever accuracy the randomly initialized head can manage with fixed BERT features — maybe 85% instead of 93%. You might think BERT isn't helping and give up. But the features are fine; you've accidentally frozen the fine-tuning.</p>
+      <p>Forget to unfreeze and model gets only whatever accuracy randomly initialized head can squeeze from fixed BERT features — maybe 85% instead of 93%. Easy wrong conclusion: BERT is not helping. Real problem: fine-tuning stayed frozen.</p>
 
       <div class="callout callout-danger">
         <div class="callout-label">🔥 Hard-Won Lesson</div>
-        <p>Run a parameter audit before training starts. Print every parameter name, its shape, whether <code>requires_grad</code> is True, and which optimizer group it belongs to. This takes 5 lines of code and catches frozen parameters, missing parameters, and optimizer misconfiguration in one shot.</p>
+        <p>Run parameter audit before training starts. Print every parameter name, shape, whether <code>requires_grad</code> is True, and optimizer group. Takes five lines. Catches frozen parameters, missing parameters, and optimizer misconfiguration in one pass.</p>
       </div>
 
 <pre><code class="language-python"># Parameter audit — run this before every training job
@@ -1217,19 +1217,19 @@ print(f"Frozen parameters: {total_params - trainable_params:,}")</code></pre>
       <!-- ================================================================== -->
       <h2>Gradient Clipping: The Safety Net</h2>
 
-      <p>Gradient clipping is one of those techniques that you almost always want on, and the question is not "should I clip?" but "what threshold?" The idea is straightforward: if a batch produces an anomalously large gradient (because of an outlier input, a numerical edge case, or a coincidentally nasty combination of samples), we cap the gradient magnitude before applying it. The signal is preserved (the direction is the same), but the step size is limited.</p>
+      <p>Gradient clipping is technique you almost always want. Real question is not "should I clip?" but "what threshold?" Idea is simple: if one batch produces unusually large gradient — outlier input, numerical edge case, or unlucky sample mix — cap gradient magnitude before applying update. Direction stays same. Step size gets limited.</p>
 
       <h3>How clip_grad_norm_ Works</h3>
 
-      <p>PyTorch's <code>torch.nn.utils.clip_grad_norm_</code> computes the <strong>global gradient norm</strong> — the L2 norm of the gradient vector formed by concatenating all parameter gradients into a single vector. If this norm exceeds the specified <code>max_norm</code>, every gradient is scaled by the same factor to bring the total norm down to <code>max_norm</code>. The formula:</p>
+      <p>PyTorch's <code>torch.nn.utils.clip_grad_norm_</code> computes <strong>global gradient norm</strong> — L2 norm of vector made by concatenating all parameter gradients. If norm exceeds <code>max_norm</code>, every gradient gets scaled by same factor until total norm becomes <code>max_norm</code>. Formula:</p>
 
-      <p>Given the total gradient norm <code>||g||</code> and the clipping threshold <code>max_norm</code>:</p>
+      <p>Given total gradient norm <code>||g||</code> and clipping threshold <code>max_norm</code>:</p>
 
       <p>If <code>||g|| &gt; max_norm</code>: scale every gradient by <code>max_norm / ||g||</code></p>
 
       <p>If <code>||g|| &lt;= max_norm</code>: do nothing</p>
 
-      <p>This is a global operation — it considers all parameters together, not each parameter independently. This is important because it preserves the <em>relative</em> magnitudes of gradients across layers. If layer A has a gradient norm of 5 and layer B has a gradient norm of 3, and the total norm is 5.83, and you clip to 1.0, both are scaled by 1.0/5.83 ≈ 0.17. Layer A's gradient is now 0.86 and layer B's is 0.51 — the same ratio as before. Per-parameter clipping would distort these ratios.</p>
+      <p>This is global operation — all parameters together, not each parameter alone. Important reason: relative gradient magnitudes across layers stay preserved. If layer A has norm 5 and layer B has norm 3, total norm is 5.83, and you clip to 1.0, both get scaled by 1.0/5.83 ≈ 0.17. Layer A becomes 0.86, layer B 0.51 — same ratio as before. Per-parameter clipping would distort those ratios.</p>
 
 <pre><code class="language-python"># The standard gradient clipping pattern
 optimizer.zero_grad()
@@ -1248,9 +1248,9 @@ writer.add_scalar('train/grad_norm_preclip', grad_norm.item(), global_step)</cod
 
       <h3>Choosing the Clipping Threshold</h3>
 
-      <p>There's no universal best value, but there are good defaults and a principled way to tune. The HuggingFace Transformers library defaults to <code>max_norm=1.0</code> for BERT-style models, and this works well for most transformer architectures. For RNNs and LSTMs, values between 0.5 and 5.0 are typical. For CNNs with batch normalization, you might not need clipping at all because BatchNorm stabilizes the gradient magnitudes naturally.</p>
+      <p>No universal best value, but good defaults and tuning method exist. HuggingFace Transformers uses <code>max_norm=1.0</code> for BERT-style models, and that works for most transformers. RNNs and LSTMs often use 0.5 to 5.0. CNNs with BatchNorm may not need clipping because BatchNorm already stabilizes gradient magnitudes.</p>
 
-      <p>A practical approach: start without clipping, log the gradient norms for the first hundred steps, look at the distribution, and set the clipping threshold at the 90th or 95th percentile. This means you're only clipping the truly anomalous batches, not interfering with normal training dynamics.</p>
+      <p>Practical method: start without clipping, log gradient norms for first hundred steps, inspect distribution, then set threshold around 90th or 95th percentile. That clips truly anomalous batches while leaving normal training alone.</p>
 
       <table>
         <thead>
@@ -1291,7 +1291,7 @@ writer.add_scalar('train/grad_norm_preclip', grad_norm.item(), global_step)</cod
 
       <h3>Monitoring the Clip Rate</h3>
 
-      <p>If gradients are being clipped on every single step, that's a red flag. It means the gradient magnitudes are consistently too large, and clipping is constantly interfering with the optimizer's updates. This usually means the learning rate is too high, the batch size is too small (noisy gradients), or the architecture has a structural issue causing amplification. If gradients are never clipped, the threshold is either well-chosen or the clipping is unnecessary. A healthy clip rate is somewhere in between: most steps proceed normally, but the occasional outlier batch gets tamed.</p>
+      <p>If gradients get clipped every step, red flag. Gradient magnitudes are consistently too large, so clipping keeps interfering with optimizer updates. Common causes: learning rate too high, batch size too small so gradients are noisy, or architecture structurally amplifies gradients. If gradients are never clipped, threshold is either well chosen or clipping is unnecessary. Healthy clip rate sits between those extremes: most steps normal, occasional outlier batch tamed.</p>
 
 <pre><code class="language-python"># Track clip statistics over training
 clip_count = 0
@@ -1316,7 +1316,7 @@ for inputs, labels in train_loader:
 
       <div class="callout callout-warning">
         <div class="callout-label">⚠️ Warning</div>
-        <p>There's also <code>clip_grad_value_</code>, which clips each gradient element independently to a range [-value, value]. This is different from norm clipping and generally less useful because it distorts the gradient direction. Norm clipping preserves direction and only scales magnitude, which is almost always what you want. Use <code>clip_grad_norm_</code> unless you have a specific reason not to.</p>
+        <p><code>clip_grad_value_</code> also exists. It clips each gradient element independently into [-value, value]. That is different from norm clipping and usually less useful because it distorts gradient direction. Norm clipping preserves direction and only scales magnitude, which is usually what you want. Use <code>clip_grad_norm_</code> unless you have specific reason not to.</p>
       </div>
 
       <!-- ================================================================== -->
@@ -1324,21 +1324,21 @@ for inputs, labels in train_loader:
       <!-- ================================================================== -->
       <h2>Weight Initialization: Where It All Begins</h2>
 
-      <p>The initial values of your network's weights determine the starting point of optimization. Get it badly wrong, and the model can't learn at all — activations saturate, gradients vanish, and the loss sits at its initial value forever. Get it right, and gradient flow is healthy from the very first step. The theory behind initialization is one of the more elegant pieces of deep learning mathematics.</p>
+      <p>Initial weight values choose optimizer's starting point. Get them wrong and model may not learn at all — activations saturate, gradients vanish, loss stays at initial value. Get them right and gradient flow stays healthy from first step. Initialization theory is one of deep learning's cleaner mathematical pieces.</p>
 
       <h3>The Core Problem</h3>
 
-      <p>Consider a layer <code>y = Wx</code> where <code>x</code> is the input with <em>n</em> elements and <code>W</code> is a weight matrix. Each element of <code>y</code> is a sum of <em>n</em> terms: <code>y_j = sum(W_ji * x_i)</code>. If each weight <code>W_ji</code> has variance <code>Var(w)</code> and each input <code>x_i</code> has variance <code>Var(x)</code>, and they're independent, then the variance of <code>y_j</code> is:</p>
+      <p>Consider layer <code>y = Wx</code> where <code>x</code> has <em>n</em> inputs and <code>W</code> is weight matrix. Each element of <code>y</code> is sum of <em>n</em> terms: <code>y_j = sum(W_ji * x_i)</code>. If each weight <code>W_ji</code> has variance <code>Var(w)</code> and each input <code>x_i</code> has variance <code>Var(x)</code>, with independence, then variance of <code>y_j</code> is:</p>
 
       <p><code>Var(y) = n × Var(w) × Var(x)</code></p>
 
-      <p>If <code>Var(w)</code> is too large, <code>Var(y)</code> will be much larger than <code>Var(x)</code>. Each layer amplifies the signal. After 10 layers, the activations have been amplified by a factor of <code>(n × Var(w))^10</code>. If <code>n × Var(w) = 2</code>, that's 2<sup>10</sup> = 1024× amplification. Activations explode. If <code>Var(w)</code> is too small, each layer attenuates the signal, and after 10 layers, activations (and their gradients) are negligibly small.</p>
+      <p>If <code>Var(w)</code> is too large, <code>Var(y)</code> greatly exceeds <code>Var(x)</code>. Each layer amplifies signal. After 10 layers, activations scale by <code>(n × Var(w))^10</code>. If <code>n × Var(w) = 2</code>, that is 2<sup>10</sup> = 1024× amplification. Activations explode. If <code>Var(w)</code> is too small, each layer attenuates signal, and after 10 layers activations and gradients become tiny.</p>
 
-      <p>The goal is to choose <code>Var(w)</code> so that <code>n × Var(w) ≈ 1</code>, meaning <code>Var(w) = 1/n</code>. This keeps the variance of activations roughly constant across layers. That's the core idea. The details depend on the activation function.</p>
+      <p>Goal: choose <code>Var(w)</code> so <code>n × Var(w) ≈ 1</code>, meaning <code>Var(w) = 1/n</code>. Then activation variance stays roughly constant across layers. Core idea. Exact details depend on activation function.</p>
 
       <h3>Xavier / Glorot Initialization (2010)</h3>
 
-      <p>Xavier Glorot and Yoshua Bengio proposed initializing weights from a distribution with variance <code>2 / (fan_in + fan_out)</code>, where <code>fan_in</code> is the number of input neurons and <code>fan_out</code> is the number of output neurons. The averaging of fan_in and fan_out ensures that both the forward pass (activations) and backward pass (gradients) have stable variance. This derivation assumes linear activations or tanh (which is approximately linear near zero).</p>
+      <p>Xavier Glorot and Yoshua Bengio proposed initializing weights with variance <code>2 / (fan_in + fan_out)</code>, where <code>fan_in</code> is number of input neurons and <code>fan_out</code> is number of output neurons. Averaging fan_in and fan_out keeps both forward-pass activations and backward-pass gradients at stable variance. Derivation assumes linear activations or tanh, which is near-linear around zero.</p>
 
 <pre><code class="language-python"># Xavier/Glorot initialization — designed for tanh or sigmoid
 import torch.nn.init as init
@@ -1358,9 +1358,9 @@ init.xavier_normal_(linear.weight)    # Normal distribution variant
 
       <h3>Kaiming / He Initialization (2015)</h3>
 
-      <p>Xavier initialization assumes the activation function is approximately linear around zero. ReLU breaks that assumption: it sets all negative activations to zero, effectively killing half the signal. If you initialize with Xavier and use ReLU, the variance of activations halves at each layer because half the neurons output zero. After 10 layers, activations are attenuated by 2<sup>-10</sup> ≈ 0.001×. Gradients suffer the same fate.</p>
+      <p>Xavier initialization assumes activation is roughly linear near zero. ReLU breaks that. ReLU zeros all negative activations, effectively killing half signal. Use Xavier with ReLU and activation variance halves each layer because half neurons output zero. After 10 layers, activations shrink by 2<sup>-10</sup> ≈ 0.001×. Gradients suffer same fate.</p>
 
-      <p>Kaiming He et al. (2015) fixed this by doubling the variance to compensate for ReLU's 50% kill rate: <code>Var(w) = 2 / fan_in</code>. The factor of 2 in the numerator accounts for half the neurons being dead. For Leaky ReLU with negative slope <code>a</code>, the formula generalizes to <code>Var(w) = 2 / ((1 + a²) × fan_in)</code>.</p>
+      <p>Kaiming He et al. (2015) fixed this by doubling variance to offset ReLU's 50% kill rate: <code>Var(w) = 2 / fan_in</code>. Factor 2 compensates for half the neurons going dead. For Leaky ReLU with negative slope <code>a</code>, formula generalizes to <code>Var(w) = 2 / ((1 + a²) × fan_in)</code>.</p>
 
 <pre><code class="language-python"># Kaiming/He initialization — designed for ReLU
 linear = nn.Linear(256, 128)
@@ -1376,17 +1376,17 @@ init.kaiming_normal_(linear.weight, a=0.01, nonlinearity='leaky_relu')
 
       <h3>PyTorch Defaults</h3>
 
-      <p>PyTorch's default initialization for <code>nn.Linear</code> is Kaiming Uniform (the He variant). This is a reasonable default for ReLU networks. <code>nn.Conv2d</code> also defaults to Kaiming Uniform. <code>nn.Embedding</code> initializes from N(0, 1). <code>nn.LSTM</code> initializes all weights from U(-1/sqrt(hidden_size), 1/sqrt(hidden_size)). In practice, PyTorch defaults work well for most architectures, and you rarely need to manually set initialization unless you're seeing specific symptoms (vanishing activations in deep networks, or training instability in the first few steps).</p>
+      <p>PyTorch defaults: <code>nn.Linear</code> uses Kaiming Uniform, He variant. Good default for ReLU networks. <code>nn.Conv2d</code> also uses Kaiming Uniform. <code>nn.Embedding</code> initializes from N(0, 1). <code>nn.LSTM</code> initializes weights from U(-1/sqrt(hidden_size), 1/sqrt(hidden_size)). In practice these defaults work for most architectures. Manual initialization is usually needed only when symptoms appear, like vanishing activations in deep nets or instability in first few steps.</p>
 
       <h3>BatchNorm Makes Initialization Matter Less</h3>
 
-      <p>One of the underappreciated benefits of batch normalization is that it makes weight initialization less critical. BatchNorm normalizes the activations at each layer to have zero mean and unit variance (during training). So even if your weights are poorly initialized and produce activations with wildly varying scales, BatchNorm resets the scale at every layer. The initialization still matters for the very first forward pass (before BatchNorm has accumulated any statistics), but the impact is greatly diminished.</p>
+      <p>One underappreciated BatchNorm benefit: it makes weight initialization less critical. BatchNorm normalizes each layer's activations to zero mean and unit variance during training. So even if weights start badly and activations have wild scales, BatchNorm resets scale each layer. Initialization still matters for very first forward pass before BatchNorm has good statistics, but overall impact drops a lot.</p>
 
-      <p>This is one reason modern architectures with BatchNorm (like ResNets) are so easy to train — they're robust to initialization choices that would be fatal for unnormalized networks.</p>
+      <p>Reason modern BatchNorm architectures like ResNets train so easily. They survive initialization choices that would kill unnormalized networks.</p>
 
       <h3>Transformer Initialization</h3>
 
-      <p>Transformers use a different initialization convention. The standard approach, popularized by the original GPT and BERT implementations, initializes all weights from N(0, 0.02). The small standard deviation (0.02 instead of the Kaiming-derived value) prevents the pre-LayerNorm activations from growing too large early in training. Some implementations scale the initialization of residual path weights by 1/sqrt(N) where N is the number of residual layers, following the GPT-2 paper's suggestion. This ensures that the output of the residual stream doesn't grow with network depth at initialization.</p>
+      <p>Transformers use different initialization convention. Standard approach from original GPT and BERT initializes weights from N(0, 0.02). Small standard deviation keeps pre-LayerNorm activations from growing too large early in training. Some implementations also scale residual-path weights by <code>1/sqrt(N)</code>, where <code>N</code> is number of residual layers, following GPT-2. Goal: keep residual stream output from growing with depth at initialization.</p>
 
 <pre><code class="language-python"># Transformer-style initialization
 def init_transformer_weights(module):
@@ -1405,7 +1405,7 @@ model.apply(init_transformer_weights)</code></pre>
 
       <div class="callout callout-info">
         <div class="callout-label">💡 Key Insight</div>
-        <p>If your model uses ReLU and no BatchNorm, Kaiming initialization is essential. If your model uses BatchNorm, initialization matters less. If your model is a transformer, use the small-std convention (0.02) and consider scaling residual paths. If you're not sure, the PyTorch defaults are reasonable — but check by printing the first-batch activation statistics. If any layer's output has a mean far from zero or a variance far from one, initialization is likely the problem.</p>
+        <p>Rule of thumb: ReLU without BatchNorm needs Kaiming initialization. BatchNorm makes initialization less critical. Transformers usually want small-std convention, 0.02, and sometimes residual scaling. If unsure, PyTorch defaults are reasonable. But verify by printing first-batch activation stats. If some layer output has mean far from zero or variance far from one, initialization is likely culprit.</p>
       </div>
 
       <!-- ================================================================== -->
@@ -1413,43 +1413,43 @@ model.apply(init_transformer_weights)</code></pre>
       <!-- ================================================================== -->
       <h2>Putting It All Together: A Debugging Checklist</h2>
 
-      <p>Let's crystallize everything into a checklist. When your sentiment classifier (or any model) isn't training well, work through this list in order. Each step either fixes the problem or eliminates a category of bugs.</p>
+      <p>Turn whole discussion into checklist. If sentiment classifier — or any model — trains badly, work list in order. Each step either fixes problem or rules out one bug class.</p>
 
       <h3>Before Training Starts</h3>
 
-      <p><strong>1. Data sanity check.</strong> Print a few samples. Decode token IDs back to text. Verify labels match the content. Check shapes, dtypes, and value ranges. This takes 2 minutes and catches the majority of bugs.</p>
+      <p><strong>1. Data sanity check.</strong> Print a few samples. Decode token IDs back to text. Verify labels match content. Check shapes, dtypes, and value ranges. Two minutes. Catches most bugs.</p>
 
-      <p><strong>2. Parameter audit.</strong> Print all parameter names, shapes, requires_grad status, and total counts. Verify nothing is accidentally frozen and the optimizer is connected to all trainable parameters.</p>
+      <p><strong>2. Parameter audit.</strong> Print parameter names, shapes, <code>requires_grad</code> status, and total counts. Verify nothing froze by accident and optimizer sees all trainable parameters.</p>
 
-      <p><strong>3. Initial loss check.</strong> Forward one batch, compute loss. Compare to the expected value for random guessing (-log(1/C)). If it's wildly different, investigate before training.</p>
+      <p><strong>3. Initial loss check.</strong> Run one batch forward, compute loss, compare with random-guess baseline <code>-log(1/C)</code>. If value is far off, investigate before training.</p>
 
-      <p><strong>4. Single-batch overfit test.</strong> Train on one fixed batch for 500 steps. Loss must go to near-zero. If it doesn't, you have a fundamental bug — fix it before proceeding.</p>
+      <p><strong>4. Single-batch overfit test.</strong> Train one fixed batch for 500 steps. Loss must reach near-zero. If not, fundamental bug exists. Fix it first.</p>
 
       <h3>During Training</h3>
 
-      <p><strong>5. Monitor loss per-batch</strong>, not per-epoch. Look for spikes, plateaus, and divergence.</p>
+      <p><strong>5. Monitor loss per batch</strong>, not per epoch. Look for spikes, plateaus, and divergence.</p>
 
-      <p><strong>6. Monitor gradient norms.</strong> Global norm per step, per-layer norms periodically. Alert if norm exceeds a threshold.</p>
+      <p><strong>6. Monitor gradient norms.</strong> Track global norm each step and per-layer norms periodically. Alert when norm crosses threshold.</p>
 
-      <p><strong>7. Gradient clipping enabled.</strong> max_norm=1.0 is a safe default. Log the clip rate.</p>
+      <p><strong>7. Gradient clipping enabled.</strong> <code>max_norm=1.0</code> is safe default. Log clip rate.</p>
 
       <p><strong>8. model.eval() for validation, model.train() for training.</strong> Every time. No exceptions.</p>
 
-      <p><strong>9. loss.item() for logging.</strong> Never store the loss tensor itself in a list.</p>
+      <p><strong>9. loss.item() for logging.</strong> Never store loss tensor itself in list.</p>
 
-      <p><strong>10. Separate transforms for train and val.</strong> Random augmentation on training only.</p>
+      <p><strong>10. Separate transforms for train and val.</strong> Random augmentation only on training data.</p>
 
       <h3>When Things Go Wrong</h3>
 
-      <p><strong>11. NaN loss?</strong> Check for numerical instabilities (log(0), sqrt(0), exp(large)). Add epsilon guards. If using mixed precision, verify GradScaler is configured. Use detect_anomaly() to find the exact operation.</p>
+      <p><strong>11. NaN loss?</strong> Check numerical instability: <code>log(0)</code>, <code>sqrt(0)</code>, <code>exp(large)</code>. Add epsilon guards. If using mixed precision, verify GradScaler setup. Use <code>detect_anomaly()</code> to find exact op.</p>
 
-      <p><strong>12. Loss plateaus?</strong> Run the learning rate finder. Check that the optimizer is stepping (scheduler might have reduced LR to zero). Verify gradients are non-zero on all layers.</p>
+      <p><strong>12. Loss plateaus?</strong> Run learning-rate finder. Check optimizer is stepping; scheduler may have driven LR to zero. Verify all layers have non-zero gradients.</p>
 
-      <p><strong>13. Val loss diverges while train loss drops?</strong> Overfitting. Add dropout, weight decay, data augmentation. Or get more data.</p>
+      <p><strong>13. Val loss diverges while train loss drops?</strong> Overfitting. Add dropout, weight decay, data augmentation, or more data.</p>
 
-      <p><strong>14. Both losses high?</strong> Underfitting. Increase model capacity, increase learning rate, train longer.</p>
+      <p><strong>14. Both losses high?</strong> Underfitting. Increase model capacity, raise learning rate, or train longer.</p>
 
-      <p><strong>15. Results differ between runs?</strong> Seed all RNGs, set deterministic flags, use worker_init_fn. Accept that cross-machine reproducibility is approximate.</p>
+      <p><strong>15. Results differ between runs?</strong> Seed all RNGs, set deterministic flags, use <code>worker_init_fn</code>. Accept that cross-machine reproducibility is approximate.</p>
 
 <pre><code class="language-python"># The complete, battle-tested training loop for our sentiment classifier
 import torch
@@ -1563,11 +1563,11 @@ for epoch in range(num_epochs):
             print("Early stopping triggered.")
             break</code></pre>
 
-      <p>That's the training loop I use for every new project, sentiment classifier or otherwise. It's not the shortest possible loop — it has monitoring, clipping, mixed precision, reproducibility, and early stopping built in. But every one of those features has saved me hours of debugging at some point. The 20 extra lines of code are an investment that pays for itself on the first training run that goes wrong.</p>
+      <p>That is training loop I use for every new project, sentiment classifier or not. Not shortest loop. It includes monitoring, clipping, mixed precision, reproducibility, and early stopping. Each feature has saved me debugging hours at least once. Extra 20 lines pay for themselves when first training run goes bad.</p>
 
       <div class="callout callout-info">
         <div class="callout-label">💡 Key Insight</div>
-        <p>Debugging deep learning training isn't about knowing every possible thing that can go wrong. It's about having a systematic flow — data, loss, gradients, architecture — and working through it methodically. The bugs described here cover 95% of training failures I've encountered in practice. The remaining 5% are genuinely novel, and by the time you've ruled out the common issues, you'll have enough information to diagnose the novel ones.</p>
+        <p>Debugging deep learning training is not about memorizing every failure mode. It is about following system — data, loss, gradients, architecture — and working methodically. Bugs here cover about 95% of failures I see in practice. Remaining 5% are novel, and by then you have enough evidence to diagnose them.</p>
       </div>
 
 

@@ -544,17 +544,17 @@ model.eval()    # uses stored running_mean and running_var</code></pre>
 
       <h3>Weight Decay — The Most Important Regularizer You'll Ever Use</h3>
 
-      <p>The idea is deceptively simple: every update step, shrink all the weights a tiny bit toward zero. Mathematically, you add a penalty term to the loss: <code>L_total = L_original + (λ/2) · ||w||²</code>. The gradient of that penalty is <code>λ·w</code>, which gently pulls every weight toward zero. The result: the network prefers smaller weights, which create smoother decision boundaries, which generalize better.</p>
+      <p>Idea looks simple: each update step, shrink weights a little toward zero. Math adds penalty term to loss: <code>L_total = L_original + (λ/2) · ||w||²</code>. Penalty gradient is <code>λ·w</code>, pulling weights toward zero. Smaller weights usually mean smoother decision boundaries and better generalization.</p>
 
-      <p>With classic SGD, this penalty-on-the-loss formulation and "shrink the weights each step" are mathematically identical. The gradient update becomes <code>w ← w - lr · (∂L/∂w + λ·w)</code>, which you can rearrange to <code>w ← (1 - lr·λ) · w - lr · ∂L/∂w</code>. That <code>(1 - lr·λ)</code> factor is the "decay" — every step, weights get multiplied by a number slightly less than 1.</p>
+      <p>With classic SGD, penalty-on-loss and per-step shrinkage are mathematically identical. Update becomes <code>w ← w - lr · (∂L/∂w + λ·w)</code>, which rearranges to <code>w ← (1 - lr·λ) · w - lr · ∂L/∂w</code>. Factor <code>(1 - lr·λ)</code> is decay: each step multiplies weights by slightly less than 1.</p>
 
-      <p>With Adam, this equivalence breaks. And the story of how it breaks is one of the more illuminating examples of a subtle bug that the field tolerated for years.</p>
+      <p>With Adam, equivalence breaks. Break matters. Field tolerated bug for years.</p>
 
       <h4>Why Adam + L2 Is Broken, and Why AdamW Fixes It</h4>
 
-      <p>In standard Adam, if you add L2 regularization the traditional way, the penalty term <code>λ·w</code> gets added to the gradient. That penalized gradient then passes through Adam's first moment (momentum) and second moment (adaptive scaling). The problem: Adam's per-parameter scaling is inversely proportional to the gradient's historical magnitude. Parameters that have seen large gradients get <em>smaller</em> updates. But that same scaling now also applies to the regularization term. Parameters with large historical gradients get <em>less</em> regularization. Parameters with small historical gradients get <em>more</em>. That's backwards from what you want.</p>
+      <p>In standard Adam, traditional L2 regularization adds penalty term <code>λ·w</code> to gradient. Penalized gradient then flows through Adam's first and second moments. Problem: Adam scales each parameter inversely to historical gradient size. Parameters with large historical gradients get smaller updates. Same scaling now hits regularization term. Large-gradient parameters get <em>less</em> regularization; small-gradient parameters get <em>more</em>. Backward from desired behavior.</p>
 
-      <p>Loshchilov and Hutter (2019) identified this issue and proposed <b>AdamW</b> — decoupled weight decay. The fix is structurally simple: apply the Adam step to the gradient alone, then apply weight decay as a separate, direct shrinkage of the weights. The decay never enters the moment estimates. It never gets distorted by adaptive scaling.</p>
+      <p>Loshchilov and Hutter (2019) identified issue and proposed <b>AdamW</b> — decoupled weight decay. Fix is simple: apply Adam step to gradient alone, then apply weight decay as separate direct shrinkage on weights. Decay never enters moment estimates. Adaptive scaling never distorts it.</p>
 
 <pre><code class="language-python"># Adam + L2 (subtly broken)
 # gradient += weight_decay * param       ← penalty enters moment estimates
@@ -570,38 +570,38 @@ optimizer = torch.optim.AdamW(
     weight_decay=0.01    # typical range: 0.01 to 0.1
 )</code></pre>
 
-      <p>Weight decay is the single most universal regularizer. It appears in virtually every modern training recipe — ResNets, Transformers, LLMs, vision models, everything. Typical values: 0.01 for Transformers, up to 0.1 for CNNs. One convention: don't apply weight decay to bias terms or normalization parameters (γ, β). These parameters have different roles — forcing them toward zero doesn't help generalization and can hurt performance.</p>
+      <p>Weight decay is most universal regularizer. Nearly every modern training recipe uses it — ResNets, Transformers, LLMs, vision models, everything. Typical values: 0.01 for Transformers, up to 0.1 for CNNs. Common convention: skip weight decay on bias terms and normalization parameters (γ, β). Those parameters play different roles; pushing them toward zero can hurt.</p>
 
 
       <h3>Label Smoothing — Teaching the Model to Say "I'm Not Sure"</h3>
 
-      <p>Standard classification targets are hard: <code>[0, 0, 1, 0]</code> for class 3 out of 4. The model is told to assign 100% probability to the correct class and 0% to everything else. To do that, the logits need to approach infinity — the model must become <em>infinitely confident</em>. That's a problem. Infinite confidence means the model is maximally wrong when it misclassifies, and its predicted probabilities are poorly <b>calibrated</b> — a model that says "95% confident" should be right about 95% of the time, but overconfident models are often right far less.</p>
+      <p>Standard classification targets are hard: <code>[0, 0, 1, 0]</code> for class 3 of 4. Model is told to put 100% probability on correct class and 0% on rest. That drives logits toward infinity and makes model <em>infinitely confident</em>. Problem: overconfident model becomes badly <b>calibrated</b>. If model says 95% confident, it should be right about 95% of time, but overconfident models often miss that.</p>
 
-      <p><b>Label smoothing</b> softens those targets. With a smoothing factor ε = 0.1 and 4 classes, the hard target <code>[0, 0, 1, 0]</code> becomes <code>[0.025, 0.025, 0.925, 0.025]</code>. The model no longer needs infinite logits — it aims for 92.5% on the correct class and spreads the remaining probability mass across the others.</p>
+      <p><b>Label smoothing</b> softens targets. With ε = 0.1 and 4 classes, hard target <code>[0, 0, 1, 0]</code> becomes <code>[0.025, 0.025, 0.925, 0.025]</code>. Model no longer needs infinite logits. Goal becomes 92.5% on correct class, with remaining probability mass spread across others.</p>
 
 <pre><code class="language-python">criterion = nn.CrossEntropyLoss(label_smoothing=0.1)</code></pre>
 
-      <p>One line in PyTorch. Negligible computational cost. But the effects are real: better calibration, better generalization, and a neat theoretical connection to knowledge distillation. Müller, Kornblith, and Hinton (2019) showed that label smoothing acts like a form of distillation where the "teacher" is a uniform distribution. The model learns to hedge its bets, keeping its internal representations less clustered and more informative.</p>
+      <p>PyTorch does it in one line. Cost is negligible. Effects are real: better calibration, better generalization, neat link to knowledge distillation. Müller, Kornblith, and Hinton (2019) showed label smoothing acts like distillation from uniform-distribution "teacher." Model learns to hedge, keeping internal representations less clustered and more informative.</p>
 
-      <p>There's a catch, though. Müller et al. also found that label smoothing can <em>hurt</em> knowledge distillation when the teacher model was itself trained with smoothing. The smoothed teacher's penultimate-layer representations become tightly clustered in ways that make them less useful as soft targets. It's one of those interactions you'd never predict from first principles — the kind of thing that makes deep learning simultaneously frustrating and fascinating.</p>
+      <p>Catch exists. Müller et al. also found label smoothing can <em>hurt</em> knowledge distillation when teacher was also trained with smoothing. Smoothed teacher's penultimate-layer representations cluster tightly, making them worse soft targets. Deep learning full of interactions like this.</p>
 
-      <p>Standard ε = 0.1. Used in virtually all competitive image classification (ImageNet models) and machine translation (Transformer-based MT). It's one of those techniques where the cost is so low and the benefit so consistent that there's no reason not to use it for classification tasks.</p>
+      <p>Standard ε = 0.1. Common in competitive image classification and machine translation. Cost stays tiny, benefit stays consistent. Hard to justify skipping it for classification.</p>
 
 
       <h3>Mixup and CutMix — Blending Reality</h3>
 
-      <p>Mixup (Zhang et al., 2018) takes two random training samples and blends them — both the inputs and the labels. If sample A is a cat (label [1, 0]) and sample B is a dog (label [0, 1]), a Mixup with λ = 0.3 creates a training example that's 70% cat pixels + 30% dog pixels, with label [0.7, 0.3]. The mixing coefficient λ is drawn from a Beta(α, α) distribution, typically with α around 0.2.</p>
+      <p>Mixup (Zhang et al., 2018) blends two random training samples — inputs and labels both. If sample A is cat with [1, 0] and sample B is dog with [0, 1], Mixup with λ = 0.3 creates 70% cat pixels + 30% dog pixels, with label [0.7, 0.3]. Mixing coefficient λ comes from Beta(α, α), usually α ≈ 0.2.</p>
 
-      <p>It sounds weird — why would training on blurry chimeras help? The insight is that Mixup encourages the model to behave <em>linearly between training examples</em>. Instead of learning sharp, brittle decision boundaries that perfectly separate the training data, the model learns smooth transitions. Those smooth transitions generalize better to test data that falls between the training examples the model has seen.</p>
+      <p>Sounds weird. Reason: Mixup pushes model to behave <em>linearly between training examples</em>. Instead of sharp, brittle decision boundaries that perfectly separate training data, model learns smooth transitions. Smooth transitions generalize better to test points between seen examples.</p>
 
-      <p><b>CutMix</b> (Yun et al., 2019) does the same thing spatially: cut a rectangular patch from one image and paste it onto another, mixing the labels proportionally to the patch area. This is more natural for vision — the model sees realistic image regions rather than ghostly alpha-blended overlays — and it forces the model to make predictions based on different parts of objects, not on single discriminative regions.</p>
+      <p><b>CutMix</b> (Yun et al., 2019) does similar thing spatially: cut rectangular patch from one image, paste onto another, mix labels by patch area. More natural for vision. Model sees real image regions instead of ghostly alpha blends. It also forces predictions to use different object parts, not one discriminative patch.</p>
 
-      <p>Both techniques are standard in competitive vision pipelines. They're regularizers, calibration improvers, and data augmentation methods all rolled into one.</p>
+      <p>Both techniques are standard in competitive vision pipelines. Regularizer, calibration helper, data augmentation. Three jobs, one move.</p>
 
 
       <h3>Early Stopping — The Simplest Regularizer</h3>
 
-      <p>Monitor validation loss during training. When it stops improving, stop training. The intuition: early in training, the model learns genuine patterns. Later, it starts memorizing noise. The best generalization usually occurs somewhere in between.</p>
+      <p>Monitor validation loss. When improvement stops, stop training. Reason: early epochs learn real patterns; late epochs memorize noise. Best generalization usually sits in middle.</p>
 
 <pre><code class="language-python">best_val_loss = float('inf')
 patience, wait = 10, 0
@@ -621,44 +621,44 @@ for epoch in range(max_epochs):
 
 model.load_state_dict(torch.load('best.pt'))</code></pre>
 
-      <p><b>Patience</b> — how many epochs of no improvement to tolerate — is the only hyperparameter. Too low and you bail during a temporary plateau. Too high and you waste compute memorizing noise. 5-20 epochs is typical. Always save the checkpoint at the best validation loss, not the final epoch. The final epoch is almost always worse.</p>
+      <p><b>Patience</b> — allowed epochs with no improvement — is only hyperparameter. Too low: stop on temporary plateau. Too high: waste compute memorizing noise. Typical range: 5-20 epochs. Always save checkpoint at best validation loss, not final epoch. Final epoch usually worse.</p>
 
 
       <h3>How Regularizers Work Together</h3>
 
-      <p>These techniques aren't alternatives to each other — they stack. A typical modern training recipe combines: <b>AdamW</b> with weight_decay=0.01 (always), <b>label smoothing</b> at 0.1 for classification (nearly always), <b>dropout</b> at 0.1 for medium-scale models (often), <b>data augmentation</b> for vision tasks (mandatory), and <b>early stopping</b> as a safety net (free). The regularizers attack overfitting from different angles — weight decay constrains magnitude, dropout forces redundancy, label smoothing prevents overconfidence, augmentation expands the effective dataset.</p>
+      <p>Regularizers stack; they do not replace each other. Typical modern recipe: <b>AdamW</b> with weight_decay=0.01, <b>label smoothing</b> at 0.1 for classification, <b>dropout</b> at 0.1 for medium models, <b>data augmentation</b> for vision, <b>early stopping</b> as safety net. Each attacks overfitting from different side — weight decay constrains magnitude, dropout forces redundancy, label smoothing reduces overconfidence, augmentation expands effective dataset.</p>
 
 
 <!-- ════════════════════════════════════════════ -->
 <h2>Part 3 — Gradient Management: Keeping the Signal Alive</h2>
 
-      <p>You can have perfect normalization and every regularizer in the book, and training can still go off a cliff. Literally. One bad batch produces a gradient spike, the weights jump to a terrible region, and days of training are wasted. Or the opposite: gradients shrink to zero across many layers, and the model stops learning entirely even as the loss barely moves. Gradient management is the safety engineering that prevents both catastrophes.</p>
+      <p>Perfect normalization and many regularizers still do not guarantee stable training. One bad batch can spike gradients, throw weights into bad region, waste days. Opposite failure also happens: gradients shrink toward zero across many layers, model stops learning while loss barely moves. Gradient management prevents both disasters.</p>
 
 
       <h3>Gradient Clipping — The Safety Net</h3>
 
-      <p>Gradient clipping caps the size of gradients before they're applied to the weights. There are two approaches, and the distinction matters.</p>
+      <p>Gradient clipping caps gradient size before weight update. Two approaches exist. Difference matters.</p>
 
-      <p><b>Clip by value</b> clamps each gradient element independently: any value above <em>v</em> becomes <em>v</em>, anything below -<em>v</em> becomes -<em>v</em>. It's simple, but it changes the gradient's <em>direction</em>. Think of a 2D gradient pointing northeast. If you clip its northward component but not its eastward one, it now points more eastward than it originally did. The optimizer follows a direction the loss landscape didn't suggest. That can hurt optimization.</p>
+      <p><b>Clip by value</b> clamps each gradient element independently: above <em>v</em> becomes <em>v</em>, below -<em>v</em> becomes -<em>v</em>. Simple, but direction changes. In 2D, northeast gradient can become more eastward if only north component gets clipped. Optimizer then follows direction loss landscape did not suggest. Optimization can suffer.</p>
 
-      <p><b>Clip by global norm</b> computes the total gradient norm across all parameters. If it exceeds a threshold, all gradients are scaled down proportionally — same direction, smaller magnitude. This preserves the relative relationships between gradients across layers. It's the overwhelmingly preferred approach.</p>
+      <p><b>Clip by global norm</b> computes total gradient norm across all parameters. If norm exceeds threshold, all gradients scale down proportionally — same direction, smaller magnitude. Relative relationships across layers stay intact. This is preferred approach.</p>
 
 <pre><code class="language-python">optimizer.zero_grad()
 loss.backward()
 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 optimizer.step()</code></pre>
 
-      <p>That order — <code>backward()</code> → <code>clip</code> → <code>step()</code> — is critical. I've seen code that clips <em>after</em> <code>step()</code>, which does absolutely nothing. The gradients have already been applied to the weights at that point. Clipping an already-used gradient is like putting on a seatbelt after the crash.</p>
+      <p>Order matters: <code>backward()</code> → <code>clip</code> → <code>step()</code>. Clip after <code>step()</code> does nothing. Weights already changed. Seatbelt after crash.</p>
 
 <div class="callout callout-danger">
   <div class="callout-label">Gradient Clipping Is Non-Negotiable for Sequence Models</div>
-  <p>RNNs and Transformers processing long sequences create very deep computational graphs — one effective "layer" per time step. Backpropagation through these graphs is numerically volatile. Without clipping, a single outlier batch can produce a gradient spike large enough to destroy an entire training run. A <code>max_norm</code> of 1.0 is the most common default. Some LLM recipes use 0.5 for extra safety.</p>
+  <p>RNNs and Transformers with long sequences create very deep computational graphs — effectively one "layer" per time step. Backprop through these graphs is numerically volatile. Without clipping, one outlier batch can spike gradients enough to ruin full training run. <code>max_norm</code> = 1.0 is common default. Some LLM recipes use 0.5 for extra safety.</p>
 </div>
 
 
       <h3>Gradient Accumulation — Large Batches on Small GPUs</h3>
 
-      <p>Many training recipes call for batch sizes of 256, 1024, or even millions of tokens. But your GPU might only fit 32 samples. Gradient accumulation bridges this gap: run N forward/backward passes on small micro-batches, let the gradients pile up in the <code>.grad</code> buffers, then do one optimizer step. The effective batch size is N × micro_batch_size.</p>
+      <p>Many training recipes want batch sizes of 256, 1024, or millions of tokens. GPU might fit only 32 samples. Gradient accumulation bridges gap: run N forward/backward passes on small micro-batches, let gradients accumulate in <code>.grad</code> buffers, then do one optimizer step. Effective batch size becomes N × micro_batch_size.</p>
 
 <pre><code class="language-python">accum_steps = 8   # effective batch = 8 × 32 = 256
 optimizer.zero_grad()
@@ -673,16 +673,16 @@ for i, (x, y) in enumerate(train_loader):
         optimizer.step()
         optimizer.zero_grad()</code></pre>
 
-      <p>That <code>loss / accum_steps</code> division is easy to forget but essential. Without it, the accumulated gradient is N times larger than a single large-batch gradient, which means your effective learning rate is N times larger than intended. I've seen training runs diverge for exactly this reason, with the developer spending hours tuning the learning rate when the real problem was a missing division.</p>
+      <p><code>loss / accum_steps</code> is easy to forget and essential. Without it, accumulated gradient becomes N times larger than true large-batch gradient, so effective learning rate also becomes N times larger. Runs diverge for this exact reason.</p>
 
-      <p>GPT-3 used an effective batch size of 3.2 million tokens. No GPU fits that. The training loop accumulated across hundreds of micro-batches spread over hundreds of GPUs. Gradient accumulation isn't a hack — it's the standard mechanism for all large-scale training.</p>
+      <p>GPT-3 used effective batch size of 3.2 million tokens. No single GPU fits that. Training accumulated across hundreds of micro-batches on hundreds of GPUs. Gradient accumulation is not hack. It is standard large-scale training mechanism.</p>
 
 
       <h3>Mixed Precision and Loss Scaling</h3>
 
-      <p>Modern GPUs compute much faster in half-precision (16-bit) than full-precision (32-bit). Mixed precision training keeps the master weights in FP32 but runs the forward and backward passes in FP16 or BF16. The speedup is significant — often 2x or more — and memory usage drops roughly in half.</p>
+      <p>Modern GPUs run much faster in half precision (16-bit) than full precision (32-bit). Mixed precision keeps master weights in FP32 but runs forward and backward passes in FP16 or BF16. Speedup is often 2x or more. Memory use drops roughly by half.</p>
 
-      <p>FP16 has a limited dynamic range, though. Small gradients can underflow to zero, silently killing the learning signal. <b>Loss scaling</b> is the solution: multiply the loss by a large factor (say 1024) before <code>backward()</code>, which scales all gradients up and out of the underflow zone. Then unscale them before the optimizer step. PyTorch's <code>GradScaler</code> does this automatically with dynamic scaling — it increases the scale when things look stable and decreases it when it detects overflow (inf/NaN).</p>
+      <p>FP16 has limited dynamic range. Small gradients can underflow to zero and kill learning signal. <b>Loss scaling</b> fixes this: multiply loss by large factor, say 1024, before <code>backward()</code>, pushing gradients out of underflow zone. Unscale before optimizer step. PyTorch <code>GradScaler</code> does this automatically with dynamic scaling, raising scale when stable and lowering it on overflow (inf/NaN).</p>
 
 <pre><code class="language-python">scaler = torch.cuda.amp.GradScaler()
 
