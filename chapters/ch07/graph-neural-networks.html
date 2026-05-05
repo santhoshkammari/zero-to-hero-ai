@@ -302,9 +302,9 @@
 <!-- ═══════════ End Table of Contents ═══════════ -->
 <!-- ───────────── OPENING ───────────── -->
 
-<p>Most deep learning assumes ordered data — images are grids, text is a sequence. But much of the world is neither: social connections, molecular structures, recommendation systems. When the relationships between entities carry as much signal as the entities themselves, you need an architecture that treats structure as a first-class input. That's what Graph Neural Networks provide.</p>
+<p>Deep learning often assumes ordered data — images as grids, text as sequence. Much world not like that: social connections, molecular structures, recommendation systems. When relationships carry as much signal as entities, need architecture that treats structure as first-class input. Graph Neural Networks do that.</p>
 
-<p>Graph Neural Networks are a family of neural architectures designed to operate on graph-structured data — nodes connected by edges, with features living on both. The core ideas trace back to the mid-2000s, but the modern era began around 2017 with Kipf &amp; Welling's GCN paper. Since then, GNNs have become the go-to tool for molecular property prediction, social network analysis, recommendation engines, and knowledge graph reasoning.</p>
+<p>Graph Neural Networks form family of neural architectures for graph-structured data — nodes linked by edges, with features on both. Core ideas trace to mid-2000s, modern era starts around 2017 with Kipf &amp; Welling's GCN paper. Since then, GNNs became go-to tool for molecular property prediction, social network analysis, recommendation engines, knowledge graph reasoning.</p>
 
 
 
@@ -312,71 +312,71 @@
 
 <h2>What is a graph, really</h2>
 
-<p>Let's start with something concrete. Imagine three friends — Alice, Bob, and Carol. Alice and Bob know each other. Bob and Carol know each other. Alice and Carol don't. That's a graph. Three <strong>nodes</strong> (the people) and two <strong>edges</strong> (the friendships).</p>
+<p>Start concrete. Imagine three friends — Alice, Bob, Carol. Alice and Bob know each other. Bob and Carol know each other. Alice and Carol don't. Graph: three <strong>nodes</strong> (people), two <strong>edges</strong> (friendships).</p>
 
-<p>A graph is nothing more than a collection of things and the connections between them. The things are nodes (sometimes called vertices). The connections are edges (sometimes called links). Unlike an image, which is a rigid grid of pixels, or a sentence, which is a strict left-to-right sequence, a graph has no inherent ordering. There's no "first" node. There's no spatial layout. There are only connections.</p>
+<p>Graph = collection of things plus connections between them. Things are nodes (vertices). Connections are edges (links). Unlike image grid or left-to-right sentence, graph has no inherent ordering. No "first" node. No spatial layout. Only connections.</p>
 
-<p>This is what makes graphs both powerful and awkward. Powerful because so much of the world is relational — atoms bonded in a molecule, users following each other on a platform, entities linked in a knowledge base. Awkward because most of our deep learning machinery assumes data arrives in neat, ordered arrays.</p>
+<p>Graphs feel powerful and awkward. Powerful because much world is relational — atoms in molecule, users following each other, entities linked in knowledge base. Awkward because most deep learning machinery expects neat, ordered arrays.</p>
 
 <h3>The adjacency matrix</h3>
 
-<p>We need a way to hand our little friendship graph to a computer. The standard approach is an <strong>adjacency matrix</strong> — a square grid where rows and columns both represent nodes, and a 1 in position (i, j) means node i is connected to node j.</p>
+<p>Need way to hand friendship graph to computer. Standard approach: <strong>adjacency matrix</strong> — square grid where rows and columns represent nodes, and 1 at position (i, j) means node i connects to node j.</p>
 
-<p>For our three friends, labeling Alice = 0, Bob = 1, Carol = 2:</p>
+<p>For three friends, label Alice = 0, Bob = 1, Carol = 2:</p>
 
 <pre><code>        Alice  Bob  Carol
 Alice  [  0     1     0  ]
 Bob    [  1     0     1  ]
 Carol  [  0     1     0  ]</code></pre>
 
-<p>This is an <strong>undirected</strong> graph — if Alice knows Bob, Bob knows Alice — so the matrix is symmetric. A 1 at row 0, column 1 (Alice→Bob) is mirrored at row 1, column 0 (Bob→Alice). If friendships were one-way — like Twitter follows — we'd have a <strong>directed</strong> graph and the matrix might not be symmetric.</p>
+<p>This is <strong>undirected</strong> graph — if Alice knows Bob, Bob knows Alice — so matrix is symmetric. 1 at row 0, column 1 (Alice→Bob) mirrors row 1, column 0 (Bob→Alice). If friendships were one-way — like Twitter follows — graph would be <strong>directed</strong> and matrix might not be symmetric.</p>
 
-<p>I'll be honest — the first time I saw adjacency matrices, I thought they were wasteful. A 3×3 grid to store two friendships? But this format turns out to be perfect for the linear algebra operations that make GNNs work. Multiplying this matrix by a vector of node features is equivalent to gathering each node's neighbors' information. That observation is the entire foundation of what comes next.</p>
+<p>First time I saw adjacency matrices, they felt wasteful. 3×3 grid to store two friendships? But format is perfect for linear algebra behind GNNs. Multiply matrix by vector of node features, and each node gathers neighbor information. That observation drives rest of chapter.</p>
 
 <h3>Node features and edge features</h3>
 
-<p>A graph with only connectivity would be like a spreadsheet with only row labels and no data. In practice, each node carries a <strong>feature vector</strong> — a list of numbers describing it. For our friends, maybe it's their movie ratings:</p>
+<p>Graph with only connectivity is like spreadsheet with row labels and no data. In practice, each node carries <strong>feature vector</strong> — list of numbers describing it. For friends, maybe movie ratings:</p>
 
 <pre><code># Each person rates three movies: Action, Comedy, Drama
 Alice = [5, 1, 3]   # loves action
 Bob   = [4, 4, 2]   # balanced tastes
 Carol = [1, 5, 4]   # comedy and drama fan</code></pre>
 
-<p>We stack these into a <strong>node feature matrix</strong> X, where each row is one node's features. For our example, X is a 3×3 matrix — three nodes, each with three features.</p>
+<p>Stack these into <strong>node feature matrix</strong> X, where each row holds one node's features. Here, X is 3×3 — three nodes, three features each.</p>
 
-<p>Edges can carry features too. In a molecule, a bond between two atoms might have a feature indicating whether it's a single bond, double bond, or aromatic bond. In a social network, an edge might carry the number of messages exchanged. We won't lean heavily on edge features in this post, but knowing they exist is important — many real-world GNN applications use them.</p>
+<p>Edges can carry features too. In molecule, bond between atoms might encode single, double, or aromatic bond. In social network, edge might carry number of messages exchanged. We won't use edge features much here, but they matter — many real-world GNN applications use them.</p>
 
 <!-- ───────────── NEIGHBORHOOD GOSSIP ───────────── -->
 
 <h2>Neighborhood gossip — why structure matters</h2>
 
-<p>Here's where things get interesting. Let's say we want to predict what Carol would think of a new action movie. If we only looked at Carol's features — her ratings of [1, 5, 4] — we'd guess she probably won't like it. Low action score.</p>
+<p>Now structure matters. Say we want predict what Carol thinks of new action movie. If we only use Carol's features — ratings [1, 5, 4] — guess is no. Low action score.</p>
 
-<p>But Carol is connected to Bob, and Bob likes action movies. If our friends influence each other's tastes (and in the real world, they do), then Carol's connection to Bob is a signal. Maybe she's more open to action than her own ratings suggest.</p>
+<p>But Carol connects to Bob, and Bob likes action movies. If friends influence each other's taste — real world says yes — Carol's link to Bob is signal. Maybe she is more open to action than her own ratings suggest.</p>
 
-<p>This is the fundamental insight behind GNNs: <strong>a node's identity is shaped not only by its own features, but by who it's connected to</strong>. It's like neighborhood gossip — you learn about someone by listening to their neighbors. And their neighbors' neighbors. The deeper you go, the more context you gather.</p>
+<p>Core GNN insight: <strong>node identity comes not only from own features, but from connections</strong>. Like neighborhood gossip — learn about person by listening to neighbors. Then neighbors' neighbors. Deeper layers gather more context.</p>
 
-<p>Think of it this way. If I told you someone's movie preferences, you'd know a little. If I also told you their three closest friends' preferences, you'd know quite a bit more. If I added their friends' friends, you'd have a rich picture of the social context that shapes their taste. That's exactly what a GNN does, layer by layer.</p>
+<p>Think of it this way. Movie preferences alone tell little. Add three closest friends' preferences, learn more. Add friends' friends, get richer social context shaping taste. GNN does exactly that, layer by layer.</p>
 
-<p>The question is: how do we do this mathematically?</p>
+<p>Question: how do we do this mathematically?</p>
 
 <!-- ───────────── MESSAGE PASSING ───────────── -->
 
 <h2>The message passing framework</h2>
 
-<p>Every modern GNN — every single one — is a variation of the same three-step loop. The loop runs once per layer, and it goes like this.</p>
+<p>Every modern GNN — every one — is variation of same three-step loop. One loop per layer.</p>
 
-<p>First, each node prepares a <strong>message</strong>. This is typically the node's current feature vector, possibly transformed by a weight matrix. In our movie example, Alice would prepare her ratings [5, 1, 3] as her message.</p>
+<p>First, each node prepares <strong>message</strong>. Usually node's current feature vector, maybe transformed by weight matrix. In movie example, Alice prepares ratings [5, 1, 3] as message.</p>
 
-<p>Second, each node <strong>aggregates</strong> the messages from its neighbors. "Aggregate" means "combine into a single summary." The aggregation function might be a sum, a mean, or a max — but it must be <strong>permutation-invariant</strong>. That's a crucial detail. Because graphs have no inherent node ordering, the result can't change if we shuffle the order of the neighbors. Sum doesn't care about order. Mean doesn't care about order. A function that reads neighbors left-to-right <em>would</em> care, and that would break everything.</p>
+<p>Second, each node <strong>aggregates</strong> messages from neighbors. Aggregate means combine into one summary. Function might be sum, mean, or max — but it must be <strong>permutation-invariant</strong>. Crucial detail. Graphs have no inherent node ordering, so result cannot change if neighbor order changes. Sum ignores order. Mean ignores order. Function that reads neighbors left-to-right <em>would</em> care, and that breaks everything.</p>
 
-<p>Third, each node <strong>updates</strong> its own representation by combining its current features with the aggregated neighbor message, usually through a learnable weight matrix and a nonlinearity like ReLU.</p>
+<p>Third, each node <strong>updates</strong> own representation by combining current features with aggregated neighbor message, usually through learnable weight matrix and nonlinearity like ReLU.</p>
 
-<p>Let's trace through this concretely. Bob is connected to both Alice and Carol. In the message step, Alice sends [5, 1, 3] and Carol sends [1, 5, 4]. Bob aggregates by averaging: [(5+1)/2, (1+5)/2, (3+4)/2] = [3, 3, 3.5]. Then Bob combines this with his own features [4, 4, 2] through a weight matrix and a nonlinearity. The exact combination depends on the architecture, but the shape of the dance is always the same: message, aggregate, update.</p>
+<p>Trace it concretely. Bob connects to Alice and Carol. In message step, Alice sends [5, 1, 3] and Carol sends [1, 5, 4]. Bob aggregates by averaging: [(5+1)/2, (1+5)/2, (3+4)/2] = [3, 3, 3.5]. Then Bob combines that with own features [4, 4, 2] through weight matrix and nonlinearity. Exact combination depends on architecture, but dance stays same: message, aggregate, update.</p>
 
-<p>That's the whole framework. If you understand this loop, you understand the skeleton of every GNN architecture ever published. The differences between GCN, GAT, and GraphSAGE are differences in how they execute these three steps — how they weight messages, how they aggregate, how they update. The skeleton is identical.</p>
+<p>That is whole framework. Understand this loop, understand skeleton of every GNN architecture published. Differences between GCN, GAT, and GraphSAGE come from how they run these three steps — how they weight messages, aggregate, update. Skeleton stays identical.</p>
 
-<p>There's a beautiful connection to matrix multiplication here. If we take our adjacency matrix A and multiply it by our node feature matrix X, the result is a new matrix where each row contains the <em>sum</em> of that node's neighbors' features. That single matrix multiplication — A × X — <em>is</em> the message passing step.</p>
+<p>Matrix multiplication connects directly here. Take adjacency matrix A and multiply by node feature matrix X. Result is new matrix where each row contains <em>sum</em> of that node's neighbors' features. Single multiply — A × X — <em>is</em> message passing step.</p>
 
 <pre><code># A is the adjacency matrix, X is the node feature matrix
 # A @ X gathers neighbor features for every node simultaneously
@@ -389,153 +389,153 @@ A = [[0, 1, 0],    X = [[5, 1, 3],    A @ X = [[4, 4, 2],
 # Row 1 (Bob):   got Alice's [5,1,3] + Carol's [1,5,4] = [6,6,7]
 # Row 2 (Carol): got Bob's features [4,4,2]</code></pre>
 
-<p>One matrix multiplication, and every node has gathered its neighbors' information. Stack a learnable weight matrix W after that, add a nonlinearity, and you've got yourself a GNN layer.</p>
+<p>One matrix multiplication, and every node has gathered neighbor information. Stack learnable weight matrix W after it, add nonlinearity, and you have GNN layer.</p>
 
 <!-- ───────────── GCN ───────────── -->
 
 <h2>GCN — the weighted average that started it all</h2>
 
-<p>In 2017, Thomas Kipf and Max Welling published a paper that turned GNNs from a theoretical curiosity into a practical tool. Their insight was to take a complex spectral theory of graph convolutions — involving eigendecompositions of the graph Laplacian and Chebyshev polynomial approximations — and simplify it down to one elegant layer rule.</p>
+<p>In 2017, Thomas Kipf and Max Welling published paper that turned GNNs from theoretical curiosity into practical tool. Their insight: take complex spectral theory of graph convolutions — eigendecompositions of graph Laplacian and Chebyshev polynomial approximations — and simplify it into one elegant layer rule.</p>
 
-<p>The backstory is worth a detour. Mathematicians had figured out how to define "convolution" on graphs by working in the frequency domain — transforming node signals using the graph's eigenvectors, applying a filter, and transforming back. Sounds expensive because it is. It required computing the eigendecomposition of the graph Laplacian, which is impractical for any reasonably sized graph. Defferrard et al. (2016) made it cheaper by approximating the spectral filter with Chebyshev polynomials up to order K. Kipf and Welling looked at that and asked: what if K = 1? What if we use the crudest possible approximation?</p>
+<p>Backstory matters. Mathematicians had defined "convolution" on graphs in frequency domain — transform node signals with graph eigenvectors, apply filter, transform back. Expensive because it is expensive. It required eigendecomposition of graph Laplacian, impractical for reasonably sized graph. Defferrard et al. (2016) made it cheaper by approximating spectral filter with Chebyshev polynomials up to order K. Kipf and Welling asked: what if K = 1? What if we use crudest possible approximation?</p>
 
-<p>What fell out was this layer rule: take each node's features, average them with its neighbors' features (including itself), multiply by a learnable weight matrix, and apply a nonlinearity. That's the entire <strong>Graph Convolutional Network</strong>.</p>
+<p>Resulting layer rule: take each node's features, average with neighbors' features (including itself), multiply by learnable weight matrix, apply nonlinearity. That is entire <strong>Graph Convolutional Network</strong>.</p>
 
-<p>In formula form: <strong>H<sup>(l+1)</sup> = σ( D̃<sup>−½</sup> Ã D̃<sup>−½</sup> H<sup>(l)</sup> W<sup>(l)</sup> )</strong></p>
+<p>Formula: <strong>H<sup>(l+1)</sup> = σ( D̃<sup>−½</sup> Ã D̃<sup>−½</sup> H<sup>(l)</sup> W<sup>(l)</sup> )</strong></p>
 
-<p>Let me unpack every symbol. H<sup>(l)</sup> is the matrix of node features at layer l — each row is one node's representation. W<sup>(l)</sup> is the learnable weight matrix for that layer. σ is a nonlinearity, typically ReLU. Ã is A + I — the adjacency matrix with <strong>self-loops</strong> added, so each node also considers its own features during aggregation. D̃ is the <strong>degree matrix</strong> of Ã — a diagonal matrix where each entry D̃<sub>ii</sub> counts how many connections node i has (including the self-loop). The D̃<sup>−½</sup> terms on either side perform <strong>symmetric normalization</strong>.</p>
+<p>Unpack symbols. H<sup>(l)</sup> is matrix of node features at layer l — each row one node representation. W<sup>(l)</sup> is learnable weight matrix for layer. σ is nonlinearity, usually ReLU. Ã is A + I — adjacency matrix with <strong>self-loops</strong>, so each node also includes own features during aggregation. D̃ is <strong>degree matrix</strong> of Ã — diagonal matrix where entry D̃<sub>ii</sub> counts connections for node i, including self-loop. D̃<sup>−½</sup> on both sides performs <strong>symmetric normalization</strong>.</p>
 
-<p>Why does the normalization matter? Without it, a node with 500 neighbors would have aggregated features 500 times larger than a node with 2 neighbors. That blows up the numerical scale and makes training unstable. The symmetric normalization — dividing by the square root of both the source and target degrees — keeps everything on a comparable scale. I'll be honest: I'm still developing my intuition for why the <em>symmetric</em> version (dividing by both sides) works better than simpler alternatives like dividing by degree alone. The mathematical justification traces back to the spectral theory, but in practice, it produces more stable gradients and better performance.</p>
+<p>Why normalization matters. Without it, node with 500 neighbors would aggregate features 500 times larger than node with 2 neighbors. Numerical scale blows up. Training gets unstable. Symmetric normalization — dividing by square root of both source and target degrees — keeps everything comparable. Why <em>symmetric</em> version beats simpler choices like dividing by degree alone traces back to spectral theory. In practice, it gives more stable gradients and better performance.</p>
 
-<p>Let's walk through GCN on our three-friend graph. We add self-loops, so Ã becomes:</p>
+<p>Walk through GCN on three-friend graph. Add self-loops, so Ã becomes:</p>
 
 <pre><code>Ã = [[1, 1, 0],    # Alice: connected to self + Bob (degree 2)
      [1, 1, 1],    # Bob: connected to self + Alice + Carol (degree 3)
      [0, 1, 1]]    # Carol: connected to self + Bob (degree 2)</code></pre>
 
-<p>After symmetric normalization (each entry divided by √(deg_i × deg_j)), the normalized matrix gives Bob's features slightly less weight when aggregated into Alice's representation — because Bob is more "popular" (higher degree), his signal gets diluted. This is by design. Without it, hub nodes would dominate the representations of everyone they touch.</p>
+<p>After symmetric normalization, each entry is divided by √(deg_i × deg_j). Bob's features get slightly less weight when aggregated into Alice's representation — Bob is more "popular" (higher degree), so signal gets diluted. By design. Without this, hub nodes would dominate representations of everyone they touch.</p>
 
-<p>The power of GCN is its simplicity. One matrix multiply to gather neighbors, one matrix multiply to transform features, one nonlinearity. The weakness is equally clear: every neighbor gets the same weight (after normalization). For many problems, that's fine. For problems where some connections matter far more than others, it's not.</p>
+<p>Power of GCN: simplicity. One matrix multiply to gather neighbors, one matrix multiply to transform features, one nonlinearity. Weakness: every neighbor gets same weight after normalization. Fine for many problems. Bad when some connections matter much more than others.</p>
 
 <!-- ───────────── GAT ───────────── -->
 
 <h2>GAT — paying attention to the right neighbors</h2>
 
-<p>GCN averages all neighbors equally. But think about it in our friend analogy: if you're trying to predict what Carol will like, does it matter whether her friend is a movie critic or someone who watches one movie a year? Of course it does. Some neighbors are more informative than others, and the network should learn which ones to listen to.</p>
+<p>GCN averages all neighbors equally. But in friend analogy, if you want predict what Carol likes, does friend being movie critic matter more than friend who watches one movie per year? Yes. Some neighbors carry more information, and network should learn who to listen to.</p>
 
-<p>This is the motivation behind <strong>Graph Attention Networks</strong>, introduced by Veličković et al. in 2018. The idea is borrowed directly from the attention mechanism in Transformers — but with a critical difference. In a Transformer, every token attends to every other token (global attention). In a GAT, each node attends only to its immediate neighbors (local attention, dictated by the graph structure). This makes GAT sparse and efficient.</p>
+<p>This motivates <strong>Graph Attention Networks</strong>, introduced by Veličković et al. in 2018. Idea comes from attention mechanism in Transformers — with one critical difference. In Transformer, every token attends to every other token (global attention). In GAT, each node attends only to immediate neighbors (local attention, set by graph structure). That makes GAT sparse and efficient.</p>
 
-<p>Here's how it works, step by step, for a single node. Say we want to compute Bob's new representation. Bob has two neighbors: Alice and Carol.</p>
+<p>Step by step for one node. Say we want Bob's new representation. Bob has two neighbors: Alice and Carol.</p>
 
-<p>First, we project everyone's features through a shared weight matrix W. Bob's features become Wh<sub>Bob</sub>, Alice's become Wh<sub>Alice</sub>, Carol's become Wh<sub>Carol</sub>.</p>
+<p>First, project everyone's features through shared weight matrix W. Bob's features become Wh<sub>Bob</sub>, Alice's become Wh<sub>Alice</sub>, Carol's become Wh<sub>Carol</sub>.</p>
 
-<p>Next, we compute an <strong>attention score</strong> for each neighbor pair. For the (Bob, Alice) pair, we concatenate Wh<sub>Bob</sub> and Wh<sub>Alice</sub> into one long vector, then take the dot product with a learnable vector <strong>a</strong>, and apply LeakyReLU. The result, e<sub>Bob,Alice</sub>, is a raw score indicating how much Alice's features matter to Bob.</p>
+<p>Next, compute <strong>attention score</strong> for each neighbor pair. For (Bob, Alice), concatenate Wh<sub>Bob</sub> and Wh<sub>Alice</sub> into one long vector, take dot product with learnable vector <strong>a</strong>, apply LeakyReLU. Result, e<sub>Bob,Alice</sub>, is raw score for how much Alice's features matter to Bob.</p>
 
-<p>We do the same for (Bob, Carol) to get e<sub>Bob,Carol</sub>. Then we normalize both scores with softmax across Bob's neighbors, so they sum to one. These normalized scores — α<sub>Bob,Alice</sub> and α<sub>Bob,Carol</sub> — are the attention weights. Bob's updated representation is the weighted sum: α<sub>Bob,Alice</sub> · Wh<sub>Alice</sub> + α<sub>Bob,Carol</sub> · Wh<sub>Carol</sub>.</p>
+<p>Do same for (Bob, Carol) to get e<sub>Bob,Carol</sub>. Then normalize both scores with softmax across Bob's neighbors so they sum to one. These normalized scores — α<sub>Bob,Alice</sub> and α<sub>Bob,Carol</sub> — are attention weights. Bob's updated representation is weighted sum: α<sub>Bob,Alice</sub> · Wh<sub>Alice</sub> + α<sub>Bob,Carol</sub> · Wh<sub>Carol</sub>.</p>
 
-<p>If you've seen Transformer attention, this feels familiar but different. There's no separate query/key/value projection. Instead, GAT uses a single shared weight matrix and a separate attention vector. It's a leaner mechanism, partly because graph neighborhoods are typically small (tens of neighbors, not thousands of tokens).</p>
+<p>If you've seen Transformer attention, this feels familiar but different. No separate query/key/value projection. GAT uses one shared weight matrix plus separate attention vector. Leaner mechanism. Works well because graph neighborhoods are usually small — tens of neighbors, not thousands of tokens.</p>
 
-<p>One practical note: GAT uses <strong>multi-head attention</strong>, the same trick that stabilizes Transformers. Multiple independent attention heads each compute their own weights, and the results are concatenated (or averaged in the final layer). This helps the model capture different kinds of relationships simultaneously.</p>
+<p>One practical note: GAT uses <strong>multi-head attention</strong>, same trick that stabilizes Transformers. Multiple independent heads compute their own weights, and results are concatenated (or averaged in final layer). This lets model capture different relationship types at same time.</p>
 
-<p>There's a subtle but important limitation in the original GAT that was discovered later. The attention mechanism computes scores using a concatenation followed by a dot product with a fixed vector — and it turns out this means the <em>ranking</em> of attention scores can be the same regardless of the query node. Brody et al. (2021) fixed this in <strong>GATv2</strong> by applying the nonlinearity after the concatenation, making the attention truly dynamic. For any new project, GATv2 is the one to use.</p>
+<p>Original GAT has subtle limitation discovered later. Attention scores come from concatenation followed by dot product with fixed vector — and ranking of scores can stay same regardless of query node. Brody et al. (2021) fixed this in <strong>GATv2</strong> by applying nonlinearity after concatenation, making attention truly dynamic. For new project, use GATv2.</p>
 
 <!-- ───────────── GRAPHSAGE ───────────── -->
 
 <h2>GraphSAGE — sampling your way to scale</h2>
 
-<p>Both GCN and GAT share a fundamental assumption: the entire graph is available during training. Every node participates in message passing, even the unlabeled ones. For a citation network with a few thousand nodes, that's fine. For Pinterest's graph with billions of pins and users, it's a non-starter.</p>
+<p>GCN and GAT share one fundamental assumption: whole graph is available during training. Every node participates in message passing, even unlabeled ones. Fine for citation network with few thousand nodes. Impossible for Pinterest graph with billions of pins and users.</p>
 
-<p>Hamilton, Ying, and Leskovec (2017) tackled this with GraphSAGE — <strong>SAmple and aggreGatE</strong>. The name captures the two core ideas.</p>
+<p>Hamilton, Ying, and Leskovec (2017) tackled this with GraphSAGE — <strong>SAmple and aggreGatE</strong>. Name captures two core ideas.</p>
 
-<p>The first idea is <strong>inductive learning</strong>. Instead of learning a fixed embedding for each node (which would require seeing every node during training and couldn't handle new nodes), GraphSAGE learns an aggregation <em>function</em>. When a new user signs up on the platform, we feed their neighborhood through the same learned function and get an embedding immediately. No retraining needed.</p>
+<p>First idea: <strong>inductive learning</strong>. Instead of learning fixed embedding for each node — which requires seeing every node during training and fails on new nodes — GraphSAGE learns aggregation <em>function</em>. When new user signs up, feed neighborhood through same learned function and get embedding immediately. No retraining.</p>
 
-<p>The second idea is <strong>neighborhood sampling</strong>. Instead of aggregating all neighbors — which for a hub node could mean millions of connections — GraphSAGE randomly samples a fixed number at each layer. Say 25 neighbors at the first hop and 10 at the second hop. This caps the computation per node and makes mini-batch training possible. The sampling introduces variance (you don't always see the same neighbors), but in practice this acts like a form of regularization and works well.</p>
+<p>Second idea: <strong>neighborhood sampling</strong>. Instead of aggregating all neighbors — which for hub node could mean millions of connections — GraphSAGE randomly samples fixed number at each layer. Say 25 neighbors at first hop and 10 at second hop. This caps computation per node and makes mini-batch training possible. Sampling adds variance — you do not always see same neighbors — but in practice that acts like regularization and works well.</p>
 
-<p>Think back to our gossip analogy. GCN and GAT are like asking every single person in the neighborhood what they think. GraphSAGE is like asking a random handful of people at the coffee shop. You don't hear from everyone, but if you ask enough times (enough training iterations), you get the gist.</p>
+<p>Back to gossip analogy. GCN and GAT are like asking every person in neighborhood what they think. GraphSAGE is like asking random handful at coffee shop. You do not hear from everyone, but if you ask enough times (enough training iterations), you get gist.</p>
 
-<p>GraphSAGE offers several aggregation functions: mean (the default, and surprisingly hard to beat), LSTM (they shuffle the neighbor order each time since LSTMs care about order — a clever hack), and max-pool (apply an MLP to each neighbor, then take the element-wise maximum). The mean aggregator is what most practitioners use.</p>
+<p>GraphSAGE offers several aggregation functions: mean (default, hard to beat), LSTM (they shuffle neighbor order each time because LSTMs care about order — clever hack), and max-pool (apply MLP to each neighbor, then take element-wise maximum). Mean aggregator is what most practitioners use.</p>
 
-<p>The practical impact is enormous. GraphSAGE-style sampling is what made GNNs deployable at companies like Pinterest, Uber, and Twitter. If you ever need to train a GNN on a graph that doesn't fit in GPU memory, this is where you start.</p>
+<p>Practical impact is enormous. GraphSAGE-style sampling made GNNs deployable at companies like Pinterest, Uber, Twitter. If you need to train GNN on graph that does not fit in GPU memory, start here.</p>
 
 <!-- ───────────── THREE TASK TYPES ───────────── -->
 
 <h2>Three kinds of questions you can ask a graph</h2>
 
-<p>We've been focused on how GNNs compute node representations, but what do we actually <em>do</em> with those representations? There are three fundamentally different types of tasks, and they differ in what entity gets a prediction.</p>
+<p>We have focused on how GNNs compute node representations, but what do we <em>do</em> with them? Three task types. Difference is which entity gets prediction.</p>
 
-<p><strong>Node-level tasks.</strong> The most common setup. Given a partially-labeled graph, predict labels for the unlabeled nodes. This is semi-supervised learning — message passing runs across the entire graph (including unlabeled nodes, which still participate in neighbor aggregation), but the loss function only looks at the nodes that have labels. Think: classifying academic papers by topic, detecting fraudulent accounts in a transaction network, predicting protein functions in a biological interaction graph.</p>
+<p><strong>Node-level tasks.</strong> Most common setup. Given partially labeled graph, predict labels for unlabeled nodes. This is semi-supervised learning — message passing runs across entire graph, including unlabeled nodes, but loss function only looks at labeled nodes. Think: classifying academic papers by topic, detecting fraudulent accounts in transaction network, predicting protein functions in biological interaction graph.</p>
 
-<p><strong>Edge-level tasks.</strong> The question here is: which edges are missing? Or which edges will form next? Run the GNN to get node embeddings, then score candidate node pairs — the simplest decoder is a dot product between two node embeddings. A high score means "these two nodes should probably be connected." This powers "people you may know" features on social platforms and knowledge graph completion (predicting missing facts like "who directed this movie?"). One gotcha that bites beginners: if you include the target edge in the graph during message passing, the model can trivially detect it. Always remove the edge you're trying to predict.</p>
+<p><strong>Edge-level tasks.</strong> Question: which edges are missing? Or which edges form next? Run GNN to get node embeddings, then score candidate node pairs — simplest decoder is dot product between two node embeddings. High score means "these two nodes should probably be connected." This powers "people you may know" and knowledge graph completion (predict missing facts like "who directed this movie?"). Beginner trap: if target edge stays in graph during message passing, model can trivially detect it. Always remove edge you are trying to predict.</p>
 
-<p><strong>Graph-level tasks.</strong> One prediction for an entire graph. Is this molecule toxic? Is this program's control flow graph malicious? This requires an extra step beyond message passing: <strong>pooling</strong>.</p>
+<p><strong>Graph-level tasks.</strong> One prediction for entire graph. Is molecule toxic? Is program's control flow graph malicious? This needs one extra step beyond message passing: <strong>pooling</strong>.</p>
 
 <h3>Graph pooling — squeezing a graph into a vector</h3>
 
-<p>Node-level tasks are straightforward — each node already has an embedding after message passing. But for graph-level tasks, we need a single vector that represents the whole graph. Pooling is how we get there.</p>
+<p>Node-level tasks are straightforward — each node already has embedding after message passing. But graph-level tasks need one vector representing whole graph. Pooling gives that.</p>
 
-<p>The simplest approaches are <strong>global mean pooling</strong> (average all node embeddings) and <strong>global sum pooling</strong> (add them up). No learnable parameters, fast, and surprisingly effective for many tasks. Sum pooling has a theoretical advantage: it can distinguish graphs with different numbers of nodes that have the same average features. Mean pooling can't.</p>
+<p>Simplest approaches are <strong>global mean pooling</strong> (average all node embeddings) and <strong>global sum pooling</strong> (add them up). No learnable parameters. Fast. Surprisingly effective for many tasks. Sum pooling has theoretical advantage: it can distinguish graphs with different node counts but same average features. Mean pooling cannot.</p>
 
-<p>When you need something more expressive, there are learned pooling methods. <strong>DiffPool</strong> (Ying et al., 2018) learns a soft cluster assignment matrix — it groups nodes into supernodes at each pooling step, creating a hierarchy. The coarsened graph goes through more GNN layers. It's powerful but memory-hungry. <strong>SAGPool</strong> uses attention scores to select the top-k most important nodes and drops the rest, creating a sparser graph for the next layer.</p>
+<p>When you need more expressiveness, learned pooling methods exist. <strong>DiffPool</strong> (Ying et al., 2018) learns soft cluster assignment matrix — it groups nodes into supernodes at each pooling step, building hierarchy. Coarsened graph goes through more GNN layers. Powerful but memory-hungry. <strong>SAGPool</strong> uses attention scores to select top-k most important nodes and drops rest, creating sparser graph for next layer.</p>
 
-<p>For most practical purposes, global mean or sum pooling works well. The learned methods shine on benchmarks with highly structured graphs where hierarchy matters — certain molecular and biological datasets — but they add complexity and computational cost.</p>
+<p>For most practical work, global mean or sum pooling works well. Learned methods shine on benchmarks with highly structured graphs where hierarchy matters — certain molecular and biological datasets — but they add complexity and compute cost.</p>
 
 <!-- ───────────── OVER-SMOOTHING ───────────── -->
 
 <h2>Over-smoothing — the blur problem</h2>
 
-<p>Here's the trap I promised earlier. Each GNN layer lets every node absorb information from its immediate neighbors. Two layers: friends-of-friends. Three layers: three hops out. The natural instinct is to stack more layers, like we do with deep CNNs or Transformers. Deeper network, richer representations, right?</p>
+<p>Here is trap I promised earlier. Each GNN layer lets every node absorb information from immediate neighbors. Two layers: friends-of-friends. Three layers: three hops out. Natural instinct is stacking more layers, like deep CNNs or Transformers. Deeper network, richer representations, right?</p>
 
-<p>Wrong. With GNNs, going deeper makes representations <em>worse</em> after a certain point. This is called <strong>over-smoothing</strong>, and the analogy that helped it click for me is blurring a photograph.</p>
+<p>Wrong. In GNNs, more depth makes representations <em>worse</em> after certain point. This is <strong>over-smoothing</strong>. Helpful analogy: blurring photograph.</p>
 
-<p>Every GNN layer is like applying a blur filter to an image. One pass gently smooths out noise while keeping the important features visible. Two passes and you start losing some detail. Five passes and everything is a washed-out smudge. Ten passes and every pixel converges to the same average gray.</p>
+<p>Each GNN layer is like blur filter on image. One pass gently smooths noise while keeping important features. Two passes and detail starts disappearing. Five passes and everything becomes washed-out smudge. Ten passes and every pixel converges to same average gray.</p>
 
-<p>The mathematics bear this out precisely. Repeatedly multiplying by the normalized adjacency matrix drives all node representations toward the dominant eigenvector — a space where every node looks the same. In a small-world graph (like most social networks), five hops can reach nearly every node, meaning five layers of message passing gives every node access to almost the entire graph. At that point, all nodes have effectively the same information, and the representations collapse.</p>
+<p>Mathematics says same thing. Repeated multiplication by normalized adjacency matrix drives node representations toward dominant eigenvector — space where every node looks same. In small-world graph, like most social networks, five hops can reach nearly every node. That means five layers of message passing gives every node access to almost entire graph. Then representations collapse.</p>
 
-<p>In practice, <strong>2–3 layers is the sweet spot</strong> for most GNNs. My favorite thing about this fact is that, aside from the mathematical explanation I gave, no one is completely certain why such shallow networks capture enough of the graph structure to work well on most tasks. The standard explanation is that many real-world graphs have small diameters, so two hops already reaches most of the relevant context.</p>
+<p>In practice, <strong>2–3 layers is sweet spot</strong> for most GNNs. Standard explanation: many real-world graphs have small diameters, so two hops already reaches most relevant context.</p>
 
-<p>Mitigations exist. <strong>Residual connections</strong> (add the input of each layer to the output, like ResNet) help preserve each node's individual identity. <strong>DropEdge</strong> randomly removes edges during training, slowing the mixing. <strong>JumpingKnowledge networks</strong> concatenate the representations from all layers, letting the final classifier pick which depth was most useful for each node. <strong>PairNorm</strong> explicitly pushes node representations apart during normalization.</p>
+<p>Mitigations exist. <strong>Residual connections</strong> (add input of each layer to output, like ResNet) help preserve node identity. <strong>DropEdge</strong> randomly removes edges during training, slowing mixing. <strong>JumpingKnowledge networks</strong> concatenate representations from all layers, letting final classifier choose most useful depth for each node. <strong>PairNorm</strong> explicitly pushes node representations apart during normalization.</p>
 
-<p>None of these fully solve the problem. If you genuinely need long-range dependencies — information that has to travel ten or twenty hops — the emerging approach is <strong>Graph Transformers</strong>, which allow global attention between all nodes, sidestepping the layer-by-layer propagation bottleneck. But that's a different chapter.</p>
+<p>None fully solve problem. If you genuinely need long-range dependencies — information traveling ten or twenty hops — emerging approach is <strong>Graph Transformers</strong>, which allow global attention between all nodes and sidestep layer-by-layer propagation bottleneck. But that is different chapter.</p>
 
 <!-- ───────────── WL TEST ───────────── -->
 
 <h2>What GNNs can't see — the Weisfeiler-Lehman wall</h2>
 
-<p>There's a deeper limitation that took me by surprise. It's not about depth — it's about what message-passing GNNs are fundamentally capable of distinguishing.</p>
+<p>There is deeper limitation. Not about depth — about what message-passing GNNs can fundamentally distinguish.</p>
 
-<p>In 1968, mathematicians Boris Weisfeiler and Andrei Lehman developed a test to check if two graphs are structurally identical (<strong>isomorphic</strong>). The test, now called the <strong>1-WL test</strong> (or color refinement), works like this: give every node an initial "color" based on its features. Then, iteratively update each node's color based on the multiset of its neighbors' colors. If, after some rounds, the two graphs have different distributions of colors, they're definitely not isomorphic. If the distributions match, they <em>might</em> be isomorphic — the test can't always tell.</p>
+<p>In 1968, Boris Weisfeiler and Andrei Lehman developed test for whether two graphs are structurally identical (<strong>isomorphic</strong>). Test, now called <strong>1-WL test</strong> or color refinement, works like this: give every node initial "color" based on features. Then iteratively update each node's color from multiset of neighbors' colors. If, after some rounds, two graphs have different color distributions, they are definitely not isomorphic. If distributions match, they <em>might</em> be isomorphic — test cannot always tell.</p>
 
-<p>Here's the punchline: Xu et al. (2019) proved that standard message-passing GNNs are <strong>at most as powerful as the 1-WL test</strong>. The iterative "gather neighbors, update" loop of a GNN is doing exactly the same computation as color refinement. Any pair of graphs that fools the 1-WL test will also fool any message-passing GNN.</p>
+<p>Punchline: Xu et al. (2019) proved standard message-passing GNNs are <strong>at most as powerful as 1-WL test</strong>. Iterative "gather neighbors, update" loop in GNN is same computation as color refinement. Any graph pair that fools 1-WL also fools message-passing GNN.</p>
 
-<p>What kinds of graphs fool it? Highly symmetric ones. Two different six-node graphs where every node has exactly the same number of neighbors can be indistinguishable to 1-WL (and therefore to GNNs), even though a human can see they're structured differently. For most practical applications — molecules, social networks, recommendations — this ceiling rarely matters. But for certain molecular structures where subtle symmetry differences affect chemical properties, it's a real concern.</p>
+<p>What graphs fool it? Highly symmetric ones. Two different six-node graphs where every node has same number of neighbors can be indistinguishable to 1-WL, and therefore to GNNs, even though human can see different structure. For most practical applications — molecules, social networks, recommendations — ceiling rarely matters. But for some molecular structures where subtle symmetry changes chemical properties, it matters.</p>
 
-<p>The same paper introduced <strong>GIN</strong> (Graph Isomorphism Network), a GNN architecture specifically designed to be <strong>maximally powerful</strong> — matching the 1-WL test exactly. The key design choice is using sum aggregation (not mean or max) combined with an injective MLP update function. GCN and GraphSAGE with mean aggregation are strictly less powerful because mean and max can map different multisets to the same output.</p>
+<p>Same paper introduced <strong>GIN</strong> (Graph Isomorphism Network), GNN architecture designed to be <strong>maximally powerful</strong> — matching 1-WL exactly. Key design choice: sum aggregation, not mean or max, plus injective MLP update function. GCN and GraphSAGE with mean aggregation are strictly less powerful because mean and max can map different multisets to same output.</p>
 
-<p>Getting beyond the 1-WL barrier requires going beyond standard message passing — higher-order GNNs that consider groups of nodes together, or architectures that incorporate subgraph structures. These exist but are computationally expensive. For most practitioners, knowing the ceiling exists and reaching for GIN when expressiveness matters is enough.</p>
+<p>Going beyond 1-WL barrier requires going beyond standard message passing — higher-order GNNs that consider groups of nodes together, or architectures that incorporate subgraph structures. These exist but cost heavy compute. For most practitioners, knowing ceiling exists and using GIN when expressiveness matters is enough.</p>
 
 <!-- ───────────── APPLICATIONS ───────────── -->
 
 <h2>Where GNNs live in the real world</h2>
 
-<p>The theory is nice, but where do GNNs actually earn their keep?</p>
+<p>Theory is nice, but where do GNNs earn keep?</p>
 
-<p><strong>Molecules.</strong> This is where GNNs arguably have the most natural fit. An atom is a node, a bond is an edge, and the task is predicting molecular properties — toxicity, solubility, binding affinity, reaction outcomes. The graph structure isn't a convenient abstraction here; it's literally what the molecule is. Drug discovery pipelines at pharmaceutical companies and startups use GNNs for virtual screening — narrowing down millions of candidate compounds to a handful worth synthesizing and testing in a lab. GNNs have also been used for retrosynthesis — given a target molecule, figuring out what reactions would produce it.</p>
+<p><strong>Molecules.</strong> This is where GNNs fit most naturally. Atom is node, bond is edge, task is predicting molecular properties — toxicity, solubility, binding affinity, reaction outcomes. Graph structure is not convenient abstraction here; it is molecule. Drug discovery pipelines at pharmaceutical companies and startups use GNNs for virtual screening — narrowing millions of candidate compounds to handful worth synthesizing and testing in lab. GNNs also get used for retrosynthesis — given target molecule, figuring out what reactions produce it.</p>
 
-<p><strong>Social networks.</strong> Fraud detection is a major application. Fraudulent accounts tend to cluster together (they follow each other, interact with the same targets), and GNNs are excellent at detecting these community patterns. Pinterest's PinSage system (built on GraphSAGE) generates embeddings for billions of pins by treating the user-pin interaction graph as the data structure. Influence prediction — figuring out which users are most likely to spread information — is another natural fit.</p>
+<p><strong>Social networks.</strong> Fraud detection is major application. Fraudulent accounts tend to cluster together — they follow each other, interact with same targets — and GNNs are excellent at detecting these community patterns. Pinterest's PinSage system (built on GraphSAGE) generates embeddings for billions of pins by treating user-pin interaction graph as data structure. Influence prediction — figuring out which users are most likely to spread information — is another natural fit.</p>
 
-<p><strong>Recommendation systems.</strong> At scale, recommendations are a graph problem. Users and items are nodes. Interactions (purchases, clicks, ratings) are edges. GNNs propagate preference signals through this bipartite graph. LightGCN, a simplified GCN variant designed specifically for recommendations, showed that stripping away feature transformations and nonlinearities and keeping only the neighborhood aggregation actually <em>improves</em> recommendation quality. Sometimes simpler is better.</p>
+<p><strong>Recommendation systems.</strong> At scale, recommendations are graph problem. Users and items are nodes. Interactions (purchases, clicks, ratings) are edges. GNNs propagate preference signals through this bipartite graph. LightGCN, simplified GCN variant for recommendations, showed that stripping away feature transformations and nonlinearities and keeping only neighborhood aggregation can actually <em>improve</em> recommendation quality. Sometimes simpler wins.</p>
 
-<p><strong>Knowledge graphs.</strong> A knowledge graph stores facts as (entity, relation, entity) triples — (Berlin, capital_of, Germany). The graph is massive and incomplete. GNNs help with <strong>link prediction</strong> on these graphs: given existing facts, predict missing ones. R-GCN (Relational GCN) was one of the first architectures to handle multiple relation types. Knowledge graph completion powers question answering systems, search engines, and personal assistants.</p>
+<p><strong>Knowledge graphs.</strong> Knowledge graph stores facts as (entity, relation, entity) triples — (Berlin, capital_of, Germany). Graph is massive and incomplete. GNNs help with <strong>link prediction</strong>: given existing facts, predict missing ones. R-GCN (Relational GCN) was one of first architectures to handle multiple relation types. Knowledge graph completion powers question answering systems, search engines, personal assistants.</p>
 
-<p>Beyond these four, GNNs show up in traffic prediction (road networks), combinatorial optimization (solving graph-structured problems like TSP), program analysis (code as a graph of functions and calls), and physics simulation (particles as nodes, interactions as edges). The common thread: whenever the relationships between entities carry as much signal as the entities themselves, GNNs are worth considering.</p>
+<p>Beyond these four, GNNs show up in traffic prediction (road networks), combinatorial optimization (graph-structured problems like TSP), program analysis (code as graph of functions and calls), and physics simulation (particles as nodes, interactions as edges). Common thread: when relationships carry as much signal as entities, GNNs are worth considering.</p>
 
 <!-- ───────────── FRAMEWORKS ───────────── -->
 
 <h2>Tools of the trade — PyG and DGL</h2>
 
-<p>Two frameworks dominate GNN development: <strong>PyTorch Geometric (PyG)</strong> and the <strong>Deep Graph Library (DGL)</strong>.</p>
+<p>Two frameworks dominate GNN development: <strong>PyTorch Geometric (PyG)</strong> and <strong>Deep Graph Library (DGL)</strong>.</p>
 
-<p>PyG feels like home if you're already a PyTorch user. The API mirrors PyTorch conventions — you define layers, write a forward method, run a training loop. Graphs are stored as an <code>edge_index</code> tensor (a 2×num_edges array listing source-target pairs) plus a node feature matrix <code>x</code>. Everything is sparse by default. Swapping GCN for GAT or GraphSAGE is often a one-line change.</p>
+<p>PyG feels like home if you already use PyTorch. API mirrors PyTorch conventions — define layers, write forward method, run training loop. Graphs are stored as <code>edge_index</code> tensor (2×num_edges array listing source-target pairs) plus node feature matrix <code>x</code>. Everything is sparse by default. Swapping GCN for GAT or GraphSAGE is often one-line change.</p>
 
 <pre><code>import torch
 import torch.nn.functional as F
@@ -571,9 +571,9 @@ for epoch in range(200):
     loss.backward()
     optimizer.step()</code></pre>
 
-<p>The training loop looks exactly like any other PyTorch classification task. The only GNN-specific detail is that <code>forward</code> takes both node features and edge connectivity, and the loss is computed only on the nodes that have labels (the <code>train_mask</code>). The unlabeled nodes still participate in message passing — their features flow through the graph and influence the labeled nodes' representations — but they don't contribute to the loss.</p>
+<p>Training loop looks exactly like any other PyTorch classification task. Only GNN-specific detail: <code>forward</code> takes node features plus edge connectivity, and loss is computed only on nodes with labels (<code>train_mask</code>). Unlabeled nodes still participate in message passing — their features flow through graph and influence labeled nodes' representations — but they do not contribute to loss.</p>
 
-<p>For graphs too large to fit in memory, PyG provides <code>NeighborLoader</code>, which implements GraphSAGE-style sampling:</p>
+<p>Large graphs need <code>NeighborLoader</code>. It implements GraphSAGE-style sampling:</p>
 
 <pre><code>from torch_geometric.loader import NeighborLoader
 
@@ -588,9 +588,9 @@ for batch in loader:
         out[:batch.batch_size], batch.y[:batch.batch_size]
     )</code></pre>
 
-<p>For batching multiple small graphs (common in molecular tasks), PyG stacks them into one large disconnected graph and tracks which node belongs to which graph via a <code>batch</code> vector. This lets you use global pooling — <code>global_mean_pool(x, batch)</code> — to get one vector per graph.</p>
+<p>For batching multiple small graphs, common in molecular tasks, PyG stacks them into one large disconnected graph and tracks graph membership for each node via <code>batch</code> vector. That lets you use global pooling — <code>global_mean_pool(x, batch)</code> — to get one vector per graph.</p>
 
-<p><strong>DGL</strong> (backed by AWS) takes a different approach. Its message-passing API is more explicit — you define message functions and reduce functions that operate on edges and nodes. This is more verbose but gives finer control, which matters for heterogeneous graphs (multiple node and edge types) and for distributed training across multiple machines. If you're building a production system at scale — think billions of edges, multiple GPUs, real-time updates — DGL is often the better choice. For research, prototyping, and standard benchmarks, PyG is where most practitioners start.</p>
+<p><strong>DGL</strong> (backed by AWS) takes different approach. Its message-passing API is more explicit — you define message functions and reduce functions operating on edges and nodes. More verbose but finer control. That matters for heterogeneous graphs (multiple node and edge types) and distributed training across multiple machines. If you are building production system at scale — billions of edges, multiple GPUs, real-time updates — DGL is often better choice. For research, prototyping, standard benchmarks, PyG is where most practitioners start.</p>
 
 
 <div class="page-nav">
