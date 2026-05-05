@@ -352,18 +352,18 @@ James       B              $48,000   630            No
 
 <p><strong>Sampling bias</strong> is mechanical. Data collection systematically excludes populations. Speech recognition trained mostly on podcast audio underperforms on elderly speakers, non-native speakers, and people with speech impediments. Pipeline never heard them, so pipeline never learned them.</p>
 
-<p>Each of these entry points has its own fix, and that's important. Rebalancing your training data helps with representation bias but does nothing for measurement bias. Reweighing your samples helps with historical bias but doesn't fix broken labels. There's no single "debias" button. Knowing where the contamination entered is the first step toward knowing how to clean it up.</p>
+<p>Each entry point needs different fix. Rebalancing training data helps representation bias but not measurement bias. Reweighing samples helps historical bias but not broken labels. No single "debias" button. First step: find where contamination entered. Next: clean that point.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <h2>The First Instinct That Doesn't Work</h2>
 
-<p>When I first thought about making a model "fair," my immediate reaction was: remove the protected attribute. Don't give the model access to race or gender, and it can't discriminate. Problem solved.</p>
+<p>First instinct for "fair" model: remove protected attribute. No race or gender feature, no discrimination. Problem solved.</p>
 
-<p>I'll be honest — I held this belief for an embarrassingly long time. It's called <strong>fairness through unawareness</strong>, and it's the most common first instinct in the industry. It's also almost completely useless.</p>
+<p>I believed this far too long. Name is <strong>fairness through unawareness</strong>. Common first instinct in industry. Almost useless.</p>
 
-<p>Go back to our bank. Suppose we remove the "neighborhood" column from the training data. The model still has zip code (which correlates with neighborhood), income (which correlates with neighborhood due to historical wealth gaps), and credit score (which correlates with access to credit, which correlates with neighborhood). These are <strong>proxy variables</strong> — features that carry the signal of the thing you removed, sometimes with such fidelity that the model barely notices the protected attribute is gone.</p>
+<p>Go back to bank. Remove "neighborhood" column from training data. Model still sees zip code, income, and credit score. Each correlates with neighborhood because of history. These are <strong>proxy variables</strong> — features carrying signal of thing you removed, sometimes so well model barely notices protected attribute is gone.</p>
 
-<p>Here's a quick test. Take all the features you plan to use and try to predict the sensitive attribute from them. If a simple model can do it well, you have proxies.</p>
+<p>Quick test: use planned features to predict sensitive attribute. If simple model does this well, proxies exist.</p>
 
 <pre><code class="language-python">from sklearn.ensemble import GradientBoostingClassifier
 
@@ -381,35 +381,35 @@ baseline = y.value_counts(normalize=True).max()
 # Removing the column was theater.
 </code></pre>
 
-<p>In our bank example, the proxy model predicts neighborhood with 94% accuracy using only income, credit score, and zip code. Removing the neighborhood column from training data didn't remove the information — it spread out across the remaining features, where it's harder to see and harder to audit.</p>
+<p>In bank example, proxy model predicts neighborhood with 94% accuracy using only income, credit score, and zip code. Removing neighborhood column did not remove information. Information spread across remaining features, where it is harder to see and harder to audit.</p>
 
-<p>This is the central tension that makes fairness genuinely hard. The very features that carry useful predictive signal — income predicts loan repayment, credit score predicts default risk — are also the features that encode historical discrimination. You can't untangle the "legitimate signal" from the "discriminatory signal" by deleting a column. The signals are woven into each other.</p>
+<p>Central tension. Same features carrying useful signal — income for repayment, credit score for default risk — also encode historical discrimination. You cannot separate "legitimate signal" from "discriminatory signal" by deleting one column. Signals are tangled.</p>
 
-<p>So if removing the attribute doesn't work, what does "fair" even mean? That turns out to be a deeper question than I expected.</p>
+<p>So if removing attribute fails, what does "fair" mean? Deeper question than it first looks.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <h2>Demographic Parity — The Simplest Definition</h2>
 
-<p>Let's start with the most intuitive definition. <strong>Demographic parity</strong> says: the model should approve loans at the same rate for every group. If 60% of neighborhood-A applicants get approved, then 60% of neighborhood-B applicants should also get approved.</p>
+<p>Start with intuitive definition. <strong>Demographic parity</strong> says model should approve loans at same rate for every group. If 60% of neighborhood A gets approved, 60% of neighborhood B should too.</p>
 
-<p>Mathematically: P(Ŷ=1 | G=a) = P(Ŷ=1 | G=b), where Ŷ is the prediction and G is the group. The probability of getting a "yes" shouldn't depend on which group you belong to.</p>
+<p>Mathematically: P(Ŷ=1 | G=a) = P(Ŷ=1 | G=b), where Ŷ is prediction and G is group. Chance of "yes" should not depend on group.</p>
 
-<p>Back at our bank, demographic parity would look like this. Suppose we have 100 applicants from each neighborhood. The uncorrected model approves 70 from A and 10 from B. Demographic parity requires us to equalize those rates — maybe 40 from each, or 50 from each, depending on where we set the threshold.</p>
+<p>At bank, demographic parity looks like this: 100 applicants from each neighborhood. Uncorrected model approves 70 from A and 10 from B. Demographic parity forces equal rates — maybe 40 from each, maybe 50 from each, depending on threshold.</p>
 
-<p>This feels right. Equal outcomes. Nobody is being treated differently based on group membership. So what's wrong with it?</p>
+<p>Feels right. Equal outcomes. No different treatment by group. So what breaks?</p>
 
-<p>The problem is that demographic parity ignores whether the applicants are actually qualified. If neighborhood A genuinely has more high-income, high-credit-score applicants (because of historical wealth accumulation, not because of anything inherent), then forcing equal approval rates means either approving less-qualified applicants from B or rejecting more-qualified applicants from A. The bank might approve a 550-credit-score applicant from B while rejecting a 720-credit-score applicant from A.</p>
+<p>Problem: demographic parity ignores qualification. If neighborhood A truly has more high-income, high-credit-score applicants because of historical wealth accumulation, forcing equal approval rates means approving less-qualified applicants from B or rejecting more-qualified applicants from A. Bank might approve 550-credit-score applicant from B while rejecting 720-credit-score applicant from A.</p>
 
-<p>Another way to think about it: imagine a fair courtroom. One judge says "fairness means acquitting the same percentage of defendants from every racial group." That feels appealing until you realize it could mean acquitting people who are guilty or convicting people who are innocent — to hit a quota. Most people's intuition is that the judge should look at the <em>evidence</em>, not the demographics. That instinct leads us to the next definition.</p>
+<p>Another view: courtroom. One judge says "fairness means acquitting same percentage from every racial group." Sounds appealing until it means acquitting guilty people or convicting innocent people to hit quota. Most people want judge to follow <em>evidence</em>, not demographics. That leads to next definition.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <h2>When Equal Outcomes Aren't Enough</h2>
 
-<p>If demographic parity ignores qualifications, maybe we should define fairness in terms of errors. A model makes two kinds of mistakes: false positives (approving someone who will default) and false negatives (rejecting someone who would have repaid). <strong>Equalized odds</strong> says both error rates should be equal across groups.</p>
+<p>If demographic parity ignores qualifications, define fairness by errors. Model makes two mistakes: false positives and false negatives. <strong>Equalized odds</strong> says both error rates should match across groups.</p>
 
-<p>Formally: the false positive rate (FPR) and the true positive rate (TPR) should be the same for every group. If the model catches 85% of good borrowers in neighborhood A (TPR = 0.85), it should also catch 85% of good borrowers in neighborhood B. And if it incorrectly approves 10% of bad borrowers in A (FPR = 0.10), it should incorrectly approve 10% of bad borrowers in B too.</p>
+<p>Formally: false positive rate (FPR) and true positive rate (TPR) should match for every group. If model catches 85% of good borrowers in neighborhood A (TPR = 0.85), it should catch 85% in neighborhood B too. If it wrongly approves 10% of bad borrowers in A (FPR = 0.10), it should wrongly approve 10% in B too.</p>
 
-<p>Let's trace through the bank example. Imagine the model's confusion matrix looks like this:</p>
+<p>Trace bank example. Assume confusion matrix looks like this:</p>
 
 <pre><code class="language-text">Neighborhood A (100 applicants, 60 actually qualified):
   True Positives:  51   (approved, would repay)     TPR = 51/60 = 0.85
@@ -424,13 +424,13 @@ Neighborhood B (100 applicants, 30 actually qualified):
   True Negatives:  68   (rejected, will default)
 </code></pre>
 
-<p>The TPR gap (0.85 vs 0.60) tells us that qualified applicants from B are much less likely to be approved than equally qualified applicants from A. The FPR gap (0.10 vs 0.03) tells us that unqualified applicants from A are more likely to slip through. Equalized odds says both of these gaps should be zero.</p>
+<p>TPR gap (0.85 vs 0.60) means qualified applicants from B are much less likely to be approved than equally qualified applicants from A. FPR gap (0.10 vs 0.03) means unqualified applicants from A slip through more often. Equalized odds says both gaps should be zero.</p>
 
-<p>This feels like a better judge — one who says "I should make the same quality of decisions regardless of who's in front of me." Mistakes are inevitable, but they shouldn't fall disproportionately on one group.</p>
+<p>This feels like better judge: same decision quality no matter who stands in front. Mistakes happen. Mistakes should not land mostly on one group.</p>
 
-<p><strong>Equal opportunity</strong> is the relaxed version: it only requires equal true positive rates. It says "qualified people from every group should have the same chance of being approved." It's silent on false positives. This is the definition that feels most natural for situations like loan approvals or college admissions, where the primary harm is denying a benefit to someone who deserved it.</p>
+<p><strong>Equal opportunity</strong> is relaxed version: only true positive rates must match. Message: qualified people from every group should have same chance of approval. It says nothing about false positives. This often feels most natural in loan approvals or college admissions, where main harm is denying benefit to someone who deserved it.</p>
 
-<p>But equalized odds has a limitation we haven't confronted yet. It cares about error rates but says nothing about what the model's <em>scores</em> mean. And that turns out to matter enormously.</p>
+<p>But equalized odds has limit. It cares about error rates, not what model <em>scores</em> mean. That matters a lot.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <h2>Calibration — When the Score Itself Matters</h2>
