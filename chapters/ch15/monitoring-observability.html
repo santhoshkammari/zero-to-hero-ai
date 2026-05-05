@@ -412,9 +412,9 @@ Almost no overlap. The model is flying blind.</code></pre>
 
 <p>Total PSI = 0.220 + 0.022 + 0.275 = <strong>0.517</strong></p>
 
-<p>That&rsquo;s well above 0.25, the threshold the credit risk industry settled on decades ago. This distribution has drifted significantly.</p>
+<p>Well above 0.25 threshold (from credit risk industry). Distribution drifted significantly.</p>
 
-<p>Notice something about the formula: when actual and expected are equal, the difference is zero and the log ratio is zero, so PSI contributes nothing. When they diverge, both the difference and the log term grow, amplifying the signal. The ln(actual/expected) term is borrowed from information theory &mdash; PSI is actually a symmetrized version of <strong>Kullback-Leibler divergence</strong>, which we&rsquo;ll get to in a moment.</p>
+<p>When actual = expected: difference zero, log ratio zero, PSI contributes nothing. When they diverge: both grow, amplifying signal. ln(actual/expected) borrowed from information theory — PSI is symmetrized version of <strong>Kullback-Leibler divergence</strong>.</p>
 
 <p>In code, the whole thing fits in a few lines:</p>
 
@@ -432,9 +432,9 @@ def compute_psi(expected, actual, bins=10):
     # The PSI formula: sum of (actual - expected) * ln(actual / expected)
     return np.sum((act_pct - exp_pct) * np.log(act_pct / exp_pct))</code></pre>
 
-<p>The <code>np.percentile</code> call creates bin edges from the training data using quantiles, so each bin has roughly equal expected counts. The <code>1e-6</code> epsilon prevents division by zero when a bin is empty in one distribution. The final line is the formula we walked through, vectorized across all bins.</p>
+<p><code>np.percentile</code> creates bin edges from training data using quantiles — each bin has roughly equal expected counts. <code>1e-6</code> epsilon prevents division by zero. Final line: formula vectorized across all bins.</p>
 
-<p>The standard interpretation thresholds:</p>
+<p>Standard thresholds:</p>
 
 <table>
 <thead><tr><th>PSI Value</th><th>What It Means</th><th>What To Do</th></tr></thead>
@@ -445,15 +445,15 @@ def compute_psi(expected, actual, bins=10):
 </tbody>
 </table>
 
-<p>PSI is great because it&rsquo;s dead simple to explain to stakeholders, works for both continuous and categorical data (bins map naturally to categories), and produces a single interpretable number. But it has a limitation: the number of bins matters, and it doesn&rsquo;t give you a p-value &mdash; no statistical confidence, no way to say &ldquo;this shift is significant at the 5% level.&rdquo; For that, we need a proper statistical test.</p>
+<p>PSI: simple to explain, works for continuous and categorical data, single interpretable number. Limitation: bin count matters, no p-value — no statistical confidence, no &ldquo;significant at 5% level.&rdquo; For that, need proper statistical test.</p>
 
 <h3>The Kolmogorov-Smirnov Test &mdash; Maximum Distance Between Distributions</h3>
 
-<p>Where PSI gives a score, the <strong>Kolmogorov-Smirnov test</strong> (KS test) gives a verdict. It&rsquo;s a nonparametric hypothesis test &mdash; no assumptions about what shape the distributions take.</p>
+<p>PSI gives score. <strong>Kolmogorov-Smirnov test</strong> (KS test) gives verdict. Nonparametric — no assumptions about distribution shape.</p>
 
-<p>The idea is beautifully geometric. Take both samples (training and production), sort them, and compute their <strong>cumulative distribution functions</strong> (CDFs). A CDF answers: &ldquo;what fraction of data points fall below this value?&rdquo; Then find the single point where the two CDFs are farthest apart. That maximum gap is the KS statistic.</p>
+<p>Geometric idea: take both samples, sort, compute <strong>cumulative distribution functions</strong> (CDFs). CDF answers: &ldquo;what fraction of data falls below this value?&rdquo; Find point where two CDFs farthest apart. That maximum gap is the KS statistic.</p>
 
-<p>Back to our ShopFlow ages. The training CDF climbs steeply between 25 and 35 (that&rsquo;s where most users are). The production CDF climbs steeply between 36 and 65. Somewhere around age 35, the training CDF might be at 0.80 (80% of training users are under 35) while the production CDF is at 0.45 (only 45% of production users are under 35). That gap of 0.35 is the KS statistic.</p>
+<p>Training CDF climbs steeply 25&ndash;35 (most training users). Production CDF climbs steeply 36&ndash;65. Around age 35: training CDF at 0.80, production CDF at 0.45. Gap of 0.35 is the KS statistic.</p>
 
 <pre><code class="language-python">from scipy import stats
 import numpy as np
@@ -465,15 +465,15 @@ production_ages = np.random.normal(62, 8, 500)
 ks_statistic, p_value = stats.ks_2samp(training_ages, production_ages)
 # ks_statistic ≈ 0.97, p_value ≈ 0.0 (extremely significant)</code></pre>
 
-<p>The <code>stats.ks_2samp</code> function takes the two samples and returns two things. The <code>ks_statistic</code> is that maximum CDF gap &mdash; ranges from 0 (identical) to 1 (completely non-overlapping). The <code>p_value</code> answers: &ldquo;if these two samples actually came from the same distribution, how likely would we see a gap this large?&rdquo; A tiny p-value means the drift is real, not random noise.</p>
+<p><code>stats.ks_2samp</code> returns two things: <code>ks_statistic</code> (maximum CDF gap, 0–1) and <code>p_value</code> (&ldquo;if samples came from same distribution, how likely is gap this large?&rdquo;). Tiny p-value: drift is real.</p>
 
-<p>The KS test shines for continuous features. It makes no assumptions about the shape of your data. But it has its own blind spot: with very large sample sizes, it flags tiny, meaningless shifts as &ldquo;statistically significant.&rdquo; A million-user production batch might produce a p-value of 0.001 for a shift that&rsquo;s too small to actually hurt your model. Always pair statistical significance with practical significance &mdash; check whether the magnitude of the shift is large enough to matter.</p>
+<p>KS test: best for continuous features, no shape assumptions. Blind spot: huge sample sizes flag tiny, meaningless shifts as &ldquo;statistically significant.&rdquo; Always pair statistical significance with practical significance — check if magnitude large enough to hurt model.</p>
 
 <h3>KL Divergence &mdash; How Much Information Did You Lose?</h3>
 
-<p>The third tool in our kit approaches drift from an information theory angle. <strong>Kullback-Leibler divergence</strong> asks: if I built an encoding scheme optimized for distribution P, how many extra bits would I waste encoding data from distribution Q?</p>
+<p>Information theory approach. <strong>Kullback-Leibler divergence</strong> asks: if I built encoding scheme optimized for distribution P, how many extra bits wasted encoding data from distribution Q?</p>
 
-<p>Imagine our ShopFlow model learned to be very efficient at recognizing users from the training distribution &mdash; it carved its decision boundaries assuming 50% of users are in the 26&ndash;35 range. When production shifts those proportions, the model&rsquo;s internal &ldquo;encoding&rdquo; is wasteful. KL divergence quantifies that waste.</p>
+<p>Model learned to be efficient recognizing users from training distribution — carved decision boundaries assuming 50% in 26&ndash;35 range. When production shifts those proportions, model&rsquo;s internal &ldquo;encoding&rdquo; is wasteful. KL divergence quantifies that waste.</p>
 
 <pre><code class="language-python">import numpy as np
 
