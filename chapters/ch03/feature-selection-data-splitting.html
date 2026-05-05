@@ -487,15 +487,15 @@ X_train, X_val, y_train, y_val = train_test_split(
 
 <p><strong>Temporal leakage</strong> happens when time-ordered data gets shuffled randomly. Stock price model that sees tomorrow's data during training will look spectacular in validation and useless in practice. Fix comes below: time-based splitting.</p>
 
-<p><strong>Group leakage</strong> happens when the same entity appears in both training and test sets. If a patient has 20 medical records and 15 end up in training while 5 land in test, the model can learn patient-specific patterns — recognizing the patient, not learning generalizable medicine.</p>
+<p><strong>Group leakage</strong> happens when same entity appears in both training and test. If patient has 20 medical records and 15 go to training while 5 go to test, model can learn patient-specific patterns — it recognizes patient, not general medicine.</p>
 
-<p>The telltale sign of leakage is always the same: performance that looks too good. If your model achieves 99.8% accuracy on a problem where domain experts expect 85%, don't celebrate. Investigate. In my experience, suspiciously good results are caused by leakage far more often than by algorithmic brilliance.</p>
+<p>Telltale sign of leakage is always same: performance looks too good. If model hits 99.8% accuracy on problem where domain experts expect 85%, do not celebrate. Investigate. Suspiciously good results come from leakage far more often than algorithmic brilliance.</p>
 
 <h2>Stratified Splits — Preserving the Balance</h2>
 
-<p>Returning to our fraud detection dataset: suppose 2% of transactions are fraudulent. In a random 80/20 split of 1,000 examples, the test set gets 200 examples. On average, only 4 of those would be fraud cases. Random variation could easily give you a test set with 0 or 1 fraud examples, making any evaluation of fraud detection performance meaningless.</p>
+<p>Back to fraud detection dataset: suppose 2% of transactions are fraud. In random 80/20 split of 1,000 examples, test set gets 200 examples. Average fraud count is only 4. Random variation can easily give test set 0 or 1 fraud cases, making fraud evaluation meaningless.</p>
 
-<p><strong>Stratified splitting</strong> ensures that every partition preserves the class distribution from the original dataset. If the full dataset is 2% fraud, then the training set is 2% fraud, the validation set is 2% fraud, and the test set is 2% fraud. No accidents.</p>
+<p><strong>Stratified splitting</strong> ensures every partition preserves original class distribution. If full dataset is 2% fraud, training is 2% fraud, validation is 2% fraud, test is 2% fraud. No accidents.</p>
 
 <pre><code>from sklearn.model_selection import StratifiedKFold
 
@@ -505,9 +505,9 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(X, y)):
     val_fraud_pct = y[val_idx].mean() * 100
     print(f"Fold {fold}: train {train_fraud_pct:.1f}% fraud, val {val_fraud_pct:.1f}% fraud")</code></pre>
 
-<p>For classification problems, always use <code>stratify=y</code> in your splits. There is essentially no downside and the protection against bad luck is significant.</p>
+<p>For classification problems, always use <code>stratify=y</code> in splits. Almost no downside. Big protection against bad luck.</p>
 
-<p>For regression, where the target is continuous, you can't stratify directly. The workaround is to bin the target into quantile-based buckets and stratify on those bins. It's not perfect, but it prevents the situation where all the extreme values end up in one split.</p>
+<p>For regression, target is continuous, so you cannot stratify directly. Workaround: bin target into quantile buckets and stratify on bins. Not perfect. Prevents all extreme values from landing in one split.</p>
 
 <pre><code>import pandas as pd
 
@@ -518,9 +518,9 @@ X_train, X_test, y_train, y_test = train_test_split(
 
 <h2>Time-Based Splits — Never Peek at the Future</h2>
 
-<p>Everything we've discussed so far assumes that your data points are independent — that the order doesn't matter. For time series data, that assumption is catastrophically wrong.</p>
+<p>Everything so far assumes data points are independent — order does not matter. For time series, that assumption is catastrophically wrong.</p>
 
-<p>If you're predicting tomorrow's stock price and your training set contains data from both yesterday and next week, the model has peeked at the future. Random shuffling destroys the temporal structure that defines the problem. The only valid approach is to split on time: train on the past, validate on the near future, test on the further future.</p>
+<p>If you predict tomorrow's stock price and training set contains data from yesterday and next week, model peeked at future. Random shuffling destroys temporal structure that defines problem. Only valid approach: split on time. Train on past, validate on near future, test on farther future.</p>
 
 <pre><code>df = df.sort_values("timestamp")
 
@@ -528,9 +528,9 @@ train = df[df["timestamp"] &lt; "2023-01-01"]
 val   = df[df["timestamp"].between("2023-01-01", "2023-06-30")]
 test  = df[df["timestamp"] &gt;= "2023-07-01"]</code></pre>
 
-<p>I still find this hard to accept emotionally. You're throwing away recent data — the most relevant data — by putting it in the test set instead of training on it. Every instinct says to use your freshest data for training. But the alternative is self-deception. A time series model evaluated with shuffled splits will show you beautiful metrics that mean absolutely nothing.</p>
+<p>I still dislike this emotionally. You put recent data — most relevant data — into test set instead of training. Every instinct says use freshest data for training. Alternative is self-deception. Time series model evaluated with shuffled splits gives beautiful metrics that mean nothing.</p>
 
-<p>For cross-validation on temporal data, sklearn provides <code>TimeSeriesSplit</code>, which implements an expanding window approach. Each successive fold uses all data up to a cutoff for training and the data immediately after for validation. No fold ever uses future data for training.</p>
+<p>For cross-validation on temporal data, sklearn provides <code>TimeSeriesSplit</code>. It uses expanding window. Each later fold trains on all data up to cutoff and validates on data immediately after. No fold trains on future data.</p>
 
 <pre><code>from sklearn.model_selection import TimeSeriesSplit
 
@@ -538,13 +538,13 @@ tscv = TimeSeriesSplit(n_splits=5)
 for fold, (train_idx, val_idx) in enumerate(tscv.split(X)):
     print(f"Fold {fold}: train {len(train_idx)} samples, val {len(val_idx)} samples")</code></pre>
 
-<p>In finance, practitioners go further with <strong>purging and embargo</strong>. Purging removes training samples that overlap with the validation window (when labels are computed over periods that cross the boundary). Embargo adds a gap between training and validation to prevent any autocorrelation leakage. These aren't academic niceties — they're the difference between a backtest you can trust and one that's lying to you.</p>
+<p>In finance, practitioners go further with <strong>purging and embargo</strong>. Purging removes training samples that overlap validation window when labels are computed over periods crossing boundary. Embargo adds gap between training and validation to block autocorrelation leakage. Not academic niceties. Difference between trustworthy backtest and lying one.</p>
 
 <h2>Group-Based Splits — Keeping Entities Together</h2>
 
-<p>In medical studies, a single patient might contribute dozens of data points — lab results from different visits, multiple imaging scans, repeated measurements. If some of those records end up in training and others in test, the model can learn to recognize the patient rather than the disease. It's memorizing faces instead of learning medicine.</p>
+<p>In medical studies, one patient can contribute dozens of data points — lab results across visits, multiple scans, repeated measurements. If some records land in training and others in test, model can learn patient identity instead of disease. It memorizes faces, not medicine.</p>
 
-<p><strong>Group-based splitting</strong> ensures all records belonging to the same entity stay in the same partition. If patient 42 is in the training set, all of patient 42's records are in the training set.</p>
+<p><strong>Group-based splitting</strong> keeps all records from same entity in same partition. If patient 42 is in training set, all records for patient 42 stay in training set.</p>
 
 <pre><code>from sklearn.model_selection import GroupKFold
 
@@ -554,13 +554,13 @@ for train_idx, val_idx in gkf.split(X, y, groups=df["patient_id"]):
     val_patients = df["patient_id"].iloc[val_idx].nunique()
     print(f"Train: {train_patients} patients, Val: {val_patients} patients")</code></pre>
 
-<p>This applies far beyond medicine. Multiple reviews from the same user. Multiple images from the same camera. Multiple transactions from the same account. Whenever your data has a grouping structure, random splitting violates independence and inflates your metrics. Group splits enforce the integrity your evaluation needs.</p>
+<p>This goes far beyond medicine. Multiple reviews from same user. Multiple images from same camera. Multiple transactions from same account. Whenever data has grouping structure, random splitting breaks independence and inflates metrics. Group splits preserve evaluation integrity.</p>
 
 <h2>Cross-Validation — When One Split Isn't Enough</h2>
 
-<p>With a small dataset, any single train/validation split is noisy. Move a few examples around and your accuracy swings by 5%. That's not telling you anything useful about your model — it's telling you about the luck of the draw.</p>
+<p>With small dataset, any single train/validation split is noisy. Move few examples and accuracy swings 5%. That does not tell you about model. It tells you about luck of draw.</p>
 
-<p><strong>K-fold cross-validation</strong> addresses this by making K different splits, each time using a different chunk as the validation set, and averaging the results. Every example gets to be in the validation set exactly once. The variance of your estimate drops, and you get a much more stable picture of model performance.</p>
+<p><strong>K-fold cross-validation</strong> fixes this by making K different splits, each time using different chunk as validation set and averaging results. Every example serves as validation exactly once. Estimate variance drops. Performance picture gets much more stable.</p>
 
 <pre><code>from sklearn.model_selection import cross_val_score
 
