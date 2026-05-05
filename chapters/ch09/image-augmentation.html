@@ -302,74 +302,74 @@
 <!-- ═══════════ End Table of Contents ═══════════ -->
 <div class="tldr">
   <div class="tldr-label">TL;DR</div>
-  <p>Augmentation is how you tell a model what <em>shouldn't</em> matter. Geometric transforms (flips, crops, rotations) teach spatial invariances. Color transforms handle lighting and camera variation. The real leap came from mixing-based methods — Cutout forces the model to learn redundant features, MixUp smooths decision boundaries by blending images and labels, and CutMix gets both benefits by pasting patches. RandAugment replaced expensive policy search with two hyperparameters (N=2, M=9) that match the results. Test-Time Augmentation squeezes out free accuracy at inference by averaging predictions over multiple views. The single question that governs all of this: "Does the label survive this transform?"</p>
+  <p>Augmentation tells model what <em>shouldn't</em> matter. Geometric transforms (flips, crops, rotations) teach spatial invariances. Color transforms handle lighting/camera variation. Real leap: mixing-based methods — Cutout forces redundant features, MixUp smooths decision boundaries by blending images+labels, CutMix gets both benefits by pasting patches. RandAugment replaced expensive policy search with two hyperparameters (N=2, M=9) matching results. Test-Time Augmentation squeezes free accuracy at inference by averaging predictions over multiple views. Single governing question: "Does label survive this transform?"</p>
 </div>
 
 <!-- ═══════════════════════ OPENING ═══════════════════════ -->
 
-<p>I treated image augmentation as plumbing for years — throw in some random flips, copy-paste a pipeline from a tutorial, move on. Then I spent two weeks debugging a medical imaging classifier that was confidently wrong on every left-right ambiguous case. The culprit? A horizontal flip on chest X-rays, where the heart is supposed to be on a specific side. I was actively teaching the model to ignore the single most important spatial cue in the data.</p>
+<p>Treated image augmentation as plumbing for years — throw in random flips, copy-paste pipeline from tutorial, move on. Then spent two weeks debugging medical imaging classifier confidently wrong on every left-right ambiguous case. Culprit? Horizontal flip on chest X-rays, where heart belongs on specific side. Was actively teaching model to ignore most important spatial cue in data.</p>
 
-<p>Data augmentation is the practice of applying random transformations to training images so the model sees more variation without collecting more data. The idea dates back to LeNet-era handwriting recognition in the 1990s, but the techniques have evolved dramatically — from basic flips and rotations to learned augmentation policies and sophisticated image-mixing strategies that sound absurd until you see the accuracy gains.</p>
+<p>Data augmentation = applying random transformations to training images so model sees more variation without collecting more data. Idea dates back to LeNet-era handwriting recognition (1990s), but techniques evolved dramatically — from basic flips and rotations to learned augmentation policies and sophisticated image-mixing strategies that sound absurd until you see accuracy gains.</p>
 
 
 <!-- ═══════════════════════ WHY AUGMENTATION WORKS ═══════════════════════ -->
 <h2>What Augmentation Actually Teaches a Model</h2>
 
-<p>Let's start with a question that seems obvious but has a subtlety most people miss. When you flip a cat image horizontally and feed it to a neural network alongside the original, what are you actually doing? You're not creating a "new" cat. There's no additional information in the flipped version. What you're doing is making a statement: <em>this transformation does not change the label.</em> A cat facing left and a cat facing right are both cats. You're encoding an <strong>invariance</strong> — a symmetry of the problem — directly into the training process.</p>
+<p>Question seems obvious but has subtlety most miss. Flip cat image horizontally, feed to neural network alongside original — what are you doing? Not creating "new" cat. No additional information in flipped version. You're making statement: <em>this transformation does not change the label.</em> Cat facing left and cat facing right = both cats. Encoding <strong>invariance</strong> — symmetry of problem — directly into training process.</p>
 
-<p>That word, invariance, is the key to everything that follows. Formally, you're telling the model that for some transformation T, you want f(T(x)) = f(x) — the output shouldn't change when the input is transformed. A flipped cat is still a cat. A slightly darker stop sign is still a stop sign. A rotated pathology slide still shows the same tissue. Every augmentation is a claim about what the model should ignore.</p>
+<p>Invariance = key to everything that follows. Formally: for some transformation T, you want f(T(x)) = f(x) — output shouldn't change when input is transformed. Flipped cat still cat. Darker stop sign still stop sign. Rotated pathology slide still shows same tissue. Every augmentation = claim about what model should ignore.</p>
 
-<p>There's a subtlety worth flagging. In classification, we want invariance — the label shouldn't change. But in object detection or segmentation, we want something different: <strong>equivariance</strong>. If the input shifts right, the bounding box should shift right too. The output should transform <em>predictably</em> alongside the input, not stay fixed. This distinction becomes critical when we build task-specific pipelines later. I'll be honest — I conflated these two concepts for years, and it caused me real grief in detection tasks where my augmentation pipeline was silently breaking bounding box alignment.</p>
+<p>Subtlety worth flagging. In classification, want invariance — label shouldn't change. In object detection or segmentation, want something different: <strong>equivariance</strong>. Input shifts right → bounding box shifts right too. Output transforms <em>predictably</em> alongside input, not stays fixed. Distinction becomes critical for task-specific pipelines. Conflated these two concepts for years — caused real grief in detection tasks where augmentation pipeline was silently breaking bounding box alignment.</p>
 
-<p>Here's the other way to think about it. Your training set is a tiny sample from the vast distribution of images your model will encounter in the real world. Studio-lit product photos don't prepare a model for dimly-lit warehouse shelves. Augmentation stretches and warps your training distribution to better cover the deployment distribution. It's regularization, but instead of the generic "make weights smaller" approach of weight decay, augmentation injects specific domain knowledge about what shouldn't matter.</p>
+<p>Other way to think about it: training set = tiny sample from vast distribution of images model encounters in real world. Studio-lit product photos don't prepare model for dimly-lit warehouse shelves. Augmentation stretches/warps training distribution to better cover deployment distribution. It's regularization, but instead of generic "make weights smaller" approach of weight decay, augmentation injects specific domain knowledge about what shouldn't matter.</p>
 
 <!-- ═══════════════════════ RUNNING EXAMPLE ═══════════════════════ -->
 <h2>The Running Example: A Tiny Fruit Classifier</h2>
 
-<p>To make this concrete, imagine we're building a classifier that distinguishes three types of fruit: apples, bananas, and grapes. We have exactly 30 training images — 10 per class, all shot on a white background under studio lighting. Our model needs to work in a grocery store where the lighting varies, the fruit is at different angles, and sometimes other objects partially block the view.</p>
+<p>Concrete example: building classifier that distinguishes three fruit types: apples, bananas, grapes. Have exactly 30 training images — 10 per class, all shot on white background under studio lighting. Model needs to work in grocery store where lighting varies, fruit at different angles, sometimes objects partially block view.</p>
 
-<p>With 30 images, a ResNet will memorize the training set in minutes and generalize terribly. It'll learn that "apple" means "red blob in the center of a white image" rather than anything about apple-ness. Our job is to break those shortcuts, one augmentation at a time.</p>
+<p>With 30 images, ResNet memorizes training set in minutes, generalizes terribly. Learns "apple" = "red blob in center of white image" rather than anything about apple-ness. Job: break those shortcuts, one augmentation at a time.</p>
 
 <pre><code># Our starting point — 30 images, no augmentation
 # The model memorizes exact pixel patterns
 # Training accuracy: 100%  |  Test accuracy: 42%
 # That gap is the problem augmentation solves</code></pre>
 
-<p>We'll return to this fruit classifier throughout the post, adding augmentations one by one and watching what changes.</p>
+<p>We'll return to this fruit classifier throughout, adding augmentations one by one, watching what changes.</p>
 
 <!-- ═══════════════════════ GEOMETRIC TRANSFORMS ═══════════════════════ -->
 <h2>Geometric Transforms — Rearranging Where Pixels Live</h2>
 
-<p>Geometric transforms modify the spatial layout of an image. These are the oldest augmentations, dating back to the earliest days of convolutional networks, and they remain the most universally useful. The reason is straightforward: the real world doesn't frame objects the same way twice.</p>
+<p>Geometric transforms modify spatial layout of image. Oldest augmentations, dating back to earliest days of convolutional networks, remain most universally useful. Reason: real world doesn't frame objects same way twice.</p>
 
 <h3>Horizontal Flipping</h3>
 
-<p>The simplest augmentation in existence: mirror the image left to right. For our fruit classifier, an apple photographed from the left side looks the same as one photographed from the right. Applying a horizontal flip with probability 0.5 instantly doubles the effective dataset. Every natural image classification pipeline uses this. It costs almost nothing and the model gets to see every training example from a perspective it hasn't encountered.</p>
+<p>Simplest augmentation: mirror image left to right. For fruit classifier, apple from left side looks same as from right. Horizontal flip with p=0.5 instantly doubles effective dataset. Every natural image classification pipeline uses this. Costs almost nothing, model sees every training example from new perspective.</p>
 
-<p>Vertical flipping is less common because gravity gives most real-world objects a definite "up" and "down." But for aerial imagery, microscopy, and satellite photos — where there's no preferred orientation — vertical flips are fair game. For our fruit, horizontal flips work perfectly. Vertical flips might be fine for apples and grapes, but a banana flipped upside down starts to look weird. The point is this: you have to think about each augmentation in the context of your specific domain.</p>
+<p>Vertical flipping less common — gravity gives most objects definite "up" and "down." But for aerial imagery, microscopy, satellite photos — no preferred orientation — vertical flips fair game. For fruit, horizontal flips work perfectly. Vertical flips maybe fine for apples/grapes, but banana flipped upside down looks weird. Point: think about each augmentation in context of your specific domain.</p>
 
 <div class="callout callout-warning">
   <div class="callout-label">The Flip That Broke My Model</div>
-  <p>Horizontal flipping is safe for most natural images but dangerous for many specific domains. A flipped 6 becomes a 9. A flipped chest X-ray puts the heart on the wrong side. Flipped text is unreadable. A satellite image with flipped compass orientation gives wrong geospatial predictions. The question to ask before every augmentation: <em>does the label survive this transform?</em> If a flip changes the correct answer, you're injecting label noise, not data.</p>
+  <p>Horizontal flipping safe for most natural images but dangerous for specific domains. Flipped 6 becomes 9. Flipped chest X-ray puts heart on wrong side. Flipped text unreadable. Satellite image with flipped compass orientation → wrong geospatial predictions. Question before every augmentation: <em>does label survive this transform?</em> If flip changes correct answer, you're injecting label noise, not data.</p>
 </div>
 
 <h3>Random Crop and Resize</h3>
 
-<p>If I had to pick a single augmentation and throw everything else away, this would be it. <code>RandomResizedCrop</code> selects a random rectangular patch — typically between 8% and 100% of the original image area, with an aspect ratio between 3/4 and 4/3 — and resizes it to the network's input resolution.</p>
+<p>If forced to pick single augmentation, this is it. <code>RandomResizedCrop</code> selects random rectangular patch — typically 8%–100% of original image area, aspect ratio between 3/4 and 4/3 — resizes to network's input resolution.</p>
 
-<p>For our fruit classifier, this is transformative. The model no longer gets to assume the apple is centered. Sometimes it sees the entire apple. Sometimes it sees a tight crop of the skin texture. Sometimes it sees the stem. It learns that all of these partial views belong to the same class. Every modern ImageNet training recipe — ResNet, EfficientNet, ConvNeXt, DeiT — uses this as the primary augmentation. It's not glamorous, but it's responsible for more accuracy than any single architectural innovation.</p>
+<p>For fruit classifier, transformative. Model no longer assumes apple is centered. Sometimes sees entire apple, sometimes tight crop of skin texture, sometimes just stem. Learns all partial views belong to same class. Every modern ImageNet recipe — ResNet, EfficientNet, ConvNeXt, DeiT — uses this as primary augmentation. Not glamorous, but responsible for more accuracy than any single architectural innovation.</p>
 
 <h3>Random Rotation</h3>
 
-<p>Rotate the image by a random angle, typically ±15° for natural images. Small rotations simulate the natural variation in how objects are oriented in the real world — nobody holds their phone perfectly level when photographing fruit. Larger rotations (up to 360°) make sense for pathology slides and satellite imagery where orientation is arbitrary.</p>
+<p>Rotate image by random angle, typically ±15° for natural images. Small rotations simulate natural variation in object orientation — nobody holds phone perfectly level when photographing fruit. Larger rotations (up to 360°) make sense for pathology slides and satellite imagery where orientation is arbitrary.</p>
 
-<p>Watch the borders. Rotating an image creates blank triangular regions at the corners. Most libraries fill these with black pixels, reflected padding, or nearest-pixel interpolation. On small images (32×32 CIFAR), border artifacts can occupy a meaningful fraction of the image. On larger images (224×224 ImageNet), it rarely matters.</p>
+<p>Watch borders. Rotating creates blank triangular regions at corners. Most libraries fill with black pixels, reflected padding, or nearest-pixel interpolation. On small images (32×32 CIFAR), border artifacts occupy meaningful fraction of image. On larger images (224×224 ImageNet), rarely matters.</p>
 
 <h3>Affine and Perspective Transforms</h3>
 
-<p>Affine transforms bundle rotation, scaling, translation, and shearing into a single operation. <strong>Shearing</strong> slants the image along an axis — imagine grabbing the top edge of a photo and sliding it sideways while the bottom stays fixed. Perspective transforms go further, simulating the effect of viewing an object from a different angle.</p>
+<p>Affine transforms bundle rotation, scaling, translation, and shearing into single operation. <strong>Shearing</strong> slants image along axis — grab top edge of photo, slide sideways while bottom stays fixed. Perspective transforms go further, simulating viewing object from different angle.</p>
 
-<p>These are more aggressive than simple rotations and can produce unrealistic distortions if overdone. Keep shear below 10° and perspective distortion below 5%. For our fruit classifier, a small shear simulates photographing fruit from slightly off-center. Push it too far and the banana looks like it's melting.</p>
+<p>More aggressive than simple rotations, can produce unrealistic distortions if overdone. Keep shear below 10°, perspective distortion below 5%. For fruit classifier, small shear simulates photographing fruit from slightly off-center. Push too far and banana looks like it's melting.</p>
 
 <pre><code>import torchvision.transforms as T
 

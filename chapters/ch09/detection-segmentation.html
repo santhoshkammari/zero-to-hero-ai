@@ -529,26 +529,26 @@ Image → CNN backbone → Feature map → Flatten to sequence
 
 <h3>Anchor-Free Detectors — Simplifying the Pipeline</h3>
 
-<p>Parallel to the DETR line, another movement was simplifying detection from a different angle: eliminating anchors.</p>
+<p>Alongside DETR, another movement simplified detection from different direction: remove anchors.</p>
 
-<p>Anchor design is tedious. You need to choose aspect ratios, scales, and counts. Get them wrong for your dataset and you miss objects. Teams commonly run k-means clustering on ground-truth boxes to determine anchor shapes — which works, but it's a hand-tuned step in an otherwise learned pipeline.</p>
+<p>Anchor design is tedious. Need aspect ratios, scales, and counts. Wrong choices miss objects. Teams often run k-means on ground-truth boxes to pick anchors. Works, but remains hand-tuned step in learned pipeline.</p>
 
-<p><strong>CornerNet</strong> (2018) predicted top-left and bottom-right corners as heatmaps, then grouped them into boxes. <strong>CenterNet</strong> (2019) took the simpler path: predict object centers as heatmaps and regress width/height from each center point. <strong>FCOS</strong> (2019) went fully convolutional — each pixel in the feature map predicts its distances to the four edges of the nearest object's bounding box, plus a "centerness" score to down-weight low-quality predictions from pixels far from the object center.</p>
+<p><strong>CornerNet</strong> (2018) predicted top-left and bottom-right corners as heatmaps, then grouped them into boxes. <strong>CenterNet</strong> (2019) simplified further: predict object centers as heatmaps and regress width/height from each center. <strong>FCOS</strong> (2019) went fully convolutional — each feature-map pixel predicts distances to four box edges of nearest object, plus centerness score that down-weights poor predictions far from object center.</p>
 
-<p>These methods are simpler to implement, have fewer hyperparameters, and avoid the anchor-object matching complexity. Modern YOLOv8+ adopted anchor-free designs. The field has largely moved on from explicit anchors — they were a useful intermediate step, but direct regression from points or centers has proved to be enough.</p>
+<p>These methods are simpler, use fewer hyperparameters, and avoid anchor-object matching complexity. Modern YOLOv8+ adopted anchor-free designs. Field has mostly moved past explicit anchors — useful intermediate step, but direct regression from points or centers proved enough.</p>
 
 
 <h3>Detection Evaluation — Metrics That Matter</h3>
 
-<p>Detection evaluation is trickier than classification because you need to simultaneously measure "did we find the right objects?" and "did we put the boxes in the right places?"</p>
+<p>Detection evaluation is harder than classification because metric must answer two questions at once: did model find right objects, and did it place boxes correctly?</p>
 
-<p>For each class, rank all detections by confidence. Walk down the list, computing precision and recall at each step. The area under that precision-recall curve is <strong>Average Precision (AP)</strong> for that class — it captures how well the model ranks true detections above false ones. Average AP across all classes, and you get <strong>mAP</strong> (mean Average Precision), the single number everyone uses to compare detectors.</p>
+<p>For each class, sort detections by confidence. Sweep down list and compute precision and recall at each step. Area under precision-recall curve is <strong>Average Precision (AP)</strong> for that class — measure of how well model ranks true detections above false ones. Average AP across classes gives <strong>mAP</strong> (mean Average Precision), standard detector comparison number.</p>
 
-<p>But mAP depends on the IoU threshold: how tight must a box be to count as correct?</p>
+<p>But mAP depends on IoU threshold: how tight must box be to count as correct?</p>
 
-<p><strong>mAP@0.5</strong> (Pascal VOC convention) counts any box with IoU above 0.5 as correct. Lenient. <strong>mAP@0.75</strong> demands tighter boxes. <strong>mAP@[0.5:0.95]</strong> (COCO convention) averages across ten thresholds — this is the gold standard, because it rewards detectors that produce precisely localized boxes, not just roughly correct ones.</p>
+<p><strong>mAP@0.5</strong> (Pascal VOC) counts boxes with IoU above 0.5 as correct. Lenient. <strong>mAP@0.75</strong> demands tighter boxes. <strong>mAP@[0.5:0.95]</strong> (COCO) averages ten thresholds — gold standard because it rewards precise localization, not rough hits.</p>
 
-<p>COCO also breaks down performance by object size: <strong>AP<sub>S</sub></strong> (small, area &lt; 32²), <strong>AP<sub>M</sub></strong> (medium), <strong>AP<sub>L</sub></strong> (large). This matters because most detectors perform very differently across sizes. A model with great overall mAP might be terrible on small objects. In our warehouse, pallets are large and easy. Loose bolts on the floor are tiny and critical. Always check the size breakdown.</p>
+<p>COCO also reports size breakdown: <strong>AP<sub>S</sub></strong> (small, area &lt; 32²), <strong>AP<sub>M</sub></strong> (medium), <strong>AP<sub>L</sub></strong> (large). This matters because detectors behave very differently by size. Model with strong overall mAP may still fail on small objects. In warehouse, pallets are large and easy. Loose bolts on floor are tiny and critical. Always inspect size breakdown.</p>
 
 <div class="table-responsive">
 <table>
@@ -608,32 +608,32 @@ Image → CNN backbone → Feature map → Flatten to sequence
 </table>
 </div>
 
-<p>These speeds are rough guides — actual performance depends heavily on backbone, input resolution, hardware, and batch size. The key insight is the tradeoff: more computation buys accuracy; simplicity buys speed. And that tradeoff has been narrowing every year.</p>
+<p>These speeds are rough guides. Real performance depends heavily on backbone, input resolution, hardware, and batch size. Core tradeoff remains: more computation buys accuracy; simplicity buys speed. Gap narrows every year.</p>
 
 <!-- ═══════════ Segmentation ═══════════ -->
 <h2>Segmentation</h2>
 
-<p>Detection draws rectangles around things. That's useful, but a rectangle is a blunt instrument. It includes background, ignores shape, and can't tell you which pixel belongs to which object. In our warehouse, a bounding box around a pallet stacked with boxes includes all the empty space between them. If a robotic arm needs to pick up a specific box, it needs to know the exact boundary — not "somewhere inside this rectangle."</p>
+<p>Detection draws rectangles around things. Useful, but rectangle is blunt. It includes background, ignores shape, and cannot say which pixel belongs to which object. In warehouse, one box around stacked pallets includes empty gaps. Robotic arm needs exact boundary, not "somewhere inside rectangle."</p>
 
-<p>Segmentation is pixel-level classification. Instead of one label per image (classification) or one label per box (detection), it assigns a label to every single pixel. The output is a map the same size as the input, where each pixel carries a prediction. And there are three distinct flavors, each answering a different question.</p>
+<p>Segmentation is pixel-level classification. Instead of one label per image or one label per box, it assigns label to every pixel. Output is map same size as input. Each pixel carries prediction. Three flavors exist, each answering different question.</p>
 
 <h3>Three Flavors of Segmentation</h3>
 
 <h4>Semantic Segmentation — "What class is each pixel?"</h4>
 
-<p>Every pixel gets a class label. All forklift pixels are "forklift." All floor pixels are "floor." All worker pixels are "worker." But here's the limitation that tripped me up at first: semantic segmentation can't distinguish between individual objects of the same class. Two workers standing next to each other? They're one blob of "worker" pixels. You know there are worker pixels in that region, but not how many workers or where one ends and another begins.</p>
+<p>Every pixel gets class label. All forklift pixels are "forklift." All floor pixels are "floor." All worker pixels are "worker." Limitation: semantic segmentation cannot separate individual objects of same class. Two nearby workers become one blob of "worker" pixels. You know class in region. You do not know count or exact instance boundaries.</p>
 
-<p>This is fine for tasks where instance identity doesn't matter — autonomous driving (road vs. sidewalk vs. building), satellite land-use mapping, scene parsing. It's not fine when you need to count things or track individuals.</p>
+<p>Fine when instance identity does not matter — autonomous driving, satellite land-use mapping, scene parsing. Not fine when you must count items or track individuals.</p>
 
 <h4>Instance Segmentation — "Which object does each pixel belong to?"</h4>
 
-<p>Each individual object gets its own pixel-perfect mask. Worker 1, Worker 2, Worker 3 — each with a separate boundary. This is harder because the model must both classify pixels and group them into distinct instances. It combines detection (finding individual objects) with segmentation (labeling pixels).</p>
+<p>Each object gets its own pixel-perfect mask. Worker 1, Worker 2, Worker 3 — separate boundaries. Harder task: model must classify pixels and group them into distinct instances. It combines detection with segmentation.</p>
 
-<p>In our warehouse, instance segmentation lets the system count exactly how many pallets are stacked and trace the precise outline of each one — critical for robotic manipulation or inventory management.</p>
+<p>In warehouse, instance segmentation lets system count exact pallet stacks and trace precise outline of each one. Critical for robotic manipulation and inventory management.</p>
 
 <h4>Panoptic Segmentation — "Everything, all at once"</h4>
 
-<p>Panoptic segmentation unifies both flavors. It divides the scene into <strong>stuff</strong> (amorphous regions like floor, walls, sky) and <strong>things</strong> (countable objects like forklifts, workers, pallets). Stuff gets semantic labels. Things get individual instance masks. Every pixel is accounted for — no gaps, no overlaps.</p>
+<p>Panoptic segmentation unifies both flavors. Scene splits into <strong>stuff</strong> (amorphous regions like floor, walls, sky) and <strong>things</strong> (countable objects like forklifts, workers, pallets). Stuff gets semantic labels. Things get individual instance masks. Every pixel is covered — no gaps, no overlaps.</p>
 
 <div class="table-responsive">
 <table>
@@ -648,27 +648,27 @@ Image → CNN backbone → Feature map → Flatten to sequence
 </table>
 </div>
 
-<p>The recent <strong>Mask2Former</strong> architecture deserves a mention here. It treats all three segmentation tasks as the same underlying problem — predict a set of binary masks with associated class labels — using a Transformer decoder with learned mask embeddings. One architecture, three tasks, state-of-the-art results on COCO, ADE20K, and Cityscapes. It's the clearest sign that the field is converging toward unified models.</p>
+<p>Recent <strong>Mask2Former</strong> deserves mention. It treats all three segmentation tasks as one problem — predict set of binary masks with class labels — using Transformer decoder with learned mask embeddings. One architecture. Three tasks. State-of-the-art results on COCO, ADE20K, and Cityscapes. Strong sign field is converging toward unified models.</p>
 
 <h3>FCN — The Starting Point</h3>
 
-<p>Before 2015, pixel-level segmentation meant sliding a patch classifier across the image, one pixel at a time. Thousands of overlapping forward passes for one image. Horrendously slow.</p>
+<p>Before 2015, pixel-level segmentation meant sliding patch classifier across image, one pixel at a time. Thousands of overlapping forward passes per image. Very slow.</p>
 
-<p>The <strong>Fully Convolutional Network</strong> (Long et al., 2015) made one elegant observation: if you replace the fully connected layers in a classification CNN (like VGG) with 1×1 convolutions, the entire network becomes fully convolutional. It can accept inputs of any size and produce a spatial output map in a single forward pass. Instead of "this image is a cat," it outputs "here is a probability map of cat-ness across the image."</p>
+<p><strong>Fully Convolutional Network</strong> (Long et al., 2015) made one key observation: replace fully connected layers in classification CNN with 1×1 convolutions, and whole network becomes fully convolutional. Then it accepts any input size and outputs spatial map in one forward pass. Instead of "this image is a cat," it outputs spatial probability map of cat-ness.</p>
 
-<p>The catch: after repeated pooling, the output map is tiny — perhaps 7×7 for a 224×224 input. FCN recovers spatial resolution using <strong>transposed convolutions</strong> (learned upsampling operations). The paper showed that combining upsampled predictions with features from earlier layers (FCN-32s → FCN-16s → FCN-8s) — a form of skip connections — produced sharper boundaries.</p>
+<p>Catch: repeated pooling makes output tiny — maybe 7×7 for 224×224 input. FCN restores resolution with <strong>transposed convolutions</strong> (learned upsampling). Paper showed that combining upsampled predictions with earlier-layer features (FCN-32s → FCN-16s → FCN-8s) — skip connections — sharpened boundaries.</p>
 
-<p>FCN was the proof of concept that end-to-end pixel prediction was possible. But the outputs were still coarse, and the architecture lacked a principled way to combine low-level spatial detail with high-level semantic understanding. That's where U-Net stepped in.</p>
+<p>FCN proved end-to-end pixel prediction was possible. But outputs stayed coarse, and architecture lacked principled way to mix low-level spatial detail with high-level semantics. Then U-Net arrived.</p>
 
 <h3>U-Net — The Architecture That Conquered Medical Imaging</h3>
 
-<p>If there's one segmentation architecture that deserves to be understood deeply rather than memorized as a name, it's <strong>U-Net</strong> (Ronneberger et al., 2015). Originally designed for biomedical image segmentation where labeled data is painfully scarce, U-Net has become the default segmentation architecture across domains — cells, satellites, industrial inspection, even as the backbone inside diffusion models like Stable Diffusion.</p>
+<p>If one segmentation architecture deserves deep understanding, it is <strong>U-Net</strong> (Ronneberger et al., 2015). Built first for biomedical image segmentation, where labeled data is scarce. Now default segmentation architecture across domains — cells, satellites, industrial inspection, even backbone inside diffusion models like Stable Diffusion.</p>
 
 <h4>The Shape That Gives It a Name</h4>
 
-<p>U-Net has a symmetric structure that, when drawn, looks like the letter U. The left side is the <strong>encoder</strong> (contracting path): stacks of convolutions followed by max-pooling, progressively shrinking the spatial resolution while deepening the feature channels. Each pooling step halves the resolution and doubles the channels. This path captures <em>what</em> is in the image — the semantic content — but loses <em>where</em> things are.</p>
+<p>U-Net has symmetric structure that looks like letter U. Left side is <strong>encoder</strong> (contracting path): convolution stacks plus max-pooling, steadily shrinking spatial resolution while increasing channels. Each pooling step halves resolution and doubles channels. This path captures <em>what</em> image contains, but loses <em>where</em> details.</p>
 
-<p>The right side is the <strong>decoder</strong> (expanding path): transposed convolutions that progressively increase spatial resolution while reducing channels. This path tries to recover the spatial detail that pooling destroyed.</p>
+<p>Right side is <strong>decoder</strong> (expanding path): transposed convolutions that raise spatial resolution while reducing channels. This path tries to recover spatial detail destroyed by pooling.</p>
 
 <pre><code>U-Net Architecture (Simplified)
 
@@ -702,31 +702,31 @@ Input (572×572)
 
 <h4>Skip Connections — Why U-Net Actually Works</h4>
 
-<p>The encoder-decoder structure alone isn't special — FCN had that. The magic of U-Net is the <strong>skip connections</strong>. At each level, the encoder's feature maps are concatenated — not added, concatenated — with the decoder's upsampled feature maps before further convolution.</p>
+<p>Encoder-decoder alone is not special — FCN had that. U-Net magic is <strong>skip connections</strong>. At each level, encoder feature maps are concatenated — not added, concatenated — with decoder upsampled maps before more convolution.</p>
 
-<p>Think about what this does. The bottleneck features (1024 channels, tiny spatial resolution) contain rich semantic information — "this region is a tumor" — but they've lost almost all spatial precision. The encoder features at the same resolution level contain precise spatial information — "there's an edge at these exact coordinates" — but limited semantic understanding. Concatenation gives the decoder <em>both</em>. The high-level "what" from the upsampled deep features, and the fine-grained "where" from the encoder's skip. The subsequent convolution layers learn to fuse them.</p>
+<p>What does this do? Bottleneck features (1024 channels, tiny spatial map) hold strong semantics — "this region is tumor" — but almost no spatial precision. Encoder features at same scale hold exact spatial structure — "edge exists at these coordinates" — but weaker semantics. Concatenation gives decoder <em>both</em>: high-level "what" from deep features and fine-grained "where" from encoder skip. Later convolutions learn fusion.</p>
 
-<p>Without skip connections, the decoder has to reconstruct spatial detail from a heavily compressed bottleneck — it's trying to paint a detailed picture from a blurry sketch. With skip connections, the fine details take a shortcut directly from the encoder. The spatial information never needs to survive the bottleneck. That's why U-Net produces sharp, precise boundaries even with limited training data.</p>
+<p>Without skip connections, decoder reconstructs detail from heavily compressed bottleneck — like painting detailed picture from blurry sketch. With skip connections, fine details shortcut directly from encoder. Spatial information does not need to survive bottleneck. That is why U-Net gives sharp boundaries even with limited data.</p>
 
 <h4>Why Medical Imaging Fell in Love</h4>
 
-<p>Medical imaging has two properties that make U-Net's design almost perfectly suited:</p>
+<p>Medical imaging has two properties that fit U-Net almost perfectly:</p>
 
-<p><strong>Data scarcity.</strong> Getting an expert radiologist to annotate pixel-level masks is expensive and slow. U-Net's skip connections provide strong inductive biases — the architecture "knows" that spatial details from the encoder should inform the decoder — so it can learn effective segmentation from hundreds of images rather than millions.</p>
+<p><strong>Data scarcity.</strong> Expert pixel-level annotation from radiologists is expensive and slow. U-Net's skip connections provide strong inductive bias — architecture already expects encoder spatial detail to guide decoder — so model learns effective segmentation from hundreds of images, not millions.</p>
 
-<p><strong>Boundary precision matters clinically.</strong> A few pixels of error in a tumor boundary can mean the difference between "operable" and "has invaded surrounding tissue." U-Net's direct spatial information transfer preserves the sub-pixel precision needed for clinical decisions.</p>
+<p><strong>Boundary precision matters clinically.</strong> Few pixels of error around tumor can change "operable" to "invaded surrounding tissue." U-Net's direct spatial transfer preserves sub-pixel precision needed for clinical decisions.</p>
 
-<p>Modern variants have extended the idea: <strong>U-Net++</strong> uses nested, dense skip connections that capture features at multiple semantic levels. <strong>Attention U-Net</strong> adds learnable gates to skip connections, letting the model decide which spatial details are worth passing through. <strong>nnU-Net</strong> (no-new-Net) auto-configures all U-Net hyperparameters for any medical segmentation task — preprocessing, architecture depth, patch size, augmentation — and routinely wins medical segmentation challenges without any manual tuning. But the core idea — symmetric encoder-decoder with skip concatenation — remains the beating heart of all of them.</p>
+<p>Modern variants extend idea. <strong>U-Net++</strong> uses nested dense skip connections to capture features at multiple semantic levels. <strong>Attention U-Net</strong> adds learnable gates to skips, so model can decide which spatial details pass through. <strong>nnU-Net</strong> (no-new-Net) auto-configures U-Net hyperparameters for any medical segmentation task — preprocessing, depth, patch size, augmentation — and often wins medical segmentation challenges without manual tuning. Core idea stays same: symmetric encoder-decoder with skip concatenation.</p>
 
 <h3>DeepLab — Seeing More Without Losing Detail</h3>
 
-<p>U-Net's strategy is: lose spatial detail in the encoder, then recover it in the decoder with skip connections. <strong>DeepLab</strong> asks a different question: what if we never lose spatial detail in the first place?</p>
+<p>U-Net strategy: lose spatial detail in encoder, then recover it in decoder with skip connections. <strong>DeepLab</strong> asks different question: what if spatial detail never disappears?</p>
 
 <h4>Atrous (Dilated) Convolutions</h4>
 
-<p>Standard convolutions with pooling or stride reduce spatial resolution to increase the receptive field. You need a big receptive field to understand context — is this pixel part of a car or a building? — but pooling destroys spatial precision. It's a fundamental tension.</p>
+<p>Standard convolutions with pooling or stride reduce spatial resolution to grow receptive field. Large receptive field gives context — is pixel part of car or building? — but pooling destroys spatial precision. Fundamental tension.</p>
 
-<p><strong>Atrous convolutions</strong> (also called dilated convolutions) resolve it by inserting gaps between kernel elements. The name comes from the French "à trous" — "with holes." The kernel samples the input at spaced-out positions instead of contiguous ones:</p>
+<p><strong>Atrous convolutions</strong> (dilated convolutions) solve this by inserting gaps between kernel elements. Name comes from French "à trous" — "with holes." Kernel samples spaced-out positions instead of contiguous ones:</p>
 
 <pre><code>Standard 3×3 conv (receptive field = 3×3):
   X X X        9 parameters, sees 3×3 area
@@ -751,11 +751,11 @@ Dilated 3×3 conv, rate=4 (receptive field = 9×9):
   . . . . . . . . .
   X . . . X . . . X</code></pre>
 
-<p>Same number of parameters. Same computational cost. Much larger receptive field. No resolution loss. The network "sees" more context without any pooling. The tradeoff is memory — you're maintaining higher-resolution feature maps throughout — but for segmentation, where spatial precision is the whole point, that tradeoff is worth it.</p>
+<p>Same parameter count. Same compute cost. Much larger receptive field. No resolution loss. Network sees more context without pooling. Tradeoff is memory — high-resolution feature maps stay alive throughout network — but for segmentation, where spatial precision is whole goal, tradeoff is worth it.</p>
 
 <h4>ASPP — Multi-Scale Context in Parallel</h4>
 
-<p>In our warehouse, a forklift nearby occupies thousands of pixels. The same forklift across the room occupies a hundred. The model needs to recognize both. <strong>ASPP</strong> (Atrous Spatial Pyramid Pooling) handles this by applying atrous convolutions at multiple dilation rates in parallel and concatenating the results:</p>
+<p>In warehouse, nearby forklift may cover thousands of pixels. Same forklift across room may cover hundred. Model must recognize both. <strong>ASPP</strong> (Atrous Spatial Pyramid Pooling) solves this by applying atrous convolutions with multiple dilation rates in parallel and concatenating results:</p>
 
 <pre><code>ASPP Module (DeepLabv3):
 
@@ -770,11 +770,11 @@ The 1×1 conv captures point-level features.
 Global avg pool captures image-level context.
 Concatenation fuses everything.</code></pre>
 
-<p><strong>DeepLabv3+</strong> combines ASPP with a lightweight decoder and a modified backbone (Xception or ResNet with atrous convolutions in later stages). The result: multi-scale context awareness with sharp boundary recovery. It remains a top choice for semantic segmentation on driving scenes and outdoor environments.</p>
+<p><strong>DeepLabv3+</strong> combines ASPP with lightweight decoder and modified backbone (Xception or ResNet with atrous convolutions in later stages). Result: multi-scale context awareness plus sharp boundary recovery. It remains top choice for semantic segmentation in driving scenes and outdoor environments.</p>
 
 <h3>Mask R-CNN — Detection Meets Pixel Masks</h3>
 
-<p>Here's where detection and segmentation converge. <strong>Mask R-CNN</strong> (He et al., 2017) takes Faster R-CNN — the two-stage detector we built up earlier — and adds one elegant branch: for each detected region, predict a binary segmentation mask in addition to the class label and bounding box.</p>
+<p>Here detection and segmentation meet. <strong>Mask R-CNN</strong> (He et al., 2017) takes Faster R-CNN — two-stage detector from earlier — and adds one elegant branch: for each detected region, predict binary segmentation mask along with class label and bounding box.</p>
 
 <pre><code>Mask R-CNN:
 
@@ -788,15 +788,15 @@ Image → Backbone (ResNet + FPN) → Region Proposal Network
                             (softmax)  (regress)  (28×28 binary
                                                    mask per class)</code></pre>
 
-<p>Two design choices make this work well. First, <strong>RoI Align replaces RoI Pooling</strong>. The quantization errors from RoI Pooling that didn't matter for classification become devastating for pixel-level masks. Bilinear interpolation preserves sub-pixel precision. Second, the mask head predicts K separate binary masks — one for each class — and uses the mask corresponding to the predicted class. This <strong>decouples classification from segmentation</strong>. The mask branch doesn't need to figure out what class the object is; it focuses entirely on where the object's pixels are. The classification head handles "what." The mask head handles "where, exactly." Each task gets features optimized for its own job.</p>
+<p>Two design choices make it work. First, <strong>RoI Align replaces RoI Pooling</strong>. Quantization errors that barely hurt classification destroy pixel-level masks. Bilinear interpolation preserves sub-pixel precision. Second, mask head predicts K separate binary masks — one per class — and uses mask for predicted class. This <strong>decouples classification from segmentation</strong>. Mask branch focuses only on pixel location. Classification head handles "what." Mask head handles "where, exactly." Each task gets features tuned for its own job.</p>
 
-<p>Mask R-CNN dominated instance segmentation benchmarks for years. It's a two-stage method, so not the fastest, but it remains the go-to starting point for instance segmentation projects — and it's the foundation of many production systems.</p>
+<p>Mask R-CNN ruled instance segmentation benchmarks for years. It is two-stage, so not fastest, but it remains go-to starting point for instance segmentation projects and foundation for many production systems.</p>
 
 <h3>SAM — Segment Anything, Zero-Shot</h3>
 
-<p>Every architecture we've discussed so far is trained for a specific set of classes. A Cityscapes model segments roads and cars. A medical model segments tumors. Train on one domain, deploy on that domain. <strong>SAM</strong> — the Segment Anything Model (Meta AI, 2023) — broke that paradigm.</p>
+<p>Every architecture so far is trained for fixed class set. Cityscapes model segments roads and cars. Medical model segments tumors. Train on one domain. Deploy on same domain. <strong>SAM</strong> — Segment Anything Model (Meta AI, 2023) — broke that pattern.</p>
 
-<p>SAM is a <strong>foundation model</strong> for segmentation. Trained on over 1 billion masks across 11 million diverse images, it can segment objects it has never been explicitly trained on. No fine-tuning. No domain-specific labels. Give it any image and a prompt — a click, a bounding box, a set of points — and it returns a segmentation mask.</p>
+<p>SAM is segmentation <strong>foundation model</strong>. Trained on more than 1 billion masks across 11 million diverse images, it can segment objects never explicitly trained as classes. No fine-tuning. No domain-specific labels. Give image plus prompt — click, bounding box, point set — and it returns mask.</p>
 
 <pre><code>SAM Architecture:
 
@@ -816,25 +816,25 @@ Image → Backbone (ResNet + FPN) → Region Proposal Network
 │ → Predicted masks + confidence scores                │
 └─────────────────────────────────────────────────────┘</code></pre>
 
-<p>The architecture is deliberately split. The image encoder — a massive Vision Transformer (ViT-Huge) — is computationally expensive but runs once per image, producing reusable embeddings. The prompt encoder and mask decoder are lightweight, so you can interactively try dozens of prompts in real time. Click a point on a worker's helmet, get the helmet mask instantly. Click the worker's torso, get the full-body mask. Draw a box around a pallet stack, get pixel-perfect boundaries for the whole stack.</p>
+<p>Architecture is intentionally split. Image encoder — huge Vision Transformer (ViT-Huge) — is expensive but runs once per image and produces reusable embeddings. Prompt encoder and mask decoder are light, so you can try many prompts interactively in real time. Click worker helmet, get helmet mask. Click torso, get full-body mask. Draw box around pallet stack, get pixel-accurate stack boundary.</p>
 
-<p>This design makes SAM transformative for data annotation. Manually drawing pixel-level masks takes minutes per object. With SAM, a single click produces a usable mask in milliseconds. Teams building segmentation datasets can annotate 10× to 50× faster. SAM's masks can also feed into downstream pipelines — classifiers, trackers, 3D reconstruction systems — where it handles "where" while other models handle "what."</p>
+<p>This design makes SAM transformative for data annotation. Hand-drawing masks takes minutes per object. SAM can produce usable mask from one click in milliseconds. Teams can annotate segmentation datasets 10× to 50× faster. SAM masks also feed downstream pipelines — classifiers, trackers, 3D reconstruction — where SAM handles "where" and other models handle "what."</p>
 
-<p><strong>SAM 2</strong> (2024) extended the paradigm to video, maintaining consistent segmentation masks across frames using a memory mechanism. Prompt an object in one frame, and SAM 2 tracks its mask through the entire video. The move from "segment anything in an image" to "segment anything in a video" is a natural progression that opens up video annotation, video editing, and temporal analysis at scale.</p>
+<p><strong>SAM 2</strong> (2024) extends idea to video, keeping segmentation masks consistent across frames with memory mechanism. Prompt object in one frame, and SAM 2 tracks mask through full video. Move from "segment anything in image" to "segment anything in video" is natural and opens video annotation, editing, and temporal analysis at scale.</p>
 
-<p>I'm still developing my intuition for where SAM's zero-shot ability breaks down. Highly specialized domains — certain medical imaging modalities, unusual industrial inspection scenarios — sometimes need fine-tuning. But the general pattern is clear: foundation models for segmentation work astonishingly well out of the box, and they're reshaping how the field thinks about task-specific training.</p>
+<p>Zero-shot ability still has limits. Highly specialized domains — some medical imaging modalities, unusual industrial inspection cases — may need fine-tuning. But broad pattern is clear: segmentation foundation models work remarkably well out of box, and they are changing how field thinks about task-specific training.</p>
 
 <h3>Loss Functions for Segmentation</h3>
 
-<p>Segmentation losses need to handle a problem that classification losses don't face: extreme class imbalance at the pixel level. In a driving scene, 60% of pixels might be "road," 20% "sky," and the remaining 20% split among a dozen classes. A model that predicts "road" everywhere gets 60% pixel accuracy while being completely useless.</p>
+<p>Segmentation losses face problem classification losses do not: extreme pixel-level class imbalance. In driving scene, maybe 60% of pixels are "road," 20% "sky," and last 20% split across many classes. Model that predicts "road" everywhere gets 60% pixel accuracy and is still useless.</p>
 
-<p><strong>Cross-entropy</strong>, applied per-pixel, is the baseline. It works, but it's dominated by the majority class. You can add class weights to compensate — assign higher loss weight to rare classes — but choosing those weights is another hyperparameter to tune.</p>
+<p><strong>Cross-entropy</strong>, applied per pixel, is baseline. It works, but majority class dominates. You can add class weights — larger loss for rare classes — but then you must tune another hyperparameter.</p>
 
 <pre><code># Weighted cross-entropy
 weights = torch.tensor([0.5, 2.0, 3.0, 5.0, ...])  # rare classes get higher weight
 loss = nn.CrossEntropyLoss(weight=weights)</code></pre>
 
-<p><strong>Dice loss</strong> directly optimizes the overlap between predicted and ground-truth masks. It measures what fraction of the predicted and actual regions coincide, naturally handling class imbalance because it's based on the <em>ratio</em> of overlap to total area — not raw pixel counts:</p>
+<p><strong>Dice loss</strong> directly optimizes overlap between predicted and ground-truth masks. It measures fraction of predicted and actual regions that coincide, and naturally handles class imbalance because it depends on overlap <em>ratio</em>, not raw pixel counts:</p>
 
 <pre><code>Dice coefficient = 2 × |Prediction ∩ Ground Truth|
                    ─────────────────────────────────
@@ -845,9 +845,9 @@ Dice loss = 1 − Dice coefficient
 Perfect overlap → Dice = 1.0 → Loss = 0.0
 No overlap     → Dice = 0.0 → Loss = 1.0</code></pre>
 
-<p>Dice loss is particularly critical in medical imaging, where the region of interest — a lesion, a tumor — might occupy 1–2% of the image. Cross-entropy would happily let the model ignore those pixels. Dice loss forces the model to get the small region right, because the denominator normalizes by region size.</p>
+<p>Dice loss matters especially in medical imaging, where lesion or tumor may cover only 1–2% of image. Cross-entropy can let model ignore those pixels. Dice loss forces attention onto small region because denominator normalizes by region size.</p>
 
-<p>In practice, most production segmentation pipelines combine both: <code>Loss = CE + λ × Dice</code>. Cross-entropy provides stable per-pixel gradients for smooth optimization. Dice loss ensures small regions aren't ignored. Together, they reliably outperform either alone.</p>
+<p>In practice, most production segmentation pipelines combine both: <code>Loss = CE + λ × Dice</code>. Cross-entropy gives stable per-pixel gradients for optimization. Dice loss prevents small regions from being ignored. Together they beat either one alone reliably.</p>
 
 <h3>Segmentation Evaluation</h3>
 
@@ -885,7 +885,7 @@ No overlap     → Dice = 0.0 → Loss = 1.0</code></pre>
 </table>
 </div>
 
-<p>IoU and Dice are related: <code>Dice = 2 × IoU / (1 + IoU)</code>. Dice is always ≥ IoU for the same prediction. For benchmarking, <strong>mIoU</strong> is the standard on PASCAL VOC, Cityscapes, and ADE20K. For medical imaging, Dice score is the convention. Know both, and know when each is expected.</p>
+<p>IoU and Dice are related: <code>Dice = 2 × IoU / (1 + IoU)</code>. Dice is always ≥ IoU for same prediction. For benchmarking, <strong>mIoU</strong> is standard on PASCAL VOC, Cityscapes, and ADE20K. In medical imaging, Dice score is standard. Know both. Know when each is expected.</p>
 
 <h3>The Full Landscape</h3>
 
