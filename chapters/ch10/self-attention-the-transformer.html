@@ -305,9 +305,9 @@
 <!--  OPENING                                                -->
 <!-- ═══════════════════════════════════════════════════════ -->
 
-<p>The Transformer is the architecture behind every frontier model you've heard of — GPT, BERT, LLaMA, Claude. Using transformers is easy; building one from scratch, tracing the numbers through the attention mechanism by hand, is where real understanding lives. This section does that trace.</p>
+<p>Transformer = architecture behind GPT, BERT, LLaMA, Claude. Using transformers easy; building one from scratch, tracing numbers through attention by hand — that's where understanding lives. This section does that trace.</p>
 
-<p>The Transformer was introduced in 2017 by Vaswani et al. in a paper titled "Attention Is All You Need." It was designed for sequence transduction — converting one sequence of symbols into another, like translating English to German. Within two years it had taken over machine translation, language modeling, speech recognition, and eventually computer vision. Every frontier model you've heard of — GPT, BERT, LLaMA, Claude — is a Transformer or a close descendant.</p>
+<p>Introduced 2017 by Vaswani et al. — "Attention Is All You Need." Designed for sequence transduction: converting one symbol sequence into another (English → German). Within two years dominated machine translation, language modeling, speech recognition, computer vision. GPT, BERT, LLaMA, Claude — all Transformers or close descendants.</p>
 
 
 
@@ -317,15 +317,15 @@
 
 <h2>Why a Sequence Needs to Talk to Itself</h2>
 
-<p>Let's start with a concrete problem. Imagine we're building a small translation system. Our input is the English sentence "The cat sat on the mat because it was tired." We want to translate it to Spanish.</p>
+<p>Concrete problem. Building small translation system. Input: English sentence "The cat sat on the mat because it was tired." Goal: translate to Spanish.</p>
 
-<p>When the model reaches the word "it," something important needs to happen. The model needs to figure out what "it" refers to. Is it the cat? The mat? The act of sitting? In Spanish, the pronoun has to agree in gender with the referent — <em>él</em> for the cat (masculine), <em>ella</em> for the mat if treated as feminine. Getting this wrong produces a grammatically broken translation.</p>
+<p>When model reaches "it," must figure out what "it" refers to. Cat? Mat? Act of sitting? In Spanish, pronoun must agree in gender with referent — <em>él</em> for cat (masculine), <em>ella</em> for mat (feminine). Wrong choice = grammatically broken translation.</p>
 
-<p>In an RNN, the information about "cat" has to survive a chain of hidden states — one hop per word — slowly decaying as it travels forward through "sat," "on," "the," "mat," "because." By the time the RNN reaches "it," the signal from "cat" six words back is faint. The signal from "mat," two words back, is stronger. The model might pick "mat" not because it's semantically correct, but because it's closer. That's a failure of architecture, not of learning.</p>
+<p>In RNN, information about "cat" must survive chain of hidden states — one hop per word — decaying through "sat," "on," "the," "mat," "because." By time RNN reaches "it," signal from "cat" six words back is faint. Signal from "mat," two words back, stronger. Model picks "mat" not because semantically correct, but because closer. Architecture failure, not learning failure.</p>
 
-<p><strong>Self-attention</strong> offers a different approach. Instead of passing messages one word at a time along a chain, what if every word could directly look at every other word in the sentence, all at once? When processing "it," the model computes a relevance score between "it" and every other word — "cat," "mat," "sat," "soft," all of them — in a single operation. If the learned weights are good, "cat" gets a high relevance score and "it" absorbs information from "cat" directly. One hop. No chain. No decay.</p>
+<p><strong>Self-attention</strong> — different approach. Every word directly looks at every other word, all at once. When processing "it," model computes relevance score between "it" and every other word — "cat," "mat," "sat," all of them — single operation. Good learned weights → "cat" gets high relevance score → "it" absorbs information from "cat" directly. One hop. No chain. No decay.</p>
 
-<p>That's the core idea. Replace the sequential chain with a fully-connected graph where every word can attend to every other word in one step. The rest of this section is about how to make that idea precise and practical.</p>
+<p>Core idea: replace sequential chain with fully-connected graph where every word attends to every other word in one step. Rest of section makes this precise and practical.</p>
 
 
 <!-- ═══════════════════════════════════════════════════════ -->
@@ -334,27 +334,27 @@
 
 <h2>The Filing Cabinet: Query, Key, and Value from First Principles</h2>
 
-<p>To build up the attention mechanism, I want to start with a physical analogy that I'll keep coming back to throughout this section.</p>
+<p>Physical analogy for attention mechanism — will reference throughout this section.</p>
 
-<p>Imagine a room full of filing cabinets. Each cabinet drawer has a label on the front — something like "Animals," "Actions," "Locations." Inside the drawer are actual documents: detailed notes, data, context. You walk into the room holding a question written on a slip of paper: "What kind of creature is being discussed?"</p>
+<p>Room full of filing cabinets. Each drawer has label — "Animals," "Actions," "Locations." Inside: actual documents, data, context. You walk in holding question on slip of paper: "What creature is being discussed?"</p>
 
-<p>You compare your question against every drawer label. "Animals" — strong match, you pull that drawer open. "Locations" — weak match, you peek inside but don't take much. "Weather" — no match, you skip it entirely. Then you take a weighted mix of the contents: mostly from the "Animals" drawer, a little from "Locations," nothing from "Weather."</p>
+<p>Compare question against every drawer label. "Animals" — strong match, pull open. "Locations" — weak match, peek inside. "Weather" — no match, skip. Take weighted mix of contents: mostly from "Animals" drawer, little from "Locations," nothing from "Weather."</p>
 
-<p>In self-attention, every word in the sentence plays all three roles at the same time. Every word is a drawer with a label and contents. And every word is also a person walking through the room with a question.</p>
+<p>In self-attention, every word plays all three roles simultaneously. Every word is drawer with label and contents. Every word also person walking through room with question.</p>
 
-<p>The question is called a <strong>Query (Q)</strong>. The drawer label is called a <strong>Key (K)</strong>. The contents inside the drawer are called a <strong>Value (V)</strong>.</p>
+<p>Question = <strong>Query (Q)</strong>. Drawer label = <strong>Key (K)</strong>. Contents inside = <strong>Value (V)</strong>.</p>
 
-<p>Here's the part that confused me for a long time: all three — Q, K, and V — come from the <em>same</em> input. The same word embedding gets transformed three different ways through three different learned weight matrices. Each matrix creates a different "view" of the same word.</p>
+<p>Key insight: all three — Q, K, V — come from <em>same</em> input. Same word embedding transformed three different ways through three learned weight matrices. Each matrix creates different "view" of same word.</p>
 
-<p>Let's make this concrete with our translation sentence. Suppose each word starts as a vector of numbers — an embedding. The word "cat" might be represented as some vector <strong>x</strong><sub>cat</sub>. We create three versions of it:</p>
+<p>Concrete example with translation sentence. Each word starts as vector — an embedding. Word "cat" = some vector <strong>x</strong><sub>cat</sub>. Create three versions:</p>
 
 <pre><code>q_cat = x_cat × W_Q    (the question "cat" asks of other words)
 k_cat = x_cat × W_K    (what "cat" advertises about itself)
 v_cat = x_cat × W_V    (what "cat" actually provides when attended to)</code></pre>
 
-<p>W_Q, W_K, and W_V are weight matrices that the model learns during training. Through backpropagation, the model figures out what makes a good question (W_Q), what makes a useful label (W_K), and what information is worth passing along (W_V). The entire attention mechanism is learned linear projections plus a dot product. No hand-crafted features. No special-purpose rules.</p>
+<p>W_Q, W_K, W_V = weight matrices learned during training. Backpropagation figures out what makes good question (W_Q), useful label (W_K), and worth passing along (W_V). Entire attention mechanism = learned linear projections + dot product. No hand-crafted features. No special rules.</p>
 
-<p>I'll be honest — when I first encountered Q, K, V, I thought they must be three fundamentally different kinds of information. It took me a while to internalize that they're three <em>learned perspectives</em> on the same input. The model decides, through training, what to ask, what to advertise, and what to share. That's what makes it so flexible.</p>
+<p>Common misconception: Q, K, V seem like three fundamentally different kinds of information. They're not — they're three <em>learned perspectives</em> on same input. Model decides through training what to ask, what to advertise, what to share. That's what makes it flexible.</p>
 
 
 <!-- ═══════════════════════════════════════════════════════ -->
@@ -363,19 +363,19 @@ v_cat = x_cat × W_V    (what "cat" actually provides when attended to)</code></
 
 <h2>Scaled Dot-Product Attention — With Actual Numbers</h2>
 
-<p>The full attention equation fits on one line:</p>
+<p>Full attention equation fits on one line:</p>
 
 <pre><code>Attention(Q, K, V) = softmax(Q K⊤ / √d_k) V</code></pre>
 
-<p>Four operations, chained together. Rather than explain them abstractly, let's trace through them with actual numbers. We'll use three words from our translation sentence — "The," "cat," "sat" — each represented as a 4-dimensional embedding. Small enough to work through by hand.</p>
+<p>Four operations chained. Trace through with actual numbers. Three words — "The," "cat," "sat" — each 4-dimensional embedding. Small enough to work by hand.</p>
 
-<p>Our input matrix X has three rows (one per word) and four columns (one per dimension):</p>
+<p>Input matrix X: three rows (one per word), four columns (one per dimension):</p>
 
 <pre><code>X = [[1.0, 0.0, 1.0, 0.0],    ← "The"
      [0.0, 2.0, 0.0, 2.0],    ← "cat"
      [1.0, 1.0, 1.0, 1.0]]    ← "sat"</code></pre>
 
-<p>We need three weight matrices, W_Q, W_K, and W_V, each 4×4. In a real model these are learned. Here, we'll pick specific values so the math stays clean:</p>
+<p>Need three weight matrices W_Q, W_K, W_V, each 4×4. Real model learns these. Here we pick specific values for clean math:</p>
 
 <pre><code class="language-python">import torch, math
 
@@ -389,7 +389,7 @@ Q = X @ W_Q   # each word's "question"
 K = X @ W_K   # each word's "label"
 V = X @ W_V   # each word's "contents"</code></pre>
 
-<p>After the matrix multiplications, we get:</p>
+<p>After matrix multiplications:</p>
 
 <pre><code>Q = [[2, 0, 1, 1],    ← "The" is asking this question
      [0, 4, 2, 2],    ← "cat" is asking this question
@@ -403,7 +403,7 @@ V = [[2, 1, 0, 1],    ← "The" will provide this
      [0, 2, 4, 2],    ← "cat" will provide this
      [2, 2, 2, 2]]    ← "sat" will provide this</code></pre>
 
-<p>Now, the first real operation: compute Q × K⊤. This gives us a 3×3 matrix where entry (i, j) is the dot product of word i's query with word j's key. A large value means "word i is looking for something that word j has."</p>
+<p>First real operation: Q × K⊤. Gives 3×3 matrix where entry (i, j) = dot product of word i's query with word j's key. Large value means "word i looking for something word j has."</p>
 
 <pre><code>scores = Q @ K.T
 
@@ -411,9 +411,9 @@ scores = [[ 2, 12,  8],    ← "The"'s question matched strongly with "cat" (12)
           [ 4,  8,  8],    ← "cat"'s question matched equally with "cat" and "sat"
           [ 8, 16, 16]]    ← "sat"'s question matched very strongly with "cat" and "sat"</code></pre>
 
-<p>Every word has been compared against every other word. That's a full pairwise comparison — three words means nine scores. For a 1,000-word document, that's one million scores. For a 100,000-token context window, it's ten billion. This is both the power and the cost of self-attention.</p>
+<p>Every word compared against every other. Full pairwise comparison — three words = nine scores. 1,000-word document = one million scores. 100,000-token context = ten billion. Both power and cost of self-attention.</p>
 
-<p>But we can't feed these raw scores into softmax yet. The numbers are too large. Here's why that matters.</p>
+<p>Can't feed raw scores into softmax yet. Numbers too large. Here's why that matters.</p>
 
 
 <!-- ═══════════════════════════════════════════════════════ -->
@@ -422,24 +422,24 @@ scores = [[ 2, 12,  8],    ← "The"'s question matched strongly with "cat" (12)
 
 <h2>Why We Divide by √d_k</h2>
 
-<p>I'll be honest — I glossed over this scaling factor for months. "Divide by square root of the dimension." Okay, sure, whatever. It seemed like a minor implementation detail. It's not. It's the difference between a model that learns and a model that's frozen.</p>
+<p>This scaling factor isn't minor detail. Difference between model that learns and model that's frozen.</p>
 
-<p>Here's the problem. When we compute the dot product of two vectors, the result's magnitude depends on how many dimensions those vectors have. If Q and K each have elements drawn from a standard normal distribution (mean 0, variance 1), the dot product of two d_k-dimensional vectors has a variance of d_k. Not 1. Not something small. d_k.</p>
+<p>Problem: dot product magnitude depends on vector dimensionality. Q and K elements drawn from standard normal (mean 0, variance 1) → dot product of two d_k-dimensional vectors has variance d_k. Not 1. d_k.</p>
 
-<p>Let me make this concrete. With d_k = 4 (our toy example), the standard deviation of the dot products is √4 = 2. Our scores range from 2 to 16 — spread out, but manageable. Now imagine d_k = 64, a typical value in real models. The standard deviation becomes √64 = 8. Scores might range from -20 to +25.</p>
+<p>Concrete: d_k = 4 (toy example), standard deviation = √4 = 2. Scores range 2–16, manageable. Now d_k = 64 (typical real model), standard deviation = √64 = 8. Scores might range -20 to +25.</p>
 
-<p>Feed those into softmax and watch what happens:</p>
+<p>Feed those into softmax:</p>
 
 <pre><code>softmax([20, 1, -15]) ≈ [1.000, 0.000, 0.000]</code></pre>
 
-<p>One score dominates completely. The softmax has <em>saturated</em> — it's pushed all its probability mass onto a single position. Every other position gets essentially zero weight. The gradient of softmax at these extreme values is vanishingly small. The model can't learn to redistribute attention. It's stuck in whatever pattern it fell into early in training.</p>
+<p>One score dominates completely. Softmax <em>saturated</em> — all probability mass on single position. Every other position gets zero weight. Gradient of softmax at these extremes vanishingly small. Model can't learn to redistribute attention. Stuck in whatever pattern it fell into early in training.</p>
 
-<p>Dividing by √d_k rescales the variance back to approximately 1, regardless of the dimension:</p>
+<p>Dividing by √d_k rescales variance back to ~1, regardless of dimension:</p>
 
 <pre><code>Variance of raw dot product:    d_k
 Variance after dividing by √d_k: d_k / d_k = 1</code></pre>
 
-<p>Now the softmax operates in a healthy region where multiple positions can share attention and gradients actually flow. Let's see this with our example:</p>
+<p>Now softmax operates in healthy region — multiple positions share attention, gradients flow. With our example:</p>
 
 <pre><code>scaled_scores = scores / √4 = scores / 2
 
@@ -447,7 +447,7 @@ scaled_scores = [[1.0, 6.0, 4.0],
                  [2.0, 4.0, 4.0],
                  [4.0, 8.0, 8.0]]</code></pre>
 
-<p>Apply softmax row by row. Each row becomes a probability distribution that sums to 1:</p>
+<p>Apply softmax row by row. Each row becomes probability distribution summing to 1:</p>
 
 <pre><code>weights = softmax(scaled_scores, dim=-1)
 
@@ -455,11 +455,11 @@ weights ≈ [[0.006, 0.880, 0.114],    ← "The" puts 88% on "cat," 11% on "sat"
            [0.035, 0.483, 0.483],    ← "cat" splits evenly between itself and "sat"
            [0.002, 0.499, 0.499]]    ← "sat" splits evenly between "cat" and itself</code></pre>
 
-<p>Without scaling, "The"'s raw scores [2, 12, 8] would softmax to approximately [0.00005, 0.982, 0.018] — nearly 100% on "cat" with almost nothing left for "sat." With scaling, "sat" gets a meaningful 11% weight. That matters because the gradient now flows to that position too, and the model can learn finer-grained attention patterns.</p>
+<p>Without scaling, "The"'s raw scores [2, 12, 8] softmax to ~[0.00005, 0.982, 0.018] — nearly 100% on "cat." With scaling, "sat" gets meaningful 11% weight. Gradient now flows to that position too, model learns finer-grained attention patterns.</p>
 
-<p>In real models with d_k = 64 or d_k = 128, the effect without scaling is catastrophic. The Vaswani et al. paper puts it plainly: "We suspect that for large values of d_k, the dot products grow large in magnitude, pushing the softmax function into regions where it has extremely small gradients."</p>
+<p>In real models with d_k = 64 or 128, effect without scaling is catastrophic. Vaswani et al.: "For large values of d_k, dot products grow large in magnitude, pushing softmax into regions where it has extremely small gradients."</p>
 
-<p>The last operation: multiply the attention weights by V. Each output row is a weighted blend of all the value vectors:</p>
+<p>Last operation: multiply attention weights by V. Each output row = weighted blend of all value vectors:</p>
 
 <pre><code>output = weights @ V
 
@@ -471,9 +471,9 @@ weights ≈ [[0.006, 0.880, 0.114],    ← "The" puts 88% on "cat," 11% on "sat"
 
 "sat" ≈ [1.00, 2.00, 3.00, 2.00]</code></pre>
 
-<p>Look at what happened to "The." It started as [1, 0, 1, 0] and ended up as approximately [0.24, 1.99, 3.75, 1.99]. It absorbed information heavily from "cat" — 88% of "cat"'s value vector is blended in. The output for "The" is no longer about "The" alone. It's a <strong>context-aware representation</strong> — a blend of the entire sentence, weighted by what the model judged to be relevant.</p>
+<p>"The" started as [1, 0, 1, 0], ended up ~[0.24, 1.99, 3.75, 1.99]. Absorbed information heavily from "cat" — 88% of "cat"'s value vector blended in. Output for "The" no longer about "The" alone. It's <strong>context-aware representation</strong> — blend of entire sentence, weighted by relevance.</p>
 
-<p>That's self-attention. The filing cabinet analogy holds: "The" walked through the room, compared its question against every drawer label, and pulled out a weighted mix of contents. Let's keep that analogy in mind — we'll come back to it.</p>
+<p>That's self-attention. Filing cabinet analogy holds: "The" walked through room, compared question against every drawer label, pulled out weighted mix of contents.</p>
 
 
 <!-- ═══════════════════════════════════════════════════════ -->
@@ -482,25 +482,25 @@ weights ≈ [[0.006, 0.880, 0.114],    ← "The" puts 88% on "cat," 11% on "sat"
 
 <h2>Multi-Head Attention: Looking in Many Directions at Once</h2>
 
-<p>There's a limitation in what we built so far. A single attention computation produces one set of weights — one probability distribution per word. That means each word can express only one pattern of relevance at a time.</p>
+<p>Limitation: single attention computation produces one set of weights — one probability distribution per word. Each word can express only one relevance pattern at a time.</p>
 
-<p>But consider our sentence again: "The cat sat on the mat because it was tired." When processing "it," the model simultaneously needs to figure out several things. It needs <strong>coreference</strong> — "it" refers to "cat." It needs <strong>syntactic structure</strong> — "it" is the subject of "was." It needs <strong>semantic role</strong> — "tired" is a predicate about "it." Asking one softmax distribution to capture all of these relationships at once is like asking a single person to look left, right, and behind them simultaneously.</p>
+<p>Consider "The cat sat on the mat because it was tired." Processing "it" — model needs several things simultaneously. <strong>Coreference</strong> — "it" refers to "cat." <strong>Syntactic structure</strong> — "it" is subject of "was." <strong>Semantic role</strong> — "tired" predicates about "it." One softmax distribution capturing all relationships = asking one person to look left, right, and behind simultaneously.</p>
 
-<p><strong>Multi-head attention</strong> solves this by running multiple attention operations in parallel, each with its own set of W_Q, W_K, W_V weight matrices. Each parallel computation is called a <strong>head</strong>. Each head gets to develop its own notion of what makes a good question, a good label, and a good response.</p>
+<p><strong>Multi-head attention</strong> solves this — multiple attention operations in parallel, each with own W_Q, W_K, W_V. Each parallel computation = <strong>head</strong>. Each head develops own notion of good question, good label, good response.</p>
 
-<p>The mechanics work like this. Instead of one attention operation with d_model = 512 dimensions, we split into h = 8 heads, each operating on d_k = 512 / 8 = 64 dimensions. Each head has its own projection matrices, runs its own attention computation, and produces its own output. Then all the head outputs get concatenated back into a 512-dimensional vector and multiplied by one final weight matrix W_O.</p>
+<p>Mechanics: instead of one attention with d_model = 512, split into h = 8 heads, each on d_k = 512/8 = 64 dimensions. Each head has own projection matrices, runs own attention, produces own output. All head outputs concatenated back to 512-dim vector, multiplied by final weight matrix W_O.</p>
 
 <pre><code>MultiHead(Q, K, V) = Concat(head₁, head₂, ..., headₕ) × W_O
 
 where headᵢ = Attention(X × Wᵢ_Q, X × Wᵢ_K, X × Wᵢ_V)</code></pre>
 
-<p>Going back to our filing cabinet analogy: a single head is one person searching the room with one question. Multi-head attention sends eight people into the room, each with a different question. One asks about coreference. Another asks about syntactic role. A third asks about positional proximity. They each come back with their own findings, and the results are combined.</p>
+<p>Filing cabinet analogy: single head = one person searching room with one question. Multi-head = eight people, each with different question. One asks coreference. Another syntactic role. Third asks positional proximity. Each returns findings, results combined.</p>
 
-<p>Research has confirmed that heads do specialize. Clark et al. (2019) visualized BERT's attention heads and found that specific heads consistently track subject-verb agreement, others track coreference chains, and others attend primarily to adjacent tokens for local syntax. I still can't always predict which patterns different heads will learn for a given task — the model figures that out on its own. But the specialization is real and measurable.</p>
+<p>Research confirms heads specialize. Clark et al. (2019) visualized BERT heads — specific heads consistently track subject-verb agreement, others track coreference chains, others attend to adjacent tokens for local syntax. Specialization is real and measurable.</p>
 
-<p>An important detail that surprised me: the total computation cost of multi-head attention is essentially the same as single-head attention with the full d_model dimensions. You're not paying more — you're reorganizing the same computation to be more expressive. Each head works in a 64-dimensional subspace instead of the full 512, so the per-head cost is smaller. Eight heads at 64 dimensions equals one head at 512 dimensions, plus one extra matrix multiplication (W_O) at the end. It's a free expressivity upgrade.</p>
+<p>Important: total compute cost of multi-head ≈ same as single-head with full d_model dimensions. Not paying more — reorganizing same computation for more expressiveness. Each head works in 64-dim subspace instead of full 512. Eight heads at 64 dims = one head at 512, plus one extra W_O multiplication. Free expressivity upgrade.</p>
 
-<p>In practice, you don't create eight separate weight matrices. You use one big projection of shape (512, 512), then reshape and transpose the tensor to split it into heads. Mathematically identical, but much faster on a GPU because it's one large matrix operation instead of eight small ones.</p>
+<p>In practice, don't create eight separate weight matrices. Use one big (512, 512) projection, reshape and transpose to split into heads. Mathematically identical, much faster on GPU — one large matmul instead of eight small ones.</p>
 
 
 <!-- ═══════════════════════════════════════════════════════ -->
