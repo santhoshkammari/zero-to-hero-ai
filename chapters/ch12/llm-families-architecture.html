@@ -302,44 +302,44 @@
 <!-- ═══════════ End Table of Contents ═══════════ -->
 <!-- ═══════════════════════════════════════════ OPENING ═══════════════════════════════════════════ -->
 
-<p>Every week some lab releases a new model — LLaMA-something, Mistral-whatever, yet another GPT variant. What's remarkable is that despite coming from different labs with different budgets, they've all converged on a surprisingly similar set of internal components. Understanding those shared components — and where each family diverges — is what this section is about.</p>
+<p>Every week, new model drops — LLaMA-something, Mistral-whatever, another GPT variant. Different labs, different budgets — all converged on same internal components. This section: those shared components, where families diverge.</p>
 
 
 <!-- ═══════════════════════════════════════════ THE DECODER-ONLY BET ═══════════════════════════════════════════ -->
 <h2>The Decoder-Only Bet</h2>
 
-<p>Let me set up a scenario we'll return to throughout. Imagine you're an ML engineer at a small startup called TinyChat. Your job: build a chatbot that answers customer questions for a restaurant chain. You have a modest GPU budget and a launch deadline. You open Hugging Face, type "language model," and get hit with thousands of results. Where do you even start?</p>
+<p>Scenario: ML engineer at small startup TinyChat. Job: build chatbot for restaurant chain. Modest GPU budget, launch deadline. Open Hugging Face, type "language model" — thousands of results. Where to start?</p>
 
-<p>The first decision that narrows the field is architecture type. The original 2017 transformer had two halves — an encoder that reads input and a decoder that produces output. After that paper, the field split into three camps, each keeping different halves of the blueprint.</p>
+<p>First decision narrows field: architecture type. Original 2017 transformer had two halves — encoder reads input, decoder produces output. Field split into three camps, each keeping different halves.</p>
 
-<p><strong>Encoder-only models</strong> (BERT and its descendants) kept the encoder half. They read the entire input at once — every token can see every other token, in both directions. This bidirectional view makes them exceptional at <em>understanding</em> text: classifying sentiment, tagging named entities, computing sentence embeddings. But they have no built-in mechanism for generating new tokens one after another.</p>
+<p><strong>Encoder-only models</strong> (BERT family) kept encoder half. Read full input at once — every token sees every other token, both directions. Bidirectional view → exceptional at <em>understanding</em> text: sentiment classification, NER, sentence embeddings. No built-in generation mechanism.</p>
 
-<p><strong>Encoder-decoder models</strong> (T5, BART) kept both halves. The encoder reads the input, the decoder generates the output. This is the most faithful descendant of the original transformer. For a while, T5's elegant "text-to-text" framing — where every task is reformulated as "translate this input into that output" — seemed like it might win.</p>
+<p><strong>Encoder-decoder models</strong> (T5, BART) kept both halves. Encoder reads input, decoder generates output. Most faithful descendant of original transformer. T5's "text-to-text" framing — every task reformulated as "translate this input into that output" — looked like winner for a while.</p>
 
-<p><strong>Decoder-only models</strong> (GPT and its descendants) kept the decoder half. They process tokens left-to-right, each token attending only to what came before it. This <strong>causal</strong> attention pattern — "I can see the past but not the future" — is what makes autoregressive generation possible. You predict one token, append it, predict the next, and so on.</p>
+<p><strong>Decoder-only models</strong> (GPT family) kept decoder half. Process tokens left-to-right, each token attends only to past. <strong>Causal</strong> attention — see past, not future — enables autoregressive generation. Predict one token, append, predict next.</p>
 
-<p>For your TinyChat project, you need a model that <em>generates</em> answers. That rules out encoder-only. So the real question is: encoder-decoder or decoder-only?</p>
+<p>TinyChat needs to <em>generate</em> answers. Rules out encoder-only. Real question: encoder-decoder or decoder-only?</p>
 
-<p>Decoder-only won, and the reasons are worth understanding because they shaped the entire LLM landscape. First, one stack is easier to scale than two. When you're pushing model size from 1 billion to 100 billion parameters, every architectural simplification matters for distributed training. Second, the autoregressive training objective — predict the next token — turns out to be a universal task interface. Want translation? Format the prompt as "Translate to French: [text]". Want classification? "Is this review positive or negative? [text]". You don't need an encoder-decoder boundary when prompting handles the routing. Third, decoder-only models get a <strong>KV cache</strong> — during generation, you compute each token's key-value pair once and reuse it for all subsequent tokens. This makes inference efficient. Encoder-decoder models need to re-process the full input through the encoder, which is wasteful for long conversations.</p>
+<p>Decoder-only won. Reasons shaped entire LLM landscape. First: one stack scales easier than two — every simplification matters from 1B to 100B parameters. Second: autoregressive objective (predict next token) is universal task interface. Translation? "Translate to French: [text]". Classification? "Is this review positive or negative?". No encoder-decoder boundary needed when prompting handles routing. Third: decoder-only gets <strong>KV cache</strong> — compute each token's key-value pair once, reuse for all subsequent tokens. Efficient inference. Encoder-decoder re-processes full input through encoder — wasteful for long conversations.</p>
 
-<p>I'll be honest — I resisted this for a while. Encoder-decoder felt more "principled" to me, more like the clean machine translation architecture from the original paper. But engineering won over elegance. One stack, scaled far enough, with a flexible enough training objective, ate the world.</p>
+<p>Encoder-decoder felt more principled — clean machine translation architecture from original paper. Engineering beat elegance. One stack, scaled far enough, flexible training objective, ate the world.</p>
 
-<p>That said, encoder-only models aren't dead — they're specialized. If TinyChat needed to classify customer complaints into categories (billing, food quality, delivery), a 110M-parameter DeBERTa would outperform a 7B decoder model at a fraction of the cost. Right tool, right problem.</p>
+<p>Encoder-only isn't dead — specialized. TinyChat needs complaint classification (billing, food quality, delivery)? 110M DeBERTa beats 7B decoder at fraction of cost. Right tool, right problem.</p>
 
 <!-- ═══════════════════════════════════════════ GPT LINEAGE ═══════════════════════════════════════════ -->
 <h2>The GPT Lineage — Scaling as a Strategy</h2>
 
-<p>With decoder-only established as the winning architecture type, the question became: what do you do with it? OpenAI's answer was startling in its simplicity. Make it bigger. Train it longer. That's it.</p>
+<p>Decoder-only established as winner. Question: what to do with it? OpenAI's answer: make it bigger, train it longer.</p>
 
-<p>The GPT story is a story about removing constraints, one generation at a time. Let's trace it through TinyChat's eyes — imagine you're building your chatbot in each era and see what each GPT generation would have given you.</p>
+<p>GPT story: removing constraints, one generation at a time. Trace through each era — what each GPT gave you.</p>
 
-<p><strong>GPT-1</strong> (2018, 117 million parameters) proved a single idea: if you pre-train a decoder-only transformer on a large book corpus using next-token prediction, and then fine-tune it on a specific task, it outperforms models that were trained from scratch on that task alone. The architecture was modest — 12 layers, 12 attention heads, 768-dimensional hidden states. If you were building TinyChat in 2018, you'd download GPT-1, fine-tune it on your restaurant Q&A data, and get reasonable results. But you'd <em>need</em> that fine-tuning step. The base model alone couldn't answer questions — it would ramble incoherently about whatever came next in its training distribution.</p>
+<p><strong>GPT-1</strong> (2018, 117M params) proved one idea: pre-train decoder-only transformer on book corpus with next-token prediction, fine-tune on specific task, beats scratch-trained models. Architecture: 12 layers, 12 heads, 768-dim hidden states. 2018: download GPT-1, fine-tune on restaurant Q&amp;A, get reasonable results. Fine-tuning required — base model rambles incoherently without it.</p>
 
-<p><strong>GPT-2</strong> (2019, 1.5 billion parameters) changed that calculus. The paper's title said it all: "Language Models are Unsupervised Multitask Learners." Scale the model 13× and train it on a larger, more diverse web corpus (WebText, ~40GB), and something unexpected happens — the model starts performing tasks it was never explicitly trained for. Summarization, translation, question answering, all at respectable quality, without a single gradient update on task-specific data. This was <strong>zero-shot</strong> capability emerging from scale. For TinyChat in 2019, you could prompt GPT-2 with "Q: What are your hours? A:" and get a coherent answer. Not great, but coherent. Without any restaurant-specific training.</p>
+<p><strong>GPT-2</strong> (2019, 1.5B params) changed calculus. Title: "Language Models are Unsupervised Multitask Learners." Scale 13×, train on larger web corpus (WebText, ~40GB) — model performs tasks never explicitly trained for. Summarization, translation, QA — respectable quality, zero gradient updates on task data. <strong>Zero-shot</strong> capability from scale. 2019: prompt with "Q: What are your hours? A:" — coherent answer. Not great, but coherent. No restaurant-specific training.</p>
 
-<p>OpenAI initially withheld GPT-2's full weights, worried about misuse. That decision — and the debate it sparked — was the first serious public conversation about responsible AI release. We'll come back to that.</p>
+<p>OpenAI withheld GPT-2 full weights, worried about misuse. That debate: first serious public conversation about responsible AI release.</p>
 
-<p><strong>GPT-3</strong> (2020, 175 billion parameters) made the leap to <strong>few-shot in-context learning</strong>. The key discovery: if you give the model a few examples of the task you want, right there in the prompt, it figures out the pattern and continues accordingly. No fine-tuning. No gradient updates. The task specification lives entirely in the prompt.</p>
+<p><strong>GPT-3</strong> (2020, 175B params) leaped to <strong>few-shot in-context learning</strong>. Key discovery: give model few examples in prompt, it infers pattern and continues. No fine-tuning. No gradient updates. Task spec lives in prompt.</p>
 
 <pre><code># The GPT-3 breakthrough: few-shot in-context learning
 # No training required — the examples ARE the task specification

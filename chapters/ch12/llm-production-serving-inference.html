@@ -420,15 +420,15 @@ Time step 5: [Req D (token 1), Req B (token 5), Req E (prefill)]</code></pre>
 
 <h2>PagedAttention: Virtual Memory for Attention</h2>
 
-<p>The KV cache memory problem has a familiar shape. We have a scarce resource (GPU memory) shared among many consumers (concurrent requests) with unpredictable lifetimes (we don&rsquo;t know how long each response will be). Some requests finish early and free up space. New requests arrive and need allocation. If we pre-allocate the maximum possible context length for every request, we waste enormous amounts of memory on padding. If we try to allocate exactly what&rsquo;s needed, we get fragmentation as requests come and go.</p>
+<p>KV cache memory problem looks familiar. Scarce resource (GPU memory) shared across many consumers (concurrent requests) with unpredictable lifetimes (response length unknown). Some requests finish early and free space. New ones arrive and need allocation. Pre-allocate max context for every request, waste huge memory on padding. Allocate exact size, get fragmentation as requests come and go.</p>
 
-<p>This is exactly the problem operating systems solved decades ago with <strong>virtual memory and paging</strong>. And that&rsquo;s precisely the insight behind <strong>PagedAttention</strong>, introduced in the vLLM paper (Kwon et al., 2023).</p>
+<p>Operating systems solved this decades ago with <strong>virtual memory and paging</strong>. That is insight behind <strong>PagedAttention</strong>, introduced in vLLM paper (Kwon et al., 2023).</p>
 
-<p>In an OS, physical RAM is divided into fixed-size blocks called <strong>pages</strong> (typically 4 KB). A process doesn&rsquo;t get a single contiguous slab of memory. Instead, it gets a <em>page table</em> that maps its logical addresses to physical pages scattered anywhere in RAM. Pages can be allocated on demand, freed individually, and reused immediately.</p>
+<p>In an OS, physical RAM is split into fixed-size <strong>pages</strong> (usually 4 KB). Process does not get one contiguous slab. It gets <em>page table</em> mapping logical addresses to physical pages scattered across RAM. Pages allocate on demand, free individually, reuse immediately.</p>
 
-<p>PagedAttention does the same thing for KV cache. Instead of allocating one contiguous buffer per request, GPU memory is divided into fixed-size <strong>KV blocks</strong> (each storing key-value data for a fixed number of tokens, say 16). Each request gets a <strong>block table</strong>&mdash;a mapping from its logical token positions to physical KV blocks. The blocks don&rsquo;t need to be contiguous in memory.</p>
+<p>PagedAttention does same for KV cache. Instead of one contiguous buffer per request, GPU memory is split into fixed-size <strong>KV blocks</strong> (each stores key-value data for fixed token count, say 16). Each request gets <strong>block table</strong>&mdash;mapping logical token positions to physical KV blocks. Blocks need not be contiguous.</p>
 
-<p>Let me walk through what this looks like. Say our GPU has space for 8 KV blocks, and we have three active requests:</p>
+<p>Example. Say GPU has space for 8 KV blocks, and 3 requests are active:</p>
 
 <pre><code>Physical KV blocks in GPU memory:
 [Block 0] [Block 1] [Block 2] [Block 3] [Block 4] [Block 5] [Block 6] [Block 7]
@@ -439,13 +439,13 @@ Request C (12 tokens, needs 1 block):  block table &rarr; [Block 2]
 
 Free pool: [Block 5, Block 7]</code></pre>
 
-<p>When Request C finishes, Block 2 goes back to the free pool. When Request D arrives, it grabs blocks from the pool. No defragmentation needed. No memory wasted on pre-allocated maximum-length buffers. The waste is at most one partially-filled block per request&mdash;less than 4% in practice.</p>
+<p>When Request C finishes, Block 2 returns to free pool. When Request D arrives, it grabs blocks from pool. No defragmentation. No memory burned on max-length buffers. Waste is at most one partially filled block per request&mdash;under 4% in practice.</p>
 
-<p>This is a massive improvement. Before PagedAttention, KV cache memory waste was estimated at 60&ndash;80% in typical serving scenarios due to over-allocation and fragmentation. PagedAttention brings it down to near zero, effectively doubling or tripling the number of concurrent requests a single GPU can handle.</p>
+<p>Big improvement. Before PagedAttention, KV cache waste was about 60&ndash;80% in typical serving due to over-allocation and fragmentation. PagedAttention cuts waste near zero, effectively doubling or tripling concurrent requests one GPU can handle.</p>
 
-<p>There&rsquo;s a bonus feature that falls out naturally from this design: <strong>prefix caching</strong>. If multiple requests share the same system prompt (which is extremely common in production&mdash;every user of your chatbot gets the same 500-token system instruction), the KV cache blocks for that shared prefix can be computed once and reused across all requests. In page table terms, multiple block tables point to the same physical blocks. This saves both memory and the compute cost of re-processing the shared prefix.</p>
+<p>Bonus feature: <strong>prefix caching</strong>. If multiple requests share same system prompt&mdash;common in production, where every chatbot user gets same 500-token instruction&mdash;shared-prefix KV blocks can be computed once and reused across requests. In page-table terms, multiple block tables point to same physical blocks. This saves memory and compute from re-processing shared prefix.</p>
 
-<p>Our restaurant analogy one more time: before PagedAttention, we were reserving an entire 20-seat table for every customer, even if they only ordered 3 courses. After PagedAttention, we use bar stools&mdash;each customer gets exactly as many stools as they need, scattered around the bar, and we keep a little map of where each customer is sitting. When they leave, the stools are available immediately.</p>
+<p>Restaurant again: before PagedAttention, we reserved whole 20-seat table for every customer, even if customer ordered 3 courses. After PagedAttention, we use bar stools. Each customer gets only needed stools, scattered around bar, plus small map showing where they sit. Customer leaves, stools free immediately.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 <!--  SPECULATIVE DECODING                                              -->
@@ -453,15 +453,15 @@ Free pool: [Block 5, Block 7]</code></pre>
 
 <h2>Speculative Decoding: Writing a Rough Draft First</h2>
 
-<p>Everything we&rsquo;ve discussed so far improves throughput&mdash;how many tokens per second you can generate across all users. But individual request latency is still fundamentally limited by the sequential nature of autoregressive decoding. You cannot generate token 10 until token 9 exists. Or can you?</p>
+<p>Everything so far boosts throughput&mdash;total tokens per second across users. But single-request latency still hits autoregressive sequential limit. Token 10 waits for token 9. Or maybe not.</p>
 
-<p><strong>Speculative decoding</strong> (Leviathan et al., 2023; Chen et al., 2023) is a trick that lets you cheat the sequential bottleneck. The intuition: most tokens in a response are predictable. If the prompt says &ldquo;The capital of France is&rdquo;, the next token is almost certainly &ldquo;Paris&rdquo;. You don&rsquo;t need a 70B model to guess that. A 1B model would get it right too.</p>
+<p><strong>Speculative decoding</strong> (Leviathan et al., 2023; Chen et al., 2023) cheats sequential bottleneck. Intuition: most response tokens are predictable. If prompt says &ldquo;The capital of France is&rdquo;, next token is almost certainly &ldquo;Paris&rdquo;. 70B model not needed for that guess. 1B model likely gets it too.</p>
 
-<p>The strategy has two players: a small, fast <strong>draft model</strong> and the large, accurate <strong>target model</strong>. Here&rsquo;s how they work together:</p>
+<p>Strategy uses two players: small, fast <strong>draft model</strong> and large, accurate <strong>target model</strong>. How they work together:</p>
 
-<p>The draft model quickly generates a sequence of <em>K</em> candidate tokens (say, K=5). It&rsquo;s small, so this is fast. Then the target model processes all K candidate tokens <em>in a single forward pass</em>&mdash;this is the key insight, because during prefill, the target model can process multiple tokens in parallel. The target model computes what it <em>would have</em> generated at each position and compares that to what the draft model proposed.</p>
+<p>Draft model quickly generates <em>K</em> candidate tokens (say, K=5). Small model, so fast. Then target model processes all K candidate tokens <em>in a single forward pass</em>&mdash;key insight, because in prefill target model can process many tokens in parallel. Target model computes what it <em>would have</em> generated at each position and compares against draft proposal.</p>
 
-<p>Let me trace through an example. The context so far is &ldquo;The weather today is&rdquo; and we&rsquo;re generating the next 5 tokens:</p>
+<p>Example. Context so far = &ldquo;The weather today is&rdquo; and we generate next 5 tokens:</p>
 
 <pre><code>Draft model generates: ["sunny", "and", "warm", "with", "rain"]
 
@@ -478,11 +478,11 @@ Net: we got 4 tokens (3 accepted + 1 resampled) for the cost of
      one draft run + one target forward pass,
      instead of 4 separate target forward passes.</code></pre>
 
-<p>The mathematical guarantee that makes this trustworthy: the acceptance criterion is designed so that the final output distribution is <em>identical</em> to what you&rsquo;d get from running the target model alone. No quality degradation. The speedup comes from the fact that the target model&rsquo;s verification pass processes K tokens in parallel (like a prefill step), which is compute-bound and efficient, rather than doing K sequential decode steps, which are memory-bandwidth-bound and slow.</p>
+<p>Mathematical guarantee makes this safe: acceptance criterion is designed so final output distribution is <em>identical</em> to running target model alone. No quality loss. Speedup comes because target verification pass handles K tokens in parallel like prefill&mdash;compute-bound and efficient&mdash;instead of K sequential decode steps, which are memory-bandwidth-bound and slow.</p>
 
-<p>In practice, speculative decoding delivers 2&ndash;3x speedup on latency when the draft model&rsquo;s acceptance rate is high (70&ndash;90% of tokens accepted). The acceptance rate depends on how well the draft model predicts the target model&rsquo;s output. For formulaic text (code, structured data), acceptance rates are high. For creative, high-entropy text, they&rsquo;re lower, and the speedup shrinks.</p>
+<p>In practice, speculative decoding gives 2&ndash;3x latency speedup when draft acceptance is high (70&ndash;90% tokens accepted). Acceptance depends on how well draft model predicts target output. Formulaic text (code, structured data) gets high acceptance. Creative, high-entropy text gets lower acceptance and less speedup.</p>
 
-<p>My favorite thing about speculative decoding is that, aside from the high-level explanation I gave, the acceptance criterion involves a somewhat subtle rejection sampling scheme that preserves the exact output distribution. Getting the math to work out so there&rsquo;s zero quality loss is elegant&mdash;and it&rsquo;s one of those things where no one anticipated how well it would work in practice until people tried it.</p>
+<p>What I like most: behind high-level story, acceptance criterion uses subtle rejection sampling that preserves exact output distribution. Math is elegant. Surprising part: practice matched theory so well.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 <!--  TENSOR PARALLELISM                                                -->
@@ -528,9 +528,9 @@ Net: we got 4 tokens (3 accepted + 1 resampled) for the cost of
 
 <h2>Streaming and API Design</h2>
 
-<p>Token-by-token generation has a user experience implication that traditional ML serving never had to deal with: <strong>streaming</strong>. Instead of waiting 20 seconds for a complete 500-token response, users see tokens appearing in real time, creating the illusion (well, the reality) of the model &ldquo;thinking aloud.&rdquo;</p>
+<p>Token-by-token generation creates user-experience issue traditional ML serving never had: <strong>streaming</strong>. Instead of waiting 20 seconds for full 500-token response, users see tokens appear in real time. Model seems to think aloud.</p>
 
-<p>The technical mechanism is <strong>Server-Sent Events (SSE)</strong>. The client sends a request, the server holds the connection open, and pushes each token (or small chunk of tokens) as it&rsquo;s generated. The client renders them incrementally. The OpenAI API format has become the de facto standard for this: each chunk is a JSON object with a delta field containing the new token.</p>
+<p>Technical mechanism = <strong>Server-Sent Events (SSE)</strong>. Client sends request, server keeps connection open, pushes each token or small chunk as generated. Client renders incrementally. OpenAI API format became de facto standard: each chunk is JSON with delta field holding new token.</p>
 
 <pre><code>data: {"choices": [{"delta": {"content": "The"}}]}
 data: {"choices": [{"delta": {"content": " capital"}}]}
@@ -541,9 +541,9 @@ data: {"choices": [{"delta": {"content": " Paris"}}]}
 data: {"choices": [{"delta": {"content": "."}}]}
 data: [DONE]</code></pre>
 
-<p>Every major serving framework (vLLM, TGI, SGLang) supports OpenAI-compatible streaming APIs, which means you can swap backends without changing client code. This is a quiet but enormously practical standardization that happened without any formal specification process&mdash;everyone converged on OpenAI&rsquo;s format because their client libraries were already everywhere.</p>
+<p>Every major serving framework (vLLM, TGI, SGLang) supports OpenAI-compatible streaming APIs, so you can swap backends without changing client code. Quiet but very practical standardization. No formal spec. Everyone converged on OpenAI format because client libraries were already everywhere.</p>
 
-<p>There are two design decisions that trip people up in production. First, <strong>timeouts</strong>: a streaming response can last 30 seconds or more for long outputs, and many default proxy and load balancer configurations will kill connections that &ldquo;seem idle&rdquo; even though tokens are flowing. You need to either send periodic keep-alive comments or configure your infrastructure to expect long-lived connections. Second, <strong>error handling mid-stream</strong>: if the model hits an error at token 247 out of 500, the client has already rendered 246 tokens. You need a protocol for signaling errors within the stream, and client code that handles partial responses gracefully.</p>
+<p>Two production design decisions trip people up. First, <strong>timeouts</strong>: streaming response can last 30 seconds or more for long outputs, and many default proxies/load balancers kill connections that seem idle even while tokens flow. Send keep-alive comments or configure infra for long-lived connections. Second, <strong>error handling mid-stream</strong>: if model fails at token 247 of 500, client already rendered 246 tokens. You need in-stream error signaling and client code that handles partial responses cleanly.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 <!--  TOKEN ECONOMICS                                                   -->
@@ -551,17 +551,17 @@ data: [DONE]</code></pre>
 
 <h2>The Money: Token Economics and Cost Optimization</h2>
 
-<p>At some point, every LLM serving conversation becomes a conversation about money. And it should, because the economics of LLM inference are unlike anything in traditional ML. The cost isn&rsquo;t &ldquo;pennies per prediction&rdquo;&mdash;it&rsquo;s &ldquo;dollars per conversation.&rdquo;</p>
+<p>Eventually every LLM serving talk becomes money talk. Good. LLM inference economics differ from traditional ML. Cost is not &ldquo;pennies per prediction.&rdquo; Cost is &ldquo;dollars per conversation.&rdquo;</p>
 
-<p>Let&rsquo;s run the numbers for two scenarios: using an API versus self-hosting.</p>
+<p>Run numbers for two scenarios: API vs self-hosting.</p>
 
-<p><strong>API pricing</strong> is straightforward. As of 2024, a frontier model like GPT-4 Turbo charges roughly $10 per million input tokens and $30 per million output tokens. For a chatbot handling 10,000 conversations per day, each averaging 500 input tokens and 300 output tokens, the daily cost is:</p>
+<p><strong>API pricing</strong> is simple. As of 2024, frontier model like GPT-4 Turbo costs about $10 per million input tokens and $30 per million output tokens. For chatbot with 10,000 conversations/day, average 500 input tokens and 300 output tokens, daily cost is:</p>
 
 <pre><code>Input:  10,000 &times; 500  = 5M tokens   &times; $10/M  = $50/day
 Output: 10,000 &times; 300  = 3M tokens   &times; $30/M  = $90/day
 Total: $140/day &asymp; $4,200/month</code></pre>
 
-<p><strong>Self-hosted</strong> math is murkier. Suppose you run Llama-2 70B on 2 A100 GPUs in the cloud at $3/hour each. With continuous batching and decent utilization, you might get 200,000 tokens/hour throughput.</p>
+<p><strong>Self-hosted</strong> math is murkier. Say you run Llama-2 70B on 2 A100 GPUs in cloud at $3/hour each. With continuous batching and decent utilization, throughput might hit 200,000 tokens/hour.</p>
 
 <pre><code>Cost per hour: 2 GPUs &times; $3/hr = $6/hr
 Tokens per hour: 200,000
@@ -570,23 +570,23 @@ Cost per 1K tokens: $6 / 200 = $0.03/1K tokens
 For the same chatbot (8M tokens/day):
 $0.03 &times; 8,000 = $240/day &asymp; $7,200/month</code></pre>
 
-<p>Wait&mdash;self-hosting is <em>more</em> expensive? It can be, especially at moderate scale with a model as large as 70B. But the math shifts dramatically with three levers:</p>
+<p>Wait&mdash;self-hosting costs <em>more</em>? Sometimes, especially at moderate scale with 70B model. But math shifts hard with three levers:</p>
 
-<p><strong>Model size.</strong> A well-tuned 7B or 13B model can handle many tasks that don&rsquo;t need 70B-level capability. The token throughput is 5&ndash;10x higher per GPU, and you need fewer GPUs. Self-hosted 7B inference can cost $0.003&ndash;0.008 per 1K tokens.</p>
+<p><strong>Model size.</strong> Well-tuned 7B or 13B model can handle many tasks that do not need 70B capability. Token throughput is 5&ndash;10x higher per GPU, and GPU count drops. Self-hosted 7B inference can cost $0.003&ndash;0.008 per 1K tokens.</p>
 
-<p><strong>Utilization.</strong> The $6/hour GPU cost is constant whether it&rsquo;s processing tokens or sitting idle. At 30% utilization (common for bursty traffic), your effective cost per token triples. At 90% utilization (achievable with continuous batching and sufficient traffic), the economics flip hard in favor of self-hosting.</p>
+<p><strong>Utilization.</strong> $6/hour GPU cost stays constant whether GPU works or sits idle. At 30% utilization&mdash;common with bursty traffic&mdash;effective cost per token triples. At 90% utilization&mdash;possible with continuous batching and enough traffic&mdash;economics swing hard toward self-hosting.</p>
 
-<p><strong>Model cascading.</strong> Route easy queries (&ldquo;What&rsquo;s my account balance?&rdquo;) to a cheap 7B model, and only send complex queries (&ldquo;Analyze this legal contract for risks&rdquo;) to the expensive 70B model or API. A well-designed router can send 70&ndash;80% of traffic to the small model, slashing costs dramatically.</p>
+<p><strong>Model cascading.</strong> Route easy queries (&ldquo;What&rsquo;s my account balance?&rdquo;) to cheap 7B model. Send hard queries (&ldquo;Analyze this legal contract for risks&rdquo;) to expensive 70B model or API. Good router can send 70&ndash;80% of traffic to small model and slash cost.</p>
 
-<p>The tipping point: below roughly 50 million tokens per month, APIs are almost always cheaper and operationally simpler. Above 500 million tokens per month with predictable traffic, self-hosting starts to win&mdash;but you&rsquo;re paying in engineering complexity, on-call rotations, and GPU procurement headaches. Between 50M and 500M is the gray zone where the answer depends on your team&rsquo;s infrastructure maturity.</p>
+<p>Tipping point: below about 50 million tokens/month, APIs are almost always cheaper and simpler operationally. Above 500 million/month with predictable traffic, self-hosting starts to win&mdash;but you pay with engineering complexity, on-call burden, and GPU procurement pain. Between 50M and 500M is gray zone. Answer depends on your team&rsquo;s infra maturity.</p>
 
-<p>Other cost optimization techniques that compound:</p>
+<p>Other cost optimizations compound:</p>
 
-<p><strong>Prompt caching.</strong> If your system prompt is 500 tokens and identical across all requests, prefix caching (enabled by PagedAttention) avoids recomputing those 500 tokens for every request. At 10,000 requests/day, that&rsquo;s 5M tokens of prefill computation saved daily.</p>
+<p><strong>Prompt caching.</strong> If system prompt is 500 tokens and same across requests, prefix caching from PagedAttention avoids recomputing those 500 tokens every time. At 10,000 requests/day, that saves 5M tokens of prefill compute each day.</p>
 
-<p><strong>Quantization.</strong> Running a model in INT4 or INT8 instead of FP16 roughly halves or quarters the memory footprint, letting you fit the model on fewer GPUs and increasing throughput. Quality degradation depends on the model and task, but for many production workloads, INT4 quantization loses less than 1% on benchmarks.</p>
+<p><strong>Quantization.</strong> Running INT4 or INT8 instead of FP16 roughly halves or quarters memory footprint, so model fits on fewer GPUs and throughput rises. Quality loss depends on model and task, but many production workloads lose under 1% on benchmarks with INT4.</p>
 
-<p><strong>Batching awareness in application design.</strong> If your application can tolerate 500ms extra latency, batching more requests together dramatically improves throughput per dollar. Real-time chat needs low latency. Background summarization, document processing, and batch classification can tolerate higher latency for lower cost.</p>
+<p><strong>Batching awareness in application design.</strong> If application can tolerate 500ms extra latency, batching more requests together greatly improves throughput per dollar. Real-time chat needs low latency. Background summarization, document processing, and batch classification can take higher latency for lower cost.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 <!--  GUARDRAILS                                                        -->
@@ -594,15 +594,15 @@ $0.03 &times; 8,000 = $240/day &asymp; $7,200/month</code></pre>
 
 <h2>Guardrails in Production</h2>
 
-<p>Here&rsquo;s where the concerns shift from &ldquo;can we serve tokens fast&rdquo; to &ldquo;should we serve <em>these</em> tokens at all.&rdquo; Production LLM systems need safety layers that don&rsquo;t exist in traditional ML serving, and bolting them on as an afterthought is how incidents happen.</p>
+<p>Concern now shifts from &ldquo;can we serve tokens fast&rdquo; to &ldquo;should we serve <em>these</em> tokens at all.&rdquo; Production LLM systems need safety layers traditional ML serving never needed. Bolting them on later causes incidents.</p>
 
-<p><strong>Input guardrails</strong> intercept the user&rsquo;s prompt before it reaches the model. These include length limits (a 100K-token prompt will blow your KV cache budget and hold a GPU hostage for seconds), prompt injection detection (attempts to override system instructions), and content policy enforcement (blocking prompts requesting harmful content). The challenge is doing this fast enough that it doesn&rsquo;t add noticeable latency&mdash;a lightweight classifier running on CPU can screen prompts in under 5 milliseconds.</p>
+<p><strong>Input guardrails</strong> stop user prompt before it hits model. They include length limits (100K-token prompt blows KV cache budget and can hold GPU hostage for seconds), prompt injection detection (attempts to override system instructions), and content policy enforcement (blocking harmful requests). Hard part: do this fast enough that latency stays invisible. Lightweight CPU classifier can screen prompts in under 5 milliseconds.</p>
 
-<p><strong>Output guardrails</strong> monitor the model&rsquo;s response as it streams. This is trickier because you need to make decisions token by token. Some teams run a secondary classifier on the accumulated output at intervals (every 50 tokens, say), terminating generation if policy violations are detected. Others use regex pattern matching for known bad outputs (PII patterns like Social Security numbers, for instance). The tension: output filtering adds latency to every token, and false positives that cut off legitimate responses frustrate users.</p>
+<p><strong>Output guardrails</strong> watch model response as it streams. Harder, because decisions happen token by token. Some teams run secondary classifier on accumulated output at intervals (say every 50 tokens) and stop generation when policy violations appear. Others use regex for known bad outputs (PII patterns like Social Security numbers). Tension: output filtering adds latency to every token, and false positives that cut legitimate responses frustrate users.</p>
 
-<p><strong>Rate limiting</strong> per user prevents abuse and protects your GPU budget. Unlike traditional API rate limiting where each request is cheap, a single LLM request can monopolize a GPU for seconds. Rate limits should account for both request count <em>and</em> token volume. A user sending 100 requests of 10 tokens each is a different load profile than a user sending 5 requests of 10,000 tokens each.</p>
+<p><strong>Rate limiting</strong> per user prevents abuse and protects GPU budget. Unlike traditional API rate limiting, each request is not cheap. One LLM request can monopolize GPU for seconds. Rate limits should track request count <em>and</em> token volume. User sending 100 requests of 10 tokens creates very different load than user sending 5 requests of 10,000 tokens.</p>
 
-<p><strong>Monitoring</strong> for LLM serving goes beyond standard HTTP metrics. The essential signals: TTFT and TPOT distributions at p50/p95/p99 (not averages&mdash;tail latency is where users suffer), tokens per second throughput, KV cache utilization percentage (approaching 100% means requests are about to queue), and error rates broken down by type (timeout, OOM, content policy violation). I&rsquo;ll be honest&mdash;getting monitoring right was harder than getting serving right. A system that looks healthy on average can be miserable for 5% of users, and you won&rsquo;t know unless you&rsquo;re watching the tail.</p>
+<p><strong>Monitoring</strong> for LLM serving goes beyond standard HTTP metrics. Key signals: TTFT and TPOT distributions at p50/p95/p99, not averages&mdash;tail latency hurts users; tokens-per-second throughput; KV cache utilization percentage, because near 100% means queueing is next; and error rates by type (timeout, OOM, content policy violation). Getting monitoring right was harder than getting serving right. System can look healthy on average and still be miserable for 5% of users unless you watch tail latency.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 <!--  WRAP-UP                                                           -->
@@ -610,9 +610,9 @@ $0.03 &times; 8,000 = $240/day &asymp; $7,200/month</code></pre>
 
 <h2>Bringing It All Together</h2>
 
-<p>We started with the fundamental insight that autoregressive generation makes LLM serving memory-bandwidth-bound, not compute-bound. We discovered that the KV cache&mdash;storing key-value vectors for every prior token at every layer&mdash;dominates the memory budget. We upgraded from static to continuous batching, turning our sit-down restaurant into a conveyor belt that never has empty seats. We borrowed virtual memory from operating systems to build PagedAttention, eliminating KV cache waste. We deployed a small draft model alongside the big target model for speculative decoding, cheating the sequential bottleneck. We split models across GPUs with tensor parallelism, navigated the framework landscape, designed streaming APIs, and stared at the real cost arithmetic of running these systems at scale.</p>
+<p>We started with core insight: autoregressive generation makes LLM serving memory-bandwidth-bound, not compute-bound. Then KV cache&mdash;storing key-value vectors for every prior token at every layer&mdash;took over memory budget. We moved from static to continuous batching, turning sit-down restaurant into conveyor belt with no empty seats. We borrowed virtual memory ideas to build PagedAttention and kill KV cache waste. We paired small draft model with big target model for speculative decoding and cheated sequential bottleneck. We split models across GPUs with tensor parallelism, compared serving frameworks, designed streaming APIs, and faced real cost math of running these systems at scale.</p>
 
-<p>My hope is that the next time someone asks you how to serve an LLM in production, instead of mumbling &ldquo;put vLLM in front of it,&rdquo; you&rsquo;ll have a pretty darn good mental model of what vLLM is actually doing under the hood&mdash;and whether it&rsquo;s the right choice for your particular restaurant.</p>
+<p>Next time someone asks how to serve LLM in production, you should have better answer than &ldquo;put vLLM in front of it.&rdquo; You should have mental model for what vLLM does under hood&mdash;and whether it fits your restaurant.</p>
 
 
 

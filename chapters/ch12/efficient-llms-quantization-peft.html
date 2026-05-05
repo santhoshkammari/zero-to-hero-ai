@@ -493,7 +493,7 @@ Q8_0          8.0 bits       ~7.2 GB     Near-lossless</code></pre>
 
 <p>GGUF democratized local LLM access. Ollama, LM Studio, Jan all use GGUF under hood. &ldquo;Run LLaMA on my laptop&rdquo; = almost certainly GGUF quantized model.</p>
 
-<p>Coming back to our scenario: if a client wants to run the model on their own hardware without a GPU, GGUF Q4_K_M is the answer. If we&rsquo;re serving from a GPU in the cloud, AWQ 4-bit with vLLM. Different suitcases for different trips.</p>
+<p>Back to scenario: client wants model on own hardware without GPU → GGUF Q4_K_M. Serving from cloud GPU → AWQ 4-bit with vLLM. Different suitcases for different trips.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <!-- SMOOTHQUANT -->
@@ -501,11 +501,11 @@ Q8_0          8.0 bits       ~7.2 GB     Near-lossless</code></pre>
 
 <h2>SmoothQuant: Taming the Outliers</h2>
 
-<p>All three methods above quantize weights only. Activations stay in full precision during inference. There&rsquo;s a good reason for this: activations have <em>nasty</em> outliers. Some channels produce values 100&times; larger than others, and if you try to quantize them to INT8, you either clip the outliers (catastrophic quality loss) or stretch the range so wide that all the normal values collapse to a few bins near zero.</p>
+<p>All three methods above quantize weights only. Activations stay full precision during inference. Good reason: activations have <em>nasty</em> outliers. Some channels produce values 100&times; larger than others. Quantize to INT8 → either clip outliers (catastrophic quality loss) or stretch range so wide all normal values collapse to few bins near zero.</p>
 
-<p>But if we <em>could</em> quantize both weights and activations to INT8, we&rsquo;d unlock hardware-native INT8 matrix multiplication. On modern GPUs, INT8 matmul is roughly 2&times; faster than FP16. That&rsquo;s worth pursuing.</p>
+<p>But if we <em>could</em> quantize both weights and activations to INT8, we&rsquo;d unlock hardware-native INT8 matmul. On modern GPUs, INT8 matmul ~2&times; faster than FP16. Worth pursuing.</p>
 
-<p>SmoothQuant (Xiao et al., 2023) found an elegant solution: <strong>transfer the quantization difficulty from activations to weights</strong>. The idea is to divide each activation channel by a smoothing factor <code>s</code>, and multiply the corresponding weight column by <code>s</code>. Mathematically, the result is identical: (X / s) &middot; (W &middot; s) = X &middot; W. But now the activation outliers have been tamed, and the weights have absorbed the extra variance. Both are now &ldquo;smooth&rdquo; enough to quantize to INT8 cleanly.</p>
+<p>SmoothQuant (Xiao et al., 2023) found elegant solution: <strong>transfer quantization difficulty from activations to weights</strong>. Divide each activation channel by smoothing factor <code>s</code>, multiply corresponding weight column by <code>s</code>. Mathematically identical: (X / s) &middot; (W &middot; s) = X &middot; W. But now activation outliers tamed, weights absorbed extra variance. Both &ldquo;smooth&rdquo; enough to quantize to INT8 cleanly.</p>
 
 <pre><code># SmoothQuant transform
 #
@@ -517,7 +517,7 @@ Q8_0          8.0 bits       ~7.2 GB     Near-lossless</code></pre>
 #
 # After smoothing, both X/s and W&middot;s quantize cleanly to INT8</code></pre>
 
-<p>SmoothQuant is the go-to method for high-throughput production serving where you want W8A8 (weights and activations both in INT8). The 2&times; speedup from hardware INT8 is real and meaningful at scale.</p>
+<p>SmoothQuant = go-to method for high-throughput production serving wanting W8A8 (weights and activations both INT8). 2&times; speedup from hardware INT8 is real and meaningful at scale.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <!-- QUANTIZATION-AWARE TRAINING -->
@@ -525,13 +525,13 @@ Q8_0          8.0 bits       ~7.2 GB     Near-lossless</code></pre>
 
 <h2>Quantization-Aware Training</h2>
 
-<p>Everything above happens <em>after</em> training. But what if the model could learn to be quantization-friendly during training itself?</p>
+<p>Everything above happens <em>after</em> training. What if model could learn to be quantization-friendly during training?</p>
 
-<p><strong>Quantization-aware training (QAT)</strong> simulates quantization during the forward pass: weights are fake-quantized (rounded to low precision, then cast back to float for gradient computation). The model learns to produce weights whose values land cleanly on the quantization grid, reducing the rounding errors that plague post-training methods.</p>
+<p><strong>Quantization-aware training (QAT)</strong> simulates quantization during forward pass: weights fake-quantized (rounded to low precision, cast back to float for gradient computation). Model learns to produce weights landing cleanly on quantization grid, reducing rounding errors plaguing post-training methods.</p>
 
-<p>The downside: QAT requires actually training (or fine-tuning) the model, which is expensive. For most practitioners, PTQ methods like GPTQ and AWQ are good enough. QAT becomes worth it when you&rsquo;re pushing to extreme compression (2-bit) or when every last fraction of a perplexity point matters.</p>
+<p>Downside: QAT requires training/fine-tuning model = expensive. For most practitioners, PTQ methods (GPTQ, AWQ) good enough. QAT worth it when pushing extreme compression (2-bit) or when every perplexity fraction matters.</p>
 
-<p>Recent work like EfficientQAT (2024) has made this more accessible &mdash; training a 2-bit 70B model on a single A100 in about 41 hours, with less than 3% accuracy degradation. And on the frontier, researchers at Microsoft have demonstrated <strong>BitNet</strong> &mdash; models trained from scratch in 1-bit (ternary: -1, 0, +1) &mdash; which would fundamentally change the hardware requirements for inference. I&rsquo;m still developing my intuition for whether 1-bit models will become practical for mainstream use, but the direction is fascinating.</p>
+<p>Recent work: EfficientQAT (2024) made this more accessible &mdash; 2-bit 70B model on single A100 in ~41 hours, &lt;3% accuracy degradation. On frontier, Microsoft demonstrated <strong>BitNet</strong> &mdash; models trained from scratch in 1-bit (ternary: -1, 0, +1) &mdash; would fundamentally change hardware requirements for inference. Whether 1-bit models become practical for mainstream use remains uncertain, but direction is fascinating.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <!-- THE FINE-TUNING MEMORY WALL -->
@@ -539,11 +539,11 @@ Q8_0          8.0 bits       ~7.2 GB     Near-lossless</code></pre>
 
 <h2>The Fine-Tuning Memory Wall</h2>
 
-<p>We&rsquo;ve solved the deployment problem. Our 7B model, quantized to 4-bit, fits comfortably on a single GPU at about 4 GB. But now Client A wants the model tuned for medical Q&amp;A, Client B for legal document summarization, and Client C for customer support in Spanish. We need to fine-tune three separate versions.</p>
+<p>Solved deployment problem. 7B model quantized to 4-bit fits on single GPU at ~4 GB. But now Client A wants medical Q&amp;A, Client B legal document summarization, Client C customer support in Spanish. Need three separate fine-tuned versions.</p>
 
-<p>Standard fine-tuning updates every one of the 7 billion parameters. We already computed the memory: 84 GB for weights + gradients + optimizer states. That&rsquo;s more than an A100-80GB can hold. And we&rsquo;d have to store three full copies of the model &mdash; 42 GB each in FP16 &mdash; one per client.</p>
+<p>Standard fine-tuning updates all 7B parameters. Memory: 84 GB for weights + gradients + optimizer states. More than A100-80GB can hold. Plus storing three full model copies &mdash; 42 GB each in FP16 &mdash; one per client.</p>
 
-<p>This is the motivation for PEFT. Not academic curiosity. Not a &ldquo;nice to have&rdquo; optimization. We literally cannot do the thing our clients need without it.</p>
+<p>This = motivation for PEFT. Not academic curiosity. Not &ldquo;nice to have.&rdquo; Literally cannot do what clients need without it.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <!-- LORA: THE LOW-RANK INSIGHT -->
