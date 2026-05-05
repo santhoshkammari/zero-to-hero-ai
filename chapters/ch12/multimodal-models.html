@@ -397,39 +397,39 @@ class CLIPContrastiveLoss(nn.Module):
 
 <p>This is <strong>zero-shot classification</strong>. No training data for specific task. No fine-tuning. Model never saw these categories as classification labels — it learned from natural language captions, and that is enough. CLIP matched or beat fully supervised ImageNet models on benchmarks it never trained for. Field got shocked.</p>
 
-<p>One subtle detail that took me a while to appreciate: prompt engineering matters here too. "dog" as a text input works worse than "a photo of a dog" because CLIP was trained on natural captions, not single words. The original paper tested 80 different prompt templates and found that ensembling them improved accuracy by 3-5%. The lesson: the text encoder learned the <em>distribution</em> of how people describe things, not a dictionary of labels.</p>
+<p>Subtle detail: prompt engineering matters here too. "dog" works worse than "a photo of a dog" because CLIP trained on natural captions, not single words. Original paper tested 80 prompt templates and found ensembling improved accuracy by 3-5%. Lesson: text encoder learned <em>distribution</em> of how people describe things, not dictionary of labels.</p>
 
-<p>But zero-shot classification is where CLIP's limitations also become apparent. "Three cats on a sofa" and "one cat on a sofa" produce nearly identical embeddings. "A cup to the left of a plate" and "a plate to the left of a cup" are hard to distinguish. CLIP doesn't count, and it doesn't really understand spatial relationships. This makes sense when you think about it — the model was trained on whole-image, whole-caption pairs. It learns <em>what's in the image</em>, not <em>where things are</em> or <em>how many there are</em>.</p>
+<p>Limits show up here too. "Three cats on a sofa" and "one cat on a sofa" produce nearly identical embeddings. "A cup to the left of a plate" and "a plate to the left of a cup" are hard to distinguish. CLIP does not count. CLIP does not really understand spatial relationships. Makes sense — model trained on whole-image, whole-caption pairs. It learns <em>what's in the image</em>, not <em>where things are</em> or <em>how many there are</em>.</p>
 
-<p>That limitation creates a pull toward something more capable. We can match images and text. But we can't answer questions. We can't say <em>why</em> something is in the image, or generate new text that describes what we see. For that, we need to wire vision into a language model.</p>
+<p>Limit pulls us toward stronger system. We can match images and text. But we cannot answer questions. We cannot say <em>why</em> something is in image, or generate new text describing what we see. For that, wire vision into language model.</p>
 
 <h2>The Fusion Problem: How Do Modalities Combine?</h2>
 
-<p>Here's the question every multimodal system has to confront: at what point do you combine the information from different senses? The answer to this shapes everything about what the model can do, how expensive it is, and how hard it is to build.</p>
+<p>Every multimodal system faces this question: when do you combine information from different senses? Answer shapes what model can do, how expensive it is, and how hard it is to build.</p>
 
-<p>Let's use our museum guide to think about this concretely, with three scenarios.</p>
+<p>Use museum guide. Three scenarios.</p>
 
-<p><strong>Scenario 1: Late fusion.</strong> The visitor's photo goes through an image model that produces a summary: "19th century oil painting, impressionist style, water lilies." Separately, the visitor's spoken question goes through a speech model that produces: "Who painted this?" At the end, some simple logic matches these two summaries. This is <strong>late fusion</strong> — each modality gets its own specialist, and they only talk at the very end. It's like two experts writing independent reports and then a manager combining them.</p>
+<p><strong>Scenario 1: Late fusion.</strong> Visitor photo goes through image model and produces summary: "19th century oil painting, impressionist style, water lilies." Separately, visitor spoken question goes through speech model and produces: "Who painted this?" At end, simple logic matches two summaries. This is <strong>late fusion</strong> — each modality gets its own specialist, and they talk only at end. Like two experts writing separate reports and manager combining them.</p>
 
-<p>Late fusion is the simplest approach. You can plug in any pre-trained image model and any pre-trained text model. Each one is independently debuggable. CLIP is a late fusion model — two separate encoders, combined only at the final similarity computation. But the limitation is that the text never gets to look at specific image patches, and the image never gets to attend to specific words. The conversation between modalities is limited to one exchange at the very end.</p>
+<p>Late fusion is simplest approach. Plug in any pre-trained image model and any pre-trained text model. Each one is debuggable on its own. CLIP is late fusion — two separate encoders, combined only in final similarity computation. Limit: text never looks at specific image patches, and image never attends to specific words. Modalities exchange one message at end.</p>
 
-<p><strong>Scenario 2: Early fusion.</strong> We convert the photo into a sequence of visual tokens (small patches of the image, each represented as a vector) and convert the question into text tokens. Then we concatenate them into one long sequence and process the whole thing through a single transformer. Every visual token can attend to every text token from the very first layer. This is <strong>early fusion</strong> — throw everything into one pot from the start.</p>
+<p><strong>Scenario 2: Early fusion.</strong> Convert photo into sequence of visual tokens (small image patches, each as vector) and question into text tokens. Then concatenate into one long sequence and run through single transformer. Every visual token can attend to every text token from first layer. This is <strong>early fusion</strong> — throw everything into one pot from start.</p>
 
-<p>Early fusion gives the richest possible cross-modal interaction. The model can learn that the word "who" should look at the painter's signature in the corner of the image. But it's expensive — you can't reuse pre-trained unimodal models easily, you need aligned tokenization across modalities, and training from scratch at this level requires enormous compute. Google's Gemini and OpenAI's GPT-4o use early fusion. Most teams cannot.</p>
+<p>Early fusion gives richest cross-modal interaction. Model can learn that word "who" should look at painter's signature in corner of image. But expensive — hard to reuse pre-trained unimodal models, you need aligned tokenization across modalities, and training from scratch here needs enormous compute. Google's Gemini and OpenAI's GPT-4o use early fusion. Most teams cannot.</p>
 
-<p><strong>Scenario 3: Cross-attention fusion.</strong> Keep the separate encoders, but at intermediate layers, let the text model peek into the image model's internal representations. Specifically, the text model generates <em>queries</em> (what information do I need?), and the image model provides <em>keys and values</em> (here's what I have). This is <strong>cross-attention</strong> — the mechanism we saw in the original transformer for translation, now repurposed to let one modality interrogate another.</p>
+<p><strong>Scenario 3: Cross-attention fusion.</strong> Keep separate encoders, but at intermediate layers let text model peek into image model's internal representations. Text model generates <em>queries</em> (what info do I need?), and image model provides <em>keys and values</em> (here is what I have). This is <strong>cross-attention</strong> — mechanism from original transformer translation, reused so one modality can interrogate another.</p>
 
-<p>Cross-attention sits in the sweet spot. You preserve pre-trained models (the image encoder stays frozen, the language model stays frozen) and add learnable cross-attention layers in between. This is how Flamingo works, how BLIP-2 works, and how most production vision-language models are built.</p>
+<p>Cross-attention sits in sweet spot. You keep pre-trained models (image encoder stays frozen, language model stays frozen) and add learnable cross-attention layers between them. This is how Flamingo works, how BLIP-2 works, and how most production vision-language models are built.</p>
 
-<p>I'll be honest — I still sometimes second-guess which fusion strategy to pick for a new task. The heuristic I've settled on: start with late fusion for prototyping, move to cross-attention when you need fine-grained reasoning ("what color is the object left of the cat?"), and reach for early fusion only if you have Google-scale compute and Google-scale ambitions.</p>
+<p>Heuristic I use: start with late fusion for prototyping. Move to cross-attention when you need fine-grained reasoning ("what color is object left of cat?"). Reach for early fusion only if you have Google-scale compute and Google-scale ambitions.</p>
 
 <h2>Teaching a Language Model to See: Cross-Attention in Practice</h2>
 
-<p>Let's get concrete about how cross-attention works when text reads from an image. This is the mechanism inside Flamingo, BLIP-2, and most production vision-language models, so it's worth understanding at the mechanical level.</p>
+<p>Get concrete. Here is how cross-attention works when text reads image. This mechanism sits inside Flamingo, BLIP-2, and most production vision-language models, so mechanical understanding matters.</p>
 
-<p>Say we have 20 text tokens (the visitor's question: "What art movement does this painting belong to?") and 196 image patches (a 14×14 grid from a Vision Transformer processing the painting). Each text token becomes a <em>query</em>: "I'm the word 'movement' — what visual information is relevant to me?" Each image patch becomes a <em>key</em> (my address) and a <em>value</em> (my content). The text query computes similarity against all 196 image keys, gets a distribution of attention weights, and reads a weighted combination of image values.</p>
+<p>Say we have 20 text tokens (visitor question: "What art movement does this painting belong to?") and 196 image patches (14×14 grid from Vision Transformer processing painting). Each text token becomes <em>query</em>: "I am word 'movement' — what visual info matters to me?" Each image patch becomes <em>key</em> (my address) and <em>value</em> (my content). Text query computes similarity against all 196 image keys, gets attention-weight distribution, and reads weighted combination of image values.</p>
 
-<p>The result: each text token gets enriched with visual information from the specific image patches that are relevant to it. The word "movement" might attend strongly to the brushstroke textures. The word "painting" might attend to the frame and canvas. The word "this" might attend broadly to the whole image.</p>
+<p>Result: each text token gets visual information from specific image patches relevant to it. Word "movement" might attend strongly to brushstroke textures. Word "painting" might attend to frame and canvas. Word "this" might attend broadly to whole image.</p>
 
 <pre><code class="language-python">import torch
 import torch.nn as nn
@@ -482,13 +482,13 @@ class CrossModalAttention(nn.Module):
         # Gated residual: tanh(gate) starts near 0, grows during training
         return self.norm(residual + torch.tanh(self.gate) * visual_context)</code></pre>
 
-<p>The gate in that code is worth pausing on. It's initialized at zero, which means <code>tanh(0) = 0</code>, which means the visual context gets multiplied by zero and thrown away. The model starts as a pure language model. During training, the gate gradually opens, allowing visual information to flow in. This is DeepMind's trick from Flamingo, and it's elegant because it means you never have to worry about the visual encoder's random initial outputs corrupting a perfectly good language model. The model decides for itself how much to trust its new sense of sight.</p>
+<p>Gate in that code matters. It starts at zero, so <code>tanh(0) = 0</code>, so visual context gets multiplied by zero and discarded. Model starts as pure language model. During training, gate slowly opens and visual information flows in. This is DeepMind's Flamingo trick. Elegant because random initial outputs from visual encoder cannot corrupt good language model. Model decides how much to trust new sense of sight.</p>
 
 <h2>Flamingo: The Careful Architecture</h2>
 
-<p>DeepMind's <strong>Flamingo</strong> (2022) was the first model that could handle interleaved sequences of images and text — like showing it two paintings and asking "How are these different?" The architecture has three key pieces.</p>
+<p>DeepMind's <strong>Flamingo</strong> (2022) was first model that could handle interleaved image-text sequences — like showing two paintings and asking "How are these different?" Architecture has three key pieces.</p>
 
-<p>First, a frozen vision encoder extracts features from each image. The output is a grid of 196+ tokens per image — one for each patch the Vision Transformer divides the image into.</p>
+<p>First, frozen vision encoder extracts features from each image. Output is grid of 196+ tokens per image — one for each patch Vision Transformer divides image into.</p>
 
 <p>Second, a <strong>Perceiver Resampler</strong>. This is where it gets interesting. 196 tokens per image is a lot to feed into a language model at every layer. If the visitor shows us three paintings, that's nearly 600 visual tokens competing for attention with the text tokens. The Perceiver Resampler compresses those down. It works like this: start with a small set of learned query tokens (typically 64). These queries cross-attend to all 196 image patches, distilling the image into a compact representation. Think of it as asking 64 targeted questions about the image and getting 64 focused answers, instead of dumping the entire raw visual field into the language model's lap.</p>
 

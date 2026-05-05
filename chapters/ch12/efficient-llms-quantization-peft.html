@@ -602,9 +602,9 @@ That&rsquo;s a 128&times; reduction.  0.78% of the original.</code></pre>
 
 <p>Ratio &alpha;/r controls how aggressively LoRA adapter modifies base model. Common choices: &alpha; = r (scaling factor 1) or &alpha; = 2r (scaling factor 2, more aggressive). Higher &alpha; = faster adaptation but more instability risk. For most tasks, &alpha; = 2r solid default.</p>
 
-<p><strong>Which layers to adapt.</strong> You don&rsquo;t have to put LoRA on every weight matrix. The original paper targeted only the query and value projections in attention. In practice, targeting all linear layers (Q, K, V, O projections in attention plus gate, up, and down projections in the feed-forward network) gives the best results. The overhead is still tiny &mdash; less than 1% of total parameters even with all layers adapted.</p>
+<p><strong>Which layers to adapt.</strong> Don&rsquo;t need LoRA on every weight matrix. Original paper targeted only Q and V projections in attention. In practice, targeting all linear layers (Q, K, V, O in attention + gate, up, down in FFN) gives best results. Overhead still tiny &mdash; &lt;1% of total parameters even with all layers adapted.</p>
 
-<p><strong>Rank selection</strong> is where I&rsquo;ve gotten burned more than once. My instinct was always to crank the rank higher &ldquo;to be safe.&rdquo; That&rsquo;s wrong. Higher rank means more capacity, which means more risk of overfitting, especially on small datasets. Here&rsquo;s the rough guide I&rsquo;ve converged on after too much trial and error:</p>
+<p><strong>Rank selection</strong> burns people. Instinct: crank rank higher &ldquo;to be safe.&rdquo; Wrong. Higher rank = more capacity = more overfitting risk, especially on small datasets. Rough guide:</p>
 
 <pre><code>Rank 4&ndash;8:    Simple tasks. Style transfer, single-domain classification.
              Good when your task is close to what the model already does.
@@ -618,11 +618,11 @@ Rank 64&ndash;128: Complex, diverse datasets. When r=32 isn&rsquo;t enough and y
 Rank 256+:   Diminishing returns. At this point, consider whether full
              fine-tuning with DeepSpeed might be simpler.</code></pre>
 
-<p>The crucial insight about rank: if you have 1,000 training examples and you set r=64 on all layers, you will almost certainly memorize the training data. Start with r=16. Increase only when validation loss plateaus and you&rsquo;ve verified you&rsquo;re not overfitting.</p>
+<p>Crucial insight: 1,000 training examples + r=64 on all layers = almost certainly memorize training data. Start with r=16. Increase only when validation loss plateaus and you&rsquo;ve verified no overfitting.</p>
 
-<p><strong>Zero inference overhead.</strong> This is LoRA&rsquo;s killer feature. After training, you compute W_merged = W + B&middot;A and replace the original weight matrix. The merged model has exactly the same architecture as the original &mdash; no extra layers, no branching paths, no runtime overhead. It&rsquo;s as if you did full fine-tuning, except you got there with 128&times; fewer trainable parameters.</p>
+<p><strong>Zero inference overhead.</strong> LoRA&rsquo;s killer feature. After training, compute W_merged = W + B&middot;A, replace original weight matrix. Merged model has exact same architecture &mdash; no extra layers, no branching, no runtime overhead. As if you did full fine-tuning, except with 128&times; fewer trainable parameters.</p>
 
-<p>For our three-client scenario: we train three separate LoRA adapters, each about 80 MB (for rank 16 on all layers of a 7B model). We store one base model (14 GB in FP16) and three tiny adapter files. To switch between clients, we swap the adapter. To deploy, we merge the adapter into the base and quantize. Three clients, one base model, 240 MB of adapters total.</p>
+<p>Three-client scenario: train three separate LoRA adapters, each ~80 MB (rank 16, all layers, 7B model). Store one base model (14 GB FP16) + three tiny adapter files. Switch clients = swap adapter. Deploy = merge adapter into base and quantize. Three clients, one base, 240 MB adapters total.</p>
 
 <pre><code>from peft import LoraConfig, get_peft_model
 
@@ -648,15 +648,15 @@ model.print_trainable_parameters()
 
 <h2>QLoRA: Quantized Base, Full-Precision Adapters</h2>
 
-<p>LoRA brought trainable parameters down from billions to millions. But there&rsquo;s still a problem: you need to load the <em>base model</em> into VRAM in FP16 to compute the forward pass. For a 7B model, that&rsquo;s 14 GB. For a 65B model, that&rsquo;s 130 GB. LoRA made the optimizer lightweight, but the base model itself is still heavy luggage.</p>
+<p>LoRA brought trainable parameters from billions to millions. But still problem: need to load <em>base model</em> into VRAM in FP16 for forward pass. 7B = 14 GB. 65B = 130 GB. LoRA made optimizer lightweight, but base model still heavy luggage.</p>
 
-<p>QLoRA (Dettmers et al., 2023) has a bold idea: what if the base model was quantized to 4-bit during training, and only the LoRA adapters ran in full precision? The intuition seems dangerous &mdash; surely 4-bit base weights would produce garbage gradients for the adapters. But the result was the paper&rsquo;s most surprising finding: <strong>it barely matters.</strong> QLoRA matches full 16-bit fine-tuning quality on benchmark after benchmark.</p>
+<p>QLoRA (Dettmers et al., 2023) bold idea: base model quantized to 4-bit during training, only LoRA adapters run full precision. Intuition seems dangerous &mdash; 4-bit base weights should produce garbage gradients for adapters. But most surprising finding: <strong>it barely matters.</strong> QLoRA matches full 16-bit fine-tuning quality on benchmark after benchmark.</p>
 
-<p>I&rsquo;ll be honest, the fact that this works still surprises me. The base weights are only used to compute the forward pass and to route gradients to the adapter parameters. Apparently, 4-bit precision is enough for that routing job. The adapter parameters themselves, which are the ones actually being optimized, stay in BF16 where they get clean gradient updates.</p>
+<p>Why this works still surprises. Base weights only used to compute forward pass and route gradients to adapter parameters. Apparently 4-bit precision enough for that routing job. Adapter parameters themselves &mdash; actually being optimized &mdash; stay BF16 where they get clean gradient updates.</p>
 
-<p>QLoRA introduced three specific innovations that made this work:</p>
+<p>QLoRA introduced three innovations that made this work:</p>
 
-<p><strong>NF4 (4-bit NormalFloat).</strong> Standard INT4 spaces its 16 quantization levels evenly across the range. But LLM weights follow a roughly Gaussian distribution &mdash; most values cluster near zero, with sparse outliers in the tails. NF4 spaces its 16 levels to match this bell curve, placing more levels near zero (where most weights are) and fewer in the tails. More levels where the data is dense means less information lost per bit.</p>
+<p><strong>NF4 (4-bit NormalFloat).</strong> Standard INT4 spaces 16 quantization levels evenly. But LLM weights follow roughly Gaussian distribution &mdash; most values cluster near zero, sparse outliers in tails. NF4 spaces 16 levels to match bell curve: more levels near zero (where most weights are), fewer in tails. More levels where data is dense = less information lost per bit.</p>
 
 <pre><code># Conceptual: INT4 vs NF4 level spacing
 #
@@ -668,7 +668,7 @@ model.print_trainable_parameters()
 #                     Dense near zero        Sparse in tails
 #                     Matches where weights actually live.</code></pre>
 
-<p><strong>Double quantization.</strong> Per-group quantization stores one FP16 scale factor per 128 weights. For a 7B model, that&rsquo;s about 55 million scale factors &times; 2 bytes = ~110 MB of overhead. Double quantization quantizes these scale factors <em>themselves</em> to 8-bit, cutting the overhead roughly in half. It&rsquo;s quantizing the quantization constants. A small savings per parameter, but meaningful at 7 billion of them.</p>
+<p><strong>Double quantization.</strong> Per-group quantization stores one FP16 scale per 128 weights. For 7B model: ~55M scale factors &times; 2 bytes = ~110 MB overhead. Double quantization quantizes these scale factors <em>themselves</em> to 8-bit, cutting overhead roughly in half. Quantizing quantization constants. Small per-parameter savings, meaningful at 7 billion.</p>
 
 <p><strong>Paged optimizers.</strong> Even with a 4-bit base model and tiny LoRA adapters, optimizer states can occasionally spike beyond GPU memory &mdash; especially with gradient accumulation on long sequences. Paged optimizers use CUDA unified memory to transparently move optimizer states to CPU RAM when GPU memory fills up, then bring them back when needed. Think of it as virtual memory for your GPU.</p>
 

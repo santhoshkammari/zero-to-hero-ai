@@ -472,15 +472,15 @@ x = x + FFN(RMSNorm(x))         # normalize BEFORE FFN</code></pre>
 <!-- ═══════════════════════════════════════════ RoPE ═══════════════════════════════════════════ -->
 <h2>How RoPE Encodes Position Through Rotation</h2>
 
-<p>Attention has no built-in sense of order. If you shuffle the tokens in a sentence before feeding them to the attention mechanism, the attention scores don't change — each token attends to every other token based on content alone, with no notion of "this word came before that one." This is why transformers need some form of <strong>position encoding</strong>: a way to inject information about where each token sits in the sequence.</p>
+<p>Attention has no built-in sense of order. Shuffle tokens — attention scores don't change. Each token attends to every other based on content alone, no notion of before/after. Transformers need <strong>position encoding</strong>: inject where each token sits in sequence.</p>
 
-<p>Early approaches tried two things. <strong>Learned absolute position embeddings</strong> (used by BERT, GPT-2) assign a trainable vector to each position — position 0 gets one vector, position 1 gets another, up to the maximum sequence length. This works, but it has a fatal flaw: the model has never seen position 513 during training (if trained on 512-token sequences), so it falls off a cliff the moment you try to process longer text.</p>
+<p>Early approaches: two options. <strong>Learned absolute position embeddings</strong> (BERT, GPT-2) assign trainable vector to each position. Works, but fatal flaw: model never saw position 513 during training (if max 512 tokens) — falls off cliff on longer text.</p>
 
-<p><strong>Sinusoidal position embeddings</strong> (the original transformer) use fixed sine and cosine waves at different frequencies. They don't need to be learned, but they encode <em>absolute</em> positions. The model has to learn on its own that position 5 and position 8 are "3 apart" — that relative relationship isn't baked in.</p>
+<p><strong>Sinusoidal position embeddings</strong> (original transformer): fixed sine/cosine waves at different frequencies. No learning needed, but encode <em>absolute</em> positions. Relative relationships not baked in — model must learn "positions 5 and 8 are 3 apart" on its own.</p>
 
-<p>What we really want is for the attention mechanism to naturally understand <em>relative</em> positions. "The word 3 positions back" matters far more than "the word at position 847." <strong>Rotary Position Embeddings</strong> — <strong>RoPE</strong> (Su et al., 2021) — achieve this through a beautiful geometric trick.</p>
+<p>What's needed: attention that naturally understands <em>relative</em> positions. "Word 3 positions back" matters more than "word at position 847." <strong>Rotary Position Embeddings</strong> — <strong>RoPE</strong> (Su et al., 2021) — achieve this via geometric trick.</p>
 
-<p>Here's the core idea, and I want to build it from the ground up because the math is more visual than it looks. Imagine a 2D vector — two numbers. We can visualize it as an arrow on a flat plane. Now imagine rotating that arrow by some angle. A rotation in 2D is a well-defined operation: multiply by a rotation matrix.</p>
+<p>Core idea: imagine 2D vector — arrow on flat plane. Rotate it by some angle. Rotation in 2D: multiply by rotation matrix.</p>
 
 <pre><code># A 2D vector [x₁, x₂] rotated by angle θ:
 #
@@ -495,11 +495,11 @@ x = x + FFN(RMSNorm(x))         # normalize BEFORE FFN</code></pre>
 # So the query at position 5 gets rotated by 5·θ₀
 # And the key at position 3 gets rotated by 3·θ₀</code></pre>
 
-<p>Now here's where it gets elegant. When the query at position m and the key at position n compute their dot product (which is how attention scores work), the two rotations combine. The dot product of two rotated vectors depends on the <em>difference</em> in their rotation angles: m·θ₀ − n·θ₀ = (m−n)·θ₀. The attention score becomes a function of (m−n) — the relative distance — not of m or n individually.</p>
+<p>Elegant part: query at position m and key at position n compute dot product (attention scores). Two rotations combine. Dot product of rotated vectors depends on <em>difference</em> in angles: m·θ₀ − n·θ₀ = (m−n)·θ₀. Attention score → function of (m−n), relative distance, not absolute positions.</p>
 
-<p>That's it. That's the entire trick. Relative position encoding, for free, from rotation.</p>
+<p>Relative position encoding, free, from rotation.</p>
 
-<p>For vectors longer than 2D (and real models use 128-dimensional head vectors), RoPE pairs up dimensions: (dim 1, dim 2), (dim 3, dim 4), and so on. Each pair gets rotated at a different frequency, similar to how a clock has a fast second hand and a slow hour hand. The different frequencies let the model distinguish positions at different scales — nearby tokens through high-frequency rotations, distant tokens through low-frequency ones.</p>
+<p>Real models use 128-dim head vectors. RoPE pairs up dimensions: (dim 1, dim 2), (dim 3, dim 4), etc. Each pair rotates at different frequency — like clock with fast second hand and slow hour hand. Different frequencies → distinguish positions at different scales: nearby tokens via high-frequency, distant via low-frequency.</p>
 
 <pre><code># RoPE for a d-dimensional vector (d=128 in LLaMA):
 # Pair dimensions: (0,1), (2,3), (4,5), ..., (126,127)
@@ -517,20 +517,20 @@ x = x + FFN(RMSNorm(x))         # normalize BEFORE FFN</code></pre>
 #   Hour hand (low freq)    = tells you "2 hours ago"
 #   Both together           = full position information</code></pre>
 
-<p>The practical superpower of RoPE is <strong>context length extension</strong>. Because positions are encoded as rotation frequencies, you can scale them to handle sequences longer than the training length. The simplest approach — <strong>linear interpolation</strong> — divides all position indices by a factor (to go from 4K to 16K context, divide positions by 4). More sophisticated approaches like <strong>NTK-aware scaling</strong> adjust the base frequency, and <strong>YaRN</strong> (Yet another RoPE extensioN) combines scaling with attention temperature adjustments for each dimension. This is why LLaMA-3 can train at 8K context but extend to 128K with continued pre-training — the mathematical structure of RoPE supports stretching gracefully.</p>
+<p>RoPE's superpower: <strong>context length extension</strong>. Positions encoded as rotation frequencies — scale them for longer sequences. <strong>Linear interpolation</strong>: divide all position indices by factor (4K→16K: divide by 4). <strong>NTK-aware scaling</strong>: adjust base frequency. <strong>YaRN</strong>: scaling + attention temperature adjustments per dimension. LLaMA-3 trains at 8K, extends to 128K — RoPE structure supports graceful stretching.</p>
 
-<p>There's an alternative approach worth knowing: <strong>ALiBi</strong> (Attention with Linear Biases), used in models like Falcon and MPT. Instead of rotating vectors, ALiBi adds a simple linear penalty to attention scores based on distance — the further apart two tokens are, the more their attention score gets reduced. ALiBi is simpler to implement and extrapolates well to long contexts, but it's less expressive than RoPE. As of 2024, RoPE has won the popularity contest: LLaMA, Mistral, Qwen, Phi, and most new models use it. ALiBi appears in fewer new architectures.</p>
+<p>Alternative: <strong>ALiBi</strong> (Attention with Linear Biases), used in Falcon and MPT. Adds linear penalty to attention scores by distance — farther tokens get bigger score reduction. Simpler, extrapolates well. Less expressive than RoPE. By 2024, RoPE won: LLaMA, Mistral, Qwen, Phi all use it. ALiBi fades from new architectures.</p>
 
-<p>But if the discomfort of not knowing what those attention tricks actually <em>are</em> — GQA, sliding window attention, Mixture-of-Experts, and the design philosophies of Claude, Gemini, and DeepSeek — is nagging at you, read on.</p>
+<p>GQA, sliding window attention, MoE, and design philosophies of Claude, Gemini, DeepSeek — all covered next.</p>
 
 <!-- ═══════════════════════════════════════════ GQA ═══════════════════════════════════════════ -->
 <h2>The KV Cache Problem and Grouped-Query Attention</h2>
 
-<p>Let's go back to TinyChat. You've deployed a LLaMA-2 7B model and it's working well. Customers love it. Your restaurant chain wants to expand the chatbot to handle longer conversations — full booking flows, menu exploration, dietary restriction discussions. You increase the context length from 4K to 32K tokens. And your GPU runs out of memory.</p>
+<p>LLaMA-2 7B deployed, working well. Restaurant chain wants longer conversations — booking flows, menu exploration, dietary restrictions. Increase context 4K→32K. GPU runs out of memory.</p>
 
-<p>The culprit isn't the model weights — those haven't changed. It's the <strong>KV cache</strong>. During autoregressive generation, the model stores the <strong>key</strong> and <strong>value</strong> vectors for every token it's already processed, so it doesn't have to recompute them when generating the next token. That cache grows linearly with sequence length <em>and</em> with the number of attention heads.</p>
+<p>Culprit: not model weights. It's <strong>KV cache</strong>. During autoregressive generation, model stores <strong>key</strong> and <strong>value</strong> vectors for every processed token — no recompute needed. Cache grows linearly with sequence length <em>and</em> number of attention heads.</p>
 
-<p>Let's do the arithmetic with real numbers. Standard <strong>Multi-Head Attention (MHA)</strong> gives every attention head its own query, key, and value projections. For a 70B model (like LLaMA-2 70B) with 64 attention heads, a head dimension of 128, 80 layers, at 32K sequence length in float16:</p>
+<p>Real arithmetic. Standard <strong>Multi-Head Attention (MHA)</strong>: every head has own query, key, value projections. LLaMA-2 70B: 64 heads, head dim 128, 80 layers, 32K sequence length, float16:</p>
 
 <pre><code># KV cache = 2 (keys + values) × num_heads × head_dim × seq_len × layers × bytes
 #
@@ -546,7 +546,7 @@ x = x + FFN(RMSNorm(x))         # normalize BEFORE FFN</code></pre>
 # you literally cannot serve a 70B model with 32K context
 # on anything less than 4 GPUs.</code></pre>
 
-<p>The first attempt to fix this was <strong>Multi-Query Attention (MQA)</strong>: make all 64 query heads share a single set of key-value projections. KV cache drops by 64×. But the quality drop is noticeable — with only one key and one value to attend to, the attention mechanism loses expressiveness.</p>
+<p>First fix: <strong>Multi-Query Attention (MQA)</strong> — 64 query heads share single KV projections. KV cache drops 64×. Quality drop noticeable — one key, one value loses expressiveness.</p>
 
 <p><strong>Grouped-Query Attention (GQA)</strong> is the compromise that stuck. Instead of 64 KV heads (MHA) or 1 KV head (MQA), you use a small number of KV head <strong>groups</strong>. Each group serves multiple query heads:</p>
 
@@ -571,24 +571,24 @@ x = x + FFN(RMSNorm(x))         # normalize BEFORE FFN</code></pre>
 # LLaMA-2 70B: 64 query heads, 8 KV heads → 8× KV cache reduction
 # KV cache drops from 85 GB to ~10.5 GB. Fits on one GPU.</code></pre>
 
-<p>The quality impact of GQA is negligible — within noise of full MHA on every benchmark that's been tested. The KV cache savings are enormous. This is why GQA is now standard: LLaMA-2 70B, LLaMA-3 (all sizes), Mistral-7B (8 KV groups for 32 query heads), and most new models use it.</p>
+<p>GQA quality impact: negligible — within noise of full MHA. KV cache savings: enormous. GQA now standard: LLaMA-2 70B, LLaMA-3 (all sizes), Mistral-7B (8 KV groups, 32 query heads), most new models.</p>
 
-<p>I still find it slightly counterintuitive that you can share key-value projections across 8 query heads and lose essentially nothing. My working intuition is that the KV projections capture "what information is available at each position," which doesn't need as much diversity as the queries, which capture "what am I looking for." The queries need to be diverse — different heads should search for different patterns. The keys and values can be shared because the underlying information at each position is the same regardless of which query is asking.</p>
+<p>Counterintuitive: share KV projections across 8 query heads and lose nothing. Working intuition: KV captures "what info is available at each position" — doesn't need query-level diversity. Queries need diversity — different heads search different patterns. KV can be shared — underlying info at each position is same regardless of which query asks.</p>
 
-<p>There's one more innovation worth flagging: <strong>Multi-head Latent Attention (MLA)</strong>, introduced by DeepSeek-V2. Instead of sharing KV heads in groups, MLA compresses the entire key-value representation into a low-dimensional latent space before caching it. It's a more aggressive compression that achieves even larger memory savings. MLA is newer and less widely adopted, but it signals the direction the field is heading — finding increasingly creative ways to shrink the KV cache bottleneck.</p>
+<p>One more: <strong>Multi-head Latent Attention (MLA)</strong> from DeepSeek-V2. Instead of grouping KV heads, MLA compresses entire KV representation into low-dimensional latent space before caching. More aggressive compression, larger memory savings. Less widely adopted, but signals direction: increasingly creative KV cache shrinking.</p>
 
 <!-- ═══════════════════════════════════════════ MISTRAL ═══════════════════════════════════════════ -->
 <h2>Mistral's Tricks — Sliding Windows and Mixture-of-Experts</h2>
 
-<p>In September 2023, a small French startup called Mistral AI released a 7B model that beat LLaMA-2 13B on every benchmark — at half the parameter count. They did it with two architectural innovations, both aimed at the same goal: doing more with less memory.</p>
+<p>September 2023: Mistral AI released 7B model that beat LLaMA-2 13B on every benchmark — half the parameter count. Two architectural innovations: both aimed at doing more with less memory.</p>
 
 <h3>Sliding Window Attention</h3>
 
-<p>Standard causal attention lets every token attend to <em>all</em> previous tokens. Token 8,000 looks back at tokens 0 through 7,999. That's 8,000 attention entries per token, and it grows linearly (making the total computation quadratic in sequence length).</p>
+<p>Standard causal attention: every token attends to <em>all</em> previous tokens. Token 8,000 looks back at 0–7,999. 8,000 attention entries per token, grows linearly → total computation quadratic in sequence length.</p>
 
-<p>Mistral-7B's insight: restrict each token to a local window of W = 4,096 previous tokens. Token 8,000 attends to tokens 3,904 through 7,999 and ignores everything before that.</p>
+<p>Mistral-7B: restrict each token to local window W = 4,096. Token 8,000 attends to 3,904–7,999, ignores everything before.</p>
 
-<p>Your immediate objection — mine too, when I first read it — is "doesn't that mean the model forgets everything beyond the window?" The answer is more subtle, and it involves thinking about what happens across layers.</p>
+<p>Immediate objection: "model forgets everything beyond window?" Answer more subtle — depends on what happens across layers.</p>
 
 <pre><code># Layer 1: Token 8000 attends to tokens [3904, 7999]
 #          Token 5000 attends to tokens [904, 4999]
