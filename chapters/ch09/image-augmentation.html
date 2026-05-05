@@ -611,11 +611,11 @@ For most projects, RandAugment(N=2, M=9) is the answer.</code></pre>
 
 <p>Where many engineers stumble: copying augmentation pipeline designed for classification into detection/segmentation project. Augmentations might be same transforms, but how they interact with annotations is fundamentally different.</p>
 
-<p>In <strong>classification</strong>, the annotation is a single label for the whole image. Any transform that preserves the label is safe. Flip the image, the label stays "apple." No coordinates to update. Nothing to align.</p>
+<p>In <strong>classification</strong>, annotation = single label for whole image. Any transform preserving label is safe. Flip image → label stays "apple." No coordinates to update. Nothing to align.</p>
 
-<p>In <strong>object detection</strong>, each annotation includes bounding box coordinates. Every spatial transform — flip, rotation, crop, resize, affine — must also transform the bounding boxes. Flip the image horizontally, and every bounding box's x-coordinates must mirror around the image center. Crop the image, and bounding boxes that fall outside the crop must be removed or clipped. Forget to transform the boxes and you have silently misaligned labels. The model trains on images where the box says "dog" but points at empty sky. I've debugged this exact problem twice, both times in production systems that had been training for days before anyone noticed the mAP wasn't improving.</p>
+<p>In <strong>object detection</strong>, each annotation includes bounding box coordinates. Every spatial transform — flip, rotation, crop, resize, affine — must also transform bounding boxes. Flip image horizontally → every bbox x-coordinate must mirror around image center. Crop image → bboxes outside crop removed or clipped. Forget to transform boxes = silently misaligned labels. Model trains on images where box says "dog" but points at empty sky. Debugged this exact problem twice — production systems training for days before anyone noticed mAP wasn't improving.</p>
 
-<p>In <strong>segmentation</strong>, the annotation is a pixel-level mask the same size as the image. Every spatial transform applied to the image must be applied identically to the mask. Flip the image, flip the mask. Rotate the image, rotate the mask with the same angle and interpolation. Use nearest-neighbor interpolation for masks (not bilinear) to avoid creating spurious fractional class labels.</p>
+<p>In <strong>segmentation</strong>, annotation = pixel-level mask same size as image. Every spatial transform applied to image must apply identically to mask. Flip image → flip mask. Rotate image → rotate mask with same angle and interpolation. Use nearest-neighbor interpolation for masks (not bilinear) to avoid creating spurious fractional class labels.</p>
 
 <pre><code># Albumentations handles all three cases seamlessly
 import albumentations as A
@@ -642,15 +642,15 @@ segmentation_transform = A.Compose([
 
 <div class="callout callout-warning">
   <div class="callout-label">The Annotation Alignment Trap</div>
-  <p>The most insidious augmentation bug is misaligned annotations. In detection, a forgotten coordinate flip causes bounding boxes to point at the wrong part of the image. In segmentation, different interpolation methods for image and mask create soft mask boundaries that confuse the loss function. These bugs don't crash your program. They silently produce bad models that seem to train normally but never reach expected accuracy. Always visualize your augmented samples <em>with their annotations</em> before committing to a pipeline.</p>
+  <p>Most insidious augmentation bug: misaligned annotations. In detection, forgotten coordinate flip causes bboxes pointing at wrong part of image. In segmentation, different interpolation for image vs. mask creates soft boundaries confusing loss function. These bugs don't crash program. Silently produce bad models that train normally but never reach expected accuracy. Always visualize augmented samples <em>with their annotations</em> before committing to pipeline.</p>
 </div>
 
 <!-- ═══════════════════════ ALBUMENTATIONS PIPELINE ═══════════════════════ -->
 <h2>Building a Real Pipeline with Albumentations</h2>
 
-<p><strong>Albumentations</strong> has become the library of choice for most vision practitioners, and for good reason. It's built on OpenCV rather than PIL, making it 2–10× faster than torchvision transforms for complex augmentations. It natively handles bounding boxes and segmentation masks. And its API composes cleanly.</p>
+<p><strong>Albumentations</strong> = library of choice for most vision practitioners. Built on OpenCV (not PIL), 2–10× faster than torchvision transforms for complex augmentations. Natively handles bounding boxes and segmentation masks. API composes cleanly.</p>
 
-<p>Here's what a production-quality classification pipeline looks like, bringing together everything we've covered:</p>
+<p>Production-quality classification pipeline bringing together everything covered:</p>
 
 <pre><code>import albumentations as A
 from albumentations.pytorch import ToTensorV2
@@ -688,16 +688,16 @@ val_transform = A.Compose([
     ToTensorV2(),
 ])</code></pre>
 
-<p>Notice the validation pipeline. No augmentation whatsoever — resize, center crop, normalize, done. If you apply random transforms to your validation data, your metrics become noisy and unreliable. The entire purpose of validation is to measure performance on a fixed, representative sample. I still occasionally see this mistake in production code, where someone added augmentation to "make the validation set harder." That's not what validation is for.</p>
+<p>Notice validation pipeline. No augmentation — resize, center crop, normalize, done. Apply random transforms to validation data → metrics become noisy/unreliable. Entire purpose of validation: measure performance on fixed, representative sample. Still see this mistake in production — someone adds augmentation to "make validation set harder." Not what validation is for.</p>
 
-<p>A word on alternatives. <strong>Kornia</strong> runs augmentations on the GPU as pure PyTorch tensor operations — useful when CPU data loading is the bottleneck. <strong>NVIDIA DALI</strong> handles the entire pipeline on GPU, including JPEG decoding, which matters at scale. For most projects, Albumentations on CPU is fast enough and much easier to set up.</p>
+<p>Alternatives: <strong>Kornia</strong> runs augmentations on GPU as pure PyTorch tensor operations — useful when CPU data loading is bottleneck. <strong>NVIDIA DALI</strong> handles entire pipeline on GPU including JPEG decoding — matters at scale. For most projects, Albumentations on CPU fast enough and much easier to set up.</p>
 
 <!-- ═══════════════════════ TTA ═══════════════════════ -->
 <h2>Test-Time Augmentation — Free Accuracy at Inference</h2>
 
-<p>Here's a trick that feels like it shouldn't work: at inference time, instead of predicting on a single image, create several augmented versions — the original, a horizontal flip, a few slightly different crops — run each through the model, and average the predictions. The result is almost always more accurate than any single prediction.</p>
+<p>Trick that feels like it shouldn't work: at inference time, instead of predicting on single image, create several augmented versions — original, horizontal flip, few slightly different crops — run each through model, average predictions. Result almost always more accurate than any single prediction.</p>
 
-<p>The reason is the same as why ensembles work. Different augmented views trigger slightly different internal representations in the model. Some views make it more confident about the correct class, others less so. But the errors tend to be <em>uncorrelated</em> across views — the model doesn't make the same mistake on a horizontally flipped image as on a slightly cropped one. Averaging reduces the variance of the prediction without increasing the bias. It's an ensemble where the "different models" are the same model seeing different perspectives of the same input.</p>
+<p>Same reason ensembles work. Different augmented views trigger slightly different internal representations. Some views → more confident about correct class, others less so. But errors tend to be <em>uncorrelated</em> across views — model doesn't make same mistake on horizontally flipped image as on slightly cropped one. Averaging reduces prediction variance without increasing bias. Ensemble where "different models" = same model seeing different perspectives of same input.</p>
 
 <pre><code>def predict_with_tta(model, image, n_augments=5):
     """Average predictions over augmented views for more stable output."""
@@ -725,22 +725,22 @@ val_transform = A.Compose([
 # Production setting: 2–5 augmentations, when accuracy matters more than latency
 # Medical diagnosis, rare-event detection, high-stakes decisions — TTA is worth it</code></pre>
 
-<p>The trade-off is straightforward: each additional augmentation adds one more forward pass. TTA with 5 views takes 5× longer than a single prediction. In Kaggle competitions, top solutions routinely use 10–20 TTA passes because leaderboard margins are tiny. In production, 2–5 passes are the sweet spot — the gains diminish beyond that, following the law of diminishing returns that all ensemble methods obey. Use TTA when accuracy matters and latency is negotiable: medical diagnosis, rare-event detection, and batch predictions that don't need real-time response.</p>
+<p>Trade-off straightforward: each additional augmentation = one more forward pass. TTA with 5 views takes 5× longer than single prediction. Kaggle competitions: top solutions use 10–20 TTA passes (tiny leaderboard margins). Production: 2–5 passes = sweet spot — gains diminish beyond that. Use TTA when accuracy matters and latency negotiable: medical diagnosis, rare-event detection, batch predictions not needing real-time response.</p>
 
 <!-- ═══════════════════════ COMMON MISTAKES ═══════════════════════ -->
 <h2>The Mistakes That Cost Real Teams Real Time</h2>
 
-<p>I've worked on enough vision pipelines — and broken enough of them — to spot the recurring patterns. These aren't hypothetical; they're problems I've either caused or debugged in production systems.</p>
+<p>Worked on enough vision pipelines — and broken enough — to spot recurring patterns. Not hypothetical; problems either caused or debugged in production systems.</p>
 
-<p><strong>Over-augmenting small datasets.</strong> A team with 500 training images applied MixUp, CutMix, aggressive rotation, heavy color jitter, and RandAugment simultaneously. The model couldn't overfit the training set even after 200 epochs. It wasn't learning invariances — it was drowning in distortion. The fix was counterintuitive: start with no augmentation, verify the model can memorize a small batch, then add augmentations one at a time, validating each addition. Augmentation should improve test accuracy without destroying training convergence.</p>
+<p><strong>Over-augmenting small datasets.</strong> Team with 500 training images applied MixUp, CutMix, aggressive rotation, heavy color jitter, RandAugment simultaneously. Model couldn't overfit training set even after 200 epochs. Wasn't learning invariances — drowning in distortion. Fix (counterintuitive): start with no augmentation, verify model can memorize small batch, add augmentations one at a time, validate each addition. Augmentation should improve test accuracy without destroying training convergence.</p>
 
-<p><strong>Copying pipelines across tasks.</strong> An ImageNet classification pipeline pasted into a radiology project. The model trained fine on the metrics, but clinically significant findings near the image edges were being cropped out by aggressive RandomResizedCrop with scale=(0.08, 1.0). In medical imaging, an 8% crop means you've discarded 92% of the diagnostic information. Domain expertise has to govern augmentation choices. No universal recipe exists.</p>
+<p><strong>Copying pipelines across tasks.</strong> ImageNet classification pipeline pasted into radiology project. Model trained fine on metrics, but clinically significant findings near image edges cropped out by aggressive RandomResizedCrop with scale=(0.08, 1.0). In medical imaging, 8% crop = discarded 92% of diagnostic information. Domain expertise must govern augmentation choices. No universal recipe exists.</p>
 
-<p><strong>Not turning off augmentation during debugging.</strong> When a model isn't learning, the first thing to try is disabling all augmentation. If the model still can't overfit a tiny batch of 8 images, the problem is elsewhere — wrong learning rate, architecture bug, data loading error. Augmentation is a regularizer; it makes learning harder on purpose. Don't add it until the basic pipeline works without it.</p>
+<p><strong>Not turning off augmentation during debugging.</strong> Model isn't learning → first try: disable all augmentation. If model still can't overfit tiny batch of 8 images, problem is elsewhere — wrong learning rate, architecture bug, data loading error. Augmentation = regularizer; makes learning harder on purpose. Don't add until basic pipeline works without it.</p>
 
-<p><strong>Forgetting that stronger augmentation needs more epochs.</strong> Each augmentation makes the training distribution wider and noisier. The model needs more passes through the data to see enough representative examples from this wider distribution. If you add heavy augmentation but keep the same training schedule, you'll underfit. Modern recipes like DeiT train for 300 epochs partly because they use aggressive augmentation (RandAugment + MixUp + CutMix + Random Erasing). Cut the augmentation and you can cut the epochs proportionally.</p>
+<p><strong>Forgetting stronger augmentation needs more epochs.</strong> Each augmentation makes training distribution wider/noisier. Model needs more passes through data to see enough representative examples from wider distribution. Add heavy augmentation but keep same training schedule → underfit. Modern recipes like DeiT train 300 epochs partly because of aggressive augmentation (RandAugment + MixUp + CutMix + Random Erasing). Cut augmentation → cut epochs proportionally.</p>
 
-<p><strong>Augmenting the wrong thing.</strong> In a segmentation task, someone applied color jitter to the image but forgot to leave the mask untouched. The mask pixels got jittered, turning clean class boundaries into soft, ambiguous zones. In a detection task, someone applied random cropping but forgot to adjust the bounding boxes. The annotations pointed at empty regions while the actual objects had moved. Always visualize a batch of augmented samples with their annotations before committing to a pipeline.</p>
+<p><strong>Augmenting wrong thing.</strong> Segmentation task: someone applied color jitter to image but forgot to leave mask untouched. Mask pixels got jittered, turning clean class boundaries into soft, ambiguous zones. Detection task: someone applied random cropping but forgot to adjust bounding boxes. Annotations pointed at empty regions while actual objects moved. Always visualize batch of augmented samples with annotations before committing to pipeline.</p>
 
 <!-- ═══════════════════════ DECISION TABLE ═══════════════════════ -->
 <h2>Quick-Reference Decision Table</h2>
