@@ -297,7 +297,7 @@
   The decision tree: choosing the simplest technique that solves your bottleneck
 </nav>
 <!-- ═══════════ End Table of Contents ═══════════ -->
-<p>Scaling deep learning training means two things: making a single model train faster across multiple devices, and making sure you aren't wasting compute on things that don't matter. The first half is distributed training — the machinery of splitting work across GPUs. The second is efficiency — mixed precision, memory tricks, and understanding how model size, data, and compute relate to each other through scaling laws. Both are now table stakes for anyone training anything non-trivial.</p>
+<p>Scaling deep learning training means two things: make one model train faster across multiple devices, and stop wasting compute on things that do not matter. First half: distributed training — split work across GPUs. Second: efficiency — mixed precision, memory tricks, and scaling laws linking model size, data, and compute. Both are now table stakes for non-trivial training.</p>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!--  THE VRAM PROBLEM                                          -->
@@ -305,15 +305,15 @@
 
 <h2>The VRAM Problem: Where All Your Memory Goes</h2>
 
-<p>Let's start with the thing that makes everything else necessary. Your GPU has a fixed amount of <strong>VRAM</strong> — Video RAM, the GPU's dedicated memory. Everything that exists during training has to live there simultaneously: the model's parameters, the gradients computed during backpropagation, the optimizer's internal bookkeeping, and the intermediate activations saved during the forward pass so the backward pass can use them.</p>
+<p>Start with reason everything else exists. Your GPU has fixed <strong>VRAM</strong> — Video RAM, GPU's dedicated memory. Everything during training must live there at same time: model parameters, gradients from backpropagation, optimizer bookkeeping, and intermediate activations saved during forward pass so backward pass can use them.</p>
 
-<p>Here's a concrete picture. Imagine you're training a modest 1-billion parameter model. Each parameter is a floating-point number. In the standard float32 format, that's 4 bytes per number. So the parameters alone eat 4 GB. But the parameters are the small part.</p>
+<p>Concrete picture. Train modest 1-billion parameter model. Each parameter is floating-point number. In standard float32, that is 4 bytes each. Parameters alone use 4 GB. But parameters are small part.</p>
 
-<p>The <strong>gradients</strong> during the backward pass are the same size as the parameters — another 4 GB. The <strong>optimizer state</strong> is where things get painful. Adam (and AdamW, which is what almost everyone uses) stores two extra tensors per parameter: the running mean of gradients (first moment) and the running mean of squared gradients (second moment). That's another 8 GB. So before you've even processed a single data point, your 1B model has consumed 16 GB on parameters, gradients, and optimizer state alone.</p>
+<p><strong>Gradients</strong> from backward pass match parameter size — another 4 GB. <strong>Optimizer state</strong> hurts most. Adam (and AdamW, what almost everyone uses) stores two extra tensors per parameter: running mean of gradients (first moment) and running mean of squared gradients (second moment). That is another 8 GB. Before one data point, your 1B model already uses 16 GB for parameters, gradients, and optimizer state alone.</p>
 
-<p>Then there are <strong>activations</strong> — the intermediate outputs of every layer, saved during the forward pass because backpropagation needs them. Their size scales with batch size, sequence length, hidden dimension, and the number of layers. For a transformer with a reasonable batch size, activations can easily double or triple the total memory usage.</p>
+<p>Then <strong>activations</strong> — intermediate outputs of every layer, saved during forward pass because backpropagation needs them. Size scales with batch size, sequence length, hidden dimension, and layer count. For transformer with reasonable batch size, activations can easily double or triple total memory use.</p>
 
-<p>Let me make that tangible. Here's the arithmetic for a 1B parameter model using mixed precision (float16 weights, float32 optimizer):</p>
+<p>Make it tangible. Arithmetic for 1B parameter model using mixed precision (float16 weights, float32 optimizer):</p>
 
 <table>
 <thead>
@@ -329,13 +329,13 @@
 </tbody>
 </table>
 
-<p>That 1B model barely fits on a 24 GB consumer GPU (RTX 3090/4090) with a small batch size. Now think about a 7B model: 7× everything, so roughly 130–140 GB for parameters, gradients, and optimizer state alone — before activations. That's two A100-80GB GPUs minimum, and we haven't even started thinking about throughput.</p>
+<p>That 1B model barely fits on 24 GB consumer GPU (RTX 3090/4090) with small batch size. Now think about 7B model: 7× everything, roughly 130–140 GB for parameters, gradients, and optimizer state alone — before activations. Need at least two A100-80GB GPUs, and throughput still not addressed.</p>
 
-<p>This is the force that drives everything in this section. Every technique we'll look at — distributed training, mixed precision, gradient checkpointing, sharding — exists because VRAM runs out and we have to get creative about either splitting the work or reducing the memory footprint.</p>
+<p>This drives everything in this section. Every technique here — distributed training, mixed precision, gradient checkpointing, sharding — exists because VRAM runs out. Need split work or shrink memory footprint.</p>
 
 <div class="callout callout-danger">
   <div class="callout-label">⚠️ The Error You'll See Most</div>
-  <p><code>RuntimeError: CUDA out of memory. Tried to allocate X MiB</code> — this is the single most common error in deep learning. Before searching for exotic solutions, try the four simplest fixes in this order: reduce batch size, enable mixed precision, use gradient accumulation, enable gradient checkpointing. These solve 90% of OOM errors.</p>
+  <p><code>RuntimeError: CUDA out of memory. Tried to allocate X MiB</code> — most common deep learning error. Before exotic fixes, try four simple ones in order: reduce batch size, enable mixed precision, use gradient accumulation, enable gradient checkpointing. These solve 90% of OOM errors.</p>
 </div>
 
 
@@ -345,13 +345,13 @@
 
 <h2>Mixed Precision: The Free Lunch</h2>
 
-<p>The first thing to reach for when memory is tight — and honestly, even when it isn't — is <strong>mixed precision training</strong>. The idea is refreshingly straightforward. Most of the arithmetic in a neural network doesn't need the full precision of float32. Matrix multiplications, convolutions, element-wise operations — they do fine with half the bits. So we run the computationally expensive parts in float16 (or bfloat16), keep a master copy of the weights in float32 for the optimizer to work with, and get the best of both worlds.</p>
+<p>First tool when memory tight — and even when not — is <strong>mixed precision training</strong>. Idea simple. Most neural network arithmetic does not need full float32 precision. Matrix multiplications, convolutions, element-wise operations work fine with half bits. Run expensive parts in float16 (or bfloat16), keep master weight copy in float32 for optimizer, get both benefits.</p>
 
-<p>The payoff is real: roughly 2× speedup on Tensor Core GPUs (anything from V100 onward) and around 40% less memory because activations are halved. The accuracy cost is negligible — the rounding noise from 16-bit arithmetic is completely drowned out by the inherent noise of mini-batch stochastic gradient descent.</p>
+<p>Payoff real: about 2× speedup on Tensor Core GPUs (V100 onward) and about 40% less memory because activations halve. Accuracy cost is negligible — rounding noise from 16-bit arithmetic gets drowned out by mini-batch stochastic gradient descent noise.</p>
 
-<p>There's one wrinkle. <strong>Float16</strong> has a narrow dynamic range — its maximum value is about 65,504, compared to float32's 3.4 × 10³⁸. Small gradients can underflow to zero and vanish. The solution is <strong>loss scaling</strong>: multiply the loss by a large number before the backward pass (inflating the gradients into float16's representable range), then divide the gradients back down before the optimizer step.</p>
+<p>One wrinkle. <strong>Float16</strong> has narrow dynamic range — max value is about 65,504, versus float32's 3.4 × 10³⁸. Small gradients can underflow to zero and vanish. Fix: <strong>loss scaling</strong>. Multiply loss by large number before backward pass, push gradients into float16's representable range, then divide gradients back down before optimizer step.</p>
 
-<p><strong>BFloat16</strong> sidesteps this problem entirely. Google designed it with the same exponent range as float32 (8 exponent bits) but fewer mantissa bits (7 instead of float16's 10). Same dynamic range, slightly less precision, no loss scaling needed. If your hardware supports BF16 (A100 and newer, or TPUs), use it. Life is easier.</p>
+<p><strong>BFloat16</strong> avoids this entirely. Google designed it with same exponent range as float32 (8 exponent bits) but fewer mantissa bits (7 instead of float16's 10). Same dynamic range. Slightly less precision. No loss scaling needed. If your hardware supports BF16 (A100 and newer, or TPUs), use it. Life gets easier.</p>
 
 <table>
   <thead>
@@ -364,7 +364,7 @@
   </tbody>
 </table>
 
-<p>In PyTorch, the implementation is almost insultingly simple. Four extra lines turn on Automatic Mixed Precision (AMP):</p>
+<p>In PyTorch, implementation is almost trivial. Four extra lines enable Automatic Mixed Precision (AMP):</p>
 
 <pre><code class="language-python">from torch.amp import autocast, GradScaler
 
@@ -381,9 +381,9 @@ for inputs, targets in dataloader:
     scaler.step(optimizer)
     scaler.update()</code></pre>
 
-<p>The <code>autocast</code> context manager routes matrix multiplications and convolutions to FP16 Tensor Cores, while keeping numerically sensitive operations (softmax, layer norm, loss functions) in FP32. The <code>GradScaler</code> dynamically adjusts the loss scaling factor — if gradients overflow, it halves the scale and skips the step; if things are stable, it gradually increases the scale to capture smaller gradients.</p>
+<p><code>autocast</code> sends matrix multiplications and convolutions to FP16 Tensor Cores, while keeping numerically sensitive operations (softmax, layer norm, loss functions) in FP32. <code>GradScaler</code> adjusts loss scaling dynamically — if gradients overflow, it halves scale and skips step; if stable, it gradually increases scale to capture smaller gradients.</p>
 
-<p>For BF16 on A100 or newer, you don't even need the scaler:</p>
+<p>For BF16 on A100 or newer, no scaler needed:</p>
 
 <pre><code class="language-python">with autocast("cuda", dtype=torch.bfloat16):
     outputs = model(inputs)
@@ -391,7 +391,7 @@ for inputs, targets in dataloader:
 loss.backward()
 optimizer.step()</code></pre>
 
-<p>I'll be honest — when I first heard "half the precision, same results," I didn't believe it. But the math checks out. The optimizer updates happen in FP32, so the accumulated weight changes are identical. The only noise introduced is in the forward and backward passes, and that noise is dwarfed by the stochasticity of mini-batch SGD. If your mixed precision run diverges but your FP32 run doesn't, the bug is in your scaling setup, not in the concept.</p>
+<p>At first, "half precision, same results" sounds wrong. But math holds. Optimizer updates happen in FP32, so accumulated weight changes stay identical. Only new noise appears in forward and backward passes, and mini-batch SGD stochasticity dwarfs it. If your mixed precision run diverges but your FP32 run does not, bug is in scaling setup, not concept.</p>
 
 
 <!-- ═══════════════════════════════════════════════════════════ -->
@@ -400,11 +400,11 @@ optimizer.step()</code></pre>
 
 <h2>Memory Optimization: Trading Compute for Bytes</h2>
 
-<p>Mixed precision halves your activation memory. But sometimes that's not enough. Two more techniques let you push further by trading compute time for memory savings.</p>
+<p>Mixed precision halves activation memory. Sometimes not enough. Two more techniques push farther by trading compute time for memory.</p>
 
 <h3>Gradient Accumulation</h3>
 
-<p>The idea is almost too simple to feel like a technique. You want an effective batch size of 128, but only 32 samples fit in memory. So you run 4 forward-backward passes with batch size 32, accumulating the gradients without stepping the optimizer, and then step once after all 4. The gradients add up to the same thing as if you'd processed 128 samples at once.</p>
+<p>Idea almost too simple. You want effective batch size 128, but only 32 samples fit in memory. Run 4 forward-backward passes with batch size 32, accumulate gradients without stepping optimizer, then step once after all 4. Gradients match processing 128 samples at once.</p>
 
 <pre><code class="language-python">accumulation_steps = 4
 
@@ -420,22 +420,22 @@ for i, (inputs, targets) in enumerate(dataloader):
         scaler.update()
         optimizer.zero_grad()</code></pre>
 
-<p>The division by <code>accumulation_steps</code> matters — without it, your effective learning rate would be 4× too large, because the gradients from 4 micro-batches are summed rather than averaged. Training time per step is the same (you still do the same total compute), but peak memory stays at the single micro-batch level.</p>
+<p>Division by <code>accumulation_steps</code> matters — without it, effective learning rate becomes 4× too large, because gradients from 4 micro-batches get summed, not averaged. Training time per step stays same — total compute is same. Peak memory stays at single micro-batch level.</p>
 
 <h3>Gradient Checkpointing</h3>
 
-<p>This one trades compute for memory in a more dramatic way. During a normal forward pass, every layer saves its output (the activations) because backpropagation needs them. For a 100-layer network, that's 100 layers worth of activations sitting in memory.</p>
+<p>This trades compute for memory more aggressively. In normal forward pass, every layer saves its output (activations) because backpropagation needs them. For a 100-layer network, memory holds 100 layers of activations.</p>
 
-<p>With <strong>gradient checkpointing</strong> (also called activation checkpointing or activation recomputation), you only save the activations at certain "checkpoint" layers. When the backward pass reaches a layer whose activations weren't saved, it recomputes them on-the-fly from the nearest checkpoint. This reduces activation memory from O(N) to roughly O(√N) for N layers, at the cost of about 30% extra compute time — you're running parts of the forward pass twice.</p>
+<p>With <strong>gradient checkpointing</strong> (also called activation checkpointing or activation recomputation), save activations only at chosen "checkpoint" layers. When backward pass reaches layer whose activations were not saved, it recomputes them on-the-fly from nearest checkpoint. This cuts activation memory from O(N) to about O(√N) for N layers, at cost of about 30% extra compute time — parts of forward pass run twice.</p>
 
 <pre><code class="language-python">from torch.utils.checkpoint import checkpoint
 
 # Instead of: output = transformer_block(x)
 # Use: output = checkpoint(transformer_block, x, use_reentrant=False)</code></pre>
 
-<p>In practice, people checkpoint every transformer block or every few residual blocks. It's the go-to technique when your model fits in memory for inference but not for training (because training needs to store activations and gradients on top of the parameters).</p>
+<p>In practice, people checkpoint every transformer block or every few residual blocks. Go-to technique when model fits in memory for inference but not for training, because training must store activations and gradients on top of parameters.</p>
 
-<p>I'm still developing my intuition for the optimal checkpoint placement — there's a real engineering tradeoff between memory reduction and the wall-clock cost of recomputation, and it depends heavily on the specific architecture and hardware. The safe default: checkpoint every transformer layer and accept the ~30% slowdown.</p>
+<p>Still building intuition for optimal checkpoint placement. Real tradeoff: memory reduction versus recomputation wall-clock cost. Depends heavily on architecture and hardware. Safe default: checkpoint every transformer layer and accept ~30% slowdown.</p>
 
 
 <!-- ═══════════════════════════════════════════════════════════ -->
@@ -444,27 +444,27 @@ for i, (inputs, targets) in enumerate(dataloader):
 
 <h2>DistributedDataParallel: The Workhorse</h2>
 
-<p>Let's picture a scenario. You've got a model that fits on one GPU, but training takes four days. You have access to 4 GPUs. The most natural thing in the world is to split the data four ways, give each GPU the same model, let them each compute gradients on their slice, and then combine the gradients so every GPU gets the same update. That's <strong>data parallelism</strong>.</p>
+<p>Picture scenario. Model fits on one GPU, but training takes four days. You have 4 GPUs. Split data four ways, give each GPU same model, let each compute gradients on its shard, then combine gradients so every GPU gets same update. That is <strong>data parallelism</strong>.</p>
 
-<p>PyTorch offers two implementations of this idea, and one of them you should never touch.</p>
+<p>PyTorch offers two implementations of this idea. One you should never touch.</p>
 
 <h3>DataParallel: The One You Should Never Use</h3>
 
-<p><code>nn.DataParallel</code> is the tempting one-liner — <code>model = nn.DataParallel(model)</code> — and it's fatally flawed. It runs in a single Python process, so it hits the GIL (Global Interpreter Lock). GPU 0 gathers all outputs and computes the loss, using far more memory than the other GPUs. Gradients are collected to GPU 0 and then broadcast back, sequentially. The result: it often runs slower with 4 GPUs than with 2, because the GPU-0 bottleneck dominates. It exists for historical reasons. Forget it exists.</p>
+<p><code>nn.DataParallel</code> looks like tempting one-liner — <code>model = nn.DataParallel(model)</code> — and it is badly flawed. It runs in single Python process, so it hits the GIL (Global Interpreter Lock). GPU 0 gathers all outputs and computes loss, using far more memory than other GPUs. Gradients collect on GPU 0, then broadcast back sequentially. Result: often slower on 4 GPUs than 2 because GPU-0 bottleneck dominates. Historical artifact. Ignore it.</p>
 
 <h3>DistributedDataParallel: How It Actually Works</h3>
 
-<p><strong>DDP</strong> does the right thing. It spawns one process per GPU. Each process holds its own copy of the model, gets a unique slice of the training data via a <code>DistributedSampler</code>, and computes gradients independently. The magic happens in how the gradients are synchronized.</p>
+<p><strong>DDP</strong> does this right. It spawns one process per GPU. Each process holds its own model copy, gets unique slice of training data via <code>DistributedSampler</code>, and computes gradients independently. Magic is gradient synchronization.</p>
 
-<p>The core operation is called <strong>all-reduce</strong>. Think of it this way: every GPU has computed gradients for its local batch, and we need every GPU to end up with the average of all those gradients. The naive approach — send everything to one GPU, average there, send back — would create a bottleneck at that one GPU. Ring all-reduce is the clever alternative.</p>
+<p>Core operation is <strong>all-reduce</strong>. Every GPU computes gradients for local batch. Every GPU must end with average of all gradients. Naive plan — send everything to one GPU, average there, send back — creates bottleneck. Ring all-reduce avoids that.</p>
 
-<p>Imagine the GPUs arranged in a ring. Each GPU splits its gradient tensor into N chunks (where N is the number of GPUs). In the first phase (reduce-scatter), each GPU sends one chunk to its neighbor and receives a chunk from the other direction, adding them together as they pass around the ring. After N-1 steps, each GPU holds the fully reduced version of one chunk. In the second phase (all-gather), the complete chunks are passed around until every GPU has the full result. The elegant thing: at every step, each GPU is sending and receiving simultaneously, maxing out the network bandwidth. The total data each GPU sends is 2 × (N-1)/N times the gradient size — which approaches 2× the gradient size regardless of how many GPUs you add. That's bandwidth-optimal.</p>
+<p>Imagine GPUs in ring. Each GPU splits gradient tensor into N chunks (N = GPU count). In first phase (reduce-scatter), each GPU sends one chunk to neighbor and receives one from other side, adding as chunks move around ring. After N-1 steps, each GPU holds fully reduced version of one chunk. In second phase (all-gather), complete chunks circulate until every GPU has full result. Key point: each GPU sends and receives simultaneously at every step, saturating network bandwidth. Total data each GPU sends is 2 × (N-1)/N times gradient size — approaching 2× gradient size no matter how many GPUs you add. That is bandwidth-optimal.</p>
 
-<p>But DDP doesn't wait for the entire backward pass to finish before starting communication. It uses <strong>gradient bucketing</strong>: as gradients are computed layer by layer during the backward pass, they're grouped into buckets (25 MB each by default). As soon as a bucket is full, its all-reduce kicks off in the background on a separate CUDA stream, overlapping communication with the computation of earlier layers' gradients. By the time the backward pass finishes, most of the gradient synchronization is already done.</p>
+<p>But DDP does not wait for whole backward pass before communication starts. It uses <strong>gradient bucketing</strong>: as gradients are computed layer by layer during backward pass, they are grouped into buckets (25 MB each by default). Once bucket fills, its all-reduce starts in background on separate CUDA stream, overlapping communication with computation of earlier layers' gradients. By backward-pass end, most gradient synchronization is already finished.</p>
 
-<p>The result: near-linear scaling. 4 GPUs typically give 3.6–3.9× the throughput of one.</p>
+<p>Result: near-linear scaling. 4 GPUs usually give 3.6–3.9× throughput of one.</p>
 
-<p>Here's the pattern you'll reuse in every DDP training script:</p>
+<p>Pattern you will reuse in every DDP training script:</p>
 
 <pre><code class="language-python">import os, torch, torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -498,9 +498,9 @@ def train(rank, world_size):
 
 # Launch with: torchrun --nproc_per_node=4 train_script.py</code></pre>
 
-<p>A few things to notice. <code>init_process_group("nccl")</code> uses NVIDIA's NCCL library — the standard for GPU-to-GPU communication, and what implements the ring all-reduce under the hood. The <code>DistributedSampler</code> splits the dataset so each GPU processes a unique subset; without it, all GPUs train on identical data and you've gained nothing. The <code>sampler.set_epoch(epoch)</code> call ensures different shuffling each epoch — forgetting this is a subtle bug that leads to the same data split every epoch. And <code>torchrun</code> is the launcher that spawns one process per GPU, handles environment variables, and supports fault tolerance.</p>
+<p>Few things to notice. <code>init_process_group("nccl")</code> uses NVIDIA's NCCL library — standard GPU-to-GPU communication backend, and implementation behind ring all-reduce. <code>DistributedSampler</code> splits dataset so each GPU processes unique subset; without it, all GPUs train on identical data and you gain nothing. <code>sampler.set_epoch(epoch)</code> ensures different shuffling each epoch — forget it, and you get same data split every epoch. <code>torchrun</code> is launcher that spawns one process per GPU, handles environment variables, and supports fault tolerance.</p>
 
-<p>Two more gotchas that will save you hours of debugging. First, log metrics and save checkpoints only on rank 0 — every process runs the same training loop, and you'll get duplicate logs and corrupted checkpoint files if you save from all ranks. Access the unwrapped model via <code>model.module</code> when saving. Second, if you're using BatchNorm, convert to <code>SyncBatchNorm</code> before wrapping with DDP, because standard BatchNorm computes statistics per-GPU, and with small per-GPU batch sizes those statistics become noisy.</p>
+<p>Two more gotchas. First, log metrics and save checkpoints only on rank 0 — every process runs same training loop, and saving from all ranks gives duplicate logs and corrupted checkpoint files. Access unwrapped model via <code>model.module</code> when saving. Second, if using BatchNorm, convert to <code>SyncBatchNorm</code> before wrapping with DDP, because standard BatchNorm computes statistics per GPU, and small per-GPU batch sizes make those statistics noisy.</p>
 
 
 <!-- ═══════════════════════════════════════════════════════════ -->
@@ -509,19 +509,19 @@ def train(rank, world_size):
 
 <h2>When the Model Doesn't Fit: FSDP and DeepSpeed ZeRO</h2>
 
-<p>DDP replicates the entire model on every GPU. For a 7B parameter model with Adam, that's ~130 GB of state per GPU — more than any single GPU has. This is where <strong>sharding</strong> enters the picture.</p>
+<p>DDP replicates entire model on every GPU. For 7B parameter model with Adam, that is ~130 GB of state per GPU — more than any single GPU has. This is where <strong>sharding</strong> enters.</p>
 
-<p>The core insight is that most of the memory sitting on each GPU during DDP training is redundant. Every GPU holds a complete copy of the optimizer state, even though each GPU only needs those states during the optimizer step. If you have 8 GPUs, you're storing the same 8 GB of Adam moments 8 times. That's 56 GB wasted.</p>
+<p>Core insight: most memory sitting on each GPU during DDP training is redundant. Every GPU holds full copy of optimizer state, even though each GPU needs those states only during optimizer step. With 8 GPUs, you store same 8 GB of Adam moments 8 times. That is 56 GB wasted.</p>
 
-<p><strong>DeepSpeed ZeRO</strong> (Zero Redundancy Optimizer), developed by Microsoft, attacks this redundancy in three progressive stages. Think of it as increasingly aggressive sharding:</p>
+<p><strong>DeepSpeed ZeRO</strong> (Zero Redundancy Optimizer), built by Microsoft, attacks this redundancy in three stages. Think: increasingly aggressive sharding.</p>
 
-<p><strong>ZeRO Stage 1</strong> partitions only the optimizer states across GPUs. Each GPU still holds all parameters and gradients, but stores only 1/N of the optimizer state (where N is the GPU count). Memory per GPU drops from P + G + O to P + G + O/N.</p>
+<p><strong>ZeRO Stage 1</strong> partitions only optimizer states across GPUs. Each GPU still holds all parameters and gradients, but stores only 1/N of optimizer state (N = GPU count). Memory per GPU drops from P + G + O to P + G + O/N.</p>
 
-<p><strong>ZeRO Stage 2</strong> adds gradient partitioning. Each GPU holds all parameters but only 1/N of gradients and optimizer states. Memory: P + G/N + O/N. The communication pattern changes — instead of all-reduce on gradients, each GPU reduce-scatters its gradient shard directly, which is slightly more efficient.</p>
+<p><strong>ZeRO Stage 2</strong> adds gradient partitioning. Each GPU holds all parameters but only 1/N of gradients and optimizer states. Memory: P + G/N + O/N. Communication pattern changes — instead of all-reduce on gradients, each GPU reduce-scatters its gradient shard directly, which is slightly more efficient.</p>
 
-<p><strong>ZeRO Stage 3</strong> goes all the way: parameters, gradients, and optimizer states are all sharded. Each GPU holds only 1/N of everything. Memory per GPU: (P + G + O) / N. When a layer needs its full parameters for a forward or backward pass, the participating GPUs gather them temporarily, compute, then discard the non-local shards. This is the maximum memory savings — and the maximum communication overhead.</p>
+<p><strong>ZeRO Stage 3</strong> goes all the way: parameters, gradients, and optimizer states all sharded. Each GPU holds only 1/N of everything. Memory per GPU: (P + G + O) / N. When layer needs full parameters for forward or backward pass, participating GPUs gather them temporarily, compute, then discard non-local shards. Maximum memory savings. Maximum communication overhead.</p>
 
-<p>PyTorch's <strong>FSDP</strong> (Fully Sharded Data Parallel) is essentially ZeRO Stage 3 built natively into PyTorch. Same idea, different implementation. The practical difference: FSDP integrates tightly with PyTorch's API and ecosystem, while DeepSpeed offers more advanced features (NVMe offloading, custom optimizers, more knobs) and tends to edge out at massive scale (64+ GPUs).</p>
+<p>PyTorch's <strong>FSDP</strong> (Fully Sharded Data Parallel) is basically ZeRO Stage 3 built into PyTorch. Same idea. Different implementation. Practical difference: FSDP integrates tightly with PyTorch's API and ecosystem, while DeepSpeed offers more advanced features (NVMe offloading, custom optimizers, more knobs) and tends to edge ahead at massive scale (64+ GPUs).</p>
 
 <pre><code class="language-python">from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp import MixedPrecision
@@ -536,9 +536,9 @@ model = FSDP(
     ),
 )</code></pre>
 
-<p>The tradeoff is always the same: more sharding means less memory per GPU but more communication to gather and scatter parameters for every layer. The practical rule is to use the lowest ZeRO stage (or DDP if possible) that fits your model. DDP first. If that OOMs, try ZeRO Stage 1. Then Stage 2. Then FSDP/ZeRO Stage 3. Each step trades some communication overhead for more memory headroom.</p>
+<p>Tradeoff is always same: more sharding means less memory per GPU but more communication to gather and scatter parameters for every layer. Practical rule: use lowest ZeRO stage — or DDP if possible — that fits model. DDP first. If that OOMs, try ZeRO Stage 1. Then Stage 2. Then FSDP/ZeRO Stage 3. Each step buys memory headroom by paying communication overhead.</p>
 
-<p>DeepSpeed also offers <strong>ZeRO-Infinity</strong>, which extends offloading to CPU RAM and even NVMe storage. This technically makes model size bounded only by your disk space, but the IO overhead is substantial. It's a tool of last resort — useful for experimentation with truly enormous models on limited hardware, but not something you'd want for production training.</p>
+<p>DeepSpeed also offers <strong>ZeRO-Infinity</strong>, extending offloading to CPU RAM and even NVMe storage. This makes model size technically bounded only by disk space, but IO overhead is large. Last-resort tool — useful for experimenting with enormous models on limited hardware, not something you want for production training.</p>
 
 
 <!-- ═══════════════════════════════════════════════════════════ -->
@@ -547,27 +547,27 @@ model = FSDP(
 
 <h2>Model Parallelism: Splitting the Model Itself</h2>
 
-<p>Everything we've seen so far is a form of data parallelism — same model (or shards of it), different data on each GPU. But there's a second axis: splitting the model's computation across GPUs. This is <strong>model parallelism</strong>, and it comes in two flavors.</p>
+<p>Everything so far is data parallelism — same model (or shards of it), different data on each GPU. But there is second axis: split model computation itself across GPUs. This is <strong>model parallelism</strong>. Two flavors.</p>
 
 <h3>Tensor Parallelism</h3>
 
-<p><strong>Tensor parallelism</strong> splits individual layers across GPUs. Consider a large linear layer that multiplies a hidden state by a weight matrix. If the weight matrix is too wide for one GPU — or even if it isn't, but you want to speed up the computation — you can split the matrix column-wise across 4 GPUs, have each GPU compute its quarter of the output, and then combine the results. In transformer architectures, this is typically applied to the attention heads and the MLP layers: each GPU computes a subset of attention heads or a portion of the feed-forward network.</p>
+<p><strong>Tensor parallelism</strong> splits individual layers across GPUs. Take large linear layer multiplying hidden state by weight matrix. If weight matrix is too wide for one GPU — or you want faster computation — split matrix column-wise across 4 GPUs, have each GPU compute its quarter of output, then combine results. In transformer architectures, this usually applies to attention heads and MLP layers: each GPU computes subset of attention heads or part of feed-forward network.</p>
 
-<p>The requirement is a fast interconnect between GPUs. Tensor parallelism involves communication at every layer — partial results need to be combined before the next layer can proceed. On NVLink (600 GB/s on H100), this is fast enough to be practical. Over PCIe (64 GB/s), the communication overhead would kill your throughput. This is why tensor parallelism is typically used within a single node where GPUs are connected by NVLink, not across nodes.</p>
+<p>Requirement: fast interconnect between GPUs. Tensor parallelism communicates at every layer — partial results must be combined before next layer can proceed. On NVLink (600 GB/s on H100), this is practical. Over PCIe (64 GB/s), communication overhead kills throughput. That is why tensor parallelism usually stays within one node with NVLink, not across nodes.</p>
 
 <h3>Pipeline Parallelism</h3>
 
-<p><strong>Pipeline parallelism</strong> partitions the model by layers. GPU 0 gets layers 1–10, GPU 1 gets layers 11–20, and so on. Data flows through the pipeline: GPU 0 processes a micro-batch, sends the activations to GPU 1, and immediately starts on the next micro-batch. In principle, all GPUs are busy once the pipeline fills up.</p>
+<p><strong>Pipeline parallelism</strong> partitions model by layers. GPU 0 gets layers 1–10, GPU 1 gets layers 11–20, and so on. Data flows through pipeline: GPU 0 processes micro-batch, sends activations to GPU 1, then immediately starts next micro-batch. In principle, all GPUs stay busy once pipeline fills.</p>
 
-<p>In practice, there's a problem called <strong>pipeline bubbles</strong>. At the start and end of a batch, some GPUs sit idle because the pipeline isn't full yet. If you have 4 stages and process 4 micro-batches, the first GPU finishes its forward passes before the last GPU has started, and the same happens in reverse for the backward pass. Micro-batching helps — more micro-batches means a fuller pipeline — but doesn't eliminate the bubble entirely. Typical pipeline efficiency is 80–90%, meaning 10–20% of GPU time is wasted waiting.</p>
+<p>In practice, problem appears: <strong>pipeline bubbles</strong>. At start and end of batch, some GPUs sit idle because pipeline is not full yet. With 4 stages and 4 micro-batches, first GPU finishes its forward passes before last GPU has started, and same pattern reverses during backward pass. Micro-batching helps — more micro-batches means fuller pipeline — but bubble never fully disappears. Typical pipeline efficiency is 80–90%, so 10–20% of GPU time gets wasted waiting.</p>
 
-<p>I'll be honest: pipeline parallelism has always felt like the least elegant of the three approaches to me. The bubble overhead is real, the scheduling gets complicated (GPT-style interleaved schedules, 1F1B scheduling), and debugging pipeline-parallel code is a genuine headache. But for very deep models where you need to split across many nodes, it's sometimes the only option.</p>
+<p>Plain truth: pipeline parallelism feels least elegant of the three approaches. Bubble overhead is real, scheduling gets complicated (GPT-style interleaved schedules, 1F1B scheduling), and debugging pipeline-parallel code is painful. But for very deep models that need splits across many nodes, sometimes it is only option.</p>
 
 <h3>3D Parallelism: Combining Everything</h3>
 
-<p>State-of-the-art systems like Megatron-LM (NVIDIA's framework for training very large language models) use all three dimensions simultaneously. A 64-GPU cluster might be organized as 4-way data parallelism × 4-way pipeline parallelism × 4-way tensor parallelism: 4 × 4 × 4 = 64 GPUs. Tensor parallelism operates within a node (fast NVLink), pipeline parallelism spans across nodes, and data parallelism replicates the entire pipeline for higher throughput.</p>
+<p>State-of-the-art systems like Megatron-LM (NVIDIA's framework for training very large language models) use all three dimensions at once. A 64-GPU cluster might use 4-way data parallelism × 4-way pipeline parallelism × 4-way tensor parallelism: 4 × 4 × 4 = 64 GPUs. Tensor parallelism works within node (fast NVLink), pipeline parallelism spans nodes, and data parallelism replicates entire pipeline for higher throughput.</p>
 
-<p>This is the architecture behind GPT-4, LLaMA, Gemini, and every other model with tens of billions of parameters. You probably won't need to implement 3D parallelism yourself — frameworks like Megatron-LM, DeepSpeed, and Hugging Face Accelerate handle the orchestration — but understanding the vocabulary is essential for reading the engineering blogs and papers that describe these systems.</p>
+<p>This is architecture behind GPT-4, LLaMA, Gemini, and every other model with tens of billions of parameters. You probably will not implement 3D parallelism yourself — frameworks like Megatron-LM, DeepSpeed, and Hugging Face Accelerate handle orchestration — but understanding vocabulary is essential for reading engineering blogs and papers about these systems.</p>
 
 <table>
 <thead>
@@ -588,15 +588,15 @@ model = FSDP(
 
 <h2>Flash Attention: Rethinking the Memory Hierarchy</h2>
 
-<p>So far we've been attacking memory at the level of parameters, gradients, and optimizer states. But there's another massive memory hog hiding inside transformers: the attention computation itself.</p>
+<p>So far, memory fight has targeted parameters, gradients, and optimizer states. Another huge memory hog hides inside transformers: attention computation itself.</p>
 
-<p>Standard self-attention computes an N × N matrix (where N is the sequence length) of attention scores — queries times keys. For a sequence length of 4,096, that's a 16-million element matrix per attention head. For 32 heads, that's half a billion numbers. This matrix gets materialized in GPU HBM (the main GPU memory), then softmax is applied, then it's multiplied by the values. Three reads from and writes to slow HBM memory. For long sequences, this becomes the bottleneck.</p>
+<p>Standard self-attention computes N × N matrix (N = sequence length) of attention scores — queries times keys. For sequence length 4,096, that is 16 million elements per attention head. For 32 heads, half a billion numbers. Matrix gets materialized in GPU HBM (main GPU memory), then softmax runs, then values multiply it. Three reads and writes through slow HBM. For long sequences, this becomes bottleneck.</p>
 
-<p><strong>Flash Attention</strong> (Tri Dao et al., 2022) is an IO-aware algorithm that restructures the computation to avoid materializing the full attention matrix. The key insight is that GPUs have a small, ultra-fast on-chip memory called <strong>SRAM</strong> (about 100 KB per streaming multiprocessor, compared to 80 GB of HBM on an A100). Standard attention bounces data back and forth between fast SRAM and slow HBM. Flash Attention tiles the computation — processes small blocks of queries, keys, and values that fit entirely in SRAM, computes partial softmax results, and combines them. The full N × N matrix never exists in memory.</p>
+<p><strong>Flash Attention</strong> (Tri Dao et al., 2022) is IO-aware algorithm that restructures computation so full attention matrix never materializes. Key insight: GPUs have small, ultra-fast on-chip memory called <strong>SRAM</strong> (about 100 KB per streaming multiprocessor, versus 80 GB of HBM on an A100). Standard attention bounces data between fast SRAM and slow HBM. Flash Attention tiles computation — processes small blocks of queries, keys, and values that fit entirely in SRAM, computes partial softmax results, and combines them. Full N × N matrix never exists in memory.</p>
 
-<p>The result: memory goes from O(N²) to O(N) in sequence length, and wall-clock time drops by 2–4× because the GPU spends less time waiting for memory transfers and more time doing math. And — this is the part that surprised me — it's <em>exact</em>. Flash Attention computes the mathematically identical result to standard attention. No approximation, no accuracy loss. It's purely a scheduling optimization that respects the GPU's memory hierarchy.</p>
+<p>Result: memory drops from O(N²) to O(N) in sequence length, and wall-clock time falls by 2–4× because GPU spends less time waiting on memory transfers and more time doing math. And this part surprises people: it is <em>exact</em>. Flash Attention gives mathematically identical result to standard attention. No approximation. No accuracy loss. Pure scheduling optimization that respects GPU memory hierarchy.</p>
 
-<p>In practice, you don't implement Flash Attention yourself. PyTorch 2.0+ includes it automatically through <code>torch.nn.functional.scaled_dot_product_attention</code>, and Hugging Face transformers enable it with a single flag. It's become standard — there's no reason not to use it.</p>
+<p>In practice, you do not implement Flash Attention yourself. PyTorch 2.0+ includes it automatically through <code>torch.nn.functional.scaled_dot_product_attention</code>, and Hugging Face transformers enable it with one flag. Standard now. No reason not to use it.</p>
 
 
 <!-- ═══════════════════════════════════════════════════════════ -->
@@ -605,29 +605,29 @@ model = FSDP(
 
 <h2>Scaling Laws: How to Spend Your Compute Budget</h2>
 
-<p>All the techniques above are about <em>how</em> to train efficiently. Scaling laws answer a different question: <em>what</em> to train. Given a fixed compute budget, how big should your model be, and how much data should you train on?</p>
+<p>All techniques above answer <em>how</em> to train efficiently. Scaling laws answer different question: <em>what</em> to train. With fixed compute budget, how big should model be, and how much data should it see?</p>
 
-<p>In 2020, <strong>Kaplan et al.</strong> (OpenAI) showed that the loss of a language model decreases as a power law with model size N, dataset size D, and compute budget C:</p>
+<p>In 2020, <strong>Kaplan et al.</strong> (OpenAI) showed that language model loss decreases as power law with model size N, dataset size D, and compute budget C:</p>
 
 <p>L(N, D) ≈ L<sub>∞</sub> + k<sub>N</sub> · N<sup>-α</sup> + k<sub>D</sub> · D<sup>-β</sup></p>
 
-<p>In plain English: make the model bigger, loss goes down. Train on more data, loss goes down. Both follow smooth, predictable curves. This is what makes neural network scaling so remarkable — unlike most engineering problems, the returns are predictable across orders of magnitude.</p>
+<p>Plain English: bigger model, lower loss. More data, lower loss. Both follow smooth, predictable curves. This makes neural network scaling remarkable — unlike most engineering problems, returns stay predictable across orders of magnitude.</p>
 
-<p>But there's a catch. Kaplan's analysis suggested that for a fixed compute budget, you should make the model as big as possible and train it on relatively little data. This led to the era of enormous models trained on "only" a few hundred billion tokens.</p>
+<p>But catch exists. Kaplan's analysis suggested that, for fixed compute budget, you should make model as big as possible and train on relatively little data. That pushed field into era of enormous models trained on "only" a few hundred billion tokens.</p>
 
-<p>In 2022, <strong>Hoffmann et al.</strong> (DeepMind) challenged this with the <strong>Chinchilla</strong> paper, which showed that most large models were undertrained. Their refined analysis found that for a fixed compute budget C, the optimal allocation is roughly:</p>
+<p>In 2022, <strong>Hoffmann et al.</strong> (DeepMind) challenged this with <strong>Chinchilla</strong>, showing that most large models were undertrained. Their refined analysis found that for fixed compute budget C, optimal allocation is roughly:</p>
 
 <p>D* ≈ 20 × N</p>
 
-<p>That is, you should train on about 20 tokens per parameter. The compute budget relates to both as C ≈ 6 × N × D (where C is in FLOPs). A 7B parameter model should ideally see about 140 billion tokens. A 70B model should see about 1.4 trillion tokens.</p>
+<p>That is, train on about 20 tokens per parameter. Compute budget relates to both as C ≈ 6 × N × D (where C is in FLOPs). A 7B parameter model should ideally see about 140 billion tokens. A 70B model should see about 1.4 trillion tokens.</p>
 
-<p>This single insight reshaped the field. It's why LLaMA-1 (7B) was trained on 1 trillion tokens — far more than earlier models of similar size. It's why the conversation shifted from "how big can we make the model" to "do we have enough data."</p>
+<p>This single insight reshaped field. It explains why LLaMA-1 (7B) trained on 1 trillion tokens — far more than earlier models of similar size. It shifted conversation from "how big can model get" to "do we have enough data."</p>
 
-<p>My favorite thing about scaling laws is that, aside from the high-level empirical observation, no one is completely certain <em>why</em> they hold so cleanly. We know that loss decreases as a power law with compute. We can fit the exponents. But the theoretical explanation for why neural networks exhibit such predictable scaling behavior is still an active area of research. It works, we can plan around it, and we don't fully understand why. I find that kind of humbling.</p>
+<p>Best part of scaling laws: aside from high-level empirical result, no one fully knows <em>why</em> they hold so cleanly. We know loss decreases as power law with compute. We can fit exponents. But theoretical reason neural networks show such predictable scaling is still active research. It works. We can plan around it. We still do not fully know why.</p>
 
 <div class="callout callout-info">
   <div class="callout-label">💡 Practical Implications</div>
-  <p>Before spending $100K training a large model, do the Chinchilla math. C = 6ND. For your compute budget C, the optimal model has N = √(C/120) parameters and trains on D = 20N tokens. If you can't get 20 tokens per parameter, make the model smaller. An optimally-trained smaller model will beat an undertrained larger one at the same compute cost.</p>
+  <p>Before spending $100K training large model, do Chinchilla math. C = 6ND. For compute budget C, optimal model has N = √(C/120) parameters and trains on D = 20N tokens. If you cannot get 20 tokens per parameter, make model smaller. Optimally trained smaller model beats undertrained larger one at same compute cost.</p>
 </div>
 
 
@@ -637,15 +637,15 @@ model = FSDP(
 
 <h2>Hyperparameter Optimization: Searching Wisely</h2>
 
-<p>The model architecture and distributed training setup get the most attention, but there's a quieter question that determines whether any training run succeeds: did you pick reasonable hyperparameters?</p>
+<p>Model architecture and distributed training setup get most attention. Quieter question decides whether run succeeds: did you choose reasonable hyperparameters?</p>
 
-<p><strong>Hyperparameters</strong> are the choices you make before training starts — learning rate, batch size, weight decay, dropout rate, number of layers, optimizer choice, learning rate schedule. Gradient descent can't help with these. You have to search for them.</p>
+<p><strong>Hyperparameters</strong> are choices made before training starts — learning rate, batch size, weight decay, dropout rate, number of layers, optimizer choice, learning rate schedule. Gradient descent cannot choose these. You must search.</p>
 
-<p><strong>Grid search</strong> tries every combination from a predefined grid. It's exhaustive and exponential: 3 learning rates × 3 batch sizes × 3 dropout rates = 27 experiments. Add two more hyperparameters and you're at 243. The problem: grid search allocates equal budget to every dimension, even the ones that barely matter.</p>
+<p><strong>Grid search</strong> tries every combination from predefined grid. Exhaustive and exponential: 3 learning rates × 3 batch sizes × 3 dropout rates = 27 experiments. Add two more hyperparameters and you reach 243. Problem: grid search gives equal budget to every dimension, even ones that barely matter.</p>
 
-<p><strong>Random search</strong> samples randomly from distributions. It sounds careless, but it's surprisingly effective. <strong>Bergstra &amp; Bengio (2012)</strong> showed why: most hyperparameters don't matter equally. Learning rate might explain 80% of the performance variation, while dropout explains 5%. A 5×5 grid gives you only 5 unique learning rates across 25 experiments. Random search gives you 25 unique learning rates — sampling the important dimension 5× more densely. With 60 random trials, you have a 95% chance of finding a configuration within the top 5% of the search space for the dimensions that matter.</p>
+<p><strong>Random search</strong> samples from distributions at random. Sounds careless. Works surprisingly well. <strong>Bergstra &amp; Bengio (2012)</strong> showed why: most hyperparameters do not matter equally. Learning rate might explain 80% of performance variation, while dropout explains 5%. A 5×5 grid gives only 5 unique learning rates across 25 experiments. Random search gives 25 unique learning rates — sampling important dimension 5× more densely. With 60 random trials, you have 95% chance of finding configuration within top 5% of search space for dimensions that matter.</p>
 
-<p><strong>Bayesian optimization</strong> goes further. It builds a surrogate model — a probabilistic model of how validation loss varies as a function of hyperparameters — and uses an acquisition function to decide where to sample next, balancing exploitation (near the best results so far) and exploration (regions of high uncertainty). <strong>Optuna</strong> is the go-to tool, using Tree-structured Parzen Estimators (TPE) by default. Combined with trial pruning (killing bad runs early), Bayesian optimization can find better hyperparameters in 2–5× fewer trials than random search.</p>
+<p><strong>Bayesian optimization</strong> goes further. It builds surrogate model — probabilistic model of how validation loss changes with hyperparameters — and uses acquisition function to decide where to sample next, balancing exploitation (near best results so far) and exploration (high-uncertainty regions). <strong>Optuna</strong> is go-to tool, using Tree-structured Parzen Estimators (TPE) by default. Combined with trial pruning (kill bad runs early), Bayesian optimization can find better hyperparameters in 2–5× fewer trials than random search.</p>
 
 <pre><code class="language-python">import optuna
 
@@ -671,11 +671,11 @@ study = optuna.create_study(direction='minimize')
 study.optimize(objective, n_trials=100)
 print(study.best_params)</code></pre>
 
-<p>The practical priority order, from hundreds of experiments: learning rate is almost always the most important hyperparameter. A 10× wrong learning rate is worse than getting everything else wrong combined. Batch size matters next (affects both optimization dynamics and generalization). Weight decay is critical for transformers, less so for CNNs with dropout. Architecture choices (depth, width) matter less than most people think within a reasonable range.</p>
+<p>Practical priority order, from hundreds of experiments: learning rate is almost always most important hyperparameter. A 10× wrong learning rate is worse than getting everything else wrong combined. Batch size comes next (it affects optimization dynamics and generalization). Weight decay is critical for transformers, less so for CNNs with dropout. Architecture choices (depth, width) matter less than most people think within reasonable range.</p>
 
 <div class="callout callout-warning">
   <div class="callout-label">⚠️ The Most Common HPO Mistake</div>
-  <p>Most models are <strong>undertrained</strong>, not undertuned. Before launching a 200-trial HPO study, ask: Am I training long enough? Is my data pipeline a bottleneck? Is my learning rate schedule reasonable? Fixing your training recipe — longer warmup, proper weight decay, cosine schedule — often delivers more improvement than any amount of hyperparameter search. HPO is the last step, not the first.</p>
+  <p>Most models are <strong>undertrained</strong>, not undertuned. Before launching 200-trial HPO study, ask: am I training long enough? Is data pipeline bottleneck? Is learning rate schedule reasonable? Fix training recipe — longer warmup, proper weight decay, cosine schedule — often gives more improvement than more hyperparameter search. HPO is last step, not first.</p>
 </div>
 
 
@@ -685,19 +685,19 @@ print(study.best_params)</code></pre>
 
 <h2>Putting It Together: The Decision Tree</h2>
 
-<p>If you're staring at a training job wondering which of these techniques to apply, here's the decision process I use:</p>
+<p>If you are staring at training job and wondering which technique to apply, use this decision process:</p>
 
-<p>Start with a single GPU. Enable mixed precision (BF16 if your GPU supports it, FP16 with GradScaler otherwise). Enable Flash Attention if you're training a transformer. These are free wins — no tradeoffs, no added complexity worth worrying about.</p>
+<p>Start with single GPU. Enable mixed precision (BF16 if GPU supports it, FP16 with GradScaler otherwise). Enable Flash Attention if training transformer. Free wins — no meaningful tradeoffs, no extra complexity worth worrying about.</p>
 
-<p>If you hit OOM, reduce batch size first. If your effective batch size gets too small for good convergence, add gradient accumulation. If activations are the bottleneck (check with <code>torch.cuda.memory_summary()</code>), enable gradient checkpointing and accept the ~30% slowdown.</p>
+<p>If you hit OOM, reduce batch size first. If effective batch size gets too small for good convergence, add gradient accumulation. If activations are bottleneck (check with <code>torch.cuda.memory_summary()</code>), enable gradient checkpointing and accept ~30% slowdown.</p>
 
-<p>If one GPU is too slow, move to DDP. Scale your learning rate linearly with the effective batch size and add a warmup period. Use <code>torchrun</code> as your launcher.</p>
+<p>If one GPU is too slow, move to DDP. Scale learning rate linearly with effective batch size and add warmup period. Use <code>torchrun</code> as launcher.</p>
 
-<p>If the model doesn't fit on one GPU even with mixed precision and checkpointing, move to FSDP (PyTorch native) or DeepSpeed ZeRO (if you need more advanced features). Start with the lowest ZeRO stage that fits.</p>
+<p>If model does not fit on one GPU even with mixed precision and checkpointing, move to FSDP (PyTorch native) or DeepSpeed ZeRO (if you need more advanced features). Start with lowest ZeRO stage that fits.</p>
 
-<p>If you're training at true scale — tens of billions of parameters — you're in 3D parallelism territory. Use Megatron-LM or DeepSpeed's pipeline parallelism, combined with tensor parallelism within nodes and data parallelism across pipeline replicas. At this point you probably have a team of infrastructure engineers, and this section has given you enough vocabulary to have productive conversations with them.</p>
+<p>If you are training at true scale — tens of billions of parameters — you are in 3D parallelism territory. Use Megatron-LM or DeepSpeed's pipeline parallelism, combined with tensor parallelism within nodes and data parallelism across pipeline replicas. At this point, you probably have infrastructure engineers. This section gives enough vocabulary for productive conversations with them.</p>
 
-<p>And before you commit significant compute to any large training run, do the Chinchilla math. Make sure your model size and data budget are balanced. An optimally-trained 7B model will outperform an undertrained 13B model at the same compute cost.</p>
+<p>Before committing significant compute to any large training run, do Chinchilla math. Make sure model size and data budget are balanced. Optimally trained 7B model will outperform undertrained 13B model at same compute cost.</p>
       <div class="page-nav">
         <span></span>
         <a class="next" href="nice-to-know.html">

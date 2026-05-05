@@ -286,96 +286,96 @@
 <!-- ═══════════ Table of Contents ═══════════ -->
 <nav class="section-toc" aria-label="Table of Contents" style="margin: 2em 0; padding-left: 1.5em; border-left: 3px solid var(--accent, #666); line-height: 2;">
   <strong style="display:block; margin-bottom:0.5em; font-size:0.9em; text-transform:uppercase; letter-spacing:0.05em; opacity:0.7;">In This Section</strong>
-  Navigating non-convex loss landscapes and why flat minima generalize better<br>
-  How vanilla SGD works and its three fundamental limitations<br>
-  Adding momentum to damp oscillations and accelerate consistent directions<br>
-  Per-parameter learning rates: from Adagrad's accumulation to RMSprop's decay<br>
-  Adam's dual-moment tracking with bias correction explained<br>
-  Why AdamW decouples weight decay and when it matters for regularization<br>
-  Learning rate schedules: warmup, cosine annealing, and one-cycle policy<br>
-  Advanced optimizers for large-batch training: LAMB, LARS, and SWA<br>
-  The practical recipe: choosing optimizer and schedule by domain<br>
-  LR finder technique to pick optimal learning rate empirically
+  Non-convex loss landscapes. Flat minima generalize better<br>
+  Vanilla SGD: step rule and three big limits<br>
+  Momentum damps oscillation, speeds consistent directions<br>
+  Per-parameter learning rates: Adagrad accumulation to RMSprop decay<br>
+  Adam tracks two moments with bias correction<br>
+  AdamW decouples weight decay for correct regularization<br>
+  Learning rate schedules: warmup, cosine annealing, one-cycle<br>
+  Large-batch optimizers: LAMB, LARS, SWA<br>
+  Practical recipe: optimizer and schedule by domain<br>
+  LR finder: pick learning rate from data
 </nav>
 <!-- ═══════════ End Table of Contents ═══════════ -->
       <div class="tldr">
         <div class="tldr-label">TL;DR</div>
-        <p>Training a neural network means navigating a rugged, high-dimensional loss landscape to find weights that generalize. SGD is where it starts — compute gradient, step. Momentum gives SGD a memory so it stops bouncing around ravines. Adam adapts a separate learning rate for every single parameter using running statistics of the gradient, and it&rsquo;s why your model converges without heroic LR tuning. AdamW fixes a subtle but important bug in how Adam applies weight decay, and it&rsquo;s what you should actually be using. For the learning rate schedule: cosine annealing with linear warmup is the modern default. The optimizer picks the direction; the schedule controls the stride length. <strong>AdamW + cosine + warmup</strong> handles 90% of what you&rsquo;ll face.</p>
+        <p>Train neural network = navigate rugged, high-dimensional loss landscape, find weights that generalize. SGD starts here: compute gradient, step. Momentum gives SGD memory; stops ravine bounce. Adam adapts separate learning rate for every parameter from running gradient stats; model converges without heroic LR tuning. AdamW fixes subtle but important weight decay bug in Adam; use this. For learning rate schedule, modern default: cosine annealing with linear warmup. Optimizer picks direction. Schedule controls stride length. <strong>AdamW + cosine + warmup</strong> handles 90% of cases.</p>
       </div>
 
       <!-- ══════════════════════════════════════════════════ -->
 
-      <p>Most people treat the optimizer as a dropdown menu: pick Adam, set <code>lr=1e-3</code>, move on. But the difference between &ldquo;model sort of converges&rdquo; and &ldquo;model converges to something that actually generalizes&rdquo; lives in the details of how you take gradient steps and how you shrink them over time. The same architecture can produce wildly different test accuracies depending on which optimizer and schedule you pair it with.</p>
+      <p>Most people treat optimizer like dropdown menu: pick Adam, set <code>lr=1e-3</code>, move on. But gap between &ldquo;model sort of converges&rdquo; and &ldquo;model converges to something that generalizes&rdquo; lives in gradient steps and how you shrink them over time. Same architecture can produce wildly different test accuracy from optimizer and schedule choice.</p>
 
-      <p>So here&rsquo;s what we&rsquo;re going to do. We&rsquo;ll start with the simplest possible picture &mdash; a loss function as a piece of terrain &mdash; and walk from vanilla SGD all the way through to the modern AdamW + cosine + warmup recipe that powers transformers and LLMs. Along the way we&rsquo;ll use a running example: training a tiny image classifier that sorts pictures of cats, dogs, and birds. We&rsquo;ll start with a toy 2-parameter model so we can literally visualize the landscape, then scale up when intuitions are solid.</p>
+      <p>Plan: start with simplest picture &mdash; loss function as terrain &mdash; then walk from vanilla SGD to modern AdamW + cosine + warmup recipe behind transformers and LLMs. Running example: tiny image classifier sorting cats, dogs, and birds. Start with toy 2-parameter model so landscape becomes visible. Scale up when intuition is solid.</p>
 
-      <p><strong>Before we start:</strong> this section assumes you already know what a gradient is and how backpropagation computes it. If those feel shaky, Chapter 2 (Calculus) and the backpropagation section earlier in this book have you covered. We won&rsquo;t re-derive the chain rule here.</p>
+      <p><strong>Before we start:</strong> section assumes you already know what gradient is and how backpropagation computes it. If shaky, Chapter 2 (Calculus) and backpropagation section earlier in this book cover it. We won&rsquo;t re-derive chain rule here.</p>
 
-      <p>Let&rsquo;s walk the landscape.</p>
+      <p>Walk landscape.</p>
 
       <!-- ══════════════════ TABLE OF CONTENTS ══════════════════ -->
 
       <h3 style="margin-top:2rem;">What We&rsquo;ll Cover</h3>
       <ul>
-        <li>The Loss Landscape &mdash; terrain, valleys, and why flat beats sharp</li>
-        <li>Vanilla SGD &mdash; the simplest step</li>
-        <li>SGD + Momentum &mdash; giving the ball a memory</li>
-        <li>The Adaptive Revolution: Adagrad &rarr; RMSprop</li>
-        <li>Adam &mdash; momentum meets adaptivity</li>
-        <li>AdamW &mdash; what you should actually use</li>
-        <li><em>Transition: from direction to stride length</em></li>
-        <li>Learning Rate Schedules &mdash; why they matter</li>
-        <li>Warmup &mdash; surviving the first few steps</li>
-        <li>Cosine Annealing &mdash; the modern default decay</li>
-        <li>One-Cycle Policy &mdash; super-convergence</li>
-        <li>Beyond the Defaults: LAMB, LARS, SWA</li>
-        <li>The Practical Recipe</li>
-        <li>Wrap-up &amp; Resources</li>
+        <li>Loss landscape &mdash; terrain, valleys, flat beats sharp</li>
+        <li>Vanilla SGD &mdash; simplest step</li>
+        <li>SGD + Momentum &mdash; ball gets memory</li>
+        <li>Adaptive revolution: Adagrad &rarr; RMSprop</li>
+        <li>Adam &mdash; momentum plus adaptivity</li>
+        <li>AdamW &mdash; default choice</li>
+        <li><em>Transition: direction to stride length</em></li>
+        <li>Learning rate schedules &mdash; why they matter</li>
+        <li>Warmup &mdash; survive first steps</li>
+        <li>Cosine annealing &mdash; modern default decay</li>
+        <li>One-cycle policy &mdash; super-convergence</li>
+        <li>Beyond defaults: LAMB, LARS, SWA</li>
+        <li>Practical recipe</li>
+        <li>Wrap-up &amp; resources</li>
       </ul>
 
       <!-- ══════════════════════════════════════════════════ -->
       <h2>The Loss Landscape</h2>
 
-      <p>Picture this: you have a tiny model with two learnable weights, <code>w1</code> and <code>w2</code>, classifying images into cat, dog, or bird. The <strong>loss function</strong> &mdash; the number that tells you how wrong your predictions are &mdash; is a surface hovering above the <code>(w1, w2)</code> plane. Every point on that plane is a different pair of weights; the height is the loss at those weights. Training means finding a low point.</p>
+      <p>Tiny model with two learnable weights, <code>w1</code> and <code>w2</code>, classifies images into cat, dog, or bird. <strong>Loss function</strong> &mdash; number telling you how wrong predictions are &mdash; forms surface above <code>(w1, w2)</code> plane. Every point on plane is different weight pair. Height is loss. Training means finding low point.</p>
 
-      <p>For our two-parameter toy, you can literally plot this surface. It looks like terrain &mdash; hills, valleys, saddle points, plateaus. A <strong>saddle point</strong> is a spot that looks like a minimum if you face one direction but a maximum if you turn 90 degrees, like the middle of a horse saddle. Real networks have millions of parameters, and the terrain is absurdly high-dimensional, but the intuition transfers: the optimizer is a hiker navigating this landscape, and different optimizers use different strategies to find low ground.</p>
+      <p>For two-parameter toy, you can plot surface directly. Looks like terrain &mdash; hills, valleys, saddle points, plateaus. <strong>Saddle point</strong> looks like minimum in one direction, maximum if you turn 90 degrees, like middle of horse saddle. Real networks have millions of parameters and absurdly high-dimensional terrain, but intuition transfers: optimizer is hiker navigating landscape, using different strategy to find low ground.</p>
 
-      <p>One insight matters for everything that follows: <strong>flat minima generalize better than sharp ones.</strong> A flat minimum is a wide valley &mdash; if you nudge the weights slightly (which is what happens when you evaluate on new data the model hasn&rsquo;t seen), the loss barely changes. A sharp minimum is a narrow spike pointing down &mdash; any perturbation sends the loss shooting up. Much of optimizer and schedule design is, whether explicitly or not, about steering the model toward these wide, flat valleys. We&rsquo;ll see how momentum, noise from mini-batches, and learning rate schedules all conspire to make this happen.</p>
+      <p>Key insight: <strong>flat minima generalize better than sharp ones.</strong> Flat minimum is wide valley &mdash; nudge weights slightly, like when evaluating on new data, and loss barely changes. Sharp minimum is narrow spike &mdash; perturb weights and loss shoots up. Much of optimizer and schedule design steers model toward wide, flat valleys. Momentum, mini-batch noise, and learning rate schedules help make this happen.</p>
 
-      <p>One more thing about the landscape: it&rsquo;s <strong>non-convex</strong>. There is no single global minimum you can march toward with a clean formula. There are many local minima, many saddle points, and vast plateaus where the gradient is nearly zero. The good news is that in high dimensions, most local minima turn out to be roughly as good as the global one. The bad news is that saddle points and plateaus can trap a na&iuml;ve optimizer for thousands of steps. That&rsquo;s our motivation. Let&rsquo;s start hiking.</p>
+      <p>Landscape is <strong>non-convex</strong>. No clean march toward one global minimum. Many local minima. Many saddle points. Vast plateaus where gradient is nearly zero. Good news: in high dimensions, most local minima are roughly as good as global one. Bad news: saddle points and plateaus can trap na&iuml;ve optimizer for thousands of steps. Motivation set. Start hiking.</p>
 
       <!-- ══════════════════════════════════════════════════ -->
       <h2>Vanilla SGD: The Simplest Step</h2>
 
-      <p><strong>Stochastic Gradient Descent</strong> is the starting point for every optimizer in deep learning. The idea is almost laughably simple: compute the gradient of the loss with respect to each weight on a mini-batch of data, then step in the opposite direction.</p>
+      <p><strong>Stochastic Gradient Descent</strong> is starting point for deep learning optimizers. Idea is simple: compute loss gradient for each weight on mini-batch, then step in opposite direction.</p>
 
 <pre><code class="language-python"># Vanilla SGD update for one parameter
 theta = theta - lr * gradient</code></pre>
 
-      <p>That&rsquo;s the entire algorithm. For our cat/dog/bird classifier, each training step grabs a mini-batch of, say, 32 images, computes how wrong the current weights are (the loss), backpropagates to get the gradient for every weight, and nudges each weight downhill by <code>lr * gradient</code>.</p>
+      <p>That&rsquo;s whole algorithm. For cat/dog/bird classifier, each training step grabs mini-batch of 32 images, computes current loss, backpropagates for gradient on every weight, then nudges each weight downhill by <code>lr * gradient</code>.</p>
 
-      <p>It works. Models have been trained this way. But spend a few hours watching a vanilla SGD training run and three problems become painfully obvious.</p>
+      <p>It works. Models train this way. But watch vanilla SGD run and three problems appear fast.</p>
 
-      <p>First, <strong>every parameter gets the same learning rate</strong>. A gradient for a rarely-activated feature detector in the early layers and a gradient for a heavily-used classifier weight in the final layer receive identical step sizes. That&rsquo;s like telling a surgeon and a lumberjack to use the same force with their tools. Second, <strong>ravine oscillation</strong>: if the loss surface is steep in one direction and shallow in another (and it almost always is), SGD bounces back and forth across the steep walls while making agonizingly slow progress along the valley floor. Third, <strong>noise</strong>. Mini-batch gradients are noisy estimates of the true gradient. Vanilla SGD amplifies that noise because it has no memory &mdash; each step is computed from scratch, with no awareness of what previous steps looked like.</p>
+      <p>First, <strong>every parameter gets same learning rate</strong>. Rarely activated early feature detector and heavily used final classifier weight get identical step size. Bad fit. Second, <strong>ravine oscillation</strong>: if loss surface is steep in one direction and shallow in another, SGD bounces across steep walls and crawls along valley floor. Third, <strong>noise</strong>. Mini-batch gradients are noisy estimates of true gradient. Vanilla SGD amplifies noise because it has no memory &mdash; each step starts from scratch, blind to previous steps.</p>
 
-      <p>Back to our terrain analogy: vanilla SGD is a hiker who looks at the slope directly beneath their feet, takes one step downhill, then forgets everything and does it again. No memory of which direction they&rsquo;ve been traveling. No sense of scale. That&rsquo;s enough to motivate the first major improvement.</p>
+      <p>Back to terrain analogy: vanilla SGD is hiker who checks slope under feet, takes one downhill step, forgets everything, repeats. No memory of travel direction. No sense of scale. Enough motivation for first big upgrade.</p>
 
       <!-- ══════════════════════════════════════════════════ -->
       <h2>SGD + Momentum: Giving the Ball a Memory</h2>
 
-      <p>Imagine replacing our forgetful hiker with a heavy ball rolling downhill. The ball doesn&rsquo;t stop and re-evaluate at every point &mdash; it builds up speed in the direction it&rsquo;s been consistently rolling. If the terrain oscillates side-to-side (the ravine problem), the ball&rsquo;s momentum cancels out those sideways jolts. If the terrain slopes consistently in one direction, the ball accelerates.</p>
+      <p>Replace forgetful hiker with heavy ball rolling downhill. Ball does not stop and re-evaluate every point &mdash; it builds speed in direction it keeps rolling. If terrain oscillates side-to-side, ball&rsquo;s momentum cancels those jolts. If terrain slopes one way, ball accelerates.</p>
 
-      <p>That&rsquo;s <strong>momentum</strong>. We introduce a <strong>velocity</strong> vector <code>v</code> that accumulates an exponential moving average of past gradients. Each step, the velocity carries forward a fraction of where it was heading before, plus the new gradient.</p>
+      <p>That&rsquo;s <strong>momentum</strong>. Add <strong>velocity</strong> vector <code>v</code> that stores exponential moving average of past gradients. Each step, velocity keeps fraction of old direction and adds new gradient.</p>
 
 <pre><code class="language-python"># SGD with momentum
 v = momentum * v + gradient        # accumulate velocity
 theta = theta - lr * v             # step using velocity, not raw gradient</code></pre>
 
-      <p>The <code>momentum</code> coefficient is typically <code>0.9</code>, meaning 90% of the previous velocity survives into the current step. The effect on our cat/dog/bird classifier is dramatic: in dimensions where the gradient keeps flipping sign (the ravine walls), the velocity averages out to near zero, damping the oscillation. In dimensions where the gradient points consistently the same way (the valley floor), the velocity builds up, amplifying progress. I was genuinely surprised the first time I plotted SGD vs. SGD+momentum trajectories on a toy surface &mdash; momentum turned a zigzag path into a nearly straight line to the minimum.</p>
+      <p><code>momentum</code> coefficient is usually <code>0.9</code>, so 90% of previous velocity survives. Effect on cat/dog/bird classifier is dramatic: where gradient keeps flipping sign, like ravine walls, velocity averages toward zero and damps oscillation. Where gradient points same way, like valley floor, velocity builds and speeds progress. On toy surface, momentum turns zigzag path into near-straight line toward minimum.</p>
 
       <h3>Nesterov Accelerated Gradient</h3>
 
-      <p>Yurii Nesterov contributed a clever twist: instead of computing the gradient at your current position, first <em>look ahead</em> to where momentum would carry you, and compute the gradient <em>there</em>.</p>
+      <p>Yurii Nesterov added clever twist: don&rsquo;t compute gradient at current position. First <em>look ahead</em> to where momentum would carry you. Compute gradient <em>there</em>.</p>
 
 <pre><code class="language-python"># Nesterov momentum (conceptual)
 lookahead = theta + momentum * v
@@ -383,45 +383,45 @@ gradient = compute_gradient(lookahead)
 v = momentum * v + gradient
 theta = theta - lr * v</code></pre>
 
-      <p>Why does this help? Standard momentum can overshoot &mdash; the ball rolls past the minimum because of accumulated velocity. Nesterov says: &ldquo;Before you commit to this step, peek ahead and see if you&rsquo;re about to go uphill. If so, pull back.&rdquo; It gives the optimizer a corrective, anticipatory character. In practice, the improvement over standard momentum is small but consistent. PyTorch makes it a single flag:</p>
+      <p>Why help? Standard momentum can overshoot &mdash; ball rolls past minimum because velocity piled up. Nesterov says: peek ahead. If uphill coming, pull back. Result: corrective, anticipatory step. Improvement over standard momentum is usually small but consistent. PyTorch makes it one flag:</p>
 
 <pre><code class="language-python">optimizer = torch.optim.SGD(
     model.parameters(), lr=0.1, momentum=0.9, nesterov=True
 )</code></pre>
 
-      <p>SGD with momentum (Nesterov or not) remains the workhorse for training vision models. If you see a ResNet or EfficientNet paper, odds are they trained with SGD+momentum and a carefully tuned learning rate schedule. It tends to find flatter minima than Adam-family optimizers, which often translates to better generalization. The catch is you have to invest effort in tuning the LR schedule &mdash; momentum SGD is high-reward but also high-effort. That trade-off is exactly what motivated the next wave of optimizers.</p>
+      <p>SGD with momentum, Nesterov or not, remains workhorse for vision models. Many ResNet and EfficientNet papers use SGD+momentum with carefully tuned learning rate schedule. It often finds flatter minima than Adam-family optimizers, which often means better generalization. Catch: LR schedule tuning takes effort. High reward. High effort. That trade-off pushed next optimizer wave.</p>
 
-      <p><strong>Limitation that motivates what&rsquo;s next:</strong> momentum solves the oscillation problem, but every parameter still gets the same learning rate. A parameter that gets bombarded with large, frequent gradients and a parameter that receives tiny, rare gradient signals are both stepped by <code>lr</code>. We need per-parameter adaptation.</p>
+      <p><strong>Limitation that motivates what&rsquo;s next:</strong> momentum fixes oscillation, but every parameter still gets same learning rate. Parameter hit by large, frequent gradients and parameter seeing tiny, rare gradients both step by <code>lr</code>. We need per-parameter adaptation.</p>
 
       <!-- ══════════════════════════════════════════════════ -->
       <h2>The Adaptive Revolution: From Adagrad to RMSprop</h2>
 
-      <p>In 2011, John Duchi and collaborators published <strong>Adagrad</strong> (Adaptive Gradient), and it changed how people thought about learning rates. The core idea: instead of one global learning rate, maintain a <em>per-parameter</em> learning rate that adapts based on how large that parameter&rsquo;s gradients have been historically.</p>
+      <p>In 2011, John Duchi and collaborators published <strong>Adagrad</strong> (Adaptive Gradient). Big idea: no single global learning rate. Use <em>per-parameter</em> learning rate that adapts from that parameter&rsquo;s gradient history.</p>
 
-      <p>Adagrad accumulates the <em>sum</em> of squared gradients for each parameter into a variable <code>G</code>. The update divides the learning rate by <code>&radic;G</code>:</p>
+      <p>Adagrad accumulates <em>sum</em> of squared gradients for each parameter in variable <code>G</code>. Update divides learning rate by <code>&radic;G</code>:</p>
 
 <pre><code class="language-python"># Adagrad (conceptual, one parameter)
 G = G + gradient ** 2
 theta = theta - (lr / (sqrt(G) + epsilon)) * gradient</code></pre>
 
-      <p>For our cat/dog/bird classifier, consider two parameters: one in the final dense layer that sees strong gradients every batch, and one in an early convolutional filter that only activates on rare edge patterns. Adagrad gives the first parameter a small effective LR (its <code>G</code> is huge) and the second parameter a large effective LR (its <code>G</code> is small). The optimizer automatically allocates more learning to the parameters that need it. This was a revelation for sparse problems &mdash; NLP embeddings where most words appear rarely, or recommender systems where most items have few interactions.</p>
+      <p>For cat/dog/bird classifier, imagine two parameters: one in final dense layer seeing strong gradients every batch, one in early convolutional filter activating only on rare edge patterns. Adagrad gives first parameter small effective LR because <code>G</code> is huge. Second parameter gets large effective LR because <code>G</code> is small. Optimizer automatically gives more learning to parameters that need it. Big win for sparse problems &mdash; NLP embeddings and recommender systems.</p>
 
-      <p>But Adagrad has a fatal flaw: <code>G</code> only grows. It&rsquo;s a sum, never reset. Over the course of training, <code>G</code> gets larger and larger, the effective learning rate shrinks toward zero, and the optimizer effectively stops learning. For dense networks trained over many epochs, this is a deal-breaker.</p>
+      <p>But Adagrad has fatal flaw: <code>G</code> only grows. Sum never resets. Over training, <code>G</code> gets bigger, effective learning rate shrinks toward zero, optimizer almost stops learning. For dense networks trained many epochs, this breaks things.</p>
 
-      <p>Enter Geoffrey Hinton, who in 2012 proposed the fix in &mdash; of all places &mdash; an unpublished Coursera lecture. (To this day, the canonical reference for <strong>RMSprop</strong> is a set of lecture slides, not a peer-reviewed paper. I find that delightful.) The fix is elegant: instead of summing all squared gradients forever, use an <strong>exponential moving average</strong> of squared gradients. Recent history matters more; ancient history fades.</p>
+      <p>Geoffrey Hinton proposed fix in 2012, in unpublished Coursera lecture. Canonical reference for <strong>RMSprop</strong> is lecture slides, not peer-reviewed paper. Fix: don&rsquo;t sum squared gradients forever. Use <strong>exponential moving average</strong> of squared gradients. Recent history matters more. Old history fades.</p>
 
 <pre><code class="language-python"># RMSprop (conceptual, one parameter)
 G = decay * G + (1 - decay) * gradient ** 2
 theta = theta - (lr / (sqrt(G) + epsilon)) * gradient</code></pre>
 
-      <p>With <code>decay = 0.99</code>, gradients from 100 steps ago contribute almost nothing to <code>G</code>. The effective learning rate can now increase again if recent gradients become smaller. The dying-LR problem is solved. RMSprop became the default adaptive optimizer for a few years and still shows up in reinforcement learning codebases and RNN training today. But it was about to be superseded by something that combined both ideas we&rsquo;ve seen so far &mdash; momentum and per-parameter adaptivity &mdash; into a single algorithm.</p>
+      <p>With <code>decay = 0.99</code>, gradients from 100 steps ago barely matter in <code>G</code>. Effective learning rate can rise again if recent gradients get smaller. Dying-LR problem solved. RMSprop became default adaptive optimizer for a while and still appears in reinforcement learning codebases and RNN training. Next optimizer combined both ideas seen so far &mdash; momentum and per-parameter adaptivity &mdash; into one algorithm.</p>
 
       <!-- ══════════════════════════════════════════════════ -->
       <h2>Adam: Momentum Meets Adaptivity</h2>
 
-      <p>Adam (Adaptive Moment Estimation, Kingma &amp; Ba 2014) is probably the most widely used optimizer in deep learning history. Understanding <em>why</em> it works is more important than memorizing its four lines of math, so let&rsquo;s build it from the pieces we already have.</p>
+      <p>Adam (Adaptive Moment Estimation, Kingma &amp; Ba 2014) is probably most used optimizer in deep learning history. Important part is <em>why</em> it works, not memorizing four math lines. Build it from pieces we already have.</p>
 
-      <p>Adam tracks two quantities for every parameter. The <strong>first moment</strong> <code>m</code> is an exponential moving average of the gradient itself &mdash; this is momentum. It tells you the <em>direction</em> the gradient has been pointing recently. The <strong>second moment</strong> <code>v</code> is an exponential moving average of the <em>squared</em> gradient &mdash; this is the RMSprop piece. It tells you the <em>magnitude</em> of recent gradients for that specific parameter.</p>
+      <p>Adam tracks two quantities for every parameter. <strong>First moment</strong> <code>m</code> is exponential moving average of gradient itself &mdash; momentum piece. It tells you recent gradient <em>direction</em>. <strong>Second moment</strong> <code>v</code> is exponential moving average of <em>squared</em> gradient &mdash; RMSprop piece. It tells you recent gradient <em>magnitude</em> for that parameter.</p>
 
 <pre><code class="language-python"># Adam update (simplified, one parameter)
 m = beta1 * m + (1 - beta1) * gradient        # first moment (momentum)
@@ -433,17 +433,17 @@ v_hat = v / (1 - beta2 ** t)
 
 theta = theta - lr * m_hat / (sqrt(v_hat) + epsilon)</code></pre>
 
-      <p>The division by <code>&radic;v</code> is where the per-parameter magic happens. Parameters that have been receiving large, frequent gradients accumulate a large <code>v</code>, which <em>shrinks</em> their effective step size &mdash; the optimizer takes cautious steps for these already well-constrained weights. Parameters with rare or small gradients have a small <code>v</code>, so their effective step size is <em>larger</em> &mdash; the optimizer explores more aggressively where the signal has been weak. This is why Adam converges faster than SGD on most tasks without requiring careful learning rate tuning. It&rsquo;s doing automatic, per-parameter LR scaling.</p>
+      <p>Division by <code>&radic;v</code> creates per-parameter magic. Parameters receiving large, frequent gradients build large <code>v</code>, which <em>shrinks</em> effective step size. Optimizer moves cautiously on already well-constrained weights. Parameters with rare or small gradients keep small <code>v</code>, so effective step size gets <em>larger</em>. Optimizer explores harder where signal is weak. That automatic per-parameter LR scaling is why Adam often converges faster than SGD with less tuning.</p>
 
       <h3>Bias Correction: The Startup Fix</h3>
 
-      <p>Both <code>m</code> and <code>v</code> are initialized to zero. In the first few steps, they&rsquo;re heavily biased toward zero because they haven&rsquo;t accumulated enough history. Without correction, the effective learning rate in early training would be far too small &mdash; the model would barely move.</p>
+      <p>Both <code>m</code> and <code>v</code> start at zero. In first few steps, both are biased toward zero because history is tiny. Without correction, effective learning rate early in training would be too small and model would barely move.</p>
 
-      <p>The bias correction term <code>m / (1 - &beta;&#x2081;&sup;t)</code> compensates. At step <code>t=1</code> with <code>&beta;&#x2081;=0.9</code>, the denominator is <code>1 - 0.9 = 0.1</code>, so we multiply <code>m</code> by 10&times;. By step <code>t=20</code>, the correction factor is negligible. Think of it as a startup fix: important for the first dozen steps, irrelevant afterward. I mention this because it comes up in interviews, but it&rsquo;s not where the real insight lives.</p>
+      <p>Bias correction term <code>m / (1 - &beta;&#x2081;&sup;t)</code> fixes this. At step <code>t=1</code> with <code>&beta;&#x2081;=0.9</code>, denominator is <code>1 - 0.9 = 0.1</code>, so <code>m</code> gets multiplied by 10&times;. By step <code>t=20</code>, correction is tiny. Startup fix. Matters early. Fades fast.</p>
 
       <h3>The Default Hyperparameters</h3>
 
-      <p>The original paper proposed defaults that have, remarkably, survived a decade of scrutiny:</p>
+      <p>Original paper proposed defaults that survived a decade of scrutiny:</p>
 
       <ul>
         <li><code>&beta;&#x2081; = 0.9</code> &mdash; momentum decay for the first moment</li>
@@ -455,25 +455,25 @@ theta = theta - lr * m_hat / (sqrt(v_hat) + epsilon)</code></pre>
 <pre><code class="language-python">optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)</code></pre>
 
       <div class="callout-danger">
-        <strong>The fine-tuning trap:</strong> Adam&rsquo;s default LR of <code>1e-3</code> is designed for training from scratch. If you&rsquo;re fine-tuning a pretrained model (say, a BERT checkpoint for text classification, or a pretrained ResNet for your cat/dog/bird classifier), <code>1e-3</code> will blast the pretrained weights out of their good region in the loss landscape. Use <code>1e-5</code> to <code>5e-5</code> for fine-tuning. I learned this by watching a fine-tuned model produce <em>worse</em> results than the frozen pretrained one, which was a very confusing afternoon.
+        <strong>The fine-tuning trap:</strong> Adam&rsquo;s default LR of <code>1e-3</code> is for training from scratch. If you fine-tune pretrained model, like BERT for text classification or pretrained ResNet for cat/dog/bird classifier, <code>1e-3</code> can blast pretrained weights out of good loss-landscape region. Use <code>1e-5</code> to <code>5e-5</code> for fine-tuning. Wrong LR can make fine-tuned model worse than frozen pretrained one.
       </div>
 
-      <p><strong>Limitation:</strong> Adam combines momentum and adaptivity beautifully, but there&rsquo;s a subtle problem lurking in how it interacts with regularization. That brings us to the optimizer you should actually be reaching for.</p>
+      <p><strong>Limitation:</strong> Adam combines momentum and adaptivity well, but subtle problem remains in how it interacts with regularization. Next stop: optimizer you should use.</p>
 
       <!-- ══════════════════════════════════════════════════ -->
       <h2>AdamW: What You Should Actually Use</h2>
 
-      <p>AdamW is not &ldquo;Adam with weight decay added on.&rdquo; It&rsquo;s a fix for a genuine bug in how the original Adam handles regularization, and the difference matters more than most people realize.</p>
+      <p>AdamW is not &ldquo;Adam with weight decay added on.&rdquo; It fixes real bug in how original Adam handles regularization. Difference matters.</p>
 
       <h3>The Bug in Adam + L2</h3>
 
-      <p>Weight decay is a standard regularization technique: you penalize large weights by adding a term proportional to the weight magnitude to the loss, encouraging the model to keep weights small. In vanilla SGD, weight decay and L2 regularization are mathematically equivalent &mdash; adding <code>&lambda; &middot; &theta;&sup2;</code> to the loss produces a gradient term <code>2&lambda;&theta;</code>, which has the same effect as directly shrinking each weight by a fraction <code>&lambda;</code> each step.</p>
+      <p>Weight decay is standard regularization: penalize large weights by adding term proportional to weight magnitude to loss, pushing weights smaller. In vanilla SGD, weight decay and L2 regularization are mathematically equivalent &mdash; adding <code>&lambda; &middot; &theta;&sup2;</code> to loss produces gradient term <code>2&lambda;&theta;</code>, which matches directly shrinking each weight by fraction <code>&lambda;</code> each step.</p>
 
-      <p>But in Adam, this equivalence breaks down. When you implement weight decay as L2 regularization (adding the penalty to the loss), the weight decay gradient <code>2&lambda;&theta;</code> flows through Adam&rsquo;s adaptive mechanism &mdash; it gets divided by <code>&radic;v</code> along with everything else. The result: parameters with large accumulated squared gradients (large <code>v</code>) have their weight decay <em>weakened</em>. The regularization is no longer uniform. Large weights that happen to live in high-gradient regions escape the penalty. The optimizer is working against the regularizer.</p>
+      <p>But in Adam, equivalence breaks. If you implement weight decay as L2 regularization, weight decay gradient <code>2&lambda;&theta;</code> flows through Adam&rsquo;s adaptive mechanism &mdash; it gets divided by <code>&radic;v</code> like everything else. Result: parameters with large accumulated squared gradients, large <code>v</code>, get <em>weaker</em> weight decay. Regularization stops being uniform. Large weights in high-gradient regions escape penalty. Optimizer fights regularizer.</p>
 
       <h3>The Fix: Decoupled Weight Decay</h3>
 
-      <p>Loshchilov and Hutter (2019) identified this and proposed a clean solution: apply weight decay <em>directly to the weights</em>, completely outside the gradient-based update. Don&rsquo;t let it touch the moments. Don&rsquo;t let the adaptive scaling interfere with it.</p>
+      <p>Loshchilov and Hutter (2019) proposed clean fix: apply weight decay <em>directly to weights</em>, completely outside gradient-based update. Keep it out of moments. Keep adaptive scaling away from it.</p>
 
 <pre><code class="language-python"># Adam + L2 (the broken way)
 gradient = gradient + weight_decay * theta     # decay inside gradient
@@ -487,7 +487,7 @@ v = beta2 * v + (1 - beta2) * gradient ** 2
 theta = theta - lr * m_hat / (sqrt(v_hat) + eps)   # adaptive step
 theta = theta - lr * weight_decay * theta           # decay applied separately</code></pre>
 
-      <p>The code difference looks trivial &mdash; you&rsquo;re moving one line. But the effect on training is not trivial. With AdamW, the regularization does what you actually intend: it pushes <em>all</em> weights toward zero uniformly, regardless of their gradient history. The model generalizes better because the regularization is consistent.</p>
+      <p>Code difference looks tiny &mdash; one moved line. Training effect is not tiny. With AdamW, regularization does what you intend: it pushes <em>all</em> weights toward zero uniformly, regardless of gradient history. Model generalizes better because regularization stays consistent.</p>
 
 <pre><code class="language-python"># AdamW in PyTorch — this should be your default
 optimizer = torch.optim.AdamW(
@@ -496,25 +496,25 @@ optimizer = torch.optim.AdamW(
     weight_decay=0.01    # typical range: 0.01 to 0.1
 )</code></pre>
 
-      <p>If someone says &ldquo;Adam&rdquo; in a modern context, they almost certainly mean AdamW. It is the default optimizer for transformers, large language models, and most modern architectures. Virtually every GPT, BERT, and Vision Transformer paper uses AdamW. Use <code>torch.optim.AdamW</code>, not <code>torch.optim.Adam</code>.</p>
+      <p>If someone says &ldquo;Adam&rdquo; in modern context, they usually mean AdamW. It is default optimizer for transformers, large language models, and most modern architectures. Virtually every GPT, BERT, and Vision Transformer paper uses AdamW. Use <code>torch.optim.AdamW</code>, not <code>torch.optim.Adam</code>.</p>
 
       <!-- ══════════════════════════════════════════════════ -->
       <h2>Learning Rate Schedules: Why They Matter</h2>
 
-      <p>The optimizer gives you the <em>direction</em> to step. The <strong>learning rate schedule</strong> controls <em>how far</em> you step, and how that distance changes over the course of training. Getting the schedule wrong is one of the most common reasons a model trains but doesn&rsquo;t generalize.</p>
+      <p>Optimizer gives <em>direction</em> of step. <strong>Learning rate schedule</strong> controls <em>how far</em> you step, and how distance changes during training. Wrong schedule is common reason model trains but fails to generalize.</p>
 
-      <p>Go back to our hiking analogy. Early in training, you&rsquo;re on a high plateau &mdash; the weights are random, the loss is terrible, and you need to take big strides to get anywhere useful. Late in training, you&rsquo;re near a good valley &mdash; big strides would overshoot and send you bouncing between the walls. You need to tiptoe into the flat bottom.</p>
+      <p>Back to hiking analogy. Early in training, you are on high plateau &mdash; random weights, terrible loss, need big strides to get somewhere useful. Late in training, you are near good valley &mdash; big strides overshoot and bounce off walls. You need tiny steps into flat bottom.</p>
 
-      <p>A fixed learning rate is a compromise that&rsquo;s almost never optimal. Set it high enough for good early progress and you overshoot later. Set it low enough for precise convergence and the first 80% of training is wasted. The learning rate schedule automates the transition: large steps early, small steps later.</p>
+      <p>Fixed learning rate is compromise that is almost never optimal. Set it high for early progress and you overshoot later. Set it low for precise convergence and first 80% of training is wasted. Learning rate schedule automates transition: large steps early, small steps later.</p>
 
-      <p>I used to skip the schedule during prototyping and wonder why my models plateaued. The schedule isn&rsquo;t a nice-to-have; it&rsquo;s load-bearing infrastructure. Let&rsquo;s look at the pieces.</p>
+      <p>Schedule is not nice-to-have. Schedule is load-bearing infrastructure. Break it into pieces.</p>
 
       <!-- ══════════════════════════════════════════════════ -->
       <h2>Warmup: Surviving the First Few Steps</h2>
 
-      <p>In the very first steps of training, several things are simultaneously terrible. The weights are randomly initialized, so the gradients are essentially noise pointing in arbitrary directions. If you&rsquo;re using Adam, the moment estimates <code>m</code> and <code>v</code> are initialized to zero and haven&rsquo;t converged yet &mdash; the bias correction helps, but the estimates are still unreliable. If you&rsquo;re using batch normalization, the running statistics haven&rsquo;t stabilized.</p>
+      <p>First training steps are ugly. Weights are randomly initialized, so gradients are mostly noise in arbitrary directions. If you use Adam, moment estimates <code>m</code> and <code>v</code> start at zero and have not converged yet &mdash; bias correction helps, but estimates are still unreliable. If you use batch normalization, running statistics are not stable yet.</p>
 
-      <p>Taking large steps based on garbage gradients is how you get early training instability: the loss spikes, NaNs appear, and sometimes the model never recovers. <strong>Linear warmup</strong> is the fix: start with a very small learning rate and linearly ramp it up to the target LR over a set number of steps.</p>
+      <p>Large steps on garbage gradients cause early training instability: loss spikes, NaNs appear, model sometimes never recovers. <strong>Linear warmup</strong> fixes this: start with very small learning rate and linearly ramp to target LR over set number of steps.</p>
 
 <pre><code class="language-python">warmup_steps = 1000
 target_lr = 1e-3
@@ -528,23 +528,23 @@ for step in range(total_steps):
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr</code></pre>
 
-      <p>At step 0 the LR is essentially zero. At step 500 it&rsquo;s half the target. At step 1000 it reaches the full target LR, and from there the decay schedule takes over. The ramp gives Adam&rsquo;s moment estimates time to become meaningful, gives batch norm statistics time to stabilize, and prevents any single garbage gradient from causing irreversible damage.</p>
+      <p>At step 0, LR is almost zero. At step 500, it is half target. At step 1000, it reaches full target LR, then decay schedule takes over. Ramp gives Adam&rsquo;s moment estimates time to become useful, gives batch norm statistics time to stabilize, and stops one garbage gradient from causing irreversible damage.</p>
 
-      <p>A typical warmup length is <strong>5&ndash;10% of total training steps</strong>. For a 100-epoch ImageNet run, that&rsquo;s roughly 5 epochs. For fine-tuning a transformer, maybe 500&ndash;2000 steps. Warmup is especially critical for transformer architectures &mdash; the attention mechanism is notoriously sensitive to initialization, and large early learning rates cause attention weights to collapse. The original &ldquo;Attention Is All You Need&rdquo; paper used warmup for a reason, and every major LLM training run since has followed suit.</p>
+      <p>Typical warmup length is <strong>5&ndash;10% of total training steps</strong>. For 100-epoch ImageNet run, that is roughly 5 epochs. For transformer fine-tuning, maybe 500&ndash;2000 steps. Warmup is especially critical for transformer architectures &mdash; attention mechanism is sensitive to initialization, and large early learning rates can collapse attention weights. Original &ldquo;Attention Is All You Need&rdquo; paper used warmup for reason. Every major LLM training run since followed.</p>
 
       <!-- ══════════════════════════════════════════════════ -->
       <h2>Cosine Annealing: The Modern Default</h2>
 
-      <p>After warmup, you need a strategy for decaying the learning rate. The most popular modern choice is <strong>cosine annealing</strong>: the LR follows a cosine curve from its peak value down to a minimum (often near zero).</p>
+      <p>After warmup, you need decay strategy for learning rate. Most popular modern choice is <strong>cosine annealing</strong>: LR follows cosine curve from peak value down to minimum, often near zero.</p>
 
-      <p>The formula is straightforward. If <code>t</code> is the current step and <code>T</code> is the total number of steps:</p>
+      <p>Formula is straightforward. If <code>t</code> is current step and <code>T</code> is total number of steps:</p>
 
 <pre><code class="language-python"># Cosine annealing formula
 lr_t = lr_min + 0.5 * (lr_max - lr_min) * (1 + cos(pi * t / T))</code></pre>
 
-      <p>At <code>t=0</code>, the cosine is 1, so <code>lr_t = lr_max</code>. At <code>t=T</code>, the cosine is &minus;1, so <code>lr_t = lr_min</code>. In between, the decay is smooth, spending more time at moderate learning rates than either extreme.</p>
+      <p>At <code>t=0</code>, cosine is 1, so <code>lr_t = lr_max</code>. At <code>t=T</code>, cosine is &minus;1, so <code>lr_t = lr_min</code>. Between them, decay stays smooth and spends more time at moderate learning rates than at either extreme.</p>
 
-      <p>Why does this work better than the older approach of step decay (dropping the LR by 10&times; at fixed epoch milestones)? Step decay creates discontinuities &mdash; the model is cruising at one LR, then suddenly the rug is pulled. The training dynamics change abruptly, and the first few epochs after a drop are often wasted as the optimizer re-adjusts. Cosine annealing avoids these shocks entirely. The curve is smooth, the model spends substantial time at intermediate learning rates where it&rsquo;s still making meaningful updates, and the gentle tail at the end gives the model many steps to settle into a flat region of the landscape.</p>
+      <p>Why does this beat older step decay, dropping LR by 10&times; at fixed epoch milestones? Step decay creates discontinuities &mdash; model cruises at one LR, then rug gets pulled. Training dynamics change abruptly, and first few epochs after drop often get wasted while optimizer re-adjusts. Cosine annealing avoids these shocks. Curve stays smooth, model spends more time at intermediate learning rates where updates still matter, and gentle tail gives many steps to settle into flat region of landscape.</p>
 
 <pre><code class="language-python"># Cosine annealing in PyTorch
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -559,7 +559,7 @@ for epoch in range(total_epochs):
 
       <h3>Cosine with Warm Restarts</h3>
 
-      <p>A variant worth knowing: <strong>cosine annealing with warm restarts</strong> (SGDR, Loshchilov &amp; Hutter 2017). The LR decays to near zero following a cosine curve, then <em>snaps back</em> to the initial LR and decays again. Each restart is a deliberate shock that lets the optimizer escape a local minimum it may have settled into. Subsequent cycles are often made longer (e.g., doubling the period each time), giving the model progressively more time to converge in later cycles.</p>
+      <p>Variant worth knowing: <strong>cosine annealing with warm restarts</strong> (SGDR, Loshchilov &amp; Hutter 2017). LR decays near zero on cosine curve, then <em>snaps back</em> to initial LR and decays again. Each restart is deliberate shock that can help optimizer escape local minimum. Later cycles are often longer, like doubling period each time, giving model more time to converge.</p>
 
 <pre><code class="language-python">scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
     optimizer,
@@ -567,14 +567,14 @@ for epoch in range(total_epochs):
     T_mult=2      # each subsequent cycle is 2x longer
 )</code></pre>
 
-      <p>Warm restarts are less common than plain cosine in transformer training, but they show up in vision tasks and ensemble methods where you want diverse models from different restart points.</p>
+      <p>Warm restarts are less common than plain cosine in transformer training, but they appear in vision tasks and ensemble methods where you want diverse models from different restart points.</p>
 
       <!-- ══════════════════════════════════════════════════ -->
       <h2>One-Cycle Policy: Super-Convergence</h2>
 
-      <p>Leslie Smith&rsquo;s <strong>one-cycle policy</strong> is a more aggressive schedule built on a counterintuitive insight: <strong>using a high learning rate in the middle of training acts as a regularizer.</strong> The logic is that a high LR prevents the model from settling into sharp minima early &mdash; it forces continued exploration of the loss landscape, favoring the wide, flat valleys that generalize better.</p>
+      <p>Leslie Smith&rsquo;s <strong>one-cycle policy</strong> is more aggressive schedule built on counterintuitive insight: <strong>high learning rate in middle of training acts like regularizer.</strong> High LR stops model from settling into sharp minima too early. It forces more exploration of loss landscape and favors wide, flat valleys that generalize better.</p>
 
-      <p>The schedule has three phases: ramp the LR up from a small value to a high peak (warmup), hold near the peak briefly, then anneal it down to a value much smaller than the starting point. Momentum is cycled inversely &mdash; high momentum when LR is low, low momentum when LR is high &mdash; because the high LR already provides plenty of exploration, and you don&rsquo;t want momentum amplifying that into instability.</p>
+      <p>Schedule has three phases: ramp LR from small value to high peak, hold near peak briefly, then anneal it down to value much smaller than start. Momentum cycles inversely &mdash; high momentum when LR is low, low momentum when LR is high &mdash; because high LR already gives lots of exploration, and extra momentum can turn that into instability.</p>
 
 <pre><code class="language-python">scheduler = torch.optim.lr_scheduler.OneCycleLR(
     optimizer,
@@ -590,19 +590,19 @@ for batch in train_loader:
     scheduler.step()</code></pre>
 
       <div class="callout-danger">
-        <strong>Gotcha that bites everyone once:</strong> <code>OneCycleLR</code> counts steps per <em>batch</em>. If you accidentally call <code>scheduler.step()</code> per epoch instead of per batch, the schedule stretches across the entire run, the LR peak arrives at the wrong time, and the whole thing silently underperforms. This is one of those bugs that doesn&rsquo;t crash &mdash; it produces mediocre results and you blame the model.
+        <strong>Gotcha that bites everyone once:</strong> <code>OneCycleLR</code> counts steps per <em>batch</em>. If you call <code>scheduler.step()</code> per epoch instead, schedule stretches across whole run, LR peak arrives at wrong time, and performance quietly drops. Bug does not crash. Bug gives mediocre results. You blame model.
       </div>
 
-      <p>Smith found that the one-cycle policy can achieve the same final accuracy in significantly fewer epochs, a phenomenon he called <strong>super-convergence</strong>. It pairs especially well with SGD+momentum. The high-LR phase is doing something similar to what large-batch training does &mdash; it smooths the loss landscape from the optimizer&rsquo;s perspective, biasing the trajectory toward flat minima.</p>
+      <p>Smith found that one-cycle policy can reach same final accuracy in far fewer epochs, a phenomenon he called <strong>super-convergence</strong>. It pairs especially well with SGD+momentum. High-LR phase does something similar to large-batch training &mdash; it smooths loss landscape from optimizer&rsquo;s view and biases trajectory toward flat minima.</p>
 
       <!-- ══════════════════════════════════════════════════ -->
       <h2>Beyond the Defaults: LAMB, LARS, and SWA</h2>
 
-      <p>Three more optimizers worth having in your vocabulary, even if you won&rsquo;t use them daily.</p>
+      <p>Three more optimizers worth knowing, even if you do not use them daily.</p>
 
-      <p><strong>LARS</strong> (Layer-wise Adaptive Rate Scaling) and <strong>LAMB</strong> (Layer-wise Adaptive Moments optimizer for Batch training) address a specific problem: when you scale to very large batch sizes for distributed training, the effective learning rate becomes too aggressive for some layers and too timid for others. LARS (used with SGD) and LAMB (used with Adam) fix this by computing a separate trust ratio for each layer, scaling the learning rate by the ratio of the layer&rsquo;s weight norm to its gradient norm. This keeps the relative update magnitude consistent across layers regardless of batch size. Google&rsquo;s BERT was famously trained with LAMB on batches of 65,536 sequences. If you&rsquo;re not doing large-batch distributed training, you don&rsquo;t need these &mdash; but they show up in system design interviews for large-scale ML.</p>
+      <p><strong>LARS</strong> (Layer-wise Adaptive Rate Scaling) and <strong>LAMB</strong> (Layer-wise Adaptive Moments optimizer for Batch training) solve specific problem: with very large batch sizes in distributed training, effective learning rate becomes too aggressive for some layers and too timid for others. LARS, used with SGD, and LAMB, used with Adam, compute separate trust ratio for each layer, scaling learning rate by ratio of layer weight norm to gradient norm. This keeps relative update magnitude consistent across layers regardless of batch size. Google&rsquo;s BERT famously used LAMB on batches of 65,536 sequences. If you are not doing large-batch distributed training, you usually do not need these. But they appear in large-scale ML system design interviews.</p>
 
-      <p><strong>Stochastic Weight Averaging (SWA)</strong> takes a different approach entirely. Instead of optimizing harder, it averages the weights from multiple points late in training. The idea is grounded in the flat minima principle: an average of several points near a minimum is likely to land closer to the <em>center</em> of a flat region than any individual point. In practice, you train normally until the LR has decayed substantially, then continue training with a constant or cyclical LR while maintaining a running average of the weights. At the end, you use the averaged weights for inference.</p>
+      <p><strong>Stochastic Weight Averaging (SWA)</strong> takes different path. Instead of optimizing harder, it averages weights from multiple late-training points. Idea comes from flat minima principle: average of several points near minimum likely lands closer to <em>center</em> of flat region than any single point. In practice, train normally until LR has decayed a lot, then keep training with constant or cyclical LR while maintaining running average of weights. At end, use averaged weights for inference.</p>
 
 <pre><code class="language-python"># SWA in PyTorch (built-in support)
 from torch.optim.swa_utils import AveragedModel, SWALR
@@ -618,12 +618,12 @@ for epoch in range(swa_start, total_epochs):
 # After training: update batch norm stats for swa_model
 torch.optim.swa_utils.update_bn(train_loader, swa_model)</code></pre>
 
-      <p>SWA is cheap (no extra optimizer state, minimal compute overhead) and can improve generalization by 0.5&ndash;1.5% on vision tasks. It&rsquo;s worth knowing for interviews and for squeezing out the last bit of performance.</p>
+      <p>SWA is cheap: no extra optimizer state, minimal compute overhead. It can improve generalization by 0.5&ndash;1.5% on vision tasks. Good interview topic. Good last-mile performance trick.</p>
 
       <!-- ══════════════════════════════════════════════════ -->
       <h2>The Practical Recipe</h2>
 
-      <p>After all the theory, here&rsquo;s what I actually reach for when starting a project. This is the recipe that works for the vast majority of tasks, and it&rsquo;s what you&rsquo;ll see in most modern codebases.</p>
+      <p>After theory, here is practical default. Recipe works for vast majority of tasks. You will see it in most modern codebases.</p>
 
 <pre><code class="language-python">import torch
 from torch.optim import AdamW
@@ -647,25 +647,25 @@ for step in range(total_steps):
     if step >= warmup_steps:
         scheduler.step()</code></pre>
 
-      <p>That&rsquo;s AdamW + cosine annealing + linear warmup. It handles 90% of what you&rsquo;ll encounter. For the remaining 10%, here are domain-specific adjustments:</p>
+      <p>That is AdamW + cosine annealing + linear warmup. It handles 90% of cases. For remaining 10%, use domain-specific adjustments:</p>
 
-      <p><strong>Computer vision from scratch</strong> (ResNets, ConvNets): SGD + momentum (0.9) + Nesterov, LR=0.1, cosine annealing. Vision folks have decades of tuning recipes for SGD, and it still wins on generalization for these architectures. Weight decay around 1e-4.</p>
+      <p><strong>Computer vision from scratch</strong> (ResNets, ConvNets): SGD + momentum (0.9) + Nesterov, LR=0.1, cosine annealing. Vision has decades of SGD tuning recipes, and SGD still often wins on generalization for these architectures. Weight decay around 1e-4.</p>
 
-      <p><strong>Computer vision fine-tuning</strong> (pretrained backbone + new head): AdamW, LR=1e-4 to 5e-5, linear decay or short cosine. The pretrained weights are already good; you want gentle updates. Consider differential learning rates &mdash; lower LR for early layers, higher for the new head.</p>
+      <p><strong>Computer vision fine-tuning</strong> (pretrained backbone + new head): AdamW, LR=1e-4 to 5e-5, linear decay or short cosine. Pretrained weights are already good, so use gentle updates. Consider differential learning rates &mdash; lower LR for early layers, higher for new head.</p>
 
-      <p><strong>NLP and Transformers</strong>: AdamW, LR=1e-4 to 5e-4, cosine decay with linear warmup (5&ndash;10% of total steps). This is essentially the recipe from the original BERT paper and it&rsquo;s barely changed since.</p>
+      <p><strong>NLP and Transformers</strong>: AdamW, LR=1e-4 to 5e-4, cosine decay with linear warmup (5&ndash;10% of total steps). This matches original BERT recipe. It barely changed since.</p>
 
-      <p><strong>LLM pre-training</strong>: AdamW, LR around 3e-4, cosine decay to 10% of peak, 2000-step warmup. &beta;&#x2082; sometimes lowered to 0.95 for stability with very long sequences. Weight decay 0.1.</p>
+      <p><strong>LLM pre-training</strong>: AdamW, LR around 3e-4, cosine decay to 10% of peak, 2000-step warmup. &beta;&#x2082; is sometimes lowered to 0.95 for stability with very long sequences. Weight decay 0.1.</p>
 
-      <p><strong>Quick prototyping</strong>: Adam (even plain Adam is fine), LR=1e-3, no schedule. Get something running, validate the data pipeline and architecture, then optimize the training recipe later.</p>
+      <p><strong>Quick prototyping</strong>: Adam, even plain Adam is fine, LR=1e-3, no schedule. Get something running. Validate data pipeline and architecture. Optimize training recipe later.</p>
 
       <div class="callout-danger">
-        <strong>The checkpoint gotcha:</strong> When resuming training from a checkpoint, you <em>must</em> save and restore the optimizer state (<code>optimizer.state_dict()</code>) and the scheduler state (<code>scheduler.state_dict()</code>) alongside the model weights. If you only load model weights, Adam&rsquo;s moment estimates reset to zero, the scheduler restarts from step 0, warmup runs again unnecessarily, and training quality silently degrades. I have seen production training runs corrupted by this exact mistake, and the failure mode is insidious &mdash; the model still trains, it&rsquo;s just worse, and you might not notice until evaluation.
+        <strong>The checkpoint gotcha:</strong> When resuming training from checkpoint, you <em>must</em> save and restore optimizer state (<code>optimizer.state_dict()</code>) and scheduler state (<code>scheduler.state_dict()</code>) along with model weights. If you load only model weights, Adam&rsquo;s moment estimates reset to zero, scheduler restarts from step 0, warmup runs again, and training quality silently degrades. Model still trains. Model is worse. You may not notice until evaluation.
       </div>
 
       <h3>The LR Finder</h3>
 
-      <p>Before committing to a learning rate, you can empirically find a good starting point. Leslie Smith&rsquo;s LR finder (2017) works like this: start with a tiny LR, train for one epoch while exponentially increasing the LR each batch, and record the loss at each step. Plot loss versus LR on a log scale. The ideal LR is where the loss is <strong>decreasing fastest</strong> &mdash; the steepest downward slope &mdash; not where the loss is at its minimum. The minimum corresponds to a LR that&rsquo;s already too high for stable long-term training; the steepest descent is where learning is most efficient.</p>
+      <p>Before committing to learning rate, find good starting point empirically. Leslie Smith&rsquo;s LR finder (2017) works like this: start with tiny LR, train for one epoch while exponentially increasing LR each batch, and record loss at each step. Plot loss versus LR on log scale. Ideal LR is where loss is <strong>decreasing fastest</strong> &mdash; steepest downward slope &mdash; not where loss reaches minimum. Minimum usually means LR is already too high for stable long-term training. Steepest descent marks most efficient learning zone.</p>
 
 <pre><code class="language-python">def lr_finder(model, train_loader, optimizer, criterion,
               lr_start=1e-7, lr_end=10, num_steps=100):
@@ -701,7 +701,7 @@ for step in range(total_steps):
 
     return lrs, losses</code></pre>
 
-      <p>Run this, plot with <code>plt.plot(lrs, losses); plt.xscale('log')</code>, and look for the steepest downhill segment. That&rsquo;s your learning rate neighborhood.</p>
+      <p>Run this. Plot with <code>plt.plot(lrs, losses); plt.xscale('log')</code>. Look for steepest downhill segment. That is your learning rate neighborhood.</p>
 
 
         <span></span>
