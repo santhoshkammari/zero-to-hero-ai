@@ -303,9 +303,9 @@
 <!-- PHASE 1: OPENING                                           -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 
-<p>Understanding CPython's internals — memory management, the GIL, concurrency — explains why your code is fast or slow, leaks memory or doesn't, scales or chokes. Here is that dive.</p>
+<p>CPython internals — memory management, GIL, concurrency — explain why code fast or slow, leaks memory or not, scales or chokes. Dive here.</p>
 
-<p>CPython — the interpreter you're almost certainly using — is a C program that compiles your Python source into bytecode and then executes that bytecode on a virtual machine. Along the way it manages memory through reference counting, coordinates threads with a global lock, and provides an event loop for concurrent I/O. These aren't obscure implementation details. They're the reason your code is fast or slow, leaks memory or doesn't, scales or chokes.</p>
+<p>CPython — interpreter you almost certainly use — is C program. Compiles Python source to bytecode, then runs bytecode on virtual machine. Along way manages memory with reference counting, coordinates threads with global lock, provides event loop for concurrent I/O. Not obscure details. Reason code fast or slow, leaks memory or not, scales or chokes.</p>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!-- TABLE OF CONTENTS                                          -->
@@ -317,16 +317,16 @@
 
 <h2>What Happens When You Run <code>python script.py</code></h2>
 
-<p>Let's say we have a tiny script. Three lines. We want to build a log ingestion pipeline — something that reads log files, counts errors, and reports. Our first version is absurdly small on purpose:</p>
+<p>Tiny script. Three lines. Goal: build log ingestion pipeline — read log files, count errors, report. First version tiny on purpose:</p>
 
 <pre><code class="language-python">logs = ["ERROR: disk full", "INFO: started", "ERROR: timeout"]
 errors = [line for line in logs if line.startswith("ERROR")]
 print(len(errors))
 </code></pre>
 
-<p>When you hit enter, CPython doesn't run this text directly. It goes through a pipeline. First, a <b>parser</b> reads the source and builds an Abstract Syntax Tree — a structured representation of what your code means. Then a <b>compiler</b> walks that tree and produces <b>bytecode</b> — a sequence of low-level instructions for CPython's virtual machine. Finally, the <b>VM</b> executes those instructions one by one in a giant loop written in C (the file is called <code>ceval.c</code>, and it's the beating heart of the interpreter).</p>
+<p>Hit enter. CPython not run text direct. Pipeline time. First, <b>parser</b> reads source, builds Abstract Syntax Tree — structured representation of code meaning. Then <b>compiler</b> walks tree, produces <b>bytecode</b> — low-level instructions for CPython virtual machine. Finally, <b>VM</b> executes instructions one by one in giant C loop (file called <code>ceval.c</code>, beating heart of interpreter).</p>
 
-<p>We can actually see the bytecode. Python ships with a module called <code>dis</code> — short for disassemble — that shows you exactly what instructions the VM will execute:</p>
+<p>Can see bytecode. Python ships module <code>dis</code> — short for disassemble — that shows exact instructions VM executes:</p>
 
 <pre><code class="language-python">import dis
 
@@ -347,11 +347,11 @@ dis.dis(count_errors)
 #     18 RETURN_VALUE
 </code></pre>
 
-<p>Each line is one bytecode instruction. <code>LOAD_FAST</code> pushes a local variable onto a stack. <code>CALL_FUNCTION</code> pops arguments off the stack and calls whatever callable is sitting on top. <code>STORE_FAST</code> takes the result and binds it to a local name. The VM doesn't know about your variable names at execution time — it works with indices into arrays of names and constants, stored in a <b>code object</b>.</p>
+<p>Each line = one bytecode instruction. <code>LOAD_FAST</code> pushes local variable onto stack. <code>CALL_FUNCTION</code> pops arguments from stack, calls callable on top. <code>STORE_FAST</code> takes result, binds it to local name. VM does not know variable names at execution time — works with indices into arrays of names and constants, stored in <b>code object</b>.</p>
 
-<p>That code object is what gets saved to a <code>.pyc</code> file in <code>__pycache__/</code>. The next time you import the same module, Python skips parsing and compiling entirely and loads the cached bytecode directly. That's why the first import is slower than subsequent ones.</p>
+<p>That code object gets saved to <code>.pyc</code> file in <code>__pycache__/</code>. Next import of same module skips parsing and compiling, loads cached bytecode direct. Reason first import slower than later ones.</p>
 
-<p>Here's why this matters for performance: every iteration of a Python <code>for</code> loop is several bytecode instructions — load the iterator, call <code>__next__</code>, check for <code>StopIteration</code>, branch back. When you call <code>np.sum(array)</code>, that's one bytecode instruction (<code>CALL_FUNCTION</code>) that drops into C code and rips through millions of elements without touching the bytecode loop at all. The gap between "Python loop over a million items" and "one C call over a million items" isn't 2x. It's 100x. Now you know why.</p>
+<p>Performance reason: each iteration of Python <code>for</code> loop is several bytecode instructions — load iterator, call <code>__next__</code>, check <code>StopIteration</code>, branch back. Call <code>np.sum(array)</code>, and one bytecode instruction (<code>CALL_FUNCTION</code>) drops into C code, rips through millions of elements without touching bytecode loop. Gap between "Python loop over million items" and "one C call over million items" not 2x. It is 100x. Now you know why.</p>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!-- PYOBJECT                                                   -->
@@ -359,7 +359,7 @@ dis.dis(count_errors)
 
 <h2>Everything Is a PyObject</h2>
 
-<p>At the C level — the level where CPython is actually implemented — every Python value is a C struct called <code>PyObject</code>. Integers, lists, functions, classes, modules, <code>None</code> — they all start with the same two fields:</p>
+<p>C level — where CPython lives — every Python value is C struct called <code>PyObject</code>. Integers, lists, functions, classes, modules, <code>None</code> — all start with same two fields:</p>
 
 <pre><code class="language-c">typedef struct _object {
     Py_ssize_t ob_refcnt;       // how many references point here
@@ -367,11 +367,11 @@ dis.dis(count_errors)
 } PyObject;
 </code></pre>
 
-<p><code>ob_refcnt</code> is the reference count — we'll get to that in a moment. <code>ob_type</code> is a pointer to another object (a <code>PyTypeObject</code>) that describes what this thing is and what operations it supports. An integer extends this base struct by adding a field for the actual numeric value. A list extends it by adding a pointer to a resizable array of other <code>PyObject</code> pointers. But at the top, they all look the same to the interpreter.</p>
+<p><code>ob_refcnt</code> is reference count — more on that soon. <code>ob_type</code> is pointer to another object (<code>PyTypeObject</code>) that says what thing is and what operations it supports. Integer extends base struct with field for actual numeric value. List extends it with pointer to resizable array of other <code>PyObject</code> pointers. Top level: all look same to interpreter.</p>
 
-<p>This is what people mean when they say "everything in Python is an object." It's not a philosophical statement. It's a literal C struct. And every variable you create in Python is a pointer to one of these structs living on the <b>heap</b> — a region of memory managed by the allocator, not the stack. When you write <code>a = [1, 2, 3]</code>, the list struct gets allocated on the heap and <code>a</code> is a name that points to it. When you write <code>b = a</code>, you don't copy the list. You create a second pointer to the same struct. One list, two names.</p>
+<p>People say "everything in Python is an object." Not philosophy. Literal C struct. Every variable you create in Python is pointer to one of these structs on <b>heap</b> — memory region managed by allocator, not stack. Write <code>a = [1, 2, 3]</code>, list struct gets allocated on heap and <code>a</code> points to it. Write <code>b = a</code>, you do not copy list. You create second pointer to same struct. One list, two names.</p>
 
-<p>I'll be honest — this was the single insight that untangled years of confusion for me. Why does <code>df2 = df</code> not copy your DataFrame? Because assignment never copies. It creates a new pointer to the same heap object. Want an actual copy? Call <code>df.copy()</code>. Same story with NumPy: slicing returns a <b>view</b> — a new object that shares the same underlying memory buffer. Modify a view, and you've modified the original. I still get tripped up by this occasionally, usually at 2am during a deadline.</p>
+<p>Key insight. <code>df2 = df</code> does not copy DataFrame because assignment never copies. It creates new pointer to same heap object. Want real copy? Call <code>df.copy()</code>. Same with NumPy: slicing returns <b>view</b> — new object sharing same underlying memory buffer. Modify view, original changes.</p>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!-- REFERENCE COUNTING                                         -->
@@ -379,9 +379,9 @@ dis.dis(count_errors)
 
 <h2>Reference Counting — The First Line of Defense</h2>
 
-<p>Back to that <code>ob_refcnt</code> field. Every <code>PyObject</code> carries an integer tracking how many things point to it. Create a new name pointing to the object — count goes up. Delete a name or reassign it — count goes down. The moment the count hits zero, CPython frees the memory immediately. No waiting, no background process. Instant reclamation.</p>
+<p>Back to <code>ob_refcnt</code>. Every <code>PyObject</code> carries integer tracking how many things point to it. Create new name pointing to object — count up. Delete name or reassign it — count down. Moment count hits zero, CPython frees memory immediately. No waiting. No background process. Instant reclamation.</p>
 
-<p>Let's trace through our log pipeline to see this in action:</p>
+<p>Trace log pipeline. Watch it happen:</p>
 
 <pre><code class="language-python">import sys
 
@@ -399,9 +399,9 @@ del logs
 # only it was holding alive
 </code></pre>
 
-<p>This is remarkably elegant for the common case. Most objects are created, used, and discarded within a single function. Reference counting handles that with zero overhead from a garbage collector — the memory is reclaimed the instant it's no longer needed. That's why <code>del df</code> on a huge DataFrame often frees gigabytes instantly. The count drops to zero, the memory goes back to the allocator, done.</p>
+<p>Elegant in common case. Most objects get created, used, discarded inside single function. Reference counting handles that with zero garbage-collector delay — memory reclaimed moment object no longer needed. Reason <code>del df</code> on huge DataFrame often frees gigabytes instantly. Count hits zero, memory goes back to allocator. Done.</p>
 
-<p>But there's a crack in this system. Imagine two objects that point to each other: object A has a reference to B, and B has a reference to A. Even if nothing else in your entire program uses either of them, both reference counts are stuck at one. They'll never reach zero. They'll sit there consuming memory forever, like two people each waiting for the other to leave a room first.</p>
+<p>But system has crack. Imagine two objects pointing to each other: object A references B, B references A. Even if nothing else in program uses either one, both reference counts stay at one. They never hit zero. They sit in memory forever.</p>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!-- GARBAGE COLLECTOR                                          -->
@@ -409,15 +409,15 @@ del logs
 
 <h2>The Garbage Collector — Catching What Refcounting Misses</h2>
 
-<p>That's where CPython's cyclic garbage collector comes in. It exists for one purpose: finding and destroying reference cycles that reference counting can't handle.</p>
+<p>Here CPython's cyclic garbage collector steps in. One job: find and destroy reference cycles reference counting cannot handle.</p>
 
-<p>The collector divides objects into three <b>generations</b>. Generation 0 holds newly created objects. When the collector runs and an object survives (because it's still reachable), it gets promoted to Generation 1. Survive again, and it moves to Generation 2. The key insight: most objects die young. A temporary list inside a function, a string built for a log message — these are created and destroyed within milliseconds. So Generation 0 is collected frequently (every ~700 allocations by default), while Generation 2 is collected rarely.</p>
+<p>Collector divides objects into three <b>generations</b>. Generation 0 holds new objects. When collector runs and object survives (still reachable), object moves to Generation 1. Survive again, move to Generation 2. Key insight: most objects die young. Temporary list inside function, string built for log message — created and destroyed in milliseconds. So Generation 0 gets collected often (every ~700 allocations by default), while Generation 2 gets collected rarely.</p>
 
-<p>Think of it like a mailroom. Letters that arrive today are checked this evening. If they're still unclaimed after a week, they go to a different shelf that's checked monthly. If they survive a month, they go to a storage room that's checked once a year. Most letters are picked up the same day.</p>
+<p>Mailroom picture. Letters arriving today get checked tonight. Still unclaimed after week, move to shelf checked monthly. Survive month, move to storage room checked yearly. Most letters get picked up same day.</p>
 
-<p>For ML work, there's a real pattern worth knowing: some training frameworks call <code>gc.disable()</code> during training to avoid the small overhead of periodic garbage collection. This is fine as long as you call <code>gc.collect()</code> between epochs. If you don't, any reference cycles that form during training — and frameworks with complex callback systems can create them — will accumulate silently until your process gets killed by the OOM reaper.</p>
+<p>For ML work, know this pattern: some training frameworks call <code>gc.disable()</code> during training to avoid small periodic garbage-collection overhead. Fine if you call <code>gc.collect()</code> between epochs. If not, reference cycles formed during training — and frameworks with complex callback systems can create them — accumulate silently until OOM reaper kills process.</p>
 
-<p>I once spent a full afternoon debugging a training run that would crash around epoch 15 — always epoch 15, regardless of batch size or model. The memory profiler showed a slow, steady climb that had nothing to do with the model or data. It was circular references between callback objects that the disabled garbage collector never cleaned up. Three lines of code fixed it: <code>gc.collect()</code> at the top of each epoch. The humbling part is how long it took me to even suspect the GC.</p>
+<p>Real bug pattern: training run crashes around epoch 15 — always epoch 15, no matter batch size or model. Memory profiler shows slow steady climb unrelated to model or data. Cause: circular references between callback objects that disabled garbage collector never cleaned up. Fix: <code>gc.collect()</code> at top of each epoch.</p>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!-- MEMORY ALLOCATOR                                           -->
@@ -425,15 +425,15 @@ del logs
 
 <h2>CPython's Secret Weapon: The Memory Allocator</h2>
 
-<p>Reference counting and the garbage collector decide <em>when</em> to free memory. The allocator decides <em>how</em> to manage the underlying blocks of memory. CPython doesn't use the system's <code>malloc</code> for most objects. It has its own allocator called <b>pymalloc</b>, optimized for the specific pattern Python exhibits: millions of tiny objects created and destroyed in rapid succession.</p>
+<p>Reference counting and garbage collector decide <em>when</em> memory gets freed. Allocator decides <em>how</em> underlying memory blocks get managed. CPython does not use system <code>malloc</code> for most objects. It uses allocator called <b>pymalloc</b>, tuned for Python pattern: millions of tiny objects created and destroyed fast.</p>
 
-<p>The architecture has three levels. At the bottom, CPython requests memory from the operating system in large chunks called <b>arenas</b> — each one 256 KB. Each arena is divided into <b>pools</b> of 4 KB. Each pool is carved into fixed-size <b>blocks</b> tuned for a specific object size class. Objects up to 512 bytes go through pymalloc. Anything larger goes directly to the system allocator.</p>
+<p>Architecture has three levels. Bottom: CPython asks operating system for large chunks called <b>arenas</b> — each 256 KB. Each arena splits into <b>pools</b> of 4 KB. Each pool splits into fixed-size <b>blocks</b> tuned for one object size class. Objects up to 512 bytes go through pymalloc. Bigger ones go straight to system allocator.</p>
 
-<p>Why does this matter? Because it explains a behavior that confuses everyone the first time they see it: Python processes often don't return memory to the operating system, even after you <code>del</code> everything. The memory is freed back to pymalloc's pools and arenas, but pymalloc holds onto those arenas for future allocations. From the OS perspective, your process is still using the same amount of RAM. From Python's perspective, the memory is available for new objects. This isn't a leak. It's an optimization — reallocating from the OS is slow.</p>
+<p>Why matter? Explains behavior that confuses everybody first time: Python processes often do not return memory to operating system, even after you <code>del</code> everything. Memory gets freed back to pymalloc pools and arenas, but pymalloc keeps those arenas for future allocations. OS sees process using same RAM. Python sees memory ready for new objects. Not leak. Optimization — OS reallocation is slow.</p>
 
-<p>CPython also pulls some clever tricks for common objects. Integers from -5 to 256 are pre-allocated at startup and reused forever — they're so common that creating fresh heap objects for every <code>0</code> and <code>1</code> would be absurdly wasteful. <code>None</code>, <code>True</code>, and <code>False</code> are singletons, permanently alive. Variable names and short string literals are <b>interned</b> — stored once in a global table and reused by identity, making dictionary lookups faster.</p>
+<p>CPython also uses clever tricks for common objects. Integers from -5 to 256 get pre-allocated at startup and reused forever — common enough that creating fresh heap objects for every <code>0</code> and <code>1</code> would waste memory. <code>None</code>, <code>True</code>, <code>False</code> are singletons, alive for program lifetime. Variable names and short string literals get <b>interned</b> — stored once in global table and reused by identity, making dictionary lookups faster.</p>
 
-<p>And here's a subtlety that trips everyone up at least once: <code>sys.getsizeof()</code> lies. It reports the shallow size of the container object itself — the internal pointer array for a list, the hash table for a dict — not the things inside it. <code>sys.getsizeof(my_list)</code> on a list of a million dictionaries returns maybe 8 MB (the pointer array), not the hundreds of megabytes the dictionaries themselves consume. For real memory numbers, use <code>memory_profiler</code> or <code>df.info(memory_usage='deep')</code> for DataFrames.</p>
+<p>Subtle trap: <code>sys.getsizeof()</code> lies. It reports shallow size of container object itself — internal pointer array for list, hash table for dict — not things inside. <code>sys.getsizeof(my_list)</code> on list of million dictionaries returns maybe 8 MB (pointer array), not hundreds of megabytes dictionaries consume. For real memory numbers, use <code>memory_profiler</code> or <code>df.info(memory_usage='deep')</code> for DataFrames.</p>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!-- REST STOP                                                  -->
@@ -445,15 +445,15 @@ del logs
 
 <h2>The GIL — One Chef, One Kitchen</h2>
 
-<p>Imagine a kitchen with one stove. No matter how many chefs you hire, only one can use the stove at any given time. The others have to wait. That's the <b>Global Interpreter Lock</b>, or GIL — a mutex inside CPython that ensures only one thread executes Python bytecode at a time.</p>
+<p>Kitchen with one stove. No matter how many chefs you hire, only one chef uses stove at time. Others wait. That is <b>Global Interpreter Lock</b>, or GIL — mutex inside CPython ensuring only one thread executes Python bytecode at time.</p>
 
-<p>The reason it exists goes straight back to <code>ob_refcnt</code>. Remember, every object has a reference count that gets incremented and decremented constantly — on every assignment, every function call, every scope exit. If two threads decrement the same <code>ob_refcnt</code> simultaneously without any coordination, the count could go wrong. Object freed while still in use. Segfault. Memory corruption. The GIL prevents this by serializing all bytecode execution through a single lock.</p>
+<p>Reason goes straight back to <code>ob_refcnt</code>. Every object has reference count that changes constantly — every assignment, every function call, every scope exit. If two threads decrement same <code>ob_refcnt</code> at same time without coordination, count can go wrong. Object freed while still in use. Segfault. Memory corruption. GIL prevents this by serializing all bytecode execution through one lock.</p>
 
-<p>At the C level, the GIL lives in <code>ceval.c</code> alongside the bytecode evaluation loop. It's a mutex with a condition variable. A thread holds the GIL, executes bytecode, and after a configurable interval — about 5 milliseconds by default, tunable via <code>sys.setswitchinterval()</code> — it checks whether another thread is waiting. If so, it releases the lock, signals the other thread, and waits to reacquire it. The handoff is controlled by a <code>gil_drop_request</code> flag to avoid unnecessary context switches when no other thread cares.</p>
+<p>C level: GIL lives in <code>ceval.c</code> beside bytecode evaluation loop. It is mutex with condition variable. Thread holds GIL, executes bytecode, and after configurable interval — about 5 milliseconds by default, tunable via <code>sys.setswitchinterval()</code> — checks whether another thread waits. If yes, thread releases lock, signals other thread, waits to reacquire. Handoff controlled by <code>gil_drop_request</code> flag so unnecessary context switches do not happen when no other thread cares.</p>
 
-<p>Could CPython use fine-grained per-object locks instead? In theory, yes. In practice, adding a lock to every <code>PyObject</code> slows down the single-threaded case — which is the overwhelmingly common case — by 30-40%. That tradeoff was rejected decades ago and has been re-evaluated several times since. The single coarse lock keeps the common path fast.</p>
+<p>Could CPython use fine-grained per-object locks instead? Theory: yes. Practice: adding lock to every <code>PyObject</code> slows single-threaded case — overwhelmingly common case — by 30-40%. Tradeoff got rejected decades ago and re-checked several times. Single coarse lock keeps common path fast.</p>
 
-<p>Our kitchen analogy extends further than you might expect. The chef can step away from the stove to check if a delivery has arrived (I/O), and while they're away from the stove, another chef can use it. That's exactly what happens: <b>the GIL is released during I/O operations</b>. Network calls, disk reads, database queries — the thread performing I/O drops the GIL, waits for the OS to respond, and reacquires it when the data arrives. This isn't a loophole. It's the design. I/O-bound multithreaded Python works well precisely because the stove is free while chefs are waiting for deliveries.</p>
+<p>Kitchen analogy goes further. Chef can step away from stove to check delivery (I/O), and while chef waits, another chef uses stove. Same thing here: <b>GIL gets released during I/O operations</b>. Network calls, disk reads, database queries — thread doing I/O drops GIL, waits for OS response, reacquires GIL when data arrives. Not loophole. Design. I/O-bound multithreaded Python works well because stove stays free while chefs wait for deliveries.</p>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!-- WHERE GIL MATTERS                                          -->
@@ -461,11 +461,11 @@ del logs
 
 <h2>Where the GIL Doesn't Matter (and Where It Bites)</h2>
 
-<p>Here's the thing about the GIL that everyone complains about but that, for most ML work, doesn't actually matter: NumPy, PyTorch, TensorFlow, and XGBoost all release the GIL when they drop into their C/C++/CUDA kernels. When NumPy is crunching a matrix multiplication, the GIL is released. When PyTorch is running a forward pass on the GPU, the GIL is released. Your <code>model.fit()</code> in scikit-learn with <code>n_jobs=-1</code> is using multiprocessing internally. The GIL is not your bottleneck during training.</p>
+<p>Thing most people miss about GIL: for most ML work, it does not matter. NumPy, PyTorch, TensorFlow, XGBoost all release GIL when they enter C/C++/CUDA kernels. When NumPy crunches matrix multiplication, GIL gets released. When PyTorch runs forward pass on GPU, GIL gets released. <code>model.fit()</code> in scikit-learn with <code>n_jobs=-1</code> uses multiprocessing internally. GIL is not training bottleneck.</p>
 
-<p>Where it <em>does</em> bite: pure Python loops doing computation. If you've written a <code>for</code> loop that processes ten million rows in Python — not vectorized through NumPy or Pandas — threading won't help. Threads will take turns on the GIL, executing one at a time, potentially <em>slower</em> than a single thread due to the overhead of lock acquisition and context switching. It's like hiring three chefs to use one stove sequentially — you're paying three salaries for one stove's throughput, minus the time they spend coordinating who goes next.</p>
+<p>Where it <em>does</em> bite: pure Python loops doing computation. If you wrote <code>for</code> loop that processes ten million rows in Python — not vectorized through NumPy or Pandas — threading will not help. Threads take turns on GIL, one at time, maybe <em>slower</em> than single thread because lock acquisition and context switching cost extra. Like hiring three chefs for one stove — one stove throughput, minus time spent deciding who goes next.</p>
 
-<p>The practical test is dead simple. If you're profiling and your CPU usage on a multi-threaded Python program never exceeds 100% (one core), you've hit the GIL. If it does exceed 100%, you're either in C extension code that releases the GIL, or using multiprocessing.</p>
+<p>Practical test: simple. If you profile multi-threaded Python program and CPU usage never goes above 100% (one core), you hit GIL. If it goes above 100%, you are either in C extension code that releases GIL or using multiprocessing.</p>
 
 <table>
   <thead>
@@ -511,9 +511,9 @@ del logs
 
 <h2>Threading, Multiprocessing, and Picking the Right Tool</h2>
 
-<p>Let's expand our log ingestion pipeline. We now need to process 10,000 log files: download them from a remote server, parse each file for error patterns (CPU-intensive regex work), and push results to a database. Three stages, three different bottleneck profiles. This is where picking the right concurrency tool stops being theoretical.</p>
+<p>Expand log ingestion pipeline. Now need to process 10,000 log files: download from remote server, parse each file for error patterns (CPU-intensive regex work), push results to database. Three stages. Three bottleneck profiles. Here picking right concurrency tool stops being theory.</p>
 
-<p><b>Stage 1: Downloading — I/O-bound.</b> The GIL is released while waiting for network responses, so threads work perfectly. Twenty threads, twenty concurrent downloads. Each thread spends 95% of its time waiting for data, and the GIL is free during that wait.</p>
+<p><b>Stage 1: Downloading — I/O-bound.</b> GIL gets released while waiting for network responses, so threads work perfectly. Twenty threads. Twenty concurrent downloads. Each thread spends 95% of time waiting for data, and GIL stays free during wait.</p>
 
 <pre><code class="language-python">from concurrent.futures import ThreadPoolExecutor
 import requests
@@ -529,7 +529,7 @@ with ThreadPoolExecutor(max_workers=20) as pool:
 # 20 downloads happening concurrently. Wall time: ~500x faster than sequential.
 </code></pre>
 
-<p><b>Stage 2: Parsing — CPU-bound.</b> Regex over megabytes of text is pure computation. Threads would take turns on the GIL. We need separate processes, each with its own interpreter and its own GIL.</p>
+<p><b>Stage 2: Parsing — CPU-bound.</b> Regex over megabytes of text is pure computation. Threads would take turns on GIL. Need separate processes, each with own interpreter and own GIL.</p>
 
 <pre><code class="language-python">from concurrent.futures import ProcessPoolExecutor, as_completed
 import re
@@ -552,13 +552,13 @@ with ProcessPoolExecutor(max_workers=8) as pool:
 # 8 processes, true parallelism. One crashed file doesn't take down the others.
 </code></pre>
 
-<p>Notice a key design choice: <code>submit()</code> with <code>as_completed()</code> instead of <code>map()</code>. With <code>map()</code>, you wait for results in order — one slow file blocks everything behind it. With <code>as_completed()</code>, you handle results as they finish, and individual failures don't sink the batch.</p>
+<p>Key design choice: <code>submit()</code> with <code>as_completed()</code> instead of <code>map()</code>. With <code>map()</code>, you wait for results in order — one slow file blocks everything behind it. With <code>as_completed()</code>, you handle results as they finish, and one failure does not sink batch.</p>
 
-<p>The beautiful thing about <code>concurrent.futures</code>: <code>ThreadPoolExecutor</code> and <code>ProcessPoolExecutor</code> share the exact same interface. Start with threads. If profiling shows CPU is the bottleneck, swap <code>Thread</code> for <code>Process</code> — one word change. This won't be the last time we'll see how practical design decisions in Python's standard library pay off.</p>
+<p>Beautiful part of <code>concurrent.futures</code>: <code>ThreadPoolExecutor</code> and <code>ProcessPoolExecutor</code> share exact same interface. Start with threads. If profiling shows CPU bottleneck, swap <code>Thread</code> for <code>Process</code> — one-word change. Good standard-library design pays off.</p>
 
 <div class="callout">
-  <div class="callout-label">The Pickle Trap</div>
-  <p>Multiprocessing sends data between processes using <code>pickle</code> serialization. If you send a 500MB DataFrame to 8 workers, that's 8 copies × 500MB = 4GB of memory consumed in serialization alone. The fix: don't send data. Send file paths or row indices and let each worker load its own slice. This is the difference between a pipeline that scales and one that gets OOM-killed at 16 workers.</p>
+  <div class="callout-label">Pickle Trap</div>
+  <p>Multiprocessing sends data between processes using <code>pickle</code> serialization. Send 500MB DataFrame to 8 workers, and you burn 8 copies × 500MB = 4GB of memory on serialization alone. Fix: do not send data. Send file paths or row indices. Let each worker load own slice. Difference between pipeline that scales and pipeline that gets OOM-killed at 16 workers.</p>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
@@ -567,17 +567,17 @@ with ProcessPoolExecutor(max_workers=8) as pool:
 
 <h2>Asyncio — Cooperative Multitasking from Scratch</h2>
 
-<p>Threads work well for tens or even hundreds of concurrent I/O tasks. But what happens when you need thousands? A web server handling 5,000 concurrent inference requests. A scraper hitting 10,000 endpoints. Each OS thread consumes memory (typically ~8 MB of stack space) and context-switching between thousands of threads gets expensive. We need a different approach.</p>
+<p>Threads work well for tens or hundreds of concurrent I/O tasks. But what if you need thousands? Web server handling 5,000 concurrent inference requests. Scraper hitting 10,000 endpoints. Each OS thread uses memory (typically ~8 MB of stack space), and context-switching across thousands of threads gets expensive. Need different approach.</p>
 
-<p><b>Asyncio</b> is Python's answer: cooperative multitasking on a single thread. Instead of the operating system preemptively switching between threads, coroutines voluntarily <b>yield</b> control at <code>await</code> points. One thread runs an <b>event loop</b> that juggles thousands of tasks by resuming whichever one has data ready.</p>
+<p><b>Asyncio</b> is Python's answer: cooperative multitasking on single thread. Instead of operating system preemptively switching threads, coroutines voluntarily <b>yield</b> control at <code>await</code> points. One thread runs <b>event loop</b> that juggles thousands of tasks by resuming whichever one has data ready.</p>
 
-<p>To understand what's happening under the hood, it helps to know that coroutines evolved from generators. A generator pauses at <code>yield</code> and resumes when you call <code>next()</code>. A coroutine (defined with <code>async def</code>) pauses at <code>await</code> and resumes when the event loop decides it's ready. Under the C hood, both are state machines — the function's local variables and instruction pointer are saved on the heap (not the stack), so resumption is cheap.</p>
+<p>To see under hood, know this: coroutines grew out of generators. Generator pauses at <code>yield</code> and resumes when you call <code>next()</code>. Coroutine (defined with <code>async def</code>) pauses at <code>await</code> and resumes when event loop decides it is ready. Under C hood, both are state machines — function local variables and instruction pointer get saved on heap (not stack), so resumption is cheap.</p>
 
-<p>The event loop itself is built on the operating system's I/O multiplexing primitives — <code>epoll</code> on Linux, <code>kqueue</code> on macOS, <code>IOCP</code> on Windows. These let a single thread ask the OS: "wake me up when <em>any</em> of these 5,000 sockets has data." The loop calls <code>selector.select()</code>, blocks until events arrive, then resumes the corresponding coroutines. No polling, no spinning, no wasted CPU cycles.</p>
+<p>Event loop itself sits on operating system I/O multiplexing primitives — <code>epoll</code> on Linux, <code>kqueue</code> on macOS, <code>IOCP</code> on Windows. These let one thread ask OS: "wake me when <em>any</em> of these 5,000 sockets has data." Loop calls <code>selector.select()</code>, blocks until events arrive, then resumes matching coroutines. No polling. No spinning. No wasted CPU cycles.</p>
 
-<p>I'm still developing my intuition for when async beats threading in practice. The rule of thumb I've settled on: if you're managing more than a few hundred concurrent I/O operations, or if you need fine-grained control over cancellation and timeouts, async is worth the cognitive overhead. For simpler workloads, threads are easier to reason about and work fine.</p>
+<p>Rule of thumb: if you manage more than few hundred concurrent I/O operations, or need fine-grained control over cancellation and timeouts, async is worth cognitive overhead. For simpler workloads, threads are easier to reason about and work fine.</p>
 
-<p>Here's <em>the</em> production pattern you'll see in ML serving — async for HTTP traffic, a process pool for the actual computation:</p>
+<p>Production pattern in ML serving: async for HTTP traffic, process pool for actual computation:</p>
 
 <pre><code class="language-python">import asyncio
 from concurrent.futures import ProcessPoolExecutor
@@ -603,7 +603,7 @@ async def predict(features: list[float]):
 # The loop is never blocked. That's the whole trick.
 </code></pre>
 
-<p><code>run_in_executor</code> bridges the two worlds: the async event loop stays responsive to incoming requests, while the CPU-bound work happens in separate processes where the GIL doesn't matter. Without this, one slow prediction blocks every other request in the server. With it, the chef is free to take orders while the prep cooks handle the heavy work in their own kitchens.</p>
+<p><code>run_in_executor</code> bridges two worlds: async event loop stays responsive to incoming requests, while CPU-bound work happens in separate processes where GIL does not matter. Without this, one slow prediction blocks every other request in server. With it, chef keeps taking orders while prep cooks do heavy work in their own kitchens.</p>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!-- FREE-THREADED PYTHON                                       -->
@@ -611,13 +611,13 @@ async def predict(features: list[float]):
 
 <h2>The Future: Free-Threaded Python</h2>
 
-<p>Python 3.13, released in October 2024, ships with an experimental <b>free-threaded</b> build — a version of CPython where the GIL can be disabled entirely. This is the result of PEP 703, years of work to make reference counting thread-safe without a global lock, using a technique called <b>biased reference counting</b> where each object tracks its "owning" thread separately from other threads.</p>
+<p>Python 3.13, released in October 2024, ships with experimental <b>free-threaded</b> build — version of CPython where GIL can be disabled entirely. Result of PEP 703: years of work making reference counting thread-safe without global lock, using <b>biased reference counting</b>, where each object tracks its "owning" thread separately from other threads.</p>
 
-<p>The tradeoffs are real. Single-threaded code runs about 10% slower in the free-threaded build, because the more complex reference counting operations — atomic increments, deferred decrements — have overhead that the GIL previously avoided. Multi-threaded CPU-bound code, on the other hand, can finally achieve true parallelism, with dramatic speedups on multi-core machines.</p>
+<p>Tradeoffs are real. Single-threaded code runs about 10% slower in free-threaded build, because more complex reference counting operations — atomic increments, deferred decrements — add overhead GIL previously avoided. Multi-threaded CPU-bound code, on other hand, can finally achieve true parallelism, with dramatic speedups on multi-core machines.</p>
 
-<p>As of mid-2025, the ecosystem is catching up. NumPy and pandas are being updated. Many C extensions that relied on the GIL for thread safety need auditing and modification. The build is opt-in, and if an extension hasn't been updated, importing it will silently re-enable the GIL with a warning.</p>
+<p>As of mid-2025, ecosystem is catching up. NumPy and pandas are being updated. Many C extensions that relied on GIL for thread safety need auditing and modification. Build is opt-in, and if extension has not been updated, importing it silently re-enables GIL with warning.</p>
 
-<p>My honest assessment: don't redesign your production systems around it yet. Use multiprocessing for CPU-bound parallelism today — it works, it's battle-tested, and it'll continue to work regardless of what happens with the GIL. Keep an eye on the ecosystem tracking pages. When the libraries you depend on are all certified free-threading-safe, that'll be the time to switch. Probably late 2025 at the earliest for adventurous teams, 2026 for most of us.</p>
+<p>Honest assessment: do not redesign production systems around it yet. Use multiprocessing for CPU-bound parallelism today — it works, battle-tested, and keeps working regardless of what happens with GIL. Watch ecosystem tracking pages. When libraries you depend on are certified free-threading-safe, then switch. Probably late 2025 earliest for adventurous teams, 2026 for most teams.</p>
 </div>
 
       <div class="page-nav">
