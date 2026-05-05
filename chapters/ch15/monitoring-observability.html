@@ -615,11 +615,11 @@ def estimate_accuracy_cbpe(confidences, calibration_map):
 <!-- ===== SHADOW MODE ===== -->
 <h2>Shadow Mode and the Champion-Challenger Pattern</h2>
 
-<p>We&rsquo;ve detected drift. We&rsquo;ve retrained the model. Now we need to deploy the new one. But how do we know it&rsquo;s actually better in production, not merely better on validation data?</p>
+<p>Drift detected. Model retrained. Now need to deploy. But how to know it&rsquo;s actually better in production, not just better on validation data?</p>
 
-<p>Back to our weather station analogy. Before replacing a thermometer, you&rsquo;d run the old and new ones side by side, comparing their readings against a reference. That&rsquo;s exactly what <strong>shadow mode</strong> does for ML models.</p>
+<p>Weather station: before replacing thermometer, run old and new side by side comparing against reference. <strong>Shadow mode</strong> does same for ML models.</p>
 
-<p>The currently deployed model is the <strong>champion</strong>. The new candidate is the <strong>challenger</strong>. In shadow mode, every incoming request gets processed by both models. The champion&rsquo;s predictions get sent to users and affect business outcomes. The challenger&rsquo;s predictions get logged but thrown away &mdash; they affect nothing. Both see identical inputs, and you compare their outputs after the fact.</p>
+<p>Deployed model = <strong>champion</strong>. New candidate = <strong>challenger</strong>. Shadow mode: every request processed by both. Champion&rsquo;s predictions go to users, affect outcomes. Challenger&rsquo;s predictions logged, thrown away — affect nothing. Both see identical inputs, compare after the fact.</p>
 
 <pre><code class="language-python">def serve_with_shadow(request, champion_model, challenger_model):
     # Champion serves the real response
@@ -638,27 +638,27 @@ def estimate_accuracy_cbpe(confidences, calibration_map):
     # Only the champion's prediction reaches the user
     return champion_pred</code></pre>
 
-<p>After enough data accumulates and ground truth labels arrive, you compare the two. If the challenger consistently wins on your primary metric <em>and</em> doesn&rsquo;t degrade any guardrail metrics (latency, error rate, fairness), you promote it to champion.</p>
+<p>After enough data and labels arrive, compare both. Challenger consistently wins on primary metric and doesn&rsquo;t degrade guardrails (latency, error rate, fairness) → promote to champion.</p>
 
-<p>The beauty of shadow mode is that it&rsquo;s zero-risk. Users never see the challenger&rsquo;s output. The cost is computational &mdash; you&rsquo;re running two models on every request. For ShopFlow&rsquo;s recommendation model, where inference is cheap, that&rsquo;s barely noticeable. For a large language model where each inference costs real money, you might shadow on a sampled subset instead of every request.</p>
+<p>Shadow mode: zero-risk. Users never see challenger output. Cost: running two models per request. Cheap for ShopFlow recommendation; for LLM inference, shadow on sampled subset instead.</p>
 
-<p>Shadow mode has a blind spot, though. It can&rsquo;t measure <em>behavioral</em> differences &mdash; effects that only manifest when users actually see the prediction. If the challenger would recommend different products, those products might lead to different browsing patterns, different purchase rates, different everything. Shadow mode tells you &ldquo;the challenger would have predicted X,&rdquo; but it can&rsquo;t tell you what <em>would have happened</em> if the user had actually seen X. For that, you need a real experiment.</p>
+<p>Blind spot: can&rsquo;t measure <em>behavioral</em> differences — effects only manifest when users see prediction. Challenger recommends different products → different browsing, different purchases. Shadow tells you &ldquo;challenger would have predicted X,&rdquo; not what would have happened if user saw X. For that, need real experiment.</p>
 
 
 <!-- ===== A/B TESTING ===== -->
 <h2>A/B Testing ML Models &mdash; The Traps Nobody Warns You About</h2>
 
-<p>A/B testing a button color is straightforward: split users randomly, measure click-through rate, run a t-test. A/B testing ML models has traps that will burn you if you treat it the same way.</p>
+<p>A/B testing button color: split users, measure click-through, run t-test. A/B testing ML models has traps.</p>
 
-<p>Let&rsquo;s say ShopFlow wants to test whether the retrained model (v2) actually generates more purchases than the current model (v1). We split users: half get recommendations from v1, half from v2. So far, so standard. Here&rsquo;s where it gets uncomfortable.</p>
+<p>ShopFlow tests v2 vs v1: split users 50/50. Standard so far. Here&rsquo;s where it gets uncomfortable.</p>
 
-<p><strong>Trap 1 &mdash; Network effects.</strong> If ShopFlow has limited inventory, model v2 recommending headphones aggressively might deplete headphone stock, affecting the experience of users on v1 who would have bought headphones too. The treatments aren&rsquo;t isolated. In marketplaces, ad auctions, and social platforms, this interference effect is real and can make your test results meaningless. The defense is to be aware of it and, where possible, split by isolated units (geographic regions, time periods) rather than individual users.</p>
+<p><strong>Trap 1 &mdash; Network effects.</strong> v2 aggressively recommending headphones might deplete stock, affecting v1 users who would have bought headphones. Treatments aren&rsquo;t isolated. Marketplaces, ad auctions, social platforms — interference real, makes results meaningless. Defense: split by isolated units (geographic regions, time periods) not individual users.</p>
 
-<p><strong>Trap 2 &mdash; Delayed outcomes.</strong> ShopFlow&rsquo;s real metric is &ldquo;did the user purchase within 7 days?&rdquo; That means the experiment must run for at least 7 days <em>after the last user is assigned</em> before computing results. The temptation to peek at results early and stop when they look good inflates your false positive rate. This is called the <strong>peeking problem</strong>, and it&rsquo;s endemic in ML A/B tests with long feedback loops.</p>
+<p><strong>Trap 2 &mdash; Delayed outcomes.</strong> ShopFlow&rsquo;s real metric: &ldquo;purchase within 7 days.&rdquo; Experiment must run at least 7 days after last user assignment before computing results. Peeking early and stopping when results look good inflates false positive rate. <strong>Peeking problem</strong>: endemic in ML A/B tests with long feedback loops.</p>
 
-<p><strong>Trap 3 &mdash; Multiple metrics.</strong> We care about purchase rate, revenue per user, page load time, and user satisfaction. Testing all four simultaneously with a 5% significance threshold means we have roughly a 19% chance of at least one false positive. The <strong>Bonferroni correction</strong> (divide your significance threshold by the number of tests) is the blunt-force fix: use &alpha; = 0.05/4 = 0.0125 for each metric.</p>
+<p><strong>Trap 3 &mdash; Multiple metrics.</strong> Testing purchase rate, revenue, latency, satisfaction simultaneously at 5% significance → ~19% chance of at least one false positive. <strong>Bonferroni correction</strong>: divide significance threshold by number of tests, &alpha; = 0.05/4 = 0.0125 per metric.</p>
 
-<p>The one non-negotiable in ML A/B testing is <strong>deterministic assignment</strong>. The same user must always see the same model variant, regardless of which server handles their request. Hash-based assignment makes this reliable:</p>
+<p>Non-negotiable: <strong>deterministic assignment</strong>. Same user must always see same model variant, regardless of server. Hash-based assignment:</p>
 
 <pre><code class="language-python">import hashlib
 
@@ -669,25 +669,25 @@ def assign_variant(experiment_id, user_id, control_pct=0.50):
     bucket = (hash_val % 10000) / 10000
     return "control" if bucket &lt; control_pct else "treatment"</code></pre>
 
-<p>This function produces the same assignment every time for the same user and experiment. The SHA-256 hash distributes users uniformly across buckets. No database lookups, no state to manage, works across distributed servers.</p>
+<p>Same assignment every time for same user and experiment. SHA-256 distributes users uniformly. No database lookups, no state, works across distributed servers.</p>
 
-<p>Define <strong>guardrail metrics</strong> before the experiment starts. These are metrics you refuse to degrade, even if the primary metric improves. ShopFlow&rsquo;s guardrails might be: p99 latency stays below 200ms, error rate stays below 1%, and no demographic group&rsquo;s purchase rate drops by more than 5%. If any guardrail fails, the experiment fails &mdash; regardless of how much the primary metric improved.</p>
+<p>Define <strong>guardrail metrics</strong> before experiment starts. Metrics you refuse to degrade even if primary metric improves. ShopFlow guardrails: p99 latency below 200ms, error rate below 1%, no demographic group&rsquo;s purchase rate drops more than 5%. Any guardrail fails → experiment fails, regardless of primary metric gain.</p>
 
 
 <!-- ===== RETRAINING TRIGGERS ===== -->
 <h2>Retraining Triggers &mdash; When to Pull the Lever</h2>
 
-<p>Drift was detected. Performance is degrading. When do you actually retrain? Too early and you waste compute on normal fluctuations. Too late and users suffer through bad predictions. This is a calibration problem with no universal answer, but there are patterns that work.</p>
+<p>Drift detected. Performance degrading. When to retrain? Too early: waste compute on normal fluctuation. Too late: users suffer bad predictions. Calibration problem — no universal answer, but patterns exist.</p>
 
-<p><strong>Time-based triggers</strong> are the bluntest instrument: retrain every week, every month, every quarter. They&rsquo;re easy to implement (a cron job) and guarantee freshness, but they retrain when nothing has changed and fail to retrain when something changes between scheduled runs.</p>
+<p><strong>Time-based triggers</strong>: retrain every week/month/quarter. Easy (cron job), guarantees freshness. Retrain when nothing changed; fail to retrain when something changes between runs.</p>
 
-<p><strong>Performance-based triggers</strong> fire when a metric drops below a threshold: &ldquo;retrain if weekly accuracy falls below 0.85.&rdquo; More responsive than time-based, but requires ground truth labels, which &mdash; as we discussed &mdash; are often delayed.</p>
+<p><strong>Performance-based triggers</strong>: fire when metric drops below threshold — &ldquo;retrain if weekly accuracy &lt; 0.85.&rdquo; More responsive, but requires ground truth labels — often delayed.</p>
 
-<p><strong>Drift-based triggers</strong> fire when statistical tests detect significant distribution change: &ldquo;retrain if PSI for any feature exceeds 0.25, or if the KS test on the prediction distribution yields p&lt;0.001.&rdquo; These don&rsquo;t need ground truth and can fire immediately. The risk is false alarms from natural variation.</p>
+<p><strong>Drift-based triggers</strong>: fire when statistical tests detect significant distribution change — &ldquo;retrain if PSI &gt; 0.25 or KS test p &lt; 0.001.&rdquo; No ground truth needed, fires immediately. Risk: false alarms from natural variation.</p>
 
-<p><strong>Volume-based triggers</strong> fire after accumulating enough new data: &ldquo;retrain after 100,000 new labeled examples.&rdquo; This ensures the new model has sufficient training data but doesn&rsquo;t account for whether the data has actually changed.</p>
+<p><strong>Volume-based triggers</strong>: fire after accumulating enough new data — &ldquo;retrain after 100,000 new labeled examples.&rdquo; Ensures sufficient training data, ignores whether data actually changed.</p>
 
-<p>In practice, the most robust approach combines multiple triggers. ShopFlow might use: scheduled monthly retraining as a baseline, immediate retraining when PSI exceeds 0.25 on any top-5 feature, and retraining within a week when weekly accuracy drops below 0.75 (once delayed labels arrive).</p>
+<p>Robust approach: combine multiple triggers. ShopFlow: monthly scheduled baseline + immediate retrain when PSI &gt; 0.25 on any top-5 feature + retrain within a week when weekly accuracy &lt; 0.75 (once delayed labels arrive).</p>
 
 <pre><code class="language-python">class RetrainingDecision:
     """Combine multiple signals to decide when to retrain."""
@@ -711,19 +711,19 @@ def assign_variant(experiment_id, user_id, control_pct=0.50):
         should = len(reasons) &gt; 0 and new_sample_count &gt;= self.min_new_samples
         return should, reasons</code></pre>
 
-<p>The <code>min_new_samples</code> guard ensures you don&rsquo;t retrain when there isn&rsquo;t enough fresh data to make a difference. The function returns both the decision and the <em>reasons</em> &mdash; logging why you retrained is as important as doing it, because you&rsquo;ll want to audit these decisions later.</p>
+<p><code>min_new_samples</code> guard: don&rsquo;t retrain when insufficient fresh data. Function returns decision and reasons — log why you retrained. Audit these decisions later.</p>
 
 
 <!-- ===== OBSERVABILITY STACK ===== -->
 <h2>The Observability Stack &mdash; Logs, Metrics, Traces for ML</h2>
 
-<p>So far we&rsquo;ve talked about monitoring: predefined checks against known questions. Observability is the broader capability &mdash; it&rsquo;s what lets you answer questions you didn&rsquo;t anticipate. &ldquo;Why did predictions for Brazilian users flip on Tuesday?&rdquo; You didn&rsquo;t set up an alert for that specific scenario, but if your observability stack is solid, you can investigate it after the fact.</p>
+<p>Monitoring: predefined checks against known questions. Observability: broader capability — answer questions you didn&rsquo;t anticipate. &ldquo;Why did predictions for Brazilian users flip Tuesday?&rdquo; No alert for that specific scenario, but solid observability stack lets you investigate after the fact.</p>
 
-<p>The observability world settled on three pillars years ago: <strong>logs</strong>, <strong>metrics</strong>, and <strong>traces</strong>. They apply to ML with some specific adaptations. Our weather station analogy extends here: logs are the detailed journal entries (&ldquo;at 3:14 PM, the thermometer read 22.7&deg;C and I noticed the humidity sensor flickering&rdquo;), metrics are the time-series charts on the wall (&ldquo;average temperature over the last 24 hours&rdquo;), and traces are the end-to-end timeline for a single measurement (&ldquo;the sensor captured data at t=0, transmitted at t=12ms, was processed at t=45ms, displayed at t=60ms&rdquo;).</p>
+<p>Three pillars, settled on years ago: <strong>logs</strong>, <strong>metrics</strong>, <strong>traces</strong>. Apply to ML with adaptations. Weather station: logs are detailed journal entries, metrics are time-series charts, traces are end-to-end timeline for single measurement.</p>
 
 <h3>Logs &mdash; What to Capture for Every Prediction</h3>
 
-<p>I&rsquo;m still developing my intuition for exactly what to log versus what&rsquo;s noise, but here&rsquo;s what I&rsquo;ve learned to never skip:</p>
+<p>What to never skip logging:</p>
 
 <pre><code class="language-python">import json, time, uuid
 

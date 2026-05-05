@@ -555,23 +555,23 @@ def nightly_training_pipeline():
 
 <p>Single most important pattern in production ML. We have been building toward it with StreamFlix all along.</p>
 
-<p>The problem: StreamFlix has 2,000 movies. For each user, we want to score every movie. Our ranking model uses 200 features per user-movie pair and takes about 0.1ms per prediction. Scoring all 2,000 movies takes 200ms. That's right at the edge of our latency budget for a real-time request. But what if StreamFlix grows to 100,000 movies? Now scoring takes 10 seconds. The page never loads.</p>
+<p>Problem: StreamFlix has 2,000 movies. For each user, we want score for every movie. Ranking model uses 200 features per user-movie pair and takes about 0.1ms per prediction. Scoring all 2,000 movies takes 200ms. Right at edge of latency budget for real-time request. But if StreamFlix grows to 100,000 movies, scoring takes 10 seconds. Page never loads.</p>
 
-<p>The solution: <b>don't score everything</b>. Split the problem into two phases.</p>
+<p>Solution: <b>don't score everything</b>. Split problem into two phases.</p>
 
-<p><b>Phase 1 — Retrieval</b>: Use a cheap, fast model to narrow 100,000 movies down to 500 candidates. This model doesn't need to be precise — it needs to be fast and have high recall (it should include most of the good movies, even if it also includes some bad ones). A two-tower model works well here: encode the user as an embedding, encode each item as an embedding (pre-computed in batch), and find the 500 items whose embeddings are closest to the user's. This is an <b>approximate nearest neighbor</b> (ANN) search, and libraries like FAISS and ScaNN can do it in under 10ms over millions of items.</p>
+<p><b>Phase 1 — Retrieval</b>: Use cheap, fast model to narrow 100,000 movies to 500 candidates. Model does not need precision first — it needs speed and high recall (it should include most good movies, even if it also includes some bad ones). Two-tower model works well here: encode user as embedding, encode each item as embedding (pre-computed in batch), and find 500 items whose embeddings are closest to user's. This is <b>approximate nearest neighbor</b> (ANN) search, and libraries like FAISS and ScaNN can do it in under 10ms over millions of items.</p>
 
-<p><b>Phase 2 — Ranking</b>: Now apply the expensive, feature-rich model to those 500 candidates. This model uses the full 200 features — user history, item metadata, context (time of day, device), cross-features (genre match, collaborative signals). Scoring 500 items at 0.1ms each takes 50ms. Well within budget.</p>
+<p><b>Phase 2 — Ranking</b>: Apply expensive, feature-rich model to those 500 candidates. This model uses full 200 features — user history, item metadata, context (time of day, device), cross-features (genre match, collaborative signals). Scoring 500 items at 0.1ms each takes 50ms. Well within budget.</p>
 
-<p>There's often a <b>Phase 3</b> that people forget: <b>business rules</b>. After the ranker scores items, we apply constraints — diversity (don't show five sci-fi movies in a row), freshness (include some new releases), legal restrictions (age-gating), and deduplication (don't show the same movie twice). This is the host seating guests — the chef picked the dishes, but the host arranges the dining experience.</p>
+<p>Often there is <b>Phase 3</b> people forget: <b>business rules</b>. After ranker scores items, we apply constraints — diversity (do not show five sci-fi movies in row), freshness (include new releases), legal restrictions (age-gating), and deduplication (do not show same movie twice). Host seating guests — chef picked dishes, host arranges dining experience.</p>
 
-<p>Why split it? Because running a 200-feature neural ranker on 100,000 candidates would cost a small fortune per request. The retrieval stage makes the ranking stage economically feasible. That's the whole trick.</p>
+<p>Why split it? Running 200-feature neural ranker on 100,000 candidates would cost fortune per request. Retrieval stage makes ranking stage economically feasible. Whole trick.</p>
 
 <h3 id="cascade">Cascade: Cheap First, Expensive Last</h3>
 
-<p>The cascade pattern extends the retrieve→rank idea to any system where you have a series of increasingly expensive models, each filtering traffic for the next. Think of it as a series of increasingly fine sieves. The coarse sieve is cheap and catches the easy cases. The fine sieve is expensive and handles the hard ones.</p>
+<p>Cascade pattern extends retrieve→rank idea to any system with series of increasingly expensive models, each filtering traffic for next. Think series of increasingly fine sieves. Coarse sieve is cheap and catches easy cases. Fine sieve is expensive and handles hard ones.</p>
 
-<p>Content moderation is the canonical example. A social media platform might process billions of posts per day. Running a state-of-the-art transformer model on every post would require a staggering amount of compute. Instead:</p>
+<p>Content moderation is canonical example. Social media platform might process billions of posts per day. Running state-of-the-art transformer model on every post would require staggering compute. Instead:</p>
 
 <pre><code># Content moderation as a cascade of sieves
 
@@ -600,21 +600,21 @@ def moderate(content):
         return "HUMAN_REVIEW"
     return "APPROVED"</code></pre>
 
-<p>The result: 90% of traffic is handled by cheap models. The expensive deep model processes the hardest 10%. The GPU bill drops by an order of magnitude while quality stays constant on the cases that matter. And the most ambiguous content — the 2% where even the deep model isn't confident — goes to human reviewers, who make the final call and whose decisions feed back into the next round of training data.</p>
+<p>Result: 90% of traffic is handled by cheap models. Expensive deep model processes hardest 10%. GPU bill drops by order of magnitude while quality stays constant on cases that matter. Most ambiguous content — 2% where even deep model is not confident — goes to human reviewers. They make final call, and decisions feed next round of training data.</p>
 
-<p>The sieve analogy recurs here: the first sieve has big holes (catches the obvious violations, lets everything else through). The second sieve has medium holes. The third has tiny holes. Each sieve is more expensive to operate, but sees less traffic. The economics work out beautifully.</p>
+<p>Sieve analogy again: first sieve has big holes (catches obvious violations, lets everything else through). Second sieve has medium holes. Third has tiny holes. Each sieve is more expensive to operate, but sees less traffic. Economics work well.</p>
 
 <h3 id="shadow-mode">Shadow Mode: Test Before You Trust</h3>
 
-<p>Before promoting a new model to production, run it in <b>shadow mode</b>. The new model receives real traffic and makes real predictions, but those predictions are <em>logged, not served</em>. The existing model still handles all users. You compare the shadow model's outputs against the live model and against ground truth.</p>
+<p>Before promoting new model to production, run it in <b>shadow mode</b>. New model receives real traffic and makes real predictions, but predictions are <em>logged, not served</em>. Existing model still handles all users. Compare shadow model outputs against live model and ground truth.</p>
 
-<p>Shadow mode is safer than A/B testing for the initial deployment because zero users see bad predictions. You discover problems — latency spikes, edge case failures, unexpected output distributions — before any user is affected. Only when the shadow model proves itself across days of real traffic do you promote it to a small percentage of users for a proper A/B test.</p>
+<p>Shadow mode is safer than A/B testing for initial deployment because zero users see bad predictions. You discover problems — latency spikes, edge case failures, unexpected output distributions — before any user is affected. Only when shadow model proves itself across days of real traffic do you promote it to small percentage of users for proper A/B test.</p>
 
-<p>Going back to our restaurant: it's like having a new chef prepare dishes alongside the existing chef for a week. The new chef's food goes to the tasting panel, not to customers. If the tasting panel approves, the new chef starts serving a few tables. Then more. Then all of them.</p>
+<p>Back to restaurant: like having new chef prepare dishes alongside existing chef for week. New chef's food goes to tasting panel, not customers. If tasting panel approves, new chef starts serving few tables. Then more. Then all.</p>
 
 <h3 id="human-in-loop">Human-in-the-Loop: Know When to Defer</h3>
 
-<p>For high-stakes decisions — medical diagnoses, loan approvals, content moderation edge cases — the model shouldn't have the final word. Route low-confidence predictions to human reviewers. The model handles the 85% of cases where it's confident. Humans handle the rest. This isn't a crutch — it's a design choice that acknowledges the limits of the model's training data.</p>
+<p>For high-stakes decisions — medical diagnoses, loan approvals, content moderation edge cases — model should not have final word. Route low-confidence predictions to human reviewers. Model handles 85% of cases where confidence is high. Humans handle rest. Not crutch — design choice that acknowledges limits of model training data.</p>
 
 <p>The hard part is calibrating the confidence threshold. Set it too high and humans drown in reviews. Set it too low and the model makes confident-but-wrong calls on cases it shouldn't have touched. The threshold is a knob you tune continuously based on the cost of human review versus the cost of a wrong automated decision.</p>
 
