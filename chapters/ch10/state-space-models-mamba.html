@@ -467,69 +467,69 @@
 
 <h2>The Hardware Story</h2>
 
-<p>Here's where things get interesting — and where Mamba becomes a <em>systems</em> paper, not just a math paper.</p>
+<p>Where things get interesting — Mamba becomes <em>systems</em> paper, not just math paper.</p>
 
-<p>Remember the convolution–recurrence duality from S4? That duality relied on the kernel being <strong>fixed</strong> — the same for every token. Once you make B, C, and Δ depend on the input, the kernel changes at every position. You can no longer precompute a single kernel and use FFT. The convolution mode is gone.</p>
+<p>Remember convolution–recurrence duality from S4? Relied on kernel being <strong>fixed</strong> — same for every token. Once B, C, Δ depend on input, kernel changes at every position. Can't precompute single kernel and use FFT. Convolution mode gone.</p>
 
-<p>Without the convolution shortcut, you're stuck with the recurrence: x_k = Ā_k · x_{k-1} + B̄_k · u_k. And recurrences are sequential — step k depends on step k-1. Exactly the problem that made RNN training so slow.</p>
+<p>Without convolution shortcut, stuck with recurrence: x_k = Ā_k · x_{k-1} + B̄_k · u_k. Recurrences are sequential — step k depends on step k-1. Same problem that made RNN training slow.</p>
 
-<p>Mamba's solution is a <strong>hardware-aware parallel scan</strong>. The parallel scan (also called a parallel prefix sum) is a well-known algorithm from the 1980s — it can compute cumulative operations like running sums in O(log n) parallel steps instead of O(n) sequential steps. Mamba adapts this to the SSM recurrence.</p>
+<p>Mamba's solution: <strong>hardware-aware parallel scan</strong>. Parallel scan (parallel prefix sum) = well-known algorithm from 1980s — computes cumulative operations like running sums in O(log n) parallel steps instead of O(n) sequential. Mamba adapts this to SSM recurrence.</p>
 
-<p>But here's the thing that made the difference: knowing the algorithm isn't enough. Modern GPUs have a hierarchy of memory — registers (fastest, tiniest), SRAM on each streaming multiprocessor (fast, small, ~20MB total on an A100), and HBM or high-bandwidth memory (large, 40–80GB, but much slower to access). The naive implementation of a parallel scan would bounce data between HBM and SRAM repeatedly, wasting most of the time on memory transfers rather than computation.</p>
+<p>But knowing algorithm isn't enough. Modern GPUs have memory hierarchy — registers (fastest, tiniest), SRAM on each streaming multiprocessor (fast, small, ~20MB total on A100), and HBM/high-bandwidth memory (large, 40–80GB, much slower). Naive parallel scan bounces data between HBM and SRAM repeatedly, wasting time on memory transfers instead of computation.</p>
 
-<p>Tri Dao (co-author of both FlashAttention and Mamba — not a coincidence) designed the selective scan kernel to keep the state in SRAM as much as possible. The sequence is split into chunks that fit in SRAM. Within each chunk, the scan runs entirely in fast on-chip memory. Between chunks, only the boundary states move to HBM. The computation is <strong>fused</strong> — discretization, the scan, the gating, and the output projection all happen in one kernel call, minimizing memory round-trips.</p>
+<p>Tri Dao (co-author of both FlashAttention and Mamba — not coincidence) designed selective scan kernel to keep state in SRAM. Sequence split into chunks fitting in SRAM. Within each chunk, scan runs entirely in fast on-chip memory. Between chunks, only boundary states move to HBM. Computation <strong>fused</strong> — discretization, scan, gating, output projection all happen in one kernel call, minimizing memory round-trips.</p>
 
-<p>I haven't figured out a great way to visualize the memory hierarchy optimization, but here's a crude attempt at the mental model: imagine doing a long math problem. If all your scratch paper fits on your desk (SRAM), you work fast. If you have to keep walking to a filing cabinet across the room (HBM) to retrieve intermediate results, you slow to a crawl. Mamba's implementation keeps the scratch paper on the desk.</p>
+<p>Mental model for memory hierarchy: doing long math problem. Scratch paper fits on desk (SRAM) → work fast. Keep walking to filing cabinet across room (HBM) for intermediate results → crawl. Mamba keeps scratch paper on desk.</p>
 
-<p>The result: Mamba's selective scan runs at about 3× the throughput of an equivalent transformer at sequence length 2K, and the gap widens as sequences get longer. At 64K tokens, the advantage is closer to 5×.</p>
+<p>Result: Mamba's selective scan runs ~3× throughput of equivalent transformer at sequence length 2K. Gap widens with longer sequences. At 64K tokens, advantage closer to 5×.</p>
 
 <!-- ══════════════════════ COMPARISON ══════════════════════ -->
 
 <h2>Mamba vs. Transformer</h2>
 
-<p>Let's lay them side by side. Not to declare a winner — the honest answer is "it depends" — but to understand the trade-offs.</p>
+<p>Side-by-side comparison. Not declaring winner — honest answer is "depends" — but understanding trade-offs.</p>
 
-<p><strong>Training cost.</strong> A transformer's self-attention computes an n × n score matrix. That's O(n²) in both time and memory. For 512 tokens, manageable. For 100K tokens — the length you'd need for a full codebase or a novel — it's brutal. Mamba's selective scan is O(n). Double the sequence, double the cost. That's the headline number.</p>
+<p><strong>Training cost.</strong> Transformer self-attention computes n × n score matrix. O(n²) in time and memory. 512 tokens: manageable. 100K tokens (full codebase or novel): brutal. Mamba's selective scan = O(n). Double sequence, double cost.</p>
 
-<p><strong>Inference cost.</strong> When generating one token at a time, a transformer must consult its KV cache — every previously generated key and value. That cache grows linearly with context length. Generating the 50,000th token requires reading 50,000 key-value pairs. Mamba maintains a fixed-size state vector, regardless of how many tokens have been processed. The 50,000th token costs the same as the 5th.</p>
+<p><strong>Inference cost.</strong> Generating one token at a time, transformer must consult KV cache — every previously generated key and value. Cache grows linearly with context. Generating 50,000th token requires reading 50,000 key-value pairs. Mamba maintains fixed-size state vector regardless of tokens processed. 50,000th token costs same as 5th.</p>
 
-<p><strong>Long-range retrieval.</strong> This is where transformers shine. Attention gives every token a direct path to every other token. If the answer to a question is buried in token 47 of a 10,000-token document, attention can find it by looking right at it. Mamba must have compressed the information from token 47 into its fixed-size state — and whether that compression preserved the right details depends on the learned dynamics. In practice, Mamba does well on most long-range benchmarks, but there are tasks — particularly "needle in a haystack" retrieval — where attention has an edge.</p>
+<p><strong>Long-range retrieval.</strong> Where transformers shine. Attention gives every token direct path to every other token. Answer buried in token 47 of 10,000-token document? Attention looks right at it. Mamba must have compressed info from token 47 into fixed-size state — whether compression preserved right details depends on learned dynamics. Practice: Mamba does well on most long-range benchmarks, but "needle in a haystack" retrieval gives attention an edge.</p>
 
-<p><strong>In-context learning.</strong> Transformers are remarkably good at learning patterns from examples provided in the prompt. This ability seems connected to the attention mechanism's ability to do explicit retrieval and comparison. Mamba can do in-context learning too, but the results are less studied and, in some settings, less robust. This is an active area of research.</p>
+<p><strong>In-context learning.</strong> Transformers remarkably good at learning patterns from prompt examples. Ability seems connected to attention's explicit retrieval and comparison. Mamba can do in-context learning too, but results less studied, sometimes less robust. Active research area.</p>
 
-<p><strong>Ecosystem.</strong> Transformers have years of accumulated engineering wisdom. HuggingFace, vLLM, TensorRT, quantization tools, RLHF pipelines, distributed training recipes — all built around attention. Mamba's ecosystem is growing but young. If you're shipping to production tomorrow, the transformer ecosystem is a significant practical advantage.</p>
+<p><strong>Ecosystem.</strong> Transformers have years of accumulated engineering wisdom. HuggingFace, vLLM, TensorRT, quantization tools, RLHF pipelines, distributed training recipes — all built around attention. Mamba's ecosystem growing but young. Shipping to production tomorrow? Transformer ecosystem = significant practical advantage.</p>
 
-<p><strong>Proven scale.</strong> GPT-4, Claude, Gemini, LLaMA 3 — every frontier model is a transformer. Mamba has been validated convincingly up to around 3B parameters, with some results at larger scales. The scaling laws are encouraging but not yet proven at the 100B+ scale where transformers have demonstrated emergent capabilities.</p>
+<p><strong>Proven scale.</strong> GPT-4, Claude, Gemini, LLaMA 3 — every frontier model = transformer. Mamba validated convincingly up to ~3B parameters, some results at larger scales. Scaling laws encouraging but not proven at 100B+ where transformers show emergent capabilities.</p>
 
-<p>My favorite thing about this comparison is that neither architecture dominates on every axis. Transformers are better at precise retrieval; Mamba is better at long-sequence efficiency. Transformers have a battle-tested ecosystem; Mamba has a more favorable scaling trajectory. This is exactly the kind of situation that leads to hybrids — which is what happened.</p>
+<p>Neither architecture dominates every axis. Transformers better at precise retrieval; Mamba better at long-sequence efficiency. Transformers have battle-tested ecosystem; Mamba has more favorable scaling trajectory. Exactly the situation that leads to hybrids — which is what happened.</p>
 
 <!-- ══════════════════════ MAMBA-2 ══════════════════════ -->
 
 <h2>Mamba-2 and the Duality Theorem</h2>
 
-<p>Six months after Mamba, Gu and Dao dropped another paper that changed how we think about the relationship between SSMs and attention. <strong>Mamba-2</strong> introduces what they call <strong>Structured State Space Duality</strong> (SSD): a mathematical proof that selective SSMs and a certain form of attention are, under specific parameterizations, computing the same thing.</p>
+<p>Six months after Mamba, Gu and Dao dropped another paper changing how we think about SSM–attention relationship. <strong>Mamba-2</strong> introduces <strong>Structured State Space Duality</strong> (SSD): mathematical proof that selective SSMs and certain attention form are, under specific parameterizations, computing same thing.</p>
 
-<p>The intuition: attention computes a weighted sum of values, where the weights come from comparing queries and keys. The SSM recurrence computes a weighted sum of past inputs, where the weights come from the state transition matrices. Mamba-2 shows that you can write both computations in a common framework — they're dual views of the same operation.</p>
+<p>Intuition: attention computes weighted sum of values, weights from comparing queries and keys. SSM recurrence computes weighted sum of past inputs, weights from state transition matrices. Mamba-2 shows both computations fit common framework — dual views of same operation.</p>
 
-<p>Why does this matter? Because it lets you pick the best <em>implementation</em> for each setting. For short sequences, the attention-like view (materialized as a matrix product) is faster on GPUs. For long sequences, the SSM recurrence view is more efficient. Mamba-2 can dynamically choose between them based on the hardware and sequence length.</p>
+<p>Why matters: lets you pick best <em>implementation</em> per setting. Short sequences → attention-like view (materialized matrix product) faster on GPUs. Long sequences → SSM recurrence more efficient. Mamba-2 dynamically chooses based on hardware and sequence length.</p>
 
-<p>The practical result: Mamba-2 is 2–8× faster than Mamba-1 on typical workloads, with the same or better model quality. The implementation is also cleaner — the connection to attention makes it easier to use existing transformer infrastructure (optimizers, parallelism strategies, quantization) with SSM-based models.</p>
+<p>Practical result: Mamba-2 is 2–8× faster than Mamba-1 on typical workloads, same or better quality. Implementation cleaner — connection to attention makes it easier to use existing transformer infrastructure (optimizers, parallelism, quantization) with SSM models.</p>
 
-<p>I'll be honest — the full SSD proof involves structured matrices and semi-separable forms that I'm still working through. But the high-level takeaway is profound: <strong>attention and state spaces are not rival paradigms. They're different views of the same underlying computation.</strong> The debate isn't "which is better?" but "which implementation is faster for this particular setting?"</p>
+<p>Full SSD proof involves structured matrices and semi-separable forms — still working through it. High-level takeaway is profound: <strong>attention and state spaces are not rival paradigms. They're different views of same underlying computation.</strong> Debate isn't "which is better?" but "which implementation faster for this setting?"</p>
 
 <!-- ══════════════════════ HYBRIDS ══════════════════════ -->
 
 <h2>Hybrid Architectures</h2>
 
-<p>If SSMs and attention are two views of the same thing, the obvious question is: why not use both?</p>
+<p>If SSMs and attention are two views of same thing, obvious question: why not use both?</p>
 
-<p><strong>Jamba</strong> (AI21 Labs, 2024) is the clearest answer. It's a 52-billion parameter model that interleaves Mamba layers with transformer layers, wrapped in a Mixture of Experts (MoE) framework. Only about 12 billion parameters are active for any given token, and the model supports a 256K-token context window.</p>
+<p><strong>Jamba</strong> (AI21 Labs, 2024) = clearest answer. 52B parameter model interleaving Mamba layers with transformer layers, wrapped in Mixture of Experts (MoE). ~12B parameters active per token. 256K-token context window.</p>
 
-<p>The architecture is roughly 1 attention layer for every 7 Mamba layers. The Mamba layers handle the bulk of sequence processing — compressing information, maintaining the running state, doing the heavy lifting of "reading" the input. The occasional attention layer acts as a precision instrument — when the model needs to look up a specific fact buried somewhere in the context, attention's direct token-to-token path handles that retrieval.</p>
+<p>Architecture: ~1 attention layer for every 7 Mamba layers. Mamba layers handle bulk of sequence processing — compressing information, maintaining running state, heavy lifting of "reading" input. Occasional attention layer = precision instrument — when model needs specific fact buried in context, attention's direct token-to-token path handles retrieval.</p>
 
-<p>Back to our thermostat analogy one last time. Imagine monitoring a building with 1,000 sensors over a full year. Most of the time, the readings follow predictable patterns — the SSM layers handle this efficiently, compressing months of routine data into a manageable state. But occasionally, you need to answer a specific question: "What was the temperature in room 307 at 2:47 PM on March 15th?" For that, you need the attention layer's ability to reach back and pull out an exact data point.</p>
+<p>Back to thermostat one last time. Monitoring building with 1,000 sensors over full year. Most readings follow predictable patterns — SSM layers handle this efficiently, compressing months of routine data. But occasionally need specific answer: "Temperature in room 307 at 2:47 PM on March 15th?" Attention layer reaches back and pulls exact data point.</p>
 
-<p>Jamba isn't the only hybrid. Google DeepMind's <strong>Griffin</strong> and <strong>Hawk</strong> models use recurrence-based layers that compete with transformers on standard benchmarks. <strong>RWKV</strong> takes a related approach with linear attention, scaling to 14B+ parameters. The trend is clear: the future isn't "transformers vs. SSMs." The future is architectures that use each mechanism where it's strongest.</p>
+<p>Jamba isn't only hybrid. Google DeepMind's <strong>Griffin</strong> and <strong>Hawk</strong> use recurrence-based layers competing with transformers on standard benchmarks. <strong>RWKV</strong> takes related approach with linear attention, scaling to 14B+. Trend clear: future isn't "transformers vs. SSMs." Future = architectures using each mechanism where strongest.</p>
 
 <pre><code class="language-python"># Conceptual hybrid: Jamba-style interleaving
 class HybridModel:
