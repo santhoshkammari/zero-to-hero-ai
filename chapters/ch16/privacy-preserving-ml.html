@@ -299,73 +299,73 @@
 </nav>
 <!-- ═══════════ End Table of Contents ═══════════ -->
       <!-- OPENING: Personal confession -->
-      <p>I avoided the privacy side of machine learning for an embarrassingly long time. Every time I read about differential privacy, my eyes would glaze over at the Greek letters and I'd tell myself "I'll get to it later." Meanwhile, I was shipping models trained on user data with nothing but a vague "we anonymized it" in the docs. Then a colleague showed me a paper where researchers reconstructed patients' faces from a medical imaging model's gradients. Actual faces. From gradients. The discomfort of not understanding what was going on under the hood grew too great for me. Here is that dive.</p>
+      <p>Ignored privacy side of machine learning too long. Differential privacy looked like Greek soup, so I kept saying "later." Meanwhile, I shipped models on user data with vague "we anonymized it" docs. Then colleague showed paper where researchers reconstructed patients' faces from medical imaging gradients. Actual faces. From gradients. That broke me. This section is dive.</p>
 
-      <p>Privacy-preserving machine learning is a collection of mathematical and systems techniques for training and deploying models without exposing individual data points. The field traces back to Cynthia Dwork's work on differential privacy in 2006 and Google's introduction of federated learning in 2016, but it has accelerated dramatically since regulations like GDPR (2018) and CCPA (2020) gave it legal teeth. It sits at the intersection of cryptography, statistics, and systems engineering.</p>
+      <p>Privacy-preserving machine learning uses math and systems tricks to train and deploy models without exposing individual data points. Field starts with Cynthia Dwork's differential privacy work in 2006 and Google's federated learning in 2016, then speeds up after GDPR (2018) and CCPA (2020) add legal force. It sits between cryptography, statistics, and systems engineering.</p>
 
       <!-- RUNNING EXAMPLE SETUP -->
       <h2>Why "Anonymized" Doesn't Mean Private</h2>
 
-      <p>Let's start with a story that will ground everything we build in this section. Imagine three hospitals — City General, Valley Medical, and Riverside Clinic — each sitting on thousands of patient records. They want to collaborate on a disease prediction model. The obvious approach: pool all the data in one place, strip the names and social security numbers, and train a model on the combined dataset.</p>
+      <p>Start with story. Three hospitals — City General, Valley Medical, Riverside Clinic — each hold thousands of patient records. They want joint disease prediction model. Obvious plan: pool data, strip names and social security numbers, train on combined dataset.</p>
 
-      <p>This is exactly what Netflix did in 2006 when they released 10 million movie ratings for a recommendation contest. They stripped usernames and figured that was enough. Researchers Arvind Narayanan and Vitaly Shmatikov cross-referenced the "anonymous" Netflix ratings with public IMDb reviews and re-identified specific users within weeks. The trick was surprisingly low-tech: if someone rated six or eight of the same movies on both platforms around the same dates, the overlap was enough to fingerprint them. Suddenly Netflix knew that user #482,931 had a name, and that name had a viewing history they might prefer to keep private.</p>
+      <p>Netflix did this in 2006. It released 10 million movie ratings for recommendation contest, stripped usernames, assumed enough. Narayanan and Shmatikov cross-referenced "anonymous" ratings with public IMDb reviews and re-identified users within weeks. Trick was low-tech: six or eight overlapping ratings on similar dates could fingerprint person. Suddenly user #482,931 had name and private viewing history.</p>
 
-      <p>Our three hospitals face the same problem. Even without names attached, a rare combination of diagnosis, age, and zip code can uniquely identify someone. A 34-year-old in zip code 02139 with a specific rare condition might be the only person matching that description in the entire dataset. "Anonymized" data is often a polite fiction. The fix isn't better anonymization. It's building systems where individual records are mathematically protected regardless of what an attacker knows.</p>
+      <p>Same problem for hospitals. Even without names, rare mix of diagnosis, age, and zip code can identify person. A 34-year-old in zip code 02139 with rare condition may be only match in whole dataset. "Anonymized" data is often polite fiction. Fix is not better anonymization. Fix is systems with mathematical protection for each record, no matter what attacker already knows.</p>
 
-      <p>That's where this story goes. But first, we need to understand what we're protecting against.</p>
+      <p>That is path. First understand threat.</p>
 
       <!-- PRIVACY ATTACKS -->
       <h2>Privacy Attacks: What an Adversary Actually Does</h2>
 
-      <p>I'll be honest — when I first heard the term "membership inference attack," I thought it sounded academic and impractical. Then I saw one work on a model I'd built. It shook me.</p>
+      <p>First time I heard "membership inference attack," I tagged it academic fluff. Then one worked on my model. That lands hard.</p>
 
-      <p>A <strong>membership inference attack</strong> asks a disarmingly pointed question: "Was this specific data point used to train this model?" The attacker feeds a sample to the model and looks at how the model responds. If the model is more confident on a particular input — lower loss, sharper probability distribution — that input was probably in the training set. Models tend to memorize their training data to some degree. They behave differently on data they've seen before versus data they haven't, and that behavioral gap is the crack an attacker exploits.</p>
+      <p>A <strong>membership inference attack</strong> asks direct question: "Was this specific data point in training set?" Attacker sends sample to model and watches response. More confidence — lower loss, sharper distribution — means sample was probably in training set. Models memorize some training data. Seen and unseen points get different behavior. Attack uses that gap.</p>
 
-      <p>Here's a concrete example with our hospitals. Suppose the combined disease prediction model is deployed as an API. An attacker has a patient record — say, Bob's medical history — and wants to know whether Bob was a patient at one of those three hospitals. They feed Bob's record into the model and measure the confidence of the prediction. If the model is suspiciously confident about Bob's outcome compared to random inputs, there's a good chance Bob's data was in the training set. The attacker now knows Bob was treated at one of those hospitals, which might reveal something sensitive.</p>
+      <p>Hospital example: disease prediction model ships as API. Attacker has Bob's medical record and wants to know if Bob was patient at one of three hospitals. Attacker sends Bob's record to model and measures confidence. If confidence is suspiciously high versus random inputs, Bob's data was probably in training set. Now attacker knows Bob got treatment at one of those hospitals. Sensitive fact leaks.</p>
 
-      <p>The original attack by Shokri et al. in 2017 trained "shadow models" that mimic the target model's behavior. You build several models on data you control, observe how they treat members versus non-members, then train a classifier to distinguish the two patterns. Recent work has shown these attacks succeed even with minimal information — sometimes even when you only see the model's top-1 prediction, not the full probability distribution.</p>
+      <p>Original 2017 attack from Shokri et al. trained "shadow models" that mimic target model behavior. Build several models on controlled data, watch member vs non-member behavior, then train classifier to separate patterns. Recent work shows attacks still work with little information — sometimes only top-1 prediction, not full probability distribution.</p>
 
-      <p><strong>Model inversion attacks</strong> go further. Instead of asking "was this person in the dataset?", they ask "what did this person's data look like?" The attacker uses the model's outputs to work backward toward the inputs. In a famous 2015 demonstration, Fredrikson et al. reconstructed recognizable face images from a facial recognition model given nothing but the model's API and a person's name. The reconstructed faces weren't perfect, but they were close enough to be disturbing.</p>
+      <p><strong>Model inversion attacks</strong> go further. Question changes from "was this person in dataset?" to "what did this person's data look like?" Attacker uses model outputs to work backward toward inputs. Fredrikson et al. showed this in 2015 by reconstructing recognizable face images from facial recognition model given only model API and person's name. Faces were not perfect. Close enough to be creepy.</p>
 
-      <p>And then there's <strong>training data extraction from large language models</strong>. Carlini et al. at Google showed in 2021 that GPT-2, when prompted with the right seed text, would sometimes regurgitate memorized training data verbatim — email addresses, phone numbers, even snippets of copyrighted books. The model had absorbed these rare, unique strings during training and, given the right nudge, would spit them back out. This isn't a theoretical risk. It's a demonstrated capability on production-scale models.</p>
+      <p>Then <strong>training data extraction from large language models</strong>. Carlini et al. showed in 2021 that GPT-2 could sometimes regurgitate memorized training data verbatim when prompted with right seed text — email addresses, phone numbers, snippets of copyrighted books. Model absorbed rare unique strings during training, then spit them back out when nudged right. Not theory. Demonstrated on production-scale models.</p>
 
-      <p>These three attack categories — membership inference, model inversion, and data extraction — form the threat landscape we need to defend against. Stripping names doesn't help against any of them. We need something stronger.</p>
+      <p>These three attacks — membership inference, model inversion, data extraction — define threat landscape. Stripping names stops none of them. Need stronger defense.</p>
 
       <!-- DIFFERENTIAL PRIVACY DEFINITION -->
       <h2>What "Private" Means Mathematically</h2>
 
-      <p>Here's the core question: how do we define privacy in a way we can actually measure and guarantee? Hand-waving about "anonymization" and "de-identification" clearly isn't enough.</p>
+      <p>Core question: how to define privacy in measurable, enforceable way? "Anonymization" and "de-identification" are not enough.</p>
 
-      <p>The answer came from Cynthia Dwork in 2006, and it's called <strong>differential privacy</strong>. The idea is elegant. Imagine our three hospitals pool their data into two versions of the same dataset: one that includes Bob's record, and one that doesn't. A mechanism (an algorithm, a query, a model) is differentially private if its output looks almost the same regardless of whether Bob is in the dataset or not. An adversary staring at the output can't tell, with any meaningful confidence, whether Bob participated.</p>
+      <p>Answer came from Cynthia Dwork in 2006: <strong>differential privacy</strong>. Idea is simple. Take two versions of same hospital dataset: one with Bob's record, one without. Mechanism — algorithm, query, model — is differentially private if output looks almost same either way. Adversary staring at output cannot tell, with meaningful confidence, whether Bob participated.</p>
 
-      <p>Let's build this up with a tiny example. Suppose City General has exactly three patients, and we want to publish the average age. The patients are aged 30, 50, and 70. The true average is 50. Now remove the 70-year-old (imagine they requested deletion). The new average is 40. An adversary who knows the other two ages and sees the published average change from 50 to 40 can immediately deduce that the removed patient was 70. With three patients, every individual has massive influence on the output.</p>
+      <p>Tiny example. City General has three patients, and we publish average age. Ages are 30, 50, 70. True average is 50. Remove 70-year-old because they requested deletion. New average becomes 40. Adversary who knows other two ages sees change from 50 to 40 and immediately infers removed patient was 70. With three patients, each person has huge influence.</p>
 
-      <p>Differential privacy formalizes this vulnerability. The mathematical statement looks intimidating at first, but it's pinning down something intuitive:</p>
+      <p>Differential privacy formalizes this leak. Math looks scary first. Meaning is intuitive.</p>
 
       <p style="text-align: center; font-family: 'JetBrains Mono', monospace; font-size: 1.05em; padding: 1em; background: var(--bg-secondary, #f5f5f5); border-radius: 6px;">
         P[M(D) &isin; S] &le; e<sup>&epsilon;</sup> &middot; P[M(D&prime;) &isin; S] + &delta;
       </p>
 
-      <p>D and D&prime; are datasets that differ by exactly one person's record. M is the mechanism — whatever computation we're performing. S is any set of possible outputs. That's the whole definition. Let's unpack the two knobs.</p>
+      <p>D and D&prime; are datasets that differ by one person's record. M is mechanism — computation we run. S is any set of possible outputs. Whole definition. Now unpack two knobs.</p>
 
-      <p><strong>Epsilon (&epsilon;)</strong> controls how much the output can shift when one person's data is added or removed. Think of it as the thickness of a soundproof wall between your data and the outside world. When &epsilon; = 0, the wall is infinitely thick — the output is pure random noise, completely useless but perfectly private. When &epsilon; = &infin;, there's no wall at all — the raw data leaks through. Practical deployments live somewhere in between. Apple uses &epsilon; between 2 and 8 for emoji frequency statistics. The 2020 US Census used &epsilon; &asymp; 19.6, which was controversial — many statisticians argued the wall was too thin.</p>
+      <p><strong>Epsilon (&epsilon;)</strong> controls how much output can change when one person's data is added or removed. Use soundproof-wall picture. When &epsilon; = 0, wall is infinitely thick — output is pure random noise, useless but perfectly private. When &epsilon; = &infin;, no wall exists — raw data leaks through. Real deployments sit between. Apple uses &epsilon; between 2 and 8 for emoji frequency stats. 2020 US Census used &epsilon; &asymp; 19.6, which many statisticians called too thin.</p>
 
-      <p><strong>Delta (&delta;)</strong> is the probability that the whole guarantee fails catastrophically. It's a safety valve for the rare case where the mechanism accidentally leaks everything. You want this to be negligible — typically much smaller than 1/n, where n is the dataset size. A common choice is &delta; = 1/n&sup2;. For our three-hospital dataset of, say, 10,000 patients, that would be &delta; = 10<sup>-8</sup>.</p>
+      <p><strong>Delta (&delta;)</strong> is probability that guarantee fails catastrophically. Safety valve for rare event where mechanism leaks everything. Want it negligible — usually much smaller than 1/n, where n is dataset size. Common choice is &delta; = 1/n&sup2;. For 10,000 patients, that is &delta; = 10<sup>-8</sup>.</p>
 
-      <p>Back to our tiny example. With three patients and a true average of 50, any change in the average is highly informative. With 10,000 patients, adding or removing one person barely moves the average. Differential privacy works much better when datasets are large, because each individual's influence is naturally diluted. The noise we add just has to cover whatever residual influence remains.</p>
+      <p>Back to tiny example. With three patients and true average 50, any change in average says a lot. With 10,000 patients, adding or removing one person barely moves average. Differential privacy works better on large datasets because each person's influence is already diluted. Noise only has to cover leftover influence.</p>
 
-      <p>I'll be using the soundproof wall analogy throughout. &epsilon; is the wall's thickness. Every time we make a query or train another epoch, we're drilling a small hole in that wall. The question is always: how many holes can we drill before the wall stops being useful?</p>
+      <p>Keep soundproof-wall analogy. &epsilon; is wall thickness. Each query or training epoch drills another small hole. Question stays same: how many holes before wall stops helping?</p>
 
       <!-- NOISE MECHANISMS -->
       <h2>Adding Noise the Right Way</h2>
 
-      <p>Knowing the definition is one thing. Actually making a computation differentially private requires adding carefully calibrated noise. Too little noise and privacy leaks. Too much and the results are garbage. The calibration depends on a property called <strong>sensitivity</strong> — how much can a single person's data change the output?</p>
+      <p>Definition alone is not enough. To make computation differentially private, add carefully calibrated noise. Too little noise leaks privacy. Too much noise kills utility. Calibration depends on <strong>sensitivity</strong> — how much one person's data can change output.</p>
 
-      <p>Let's go back to our hospital average age example, but now with all 10,000 patients. If ages range from 0 to 120, the sensitivity of the average query is (120 - 0) / 10,000 = 0.012. That's the maximum amount the average can shift when one record changes. A query on a small dataset of 3 patients would have sensitivity (120 - 0) / 3 = 40. The smaller the sensitivity, the less noise we need to add to protect privacy.</p>
+      <p>Back to hospital average age, now with 10,000 patients. If ages range from 0 to 120, average-query sensitivity is (120 - 0) / 10,000 = 0.012. That is biggest shift one record can cause. On dataset of 3 patients, sensitivity is (120 - 0) / 3 = 40. Smaller sensitivity means less noise needed.</p>
 
-      <p>The <strong>Laplace mechanism</strong> is the simplest approach. Take the true answer, add noise drawn from a Laplace distribution with scale equal to sensitivity/&epsilon;. It satisfies what's called "pure" (&epsilon;, 0)-differential privacy — the &delta; is exactly zero, meaning no probability of catastrophic failure. For our hospital example with 10,000 patients and &epsilon; = 1, we'd add Laplace noise with scale 0.012. The published average would be within a fraction of a year of the truth. That's a small price for mathematical privacy guarantees.</p>
+      <p><strong>Laplace mechanism</strong> is simplest. Take true answer and add Laplace noise with scale sensitivity/&epsilon;. It gives "pure" (&epsilon;, 0)-differential privacy — &delta; is exactly zero, so no catastrophic-failure probability. For 10,000 patients and &epsilon; = 1, noise scale is 0.012. Published average stays within fraction of year of truth. Small cost for mathematical guarantee.</p>
 
-      <p>The <strong>Gaussian mechanism</strong> adds noise from a normal distribution instead. It satisfies the slightly weaker (&epsilon;, &delta;)-DP, meaning there's a tiny &delta; probability of failure. But here's why people use it anyway: it composes much more tightly across multiple queries. When you're going to run hundreds of computations on the same data — which is exactly what happens during model training — the Gaussian mechanism lets you get away with less total noise.</p>
+      <p><strong>Gaussian mechanism</strong> adds normal noise instead. It gives slightly weaker (&epsilon;, &delta;)-DP, so tiny &delta; failure probability exists. People still use it because composition is much tighter across many queries. If you run hundreds of computations on same data — exactly what model training does — Gaussian mechanism usually needs less total noise.</p>
 
 <pre><code class="language-python">import numpy as np
 
@@ -390,33 +390,33 @@ print(f"Laplace DP average:  {dp_avg_laplace:.1f}")
 print(f"Gaussian DP average: {dp_avg_gaussian:.1f}")
 # Both will be very close to 47.3 — the large dataset makes this easy</code></pre>
 
-      <p>The noise scale tells the whole story. For our 10,000-patient hospital at &epsilon; = 1, the Laplace scale is 0.012 years — about 4 days. The published average age would be off by, at most, a few days. Nobody would notice. Now imagine the same query on a 3-patient dataset: the scale becomes 40 years. The noise would completely obliterate the answer. This is the fundamental tension of differential privacy: it works beautifully at scale and struggles terribly with small datasets.</p>
+      <p>Noise scale tells story. For 10,000-patient hospital at &epsilon; = 1, Laplace scale is 0.012 years — about 4 days. Published average age misses by only few days. Nobody notices. On 3-patient dataset, scale jumps to 40 years. Noise destroys answer. This is core tension of differential privacy: excellent at scale, brutal on small datasets.</p>
 
       <!-- COMPOSITION -->
       <h2>Privacy Leaks with Every Question You Ask</h2>
 
-      <p>Here's where things get uncomfortable. Every time you query a differentially private dataset, you spend some of your privacy budget. Ask one question at &epsilon; = 1, and you've used 1 unit. Ask a hundred questions, and the privacy guarantee degrades. Our soundproof wall gets another hole drilled in it with each query.</p>
+      <p>Now uncomfortable part. Every query to differentially private dataset spends privacy budget. One question at &epsilon; = 1 spends 1 unit. Ask a hundred questions, guarantee weakens. Soundproof wall gets another hole each time.</p>
 
-      <p>The simplest accounting is called <strong>basic composition</strong>: k queries at &epsilon; each cost k&epsilon; total. A hundred queries at &epsilon; = 1 each give you &epsilon; = 100 total — which is terrible privacy. Basically no wall left.</p>
+      <p>Simplest accounting is <strong>basic composition</strong>: k queries at &epsilon; each cost k&epsilon; total. Hundred queries at &epsilon; = 1 give &epsilon; = 100 total — terrible privacy. Wall mostly gone.</p>
 
-      <p>Fortunately, basic composition is pessimistic. It assumes the worst case every time. <strong>Advanced composition</strong> gives a tighter bound: k queries at &epsilon; each cost roughly &epsilon;&radic;(2k &middot; ln(1/&delta;)) total. For our 100 queries, that's roughly &epsilon;&radic;(200 &middot; 18) &asymp; 60&epsilon; instead of 100&epsilon;. Better, but the square root is doing a lot of work.</p>
+      <p><strong>Advanced composition</strong> is tighter. It says k queries at &epsilon; each cost roughly &epsilon;&radic;(2k &middot; ln(1/&delta;)) total. For 100 queries, that is about &epsilon;&radic;(200 &middot; 18) &asymp; 60&epsilon; instead of 100&epsilon;. Better, but still expensive.</p>
 
-      <p>The tightest tracking comes from <strong>Rényi Differential Privacy</strong> and the <strong>moments accountant</strong>, introduced by Abadi et al. in 2016. Instead of tracking privacy loss as a single number, the moments accountant tracks the entire distribution of privacy loss across training steps. This approach is what makes DP model training practical at all — without it, even a few dozen epochs would blow through any reasonable privacy budget. The Opacus library uses this internally, which is why it can train models for hundreds of epochs and still report meaningful (&epsilon;, &delta;) guarantees at the end.</p>
+      <p>Tightest practical tracking uses <strong>Rényi Differential Privacy</strong> and <strong>moments accountant</strong>, introduced by Abadi et al. in 2016. Instead of one privacy-loss number, moments accountant tracks full distribution of privacy loss across training steps. That makes DP training practical. Without it, even few dozen epochs would blow budget. Opacus uses this internally, which is why it can train for hundreds of epochs and still report meaningful (&epsilon;, &delta;) at end.</p>
 
-      <p>I'm still developing my intuition for why the moments accountant works so much better than simple composition. The high-level idea is that worst-case privacy losses are unlikely to all stack up simultaneously — the accountant exploits the fact that random noise tends to cancel out over many steps. But I won't pretend I find the proof intuitive.</p>
+      <p>My intuition here is still rough. High-level idea: worst-case losses usually do not stack in same way at every step, and random noise partly cancels over time. I trust result more than I love proof.</p>
 
       <!-- DP-SGD -->
       <h2>Training a Model Privately: DP-SGD</h2>
 
-      <p>Now we reach the payoff. We know how to add noise to a single query. But training a neural network involves thousands of gradient updates, each one computed from training data. How do we make that entire process differentially private?</p>
+      <p>Now payoff. We can privatize one query. Neural network training uses thousands of gradient updates from training data. Need whole process private.</p>
 
-      <p>The answer is <strong>DP-SGD</strong> (Differentially Private Stochastic Gradient Descent), introduced by Abadi et al. in the same 2016 paper. It modifies standard SGD in two ways, and both are essential.</p>
+      <p>Answer is <strong>DP-SGD</strong> (Differentially Private Stochastic Gradient Descent), from Abadi et al. in same 2016 paper. It changes standard SGD in two essential ways.</p>
 
-      <p>First, <strong>per-example gradient clipping</strong>. In standard SGD, you compute the gradient for each example in a batch, average them, and update the model. In DP-SGD, before averaging, you clip each individual gradient to have a maximum norm C. If one patient's record produces a gradient with norm 50 while the clipping threshold is C = 1, that gradient gets scaled down to norm 1. This bounds the sensitivity — no single training example can influence the update by more than C.</p>
+      <p>First, <strong>per-example gradient clipping</strong>. Standard SGD computes gradient for each batch example, averages them, updates model. DP-SGD clips each individual gradient to maximum norm C before averaging. If one patient's record produces norm 50 and threshold is C = 1, scale that gradient down to norm 1. This bounds sensitivity — no single example can move update by more than C.</p>
 
-      <p>Second, <strong>Gaussian noise addition</strong>. After clipping and averaging the gradients, you add Gaussian noise calibrated to the clipping threshold. The noise scale is &sigma; = noise_multiplier &times; C / batch_size. This makes each gradient update differentially private.</p>
+      <p>Second, <strong>Gaussian noise addition</strong>. After clipping and averaging gradients, add Gaussian noise calibrated to clipping threshold. Noise scale is &sigma; = noise_multiplier &times; C / batch_size. That makes each gradient update differentially private.</p>
 
-      <p>Let's trace through one step with our hospital model. Suppose we have a batch of 64 patient records. We compute 64 individual gradients. Patient #17 has a rare condition that produces an unusually large gradient (norm = 12.5). We clip it to norm C = 1.0, which divides it by 12.5. All 64 clipped gradients get averaged, then we add Gaussian noise with scale &sigma; &times; 1.0 / 64. The model updates. Nobody's individual record dominated the step, and the noise ensures the step looks statistically similar whether patient #17 was in the batch or not.</p>
+      <p>Walk one step. Batch has 64 patient records. We compute 64 individual gradients. Patient #17 has rare condition and huge gradient (norm = 12.5). Clip it to C = 1.0, so divide by 12.5. Average all 64 clipped gradients, then add Gaussian noise with scale &sigma; &times; 1.0 / 64. Model updates. No single record dominates, and noise makes step look statistically similar whether patient #17 was in batch or not.</p>
 
 <pre><code class="language-python">import torch
 import torch.nn as nn
@@ -449,22 +449,22 @@ def dp_sgd_step(model, loss_fn, batch_x, batch_y,
             noise = torch.normal(0, noise_scale, size=avg_grad.shape)
             param -= lr * (avg_grad + noise)</code></pre>
 
-      <p>The clipping does the heavy lifting for sensitivity bounding. The noise does the heavy lifting for indistinguishability. Together, they make each update (&epsilon;, &delta;)-differentially private. The moments accountant tracks the cumulative cost across all training steps.</p>
+      <p>Clipping does sensitivity bounding. Noise does indistinguishability. Together they make each update (&epsilon;, &delta;)-differentially private. Moments accountant tracks total cost across all steps.</p>
 
-      <p>There's a real cost. DP-SGD typically drops accuracy by 2 to 10 percentage points compared to standard training. On CIFAR-10, state-of-the-art DP models at &epsilon; = 8 reach about 96% accuracy versus 99% without DP. On large datasets like ImageNet, the gap is smaller because noise gets averaged over more examples. On small medical datasets — like our three hospitals might have — the gap can be devastating. I've seen cases where DP-SGD reduced a model from "clinically useful" to "no better than guessing." Always benchmark your specific task before committing to a privacy budget.</p>
+      <p>Cost is real. DP-SGD usually drops accuracy by 2 to 10 percentage points versus standard training. On CIFAR-10, strong DP models at &epsilon; = 8 reach about 96% accuracy versus 99% without DP. On large datasets like ImageNet, gap shrinks because noise averages over more examples. On small medical datasets — like our three hospitals may have — gap can be devastating. I have seen DP-SGD turn model from clinically useful into guessing. Benchmark your own task before locking privacy budget.</p>
 
-      <p>For production work, use <strong>Opacus</strong> (PyTorch) or <strong>TF Privacy</strong> (TensorFlow). They handle per-example gradient computation through clever hooks, clip and noise automatically, and track the privacy budget via the moments accountant so you can report exact (&epsilon;, &delta;) at the end of training.</p>
+      <p>For production, use <strong>Opacus</strong> (PyTorch) or <strong>TF Privacy</strong> (TensorFlow). They handle per-example gradients with hooks, apply clipping and noise automatically, and track privacy budget with moments accountant so you can report exact (&epsilon;, &delta;) after training.</p>
 
       <!-- FEDERATED LEARNING -->
       <h2>What if the Data Can't Leave?</h2>
 
-      <p>Back to our hospitals. City General has 5,000 cardiology records. Valley Medical has 3,000. Riverside Clinic has 2,000. Regulations say patient data cannot leave the hospital's network. A centralized DP-SGD approach is off the table because there's no central dataset to train on.</p>
+      <p>Back to hospitals. City General has 5,000 cardiology records. Valley Medical has 3,000. Riverside Clinic has 2,000. Regulations say patient data cannot leave hospital network. Centralized DP-SGD is off table because no central dataset exists.</p>
 
-      <p>The insight behind <strong>federated learning</strong> is to flip the script: instead of sending data to the model, send the model to the data. The algorithm, called <strong>FedAvg</strong> (Federated Averaging), works like this.</p>
+      <p>Key idea behind <strong>federated learning</strong>: send model to data, not data to model. Main algorithm is <strong>FedAvg</strong> (Federated Averaging).</p>
 
-      <p>A central server holds a global model — say, an initial random neural network. It sends a copy to each hospital. Each hospital trains the model on its local data for a few epochs, producing a slightly different version. The hospitals send their updated models (not their data) back to the server. The server averages the three updates, weighted by how much data each hospital contributed. This averaged model becomes the new global model, and the cycle repeats.</p>
+      <p>Central server holds global model — maybe random neural network. Server sends copy to each hospital. Each hospital trains on local data for few epochs, producing slightly different model. Hospitals send updated models back, not raw data. Server averages updates, weighted by amount of data each hospital used. Averaged model becomes new global model. Cycle repeats.</p>
 
-      <p>Let's trace through one round. The server sends model version v0 to all three hospitals. City General trains on its 5,000 records for 5 epochs, producing v1_city. Valley Medical produces v1_valley. Riverside produces v1_riverside. The server computes a weighted average: (5000 &times; v1_city + 3000 &times; v1_valley + 2000 &times; v1_riverside) / 10000. That becomes v1_global. Send it back out. Repeat for 50 or 100 rounds.</p>
+      <p>One round looks like this. Server sends version v0 to all three hospitals. City General trains on 5,000 records for 5 epochs and returns v1_city. Valley Medical returns v1_valley. Riverside returns v1_riverside. Server computes weighted average: (5000 &times; v1_city + 3000 &times; v1_valley + 2000 &times; v1_riverside) / 10000. That becomes v1_global. Send back out. Repeat 50 or 100 rounds.</p>
 
 <pre><code class="language-python">import torch
 import torch.nn as nn
@@ -499,56 +499,56 @@ def local_train(model_state, model_fn, data, labels, epochs=5, lr=0.01):
 # One round: server distributes, hospitals train, server aggregates
 # No patient record ever leaves its hospital</code></pre>
 
-      <p>No patient record crosses the hospital's network boundary. City General's patients never learn that Valley Medical exists, and vice versa. The only thing shared is model parameters — numbers that describe the model's weights, not individual data points.</p>
+      <p>No patient record crosses hospital network boundary. City General's patients never learn Valley Medical exists, and vice versa. Only shared artifact is model parameters — weights, not raw records.</p>
 
-      <p>But here's where the soundproof wall analogy comes back. Our three hospitals have very different patient populations. City General is in a dense urban area — lots of hypertension, diabetes, gunshot wounds. Riverside Clinic is rural — more agricultural injuries, fewer specialists. The data at each hospital is <strong>non-IID</strong> (not independently and identically distributed), and FedAvg was designed under the assumption that data is roughly uniform across clients. When data is highly heterogeneous, FedAvg can diverge: the local models pull in such different directions that the average ends up in a no-man's-land that works poorly for everyone.</p>
+      <p>Now soundproof-wall problem returns. Hospitals have very different patient populations. City General is dense urban area — more hypertension, diabetes, gunshot wounds. Riverside Clinic is rural — more agricultural injuries, fewer specialists. Data across hospitals is <strong>non-IID</strong> (not independently and identically distributed), but FedAvg assumes data is roughly uniform across clients. When heterogeneity is high, FedAvg can diverge: local models pull in different directions, and average lands in bad middle ground.</p>
 
-      <p><strong>FedProx</strong> is the standard fix. It adds a penalty term to each hospital's local training: &mu;/2 &middot; ||w - w<sub>global</sub>||&sup2;. Think of it as an elastic band connecting each hospital's model to the global model. The hospital can drift away from the global model to fit its local data, but the elastic band pulls it back, preventing it from wandering too far. Setting &mu; between 0.01 and 1.0 works for most cases.</p>
+      <p><strong>FedProx</strong> is standard fix. It adds penalty term to local training: &mu;/2 &middot; ||w - w<sub>global</sub>||&sup2;. Think elastic band from each hospital model to global model. Local model can drift to fit local data, but band pulls back before it wanders too far. Setting &mu; between 0.01 and 1.0 works in many cases.</p>
 
-      <p>There's also a fundamental communication cost. Every round, each hospital uploads and downloads a full model. For a model with 100 million parameters at 32-bit precision, that's 400 MB per round per hospital. Over 100 rounds, that's 40 GB of transfers per hospital. Techniques like <strong>gradient compression</strong> (sending only the top-k largest gradients), <strong>quantization</strong> (reducing precision from 32-bit to 8-bit), and <strong>fewer but longer local rounds</strong> can help, but they all interact with the non-IID problem in ways that require careful tuning.</p>
+      <p>Communication cost is fundamental too. Every round, each hospital uploads and downloads full model. For 100 million parameters at 32-bit precision, that is 400 MB per round per hospital. Over 100 rounds, that is 40 GB transferred per hospital. <strong>Gradient compression</strong> (send top-k gradients), <strong>quantization</strong> (drop from 32-bit to 8-bit), and <strong>fewer but longer local rounds</strong> can help, but each choice interacts with non-IID instability and needs tuning.</p>
 
       <!-- FL IS NOT PRIVATE -->
       <h2>Federated Learning Is Not Automatically Private</h2>
 
-      <p>I need to correct an oversimplification. I said the hospitals send "model parameters, not individual data points," and that's true. But model parameters can leak individual data points.</p>
+      <p>Need one correction. I said hospitals send "model parameters, not individual data points." True. Still not enough. Model parameters can leak individual data.</p>
 
-      <p>In 2019, Zhu et al. demonstrated a <strong>gradient inversion attack</strong> that reconstructed individual training images from a single gradient update with startling fidelity. The attacker starts with a random image, computes what gradient that fake image would produce, compares it to the real gradient the hospital shared, and iteratively adjusts the fake image until the gradients match. When they match, the fake image looks remarkably like the real training image. Actual faces. From gradients.</p>
+      <p>In 2019, Zhu et al. showed <strong>gradient inversion attack</strong> that reconstructed individual training images from one gradient update with startling fidelity. Attacker starts with random image, computes gradient from fake image, compares it to real gradient hospital shared, then adjusts fake image until gradients match. When match happens, fake image looks a lot like true training image. Actual faces. From gradients.</p>
 
-      <p>So "data stays on device" does not equal "data is private." Our soundproof wall has a crack: the gradient updates themselves carry information about individual records.</p>
+      <p>So "data stays on device" does not mean "data is private." Soundproof wall has crack. Gradient updates carry information about individual records.</p>
 
-      <p><strong>Secure aggregation</strong> patches one part of this problem. It ensures the central server sees only the sum of all hospitals' updates, never an individual hospital's update. The technique uses cryptographic masking: City General adds a random mask +r₁ to its update, and Valley Medical adds -r₁. When the server sums the two updates, the masks cancel out, leaving the true aggregate. The server never sees either individual update. Google deployed this for their GBoard keyboard predictions in 2017.</p>
+      <p><strong>Secure aggregation</strong> patches part of problem. Central server sees only sum of all hospital updates, never one hospital's update alone. Technique uses cryptographic masking: City General adds random mask +r₁, Valley Medical adds -r₁. When server sums updates, masks cancel and true aggregate remains. Server never sees either individual update. Google deployed this for GBoard in 2017.</p>
 
-      <p>But secure aggregation alone isn't enough. An adversary who controls the server and two of the three hospitals can still infer the third hospital's update by subtracting. For real privacy guarantees, you need all three layers: federated learning (keep data local) + secure aggregation (hide individual updates) + differential privacy noise on each update (make individual contributions statistically invisible). It's belts, suspenders, and safety pins.</p>
+      <p>Secure aggregation alone still fails to give full privacy. If adversary controls server and two of three hospitals, it can subtract known updates and infer third hospital's update. Real guarantees need all three layers: federated learning for local data, secure aggregation for hidden individual updates, differential privacy noise on each update for statistical invisibility. Belt, suspenders, safety pins.</p>
 
       <!-- SMPC AND HE -->
       <h2>Computing on Data You Can't See</h2>
 
-      <p>Secure aggregation is a special case of a more general idea: what if multiple parties could jointly compute a result without any party seeing the others' inputs? This is <strong>secure multi-party computation</strong> (SMPC).</p>
+      <p>Secure aggregation is special case of broader idea: let multiple parties compute shared result without any party seeing others' inputs. That is <strong>secure multi-party computation</strong> (SMPC).</p>
 
-      <p>The core technique is <strong>secret sharing</strong>. Suppose City General has a patient count it wants to contribute to a joint computation without revealing the exact number to the other hospitals. It splits the number into random "shares" — for instance, the number 5000 becomes three shares: 1847, -923, and 4076 (which sum to 5000). One share goes to each hospital. No single hospital can reconstruct the original number. But when the hospitals combine their shares at the end, the computation comes out correct.</p>
+      <p>Core trick is <strong>secret sharing</strong>. Suppose City General wants to contribute patient count without revealing exact number. Split 5000 into random shares like 1847, -923, and 4076, which sum to 5000. Send one share to each hospital. No single hospital can recover original count. Combine shares at end, and computation is still correct.</p>
 
-      <p>Addition on secret shares is free — each party adds their shares locally, and the results sum correctly. Multiplication is harder — it requires a round of communication between parties, which is where the overhead comes from. For simple operations like aggregation and linear regression, SMPC is practical. For training a neural network with billions of parameters, the communication overhead makes it impractical — every multiplication in every forward and backward pass would need inter-party communication.</p>
+      <p>Addition on secret shares is free — each party adds shares locally, and totals still line up. Multiplication is hard — it needs communication round between parties, which creates overhead. For aggregation and linear regression, SMPC is practical. For billion-parameter neural network training, communication blows up because every multiplication in forward and backward pass needs coordination.</p>
 
-      <p>Then there's the dream scenario: <strong>homomorphic encryption</strong> (HE). With HE, you can perform computations directly on encrypted data. A hospital encrypts its patient records, sends the ciphertext to a cloud server, the server runs the model on the encrypted data, and sends back an encrypted result. The hospital decrypts the result. At no point did the server see the actual patient data.</p>
+      <p>Then dream scenario: <strong>homomorphic encryption</strong> (HE). HE lets you compute directly on encrypted data. Hospital encrypts patient records, sends ciphertext to cloud server, server runs model on ciphertext, returns encrypted result, hospital decrypts. Server never sees raw data.</p>
 
-      <p>I'll be honest — the first time I read about fully homomorphic encryption, I didn't believe it could work. Computing on encrypted data sounds like magic. The reality is less magical: <strong>fully homomorphic encryption is 1,000 to 1,000,000 times slower than plaintext computation</strong>. A neural network inference that takes 10 milliseconds in plaintext might take 10 seconds to 3 hours under FHE. Libraries like Microsoft SEAL and Zama's Concrete-ML have made impressive progress, especially for simple models — logistic regression on encrypted medical records is practical today. But running a large transformer on encrypted data? Not yet.</p>
+      <p>First time I read about fully homomorphic encryption, I did not buy it. Computing on encrypted data sounds like magic. Reality is slower: <strong>fully homomorphic encryption is 1,000 to 1,000,000 times slower than plaintext computation</strong>. Neural network inference that takes 10 milliseconds in plaintext may take 10 seconds to 3 hours under FHE. Libraries like Microsoft SEAL and Zama's Concrete-ML have made strong progress, especially for simple models — logistic regression on encrypted medical records is practical now. Large transformer on encrypted data? Not yet.</p>
 
-      <p>The practical hierarchy today looks like this: for model training, use federated learning + DP. For secure aggregation and small computations, SMPC works well with 2 to 10 parties. For inference on sensitive data where latency is acceptable, HE is becoming viable. Each technique protects against different threats, and production systems often layer them.</p>
+      <p>Practical stack today looks like this: use federated learning + DP for model training. Use SMPC for secure aggregation and other small computations with 2 to 10 parties. Use HE for inference on sensitive data when latency is acceptable. Each tool blocks different threats, and production systems often layer them.</p>
 
       <!-- REGULATIONS AND UNLEARNING -->
       <h2>The Law Catches Up: GDPR, CCPA, and Machine Unlearning</h2>
 
-      <p>Everything we've built so far addresses a technical question: how do we protect privacy mathematically? But there's also a legal question that has real consequences for system design.</p>
+      <p>So far, problem was technical: how to protect privacy mathematically. There is also legal problem, and it changes system design.</p>
 
-      <p>The <strong>GDPR</strong> (General Data Protection Regulation), which took effect in the EU in 2018, established several principles that directly impact ML engineering. <strong>Data minimization</strong> means you can only collect features you actually need — that 200-column user profile table requires justification for every column. <strong>Purpose limitation</strong> means data collected for disease prediction can't be repurposed for insurance scoring without new consent. <strong>Right to explanation</strong> (Article 22) means automated decisions with significant effects require meaningful explanation — which ties directly to interpretability.</p>
+      <p><strong>GDPR</strong> (General Data Protection Regulation), effective in EU in 2018, sets rules that hit ML engineering directly. <strong>Data minimization</strong>: collect only features you need — 200-column profile table needs justification for every column. <strong>Purpose limitation</strong>: data collected for disease prediction cannot become insurance scoring without new consent. <strong>Right to explanation</strong> (Article 22): automated decisions with major effects need meaningful explanation, which ties to interpretability.</p>
 
-      <p>But the most technically challenging requirement is <strong>Article 17: the right to erasure</strong>. A patient at City General can demand that their data be deleted. Deleting the row from a database is easy. But what about the model that was trained on their data? The model's weights were shaped by that patient's record. In some sense, the model "remembers" the patient. Does it need to be retrained from scratch?</p>
+      <p>Hardest requirement is <strong>Article 17: right to erasure</strong>. Patient at City General can demand deletion. Deleting database row is easy. Hard part is model trained on that data. Model weights were shaped by patient's record. In real sense, model remembers patient. Question: retrain from scratch or not?</p>
 
-      <p>For our three-hospital consortium, retraining the federated model from scratch every time a patient exercises their erasure rights could cost tens of thousands of dollars in compute and take days. That's the <strong>machine unlearning</strong> problem, and it's arguably the hardest open challenge in privacy engineering.</p>
+      <p>For three-hospital consortium, retraining federated model from scratch every time patient uses erasure rights could cost tens of thousands of dollars in compute and take days. That is <strong>machine unlearning</strong> problem. Probably hardest open problem in privacy engineering.</p>
 
-      <p>The <strong>CCPA</strong> (California Consumer Privacy Act) creates similar requirements in the US. While it's less prescriptive than GDPR about what "deletion" means for models, the trajectory is clear: regulators worldwide are moving toward requiring that individuals can be removed from trained models.</p>
+      <p><strong>CCPA</strong> (California Consumer Privacy Act) creates similar pressure in US. It is less specific than GDPR about what "deletion" means for models, but direction is clear: regulators are moving toward requirement that trained models can remove individuals too.</p>
 
-      <p>The cleverest engineering solution is <strong>SISA training</strong> (Sharded, Isolated, Sliced, and Aggregated). Instead of training one big model on all the data, you partition the data into, say, 10 shards and train a separate sub-model on each shard. Predictions come from ensembling all 10 sub-models. When a patient requests deletion, you only retrain the single shard that contained their data — one-tenth the cost of a full retrain.</p>
+      <p>Smartest engineering workaround is <strong>SISA training</strong> (Sharded, Isolated, Sliced, and Aggregated). Instead of one big model on all data, split data into, say, 10 shards and train separate sub-model on each shard. Prediction comes from ensemble of all 10 sub-models. When patient requests deletion, retrain only shard that held that data — one-tenth cost of full retrain.</p>
 
 <pre><code class="language-python">class SISATrainer:
     def __init__(self, model_fn, num_shards=10):
@@ -584,29 +584,29 @@ def local_train(model_state, model_fn, data, labels, epochs=5, lr=0.01):
         # Retrain only the affected shard — 1/10th the compute
         self.train_shard(shard_idx, remaining_data, remaining_labels)</code></pre>
 
-      <p><strong>Exact unlearning</strong> means the retrained model is identical to one that never saw the deleted record. SISA achieves this. <strong>Approximate unlearning</strong> uses gradient-based methods to "nudge" the model away from the deleted data point's influence — much faster, but hard to verify. Regulators haven't yet settled on which standard they'll require, and my favorite thing about this corner of the field is that the legal and technical definitions of "forgotten" are still being actively negotiated.</p>
+      <p><strong>Exact unlearning</strong> means retrained model matches one that never saw deleted record. SISA gives this. <strong>Approximate unlearning</strong> uses gradient-based tricks to push model away from deleted point's influence — faster, harder to verify. Regulators still have not settled required standard. Legal and technical meaning of "forgotten" is still being negotiated.</p>
 
       <!-- SYNTHETIC DATA -->
       <h2>Synthetic Data: Fake Records, Real Problems</h2>
 
-      <p>There's an appealing idea floating around: instead of protecting real data, why not generate fake data that has the same statistical properties? Train a generative model — a GAN, a VAE, a diffusion model — on the real hospital records, then publish the synthetic dataset instead. The synthetic records don't correspond to real patients, so there's nothing to re-identify.</p>
+      <p>Popular idea: stop protecting real data, generate fake data with same statistics instead. Train generative model — GAN, VAE, diffusion model — on real hospital records, then publish synthetic dataset. Synthetic records do not map to real patients, so re-identification sounds impossible.</p>
 
-      <p>In theory, this sounds like a free lunch. In practice, it's more like a discounted lunch with hidden fees.</p>
+      <p>In theory, free lunch. In practice, discounted lunch with hidden fees.</p>
 
-      <p>Without differential privacy in the training process, the generative model itself can memorize individual records. A membership inference attack on the GAN can reveal whether a specific patient's data was used to train it. The synthetic data looks different from the real data, but the model that produced it still carries the information. A <strong>DP-GAN</strong> — a GAN trained with DP-SGD — provides formal guarantees, but at a cost: synthetic data quality drops significantly, with downstream model accuracy falling 5 to 20 percentage points at &epsilon; between 2 and 5.</p>
+      <p>Without differential privacy during training, generative model can still memorize individual records. Membership inference attack on GAN can reveal whether specific patient's data trained it. Synthetic records look different, but model still carries information. <strong>DP-GAN</strong> — GAN trained with DP-SGD — gives formal guarantees, but quality drops hard. Downstream accuracy can fall 5 to 20 percentage points at &epsilon; between 2 and 5.</p>
 
-      <p>Synthetic data is genuinely useful for one thing: development and testing. Engineers can build and debug pipelines against synthetic records without ever touching real patient data. But for regulatory compliance or publishable analysis, you need either differential privacy guarantees on the generative model or a formal privacy analysis showing the synthetic data doesn't leak. Think of synthetic data as a development convenience, not a privacy guarantee.</p>
+      <p>Synthetic data is genuinely great for one job: development and testing. Engineers can build and debug pipelines on synthetic records without touching real patient data. For regulatory compliance or publishable analysis, you still need differential privacy guarantees on generative model or formal privacy analysis showing synthetic data does not leak. Treat synthetic data as development convenience, not privacy guarantee.</p>
 
       <!-- THE TRADEOFF -->
       <h2>The Fundamental Tradeoff</h2>
 
-      <p>Everything in this section comes back to one tension: privacy and utility pull in opposite directions. Every technique we've covered — DP noise, gradient clipping, federated training, encryption overhead — trades away some model performance or computational efficiency for privacy protection.</p>
+      <p>Whole section comes back to one tension: privacy and utility pull opposite ways. Every tool here — DP noise, gradient clipping, federated training, encryption overhead — trades some performance or efficiency for privacy protection.</p>
 
-      <p>Our three hospitals face this directly. With no privacy protections, they could pool all records and train the best possible model. With DP-SGD at &epsilon; = 1 (strong privacy), the model might lose 8 percentage points of accuracy — potentially the difference between clinically useful and clinically useless. With federated learning, the non-IID data distribution adds convergence challenges on top of whatever DP noise they add. With homomorphic encryption, inference takes minutes instead of milliseconds.</p>
+      <p>Three hospitals face this directly. With no privacy protections, they could pool records and train best model. With DP-SGD at &epsilon; = 1, model might lose 8 accuracy points — enough to cross line from clinically useful to useless. With federated learning, non-IID data adds convergence pain on top of DP noise. With homomorphic encryption, inference takes minutes instead of milliseconds.</p>
 
-      <p>There is no magic setting that gives you perfect privacy and perfect accuracy. But there are ways to push the frontier. Larger datasets help enormously — noise gets averaged over more examples. Better privacy accounting (Rényi DP, the moments accountant) lets you squeeze more utility out of the same privacy budget. Pre-training on public data and fine-tuning with DP on private data is emerging as a powerful pattern — the model learns general features from public data and only needs a small DP-protected fine-tuning step on the sensitive data.</p>
+      <p>No magic setting gives perfect privacy and perfect accuracy. But frontier can move. Larger datasets help because noise averages over more examples. Better accounting — Rényi DP and moments accountant — squeezes more utility from same budget. Pre-training on public data, then fine-tuning with DP on private data, is emerging strong pattern: model learns general features publicly, then uses small DP-protected step on sensitive data.</p>
 
-      <p>The honest answer for where to set &epsilon; is: it depends on what you're building, who you're protecting, and what happens if privacy fails. A medical diagnosis model where leakage could reveal HIV status demands a very different &epsilon; than an emoji frequency counter. There is no universal right answer, and anyone who tells you otherwise is selling something.</p>
+      <p>Honest answer for choosing &epsilon;: depends on system, people at risk, and cost of failure. Medical diagnosis model that could leak HIV status needs very different &epsilon; than emoji frequency counter. No universal right answer. Anyone selling one is selling something else too.</p>
 
 
 
