@@ -301,26 +301,26 @@
   <p>Computers lie about numbers. Store approximations, not exact values. Naive math on approximations makes silent garbage — NaN losses, zero gradients, training runs drifting into nonsense. This section builds instinct for traps: IEEE 754 floating point, catastrophic cancellation, log-sum-exp trick, why you never invert matrix, how GPUs move data, mixed-precision regime now default for serious training. Not academic footnotes. Difference between model that converges and one that silently fails at 3 AM.</p>
 </div>
 
-<p>I kept getting <code>NaN</code> in training runs and reflexively lowering the learning rate until I spent two full days debugging a loss that turned out to be an unprotected <code>log(0)</code>. That was enough to convince me the numbers deserved a real look.</p>
+<p>Kept getting <code>NaN</code> in training runs. I kept lowering learning rate until two-day debug found unprotected <code>log(0)</code>. Enough to make numbers deserve real look.</p>
 
-<p>Numerical computing is the study of how to do math on machines that can't actually do math perfectly. The field has been around since the 1950s, when scientists first realized that computers introduce errors every time they store a number. In ML, these errors compound across millions of operations per training step, and the consequences range from subtle accuracy drift to spectacular NaN explosions.</p>
+<p>Numerical computing studies math on machines that cannot do math perfectly. Field goes back to 1950s, when scientists saw computers add error every time they store number. In ML, errors compound across millions of operations per training step. Result: subtle accuracy drift to spectacular NaN explosions.</p>
 
 
 
 <h2>Computers Lie About Numbers</h2>
 
-<p>Let's start with the most famous lie in computing.</p>
+<p>Start with most famous lie in computing.</p>
 
 <pre><code>a = 0.1 + 0.2
 print(a == 0.3)        # False
 print(f"{a:.20f}")     # 0.30000000000000004441
 </code></pre>
 
-<p>The first time I saw this, I genuinely questioned whether Python was broken. It's not. The issue is deeper than any programming language. Computers think in binary — base 2 — and in base 2, the number 0.1 has no exact representation. It's the same reason 1/3 has no exact decimal representation: 0.33333... goes on forever. In binary, 0.1 goes on forever too. So the computer stores the closest binary fraction it can fit, and that introduces a tiny error. This is not a bug. It's a law of the universe, like friction.</p>
+<p>First time I saw this, thought Python was broken. Not broken. Problem goes deeper than any programming language. Computers use binary — base 2 — and in base 2, 0.1 has no exact representation. Same reason 1/3 has no exact decimal representation: 0.33333... goes on forever. In binary, 0.1 also goes forever. Computer stores closest binary fraction it can fit. Tiny error appears. Not bug. Law of universe, like friction.</p>
 
-<p>The <strong>IEEE 754 standard</strong>, established in 1985 and used by virtually every computer on Earth, defines how these approximations work. Every floating-point number is stored as three pieces: a <strong>sign bit</strong> (positive or negative), an <strong>exponent</strong> (which sets the magnitude), and a <strong>mantissa</strong> (also called the <strong>significand</strong>, which carries the actual precision digits). Think of it like scientific notation. The number -2.998 × 10⁸ has a sign (negative), a significand (2.998), and an exponent (8). IEEE 754 does the same thing, but in base 2: the value is (-1)^sign × 1.mantissa × 2^(exponent - bias).</p>
+<p><strong>IEEE 754 standard</strong>, set in 1985 and used by almost every computer, defines these approximations. Every floating-point number stores three pieces: <strong>sign bit</strong> (positive or negative), <strong>exponent</strong> (sets magnitude), and <strong>mantissa</strong> (also called <strong>significand</strong>, carries precision digits). Think scientific notation. Number -2.998 × 10⁸ has sign (negative), significand (2.998), and exponent (8). IEEE 754 does same thing in base 2: value is (-1)^sign × 1.mantissa × 2^(exponent - bias).</p>
 
-<p>Here's a way to think about it that stuck with me. Imagine a ruler where the tick marks are not evenly spaced. Near zero, the ticks are packed tightly together — you can distinguish between very small numbers with fine precision. But as you move toward larger magnitudes, the ticks spread farther and farther apart. Between 1.0 and 2.0, there are millions of representable float32 values. Between 10,000,000 and 10,000,001, there might be none. The ruler covers an enormous range, but it pays for that range by getting coarser as the numbers grow.</p>
+<p>Good mental model: ruler with uneven tick marks. Near zero, ticks pack tight — very small numbers stay distinguishable. At larger magnitudes, ticks spread apart. Between 1.0 and 2.0, float32 has millions of representable values. Between 10,000,000 and 10,000,001, maybe none. Ruler covers huge range, but pays by getting coarser as numbers grow.</p>
 
 <p>The formats you'll encounter in practice are <strong>float64</strong> (double precision: 1 sign + 11 exponent + 52 mantissa bits, about 15-16 decimal digits of precision), <strong>float32</strong> (single precision: 1 sign + 8 exponent + 23 mantissa bits, about 7 decimal digits), <strong>float16</strong> (half precision: 1 sign + 5 exponent + 10 mantissa bits, about 3.3 decimal digits), and <strong>bfloat16</strong> (brain float: 1 sign + 8 exponent + 7 mantissa bits, about 2.4 decimal digits but the same range as float32). NumPy defaults to float64. PyTorch defaults to float32. That gap matters enormously and we'll come back to it.</p>
 
