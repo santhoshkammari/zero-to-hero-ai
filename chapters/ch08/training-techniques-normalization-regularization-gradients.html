@@ -324,9 +324,9 @@
 
       <h3>Batch Normalization — The Breakthrough That Changed Everything</h3>
 
-      <p>Imagine a tiny network with one hidden layer and four features. During training, we pass a mini-batch of, say, 8 samples through this layer. Each sample produces 4 activation values. Before BatchNorm, those activations get passed directly to the next layer — whatever scale they happen to be at.</p>
+      <p>Imagine tiny network: one hidden layer, four features. Mini-batch of 8 samples passes through layer. Each sample produces 4 activation values. Before BatchNorm, next layer gets activations at whatever scale shows up.</p>
 
-      <p>BatchNorm does something aggressive. For each of those 4 features, it looks <em>across all 8 samples in the batch</em>, computes the mean and variance, and normalizes to zero mean and unit variance. Then — and this is the subtle part — it applies a learnable scale γ and a learnable shift β. Those two parameters let the network undo the normalization if that turns out to be optimal. The normalization gives the optimizer a clean starting point; γ and β preserve the network's freedom to express whatever it needs.</p>
+      <p>BatchNorm acts hard. For each of 4 features, it looks <em>across all 8 samples in batch</em>, computes mean and variance, normalizes to zero mean and unit variance. Then subtle part: learnable scale γ and shift β. Those parameters let network undo normalization if needed. Normalization gives clean optimization starting point; γ and β keep expressiveness.</p>
 
 <pre><code class="language-python">def batch_norm(x, gamma, beta, eps=1e-5):
     # x: (batch_size, features) — say, (8, 4)
@@ -335,34 +335,34 @@
     x_hat = (x - mu) / (var + eps).sqrt()   # normalize
     return gamma * x_hat + beta             # scale and shift</code></pre>
 
-      <p>That <code>eps=1e-5</code> in the denominator prevents division by zero when a feature happens to have zero variance. It's a tiny constant, but remove it and you'll get NaN losses on the very first batch where some feature is constant across samples. I've made that mistake.</p>
+      <p><code>eps=1e-5</code> prevents division by zero when feature variance hits zero. Tiny constant. Remove it, some constant feature in one batch gives NaN loss.</p>
 
-      <p>Why γ and β? Without them, every layer's output would be forced into the exact same distribution — zero mean, unit variance. That sounds clean, but it cripples the network. Some layers <em>need</em> non-zero means or larger variance to represent what they've learned. With γ and β, the network can learn to set γ = σ_original and β = μ_original and perfectly recover the pre-normalization distribution. The normalization doesn't remove representational power — it provides a better optimization starting point.</p>
+      <p>Why γ and β? Without them, every layer output gets forced into exact same distribution: zero mean, unit variance. Clean-looking, bad idea. Some layers <em>need</em> non-zero means or larger variance. With γ and β, network can learn γ = σ_original and β = μ_original, recovering pre-normalization distribution. Representational power stays. Optimization start improves.</p>
 
       <h4>The Train/Eval Split — Where Bugs Hide</h4>
 
-      <p>Here's where BatchNorm gets ugly. During training, it computes mean and variance from the current mini-batch. But during inference, you typically pass one sample at a time — there's no "batch" to compute statistics from. So during training, BatchNorm quietly maintains a <b>running exponential moving average</b> of the means and variances it's seen. At inference time, it uses those stored statistics instead.</p>
+      <p>BatchNorm gets ugly here. During training, mean and variance come from current mini-batch. During inference, often one sample arrives, so no batch statistics to compute. During training, BatchNorm keeps <b>running exponential moving averages</b> of seen means and variances. Inference uses stored statistics.</p>
 
 <pre><code class="language-python">bn = nn.BatchNorm1d(256)
 
 model.train()   # uses live batch statistics, updates running averages
 model.eval()    # uses stored running_mean and running_var</code></pre>
 
-      <p>This split is the source of more production bugs than I care to count. Forget to call <code>model.eval()</code> before inference? Your model's output becomes <em>batch-dependent</em> — feed the same input with different companion samples, get different predictions. I've seen teams debug this for days before someone notices the missing <code>.eval()</code> call.</p>
+      <p>Train/eval split causes many production bugs. Forget <code>model.eval()</code> before inference? Output becomes <em>batch-dependent</em>. Same input plus different companion samples gives different predictions. Teams debug this for days.</p>
 
 <div class="callout callout-danger">
   <div class="callout-label">BN + Small Batch = Trouble</div>
-  <p>BatchNorm's statistics are only as good as the batch they come from. With batch size 2, the "mean" is the average of two numbers — a terrible estimator. Training becomes noisy and erratic. If your GPU memory forces small batches (common with large images in detection, segmentation, and 3D tasks), don't use BatchNorm. Use GroupNorm or LayerNorm instead. Alternatively, <code>nn.SyncBatchNorm</code> aggregates statistics across GPUs to get a larger effective batch.</p>
+  <p>BatchNorm statistics only as good as batch. Batch size 2 gives mean from two numbers. Terrible estimator. Training gets noisy, erratic. If GPU memory forces small batches, common in detection, segmentation, 3D, skip BatchNorm. Use GroupNorm or LayerNorm. Alternative: <code>nn.SyncBatchNorm</code> aggregates statistics across GPUs for larger effective batch.</p>
 </div>
 
-      <p>For convolutional networks, BN operates across (B, H, W) for each channel — all spatial positions in all samples share one mean and one variance per channel. That's <code>nn.BatchNorm2d</code> in PyTorch. The reason: spatial locations within a channel are "the same feature" applied at different positions, so it makes sense to normalize them together.</p>
+      <p>For convolutional networks, BN normalizes across (B, H, W) for each channel — all spatial positions in all samples share one mean and variance per channel. PyTorch calls this <code>nn.BatchNorm2d</code>. Reason: spatial locations inside one channel represent same feature at different positions, so joint normalization makes sense.</p>
 
-      <p>BatchNorm was a genuine breakthrough. Before 2015, training anything deeper than about 20 layers was an exercise in frustration — careful initialization, tiny learning rates, lots of prayer. After BatchNorm, people routinely trained 50, 100, even 152-layer ResNets. But it comes with baggage: the batch dependency, the train/eval split, and the stored running statistics. Those limitations motivated the search for alternatives.</p>
+      <p>BatchNorm changed field. Before 2015, training deeper than ~20 layers meant careful initialization, tiny learning rates, frustration. After BatchNorm, people trained 50-, 100-, 152-layer ResNets routinely. Cost remains: batch dependency, train/eval split, stored running statistics. Those limits pushed search for alternatives.</p>
 
 
       <h3>Layer Normalization — The Transformer's Best Friend</h3>
 
-      <p>Layer Normalization, introduced by Ba, Kiros, and Hinton in 2016, flips the normalization axis. Instead of computing statistics across the batch for each feature, it computes statistics <b>across all features for each sample independently</b>. Every sample gets its own private mean and variance.</p>
+      <p>Layer Normalization, introduced by Ba, Kiros, and Hinton in 2016, flips normalization axis. Instead of statistics across batch for each feature, it computes statistics <b>across all features for each sample independently</b>. Each sample gets private mean and variance.</p>
 
 <pre><code class="language-python">def layer_norm(x, gamma, beta, eps=1e-5):
     # x: (batch_size, features) — say, (8, 4)
@@ -371,16 +371,16 @@ model.eval()    # uses stored running_mean and running_var</code></pre>
     x_hat = (x - mu) / (var + eps).sqrt()
     return gamma * x_hat + beta</code></pre>
 
-      <p>The difference is subtle in code — <code>dim=0</code> vs <code>dim=-1</code> — but the consequences are massive. No batch dependency means: works with batch size 1, identical behavior during training and inference (no running statistics, no train/eval footgun), and works naturally with variable-length sequences where different samples have different lengths.</p>
+      <p>Code difference looks small — <code>dim=0</code> vs <code>dim=-1</code>. Consequences huge. No batch dependency means batch size 1 works, training and inference behave identically, no running statistics, no train/eval footgun, variable-length sequences fit naturally.</p>
 
-      <p>LayerNorm is <b>the normalization for Transformers</b>. Every GPT, LLaMA, BERT, T5, and Mistral model uses it (or its lighter cousin RMSNorm, which we'll get to). The reason is practical: Transformers process sequences of varying lengths, often batch size 1 during inference. Attention mechanisms are sensitive to per-sample statistics — what matters is how features relate to each other <em>within</em> one sequence, not how they compare across sequences in a batch.</p>
+      <p>LayerNorm is <b>normalization for Transformers</b>. GPT, LLaMA, BERT, T5, Mistral — all use it or RMSNorm. Reason: practical. Transformers handle variable-length sequences and often infer with batch size 1. Attention cares about feature relationships <em>within</em> one sequence, not comparisons across different sequences in batch.</p>
 
 
       <h4>Pre-LN vs. Post-LN — A Small Change That Matters a Lot</h4>
 
-      <p>The original Transformer paper (Vaswani et al., 2017) placed LayerNorm <em>after</em> the residual addition: <code>LayerNorm(x + Sublayer(x))</code>. This is called <b>Post-LN</b>. Sometime later, researchers tried putting it <em>before</em> the sublayer: <code>x + Sublayer(LayerNorm(x))</code>. This is <b>Pre-LN</b>.</p>
+      <p>Original Transformer paper (Vaswani et al., 2017) put LayerNorm <em>after</em> residual addition: <code>LayerNorm(x + Sublayer(x))</code>. This is <b>Post-LN</b>. Later work tried putting it <em>before</em> sublayer: <code>x + Sublayer(LayerNorm(x))</code>. This is <b>Pre-LN</b>.</p>
 
-      <p>The difference sounds cosmetic. It's not. With Post-LN, the gradient flowing backward has to pass through the normalization operation on its way through the residual path. That distortion accumulates over many layers. With Pre-LN, the residual connection is "clean" — the gradient can flow directly from one end of the network to the other without being warped by normalization. Xiong et al. (2020) showed this formally: Pre-LN produces gradients whose magnitude stays bounded regardless of depth. Post-LN gradients can shrink or explode.</p>
+      <p>Difference sounds cosmetic. Not cosmetic. With Post-LN, backward gradient passes through normalization on residual path. Distortion accumulates with depth. With Pre-LN, residual connection stays clean; gradient can flow end to end without normalization warp. Xiong et al. (2020) showed it formally: Pre-LN keeps gradient magnitude bounded with depth. Post-LN gradients can shrink or explode.</p>
 
 <pre><code class="language-python">class PreLNBlock(nn.Module):
     def __init__(self, d_model, n_heads, d_ff):
@@ -397,28 +397,28 @@ model.eval()    # uses stored running_mean and running_var</code></pre>
         x = x + self.ffn(self.ln2(x))
         return x</code></pre>
 
-      <p>Most modern LLMs — GPT-2, GPT-3, LLaMA, Mistral — use Pre-LN. Post-LN can sometimes achieve marginally better final performance, but it needs careful learning rate warmup and is more brittle during early training. Pre-LN trains stably out of the box. When you're spending millions of dollars on a training run, "trains stably" wins every time.</p>
+      <p>Most modern LLMs — GPT-2, GPT-3, LLaMA, Mistral — use Pre-LN. Post-LN can sometimes reach slightly better final performance, but it needs careful warmup and stays brittle early. Pre-LN trains stably out of box. Expensive training run wants stability.</p>
 
 
       <h3>RMSNorm — When the Mean Doesn't Matter</h3>
 
-      <p>In 2019, Zhang and Sennrich asked a provocative question: does LayerNorm's mean subtraction actually contribute anything? They ran experiments and found that, for Transformer-class models, the answer is <em>not really</em>. The variance normalization does the heavy lifting. The mean subtraction is mostly dead weight.</p>
+      <p>In 2019, Zhang and Sennrich asked hard question: does LayerNorm mean subtraction help? Experiments said, for Transformer-class models, <em>not really</em>. Variance normalization does most work. Mean subtraction mostly extra weight.</p>
 
-      <p><b>RMSNorm</b> (Root Mean Square Normalization) takes that finding to its logical conclusion: it drops the mean subtraction entirely and divides by the root mean square of the activations. No mean, no shift parameter β — only a scale parameter γ.</p>
+      <p><b>RMSNorm</b> (Root Mean Square Normalization) follows that result. It drops mean subtraction and divides by root mean square of activations. No mean, no shift parameter β — only scale parameter γ.</p>
 
 <pre><code class="language-python">def rms_norm(x, gamma, eps=1e-6):
     # x: (batch_size, features)
     rms = (x.pow(2).mean(dim=-1, keepdim=True) + eps).sqrt()
     return (x / rms) * gamma</code></pre>
 
-      <p>Fewer operations, fewer parameters, same performance. The LLaMA paper stated it plainly: "We replace LayerNorm with RMSNorm for efficiency. We did not observe any degradation in performance." At the scale of a 65-billion parameter model processing trillions of tokens, saving two operations per normalization layer adds up to real wall-clock savings — roughly 7-10% faster in practice.</p>
+      <p>Fewer operations, fewer parameters, same performance. LLaMA paper said it plain: "We replace LayerNorm with RMSNorm for efficiency. We did not observe any degradation in performance." At 65B parameters and trillions of tokens, saving two operations per normalization layer becomes real wall-clock savings — roughly 7-10% faster.</p>
 
-      <p>RMSNorm is now the default for modern LLMs: LLaMA 1/2/3, Mistral, Gemma. If you're building a new Transformer from scratch in 2024, RMSNorm is the normalization to reach for. LayerNorm still works fine — nobody needs to rush to swap it out of an existing codebase — but the direction is clear.</p>
+      <p>RMSNorm now default for modern LLMs: LLaMA 1/2/3, Mistral, Gemma. Building new Transformer from scratch in 2024? Reach for RMSNorm. LayerNorm still works fine; no rush to swap existing codebase. Trend clear.</p>
 
 
       <h3>Group Normalization — For When Your Batch Is Tiny</h3>
 
-      <p>Wu and He (2018) at Facebook AI introduced Group Normalization as a practical solution to BatchNorm's batch-size problem. The idea: split the channels into groups and normalize within each group, per sample. If you have 256 channels and use 32 groups, each group of 8 channels gets its own mean and variance.</p>
+      <p>Wu and He (2018) at Facebook AI introduced Group Normalization to solve BatchNorm batch-size problem. Idea: split channels into groups, normalize within each group, per sample. Example: 256 channels with 32 groups gives 32 groups of 8 channels, each with own mean and variance.</p>
 
 <pre><code class="language-python">gn = nn.GroupNorm(num_groups=32, num_channels=256)
 
@@ -426,9 +426,9 @@ model.eval()    # uses stored running_mean and running_var</code></pre>
 # num_groups == num_channels → Instance Normalization
 # num_groups == 1           → Layer Normalization</code></pre>
 
-      <p>GroupNorm has no batch dependency. It gives nearly BatchNorm-level performance on vision tasks without requiring large batches. That's why Detectron2 — Facebook's object detection framework — defaults to GroupNorm. Object detection models often run with batch size 2 per GPU because images are large and feature pyramids eat memory. BatchNorm would be a disaster there. GroupNorm handles it fine.</p>
+      <p>GroupNorm has no batch dependency. Performance stays near BatchNorm on vision tasks without large batches. Detectron2 defaults to GroupNorm for this reason. Object detection often runs batch size 2 per GPU because large images and feature pyramids eat memory. BatchNorm fails there. GroupNorm works.</p>
 
-      <p><b>Instance Normalization</b> is the extreme case: one channel per group. It normalizes each channel of each sample independently, which strips per-instance style information (mean brightness, contrast). That's why it became the go-to for style transfer — but it's rarely useful elsewhere.</p>
+      <p><b>Instance Normalization</b> is extreme case: one channel per group. Each channel of each sample gets normalized independently, stripping per-instance style information like mean brightness and contrast. Good for style transfer. Rarely useful elsewhere.</p>
 
 
       <h3>Choosing Your Normalization</h3>
@@ -482,24 +482,24 @@ model.eval()    # uses stored running_mean and running_var</code></pre>
         </tbody>
       </table>
 
-      <p>One practical note on placement: for Transformers, Pre-LN (normalize before the sublayer) is the default because it stabilizes gradients. For CNNs, the convention is <code>Conv → BN → ReLU</code>. And across all architectures, <b>normalize before dropout, never after</b> — normalizing after dropout computes statistics over the dropped-out activations, which gives skewed estimates.</p>
+      <p>Placement note. Transformers default to Pre-LN because gradients stay stable. CNN convention is <code>Conv → BN → ReLU</code>. Across architectures, <b>normalize before dropout, never after</b>. Normalizing after dropout measures dropped-out activations and skews statistics.</p>
 
 
 <!-- ════════════════════════════════════════════ -->
-<p>But if you want to understand <em>why</em> dropout is approximately Bayesian inference, why Adam with L2 regularization is subtly broken, or why label smoothing connects to knowledge distillation — read on.</p>
+<p>Want more? Next: why dropout approximates Bayesian inference, why Adam + L2 breaks, why label smoothing connects to knowledge distillation.</p>
 
 
 <!-- ════════════════════════════════════════════ -->
 <h2>Part 2 — Regularization: Keeping the Model Honest</h2>
 
-      <p>A model that perfectly memorizes its training data is useless. It needs to generalize — to perform well on data it has never seen. Regularization is the art of preventing that memorization by either constraining the model's capacity or injecting noise that forces it to learn robust patterns instead of surface-level quirks.</p>
+      <p>Model that memorizes training data perfectly is useless. Model must generalize to unseen data. Regularization blocks memorization by constraining capacity or injecting noise, forcing robust patterns instead of surface quirks.</p>
 
-      <p>I like to think of regularization as friction in the learning process. Without any friction, a powerful model will slide into the deepest, sharpest groove in the training loss — a groove that happens to fit the noise in your specific training set. Regularization adds friction that keeps the model on smoother, more generalizable paths.</p>
+      <p>Think of regularization as friction. No friction: powerful model slides into deepest, sharpest groove in training loss, often fitting noise in one dataset. Regularization adds friction, keeps model on smoother paths that generalize.</p>
 
 
       <h3>Dropout — Three Ways to Think About It</h3>
 
-      <p>During training, dropout randomly sets a fraction <em>p</em> of neuron activations to zero. Each forward pass uses a different random mask — a different random subset of the network is active. At inference time, all neurons are active, but their outputs are scaled to compensate.</p>
+      <p>During training, dropout randomly sets fraction <em>p</em> of neuron activations to zero. Each forward pass uses new random mask, so different subset of network stays active. During inference, all neurons stay active, with outputs scaled to compensate.</p>
 
 <pre><code class="language-python">class MLP(nn.Module):
     def __init__(self, d_in, d_hidden, d_out, drop_rate=0.3):
@@ -517,29 +517,29 @@ model.eval()    # uses stored running_mean and running_var</code></pre>
     def forward(self, x):
         return self.net(x)</code></pre>
 
-      <p>That code is straightforward. The interesting part is why this works. And there are at least three different ways to understand it, each offering a different angle.</p>
+      <p>Code looks straightforward. Interesting part: why it works. Three useful views. Each shows different angle.</p>
 
-      <p><b>The ensemble interpretation.</b> Each dropout mask creates a different "sub-network" — a different subset of neurons and connections. A network with 1,000 neurons and p=0.5 has 2^1000 possible sub-networks. Training with dropout is like simultaneously training all of them, with shared weights. At inference time, using all neurons with scaled weights approximates averaging the predictions of this exponentially large ensemble. That's powerful. Ensemble methods are one of the most reliable ways to improve accuracy, and dropout gives you an approximation for free.</p>
+      <p><b>Ensemble interpretation.</b> Each dropout mask creates different "sub-network" — different subset of neurons and connections. Network with 1,000 neurons and p=0.5 has 2^1000 possible sub-networks. Training with dropout approximates training all of them with shared weights. Inference with all neurons and scaled weights approximates averaging predictions from that huge ensemble. Ensemble effect boosts accuracy.</p>
 
-      <p><b>The Bayesian interpretation.</b> Gal and Ghahramani showed in 2016 that dropout is a form of approximate variational inference. In Bayesian terms, instead of finding a single best set of weights, we want a <em>distribution</em> over possible weights — which captures our uncertainty. Dropout approximately samples from this distribution. This leads to a practical technique called <b>Monte Carlo Dropout</b>: keep dropout enabled at test time, run the same input through the model many times, and look at the spread of predictions. Wide spread = the model is uncertain. Narrow spread = confident. It's one of the cheapest ways to get uncertainty estimates from a neural network.</p>
+      <p><b>Bayesian interpretation.</b> Gal and Ghahramani (2016) showed dropout acts like approximate variational inference. Bayesian view wants <em>distribution</em> over weights, not one best setting, so uncertainty stays explicit. Dropout approximately samples from that distribution. Practical result: <b>Monte Carlo Dropout</b>. Keep dropout on at test time, run same input many times, inspect prediction spread. Wide spread means uncertain model. Narrow spread means confident model. Cheap uncertainty estimates.</p>
 
-      <p><b>The noise injection interpretation.</b> Dropping random neurons adds noise to the forward pass, which prevents the network from relying on any single neuron too heavily. Information gets spread across multiple redundant pathways. If neuron 47 always fires for "cat," dropout forces the network to distribute that cat-detecting ability across many neurons. More distributed representations tend to generalize better.</p>
+      <p><b>Noise injection interpretation.</b> Randomly dropping neurons adds noise to forward pass, so network cannot rely too heavily on one neuron. Information spreads across redundant pathways. If neuron 47 always fires for "cat," dropout forces cat signal to spread across many neurons. Distributed representations generalize better.</p>
 
-      <p>One implementation detail that trips people up: <b>inverted dropout</b>. Modern frameworks (PyTorch, TensorFlow) scale the surviving activations by 1/(1-p) during training, not at inference. This keeps the expected values consistent. If you're reading older code that scales at inference time instead, it's doing the same thing — the math works out identically — but inverted dropout is cleaner because your inference path requires zero modifications.</p>
+      <p>Implementation detail trips people up: <b>inverted dropout</b>. Modern frameworks scale surviving activations by 1/(1-p) during training, not inference. Expected values stay consistent. Older code may scale at inference instead; math is same. Inverted dropout keeps inference path clean.</p>
 
-      <p>Typical rates: <b>0.1</b> for Transformer attention and FFN layers, <b>0.2–0.5</b> for fully-connected layers in older architectures. And — this is important — dropout must be disabled during inference. Forget <code>model.eval()</code> and your model makes different predictions every time, which is fine for MC Dropout but a disaster for everything else.</p>
+      <p>Typical rates: <b>0.1</b> for Transformer attention and FFN layers, <b>0.2–0.5</b> for fully-connected layers in older architectures. Disable dropout during inference. Forget <code>model.eval()</code>, predictions change every run. Fine for MC Dropout. Disaster otherwise.</p>
 
 <div class="callout callout-warning">
   <div class="callout-label">Dropout Is Fading from Large Models</div>
-  <p>Large pre-trained models (GPT-3+, LLaMA, ViT-L) increasingly train with <b>zero dropout</b>. When the dataset is big enough (billions of tokens), overfitting isn't the bottleneck — optimization speed is. Dropout's noise slows convergence. Modern large-scale training relies on weight decay + data augmentation instead. This doesn't mean dropout is obsolete — for moderate-sized models and datasets, it's still one of the best regularizers. But don't cargo-cult it into every architecture.</p>
+  <p>Large pre-trained models increasingly use <b>zero dropout</b>. When dataset is huge, billions of tokens, overfitting stops being bottleneck and optimization speed becomes bottleneck. Dropout noise slows convergence. Modern large-scale training leans on weight decay and data augmentation instead. Dropout not obsolete; moderate models and datasets still benefit a lot. Do not cargo-cult it into every architecture.</p>
 </div>
 
 
       <h4>DropPath — Dropout's Block-Level Cousin</h4>
 
-      <p>Standard dropout kills individual neurons. <b>DropPath</b> (also called stochastic depth, Huang et al. 2016) kills entire residual blocks. During training, each block is randomly bypassed — the input skips straight through the identity connection as if the block didn't exist. Drop probability often increases with depth: shallow blocks are rarely skipped, deep blocks are skipped more often.</p>
+      <p>Standard dropout kills individual neurons. <b>DropPath</b> (also called stochastic depth, Huang et al. 2016) kills whole residual blocks. During training, each block can be bypassed, so input skips through identity connection as if block vanished. Drop probability often rises with depth: shallow blocks rarely skipped, deep blocks skipped more.</p>
 
-      <p>This makes more sense than it first sounds. In a 100-layer residual network, many blocks learn small refinements that aren't always needed. Randomly skipping them during training forces each block to be independently useful and prevents deep blocks from relying on the specific output of the block before them. DropPath is standard in Vision Transformers (ViT, Swin, DeiT) and modern ResNets. If your architecture has residual connections, DropPath is often more appropriate than standard dropout.</p>
+      <p>Reason this works: deep residual networks contain many blocks that learn small refinements, not always needed. Random skipping forces each block to matter on its own and stops deep blocks from depending on exact output of previous block. DropPath is standard in Vision Transformers (ViT, Swin, DeiT) and modern ResNets. Residual architecture often wants DropPath more than standard dropout.</p>
 
 
       <h3>Weight Decay — The Most Important Regularizer You'll Ever Use</h3>
