@@ -594,9 +594,9 @@ train_data = lgb.Dataset(X_train, label=y_train, categorical_feature=cat_feature
 
 <p>Second innovation is <strong>ordered boosting</strong>. In regular gradient boosting, subtle bias appears: residuals used to train tree m were computed on same data used to train trees 1 through m−1. Model has already seen these examples, so residuals are optimistically small — smaller than on fresh data. CatBoost computes residuals using different data subsets, reducing this "prediction shift." Training costs more, but models generalize better, especially on smaller datasets.</p>
 
-<p>CatBoost also builds <strong>symmetric trees</strong> by default — every split at the same depth uses the same feature and threshold. This sounds restrictive, but it produces trees that are extremely fast for inference (every leaf at the same depth, highly cache-friendly) and acts as a strong regularizer.</p>
+<p>CatBoost also builds <strong>symmetric trees</strong> by default — every split at same depth uses same feature and threshold. Sounds restrictive, but produces trees that are extremely fast for inference (every leaf at same depth, highly cache-friendly) and acts as strong regularizer.</p>
 
-<p>I'm still developing my intuition for when CatBoost beats LightGBM. The general pattern: if your dataset has many categorical features with high cardinality, or if you don't have time for extensive hyperparameter tuning, CatBoost's defaults are remarkably good. The downside is training speed — CatBoost is the slowest of the three libraries, especially on large, numerically-dominated datasets.</p>
+<p>General pattern: if dataset has many high-cardinality categorical features, or you do not have time for extensive hyperparameter tuning, CatBoost defaults are remarkably good. Downside is training speed — CatBoost is slowest of three libraries, especially on large, numerically dominated datasets.</p>
 
 <!-- ════════════════════════════════════════════ -->
 
@@ -619,19 +619,19 @@ train_data = lgb.Dataset(X_train, label=y_train, categorical_feature=cat_feature
   </tbody>
 </table>
 
-<p>In practice, all three perform within 1–2% of each other on most problems. The choice usually comes down to: speed and scale → LightGBM. Heavy categorical features → CatBoost. Largest ecosystem and documentation → XGBoost. You won't go wrong with any of them. If you're starting from scratch on a new project, LightGBM is my current default, but I've been wrong about these preferences before and I'll be wrong again.</p>
+<p>In practice, all three perform within 1–2% of each other on most problems. Choice usually comes down to: speed and scale → LightGBM. Heavy categorical features → CatBoost. Largest ecosystem and documentation → XGBoost. You will not go wrong with any. If starting from scratch on new project, LightGBM is strong default.</p>
 
-<p>The 2024 benchmarks on 10 million rows tell the speed story clearly: LightGBM finishes in about 20 seconds on CPU, XGBoost takes about 40, and CatBoost about 70. On GPU, XGBoost actually edges ahead. The accuracy differences are smaller than the noise in most real-world feature engineering cycles.</p>
+<p>2024 benchmarks on 10 million rows tell speed story clearly: LightGBM finishes in about 20 seconds on CPU, XGBoost takes about 40, CatBoost about 70. On GPU, XGBoost edges ahead. Accuracy differences are smaller than noise in most real-world feature-engineering cycles.</p>
 
 <!-- ════════════════════════════════════════════ -->
 
 <h2>Stacking: When One Ensemble Isn't Enough</h2>
 
-<p>We've built ensembles of trees. Stacking asks: what if we built an ensemble of <em>different kinds of ensembles</em>? Take the predictions from a Random Forest, a LightGBM, an XGBoost, and maybe a logistic regression. Feed those predictions as input features to a new model — the <strong>meta-learner</strong> — that learns which base model to trust in which situations.</p>
+<p>We built ensembles of trees. Stacking asks: what if we build ensemble of <em>different kinds of ensembles</em>? Take predictions from Random Forest, LightGBM, XGBoost, maybe logistic regression. Feed those predictions as input features to new model — <strong>meta-learner</strong> — which learns which base model to trust in which situations.</p>
 
-<p>The meta-learner might learn that the Random Forest is most reliable for high-value houses, while LightGBM is better for entry-level homes, and logistic regression provides a useful "sanity check" signal. The meta-learner weights and combines these signals to produce a final prediction.</p>
+<p>Meta-learner might learn Random Forest is most reliable for high-value houses, LightGBM works better for entry-level homes, and logistic regression provides useful "sanity check" signal. Meta-learner weights and combines these signals to produce final prediction.</p>
 
-<p>There's a critical detail that makes or breaks stacking: you must generate the base model predictions using <strong>out-of-fold predictions</strong>. That means you split the training data into, say, 5 folds. For each fold, you train each base model on the other 4 folds and predict on the held-out fold. This gives you base-model predictions for every training example that the respective model never saw during its training. Without this step, the meta-learner would learn to trust whichever base model overfits the most.</p>
+<p>Critical detail makes or breaks stacking: base-model predictions must come from <strong>out-of-fold predictions</strong>. Split training data into, say, 5 folds. For each fold, train each base model on other 4 folds and predict held-out fold. This gives base-model predictions for every training example that respective model never saw during training. Skip this step, and meta-learner learns to trust whichever base model overfits most.</p>
 
 <pre><code>from sklearn.ensemble import StackingClassifier
 from sklearn.linear_model import LogisticRegression
@@ -647,27 +647,27 @@ stack = StackingClassifier(
 )
 stack.fit(X_train, y_train)</code></pre>
 
-<p>Stacking typically squeezes out an extra 0.5–1% accuracy on top of the best single model. In Kaggle competitions, where 0.001 AUC can mean the difference between first place and tenth, that's worth the effort. In production? Almost never. You're tripling your model complexity, inference latency, and maintenance burden for a marginal gain that often disappears with distribution shift. Know that stacking exists, understand how it works, and save it for competitions.</p>
+<p>Stacking typically squeezes out extra 0.5–1% accuracy on top of best single model. In Kaggle competitions, where 0.001 AUC can separate first place from tenth, that gain matters. In production? Almost never. You triple model complexity, inference latency, and maintenance burden for marginal gain that often disappears under distribution shift. Know stacking exists. Understand how it works. Save it for competitions.</p>
 
 <!-- ════════════════════════════════════════════ -->
 
 <h2>Ensembles in Production</h2>
 
-<p>Ensembles in a notebook and ensembles in production are different beasts. A few things that bit me and will probably bite you:</p>
+<p>Ensembles in notebook and ensembles in production are different beasts. Few things that bit me and will probably bite you:</p>
 
-<p><strong>Model size.</strong> A LightGBM model with 5,000 trees and 255 leaves each can be 100+ MB serialized. If you're deploying to mobile devices or need fast cold starts in serverless functions, this matters. The fix: reduce <code>n_estimators</code> and increase <code>learning_rate</code> proportionally. You're trading a tiny bit of accuracy for a much smaller model. Alternatively, export to ONNX for optimized runtimes that compress the tree representation.</p>
+<p><strong>Model size.</strong> LightGBM model with 5,000 trees and 255 leaves each can serialize to 100+ MB. If deploying to mobile devices or needing fast cold starts in serverless functions, this matters. Fix: reduce <code>n_estimators</code> and increase <code>learning_rate</code> proportionally. You trade tiny bit of accuracy for much smaller model. Alternative: export to ONNX for optimized runtimes that compress tree representation.</p>
 
-<p><strong>Prediction latency.</strong> Each prediction requires traversing every tree and aggregating the results. That's N sequential memory lookups, and trees are not SIMD-friendly. For real-time serving at thousands of queries per second, LightGBM's prediction path is the fastest of the three. CatBoost's symmetric trees also predict fast because every path is the same depth — cache-friendly.</p>
+<p><strong>Prediction latency.</strong> Each prediction must traverse every tree and aggregate results. That is N sequential memory lookups, and trees are not SIMD-friendly. For real-time serving at thousands of queries per second, LightGBM has fastest prediction path of three. CatBoost's symmetric trees also predict fast because every path has same depth — cache-friendly.</p>
 
-<p><strong>Feature engineering still matters.</strong> GBMs can learn feature interactions — tree splits naturally capture them. A tree that splits on square footage and then on bedrooms has learned an interaction between the two. But explicit feature engineering still helps. A feature like <code>price_per_sqft = price / sqft</code> is one split for the model to discover automatically, but zero effort for you to create. Hand-crafted features reduce the number of trees needed and improve generalization. The practitioners who win Kaggle competitions consistently report that feature engineering outweighs model tuning by a wide margin.</p>
+<p><strong>Feature engineering still matters.</strong> GBMs can learn feature interactions — tree splits capture them naturally. Tree that splits on square footage and then bedrooms has learned interaction between two features. But explicit feature engineering still helps. Feature like <code>price_per_sqft = price / sqft</code> is one split for model to discover, but zero effort for you to create. Hand-crafted features reduce number of trees needed and improve generalization. Practitioners who win Kaggle competitions consistently report feature engineering outweighs model tuning by wide margin.</p>
 
-<p><strong>Why tree ensembles still beat neural networks on tabular data.</strong> I kept waiting for deep learning to take over tabular ML the way it took over vision and NLP. It hasn't happened. Tree ensembles have natural inductive biases for tabular data — axis-aligned splits match the logical structure of features like "age > 50 AND income < 30k." They handle categorical features and missing values natively. They're sample-efficient (most tabular datasets have thousands to tens of thousands of rows, not millions). Tabular deep learning architectures like TabNet and FT-Transformer exist, but on benchmark after benchmark, a well-tuned GBM matches or beats them. My favorite thing about this is that, aside from high-level explanations about inductive bias, no one is completely certain why tree ensembles maintain this advantage so stubbornly.</p>
+<p><strong>Why tree ensembles still beat neural networks on tabular data.</strong> Deep learning has not taken over tabular ML the way it took over vision and NLP. Tree ensembles have natural inductive biases for tabular data — axis-aligned splits match logical structure of features like "age > 50 AND income < 30k." They handle categorical features and missing values natively. They are sample-efficient (most tabular datasets have thousands to tens of thousands of rows, not millions). Tabular deep learning architectures like TabNet and FT-Transformer exist, but across benchmark after benchmark, well-tuned GBM matches or beats them. High-level explanation points to inductive bias, but exact reason tree ensembles keep this stubborn advantage is still not completely certain.</p>
 
 <!-- ════════════════════════════════════════════ -->
 
 <h2>The Pattern Everyone Uses</h2>
 
-<p>This is the template. It's what competitive ML practitioners reach for on every tabular problem. It gives you per-fold scores (to check stability), out-of-fold predictions (for stacking or calibration), automatic early stopping (no overfitting), and a reliable estimate of test performance.</p>
+<p>This is template. Competitive ML practitioners reach for it on nearly every tabular problem. It gives per-fold scores (check stability), out-of-fold predictions (for stacking or calibration), automatic early stopping (avoid overfitting), and reliable test-performance estimate.</p>
 
 <pre><code>import lightgbm as lgb
 import numpy as np
@@ -712,7 +712,7 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(X_train, y_train)):
 
 print(f"\nOverall OOF AUC: {roc_auc_score(y_train, oof_preds):.4f}")</code></pre>
 
-<p>The parameters above are sensible defaults. The learning rate is small enough for good generalization. <code>num_leaves=31</code> gives moderate tree complexity. Feature and row subsampling add diversity. The L1 and L2 regularization terms keep leaf weights in check. Early stopping does the heavy lifting of deciding how many trees to train. Start here, and tune from here.</p>
+<p>Parameters above are sensible defaults. Learning rate is small enough for good generalization. <code>num_leaves=31</code> gives moderate tree complexity. Feature and row subsampling add diversity. L1 and L2 regularization keep leaf weights in check. Early stopping does heavy lifting on tree count. Start here. Tune from here.</p>
 
 
       <div class="page-nav">
