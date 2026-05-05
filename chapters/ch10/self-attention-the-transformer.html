@@ -509,28 +509,28 @@ where headᵢ = Attention(X × Wᵢ_Q, X × Wᵢ_K, X × Wᵢ_V)</code></pre>
 
 <h2>The Order Problem: Positional Encoding</h2>
 
-<p>We've built something powerful, but it has a fatal flaw. Look back at the attention formula: softmax(QK⊤/√d_k) V. Where in that formula does the model know that "cat" comes before "sat" which comes before "on"?</p>
+<p>Powerful, but fatal flaw. Look at attention formula: softmax(QK⊤/√d_k) V. Where does model know "cat" comes before "sat" which comes before "on"?</p>
 
 <p>Nowhere.</p>
 
-<p>Self-attention is <strong>permutation-equivariant</strong>. If you shuffle the input words, the output words get shuffled in the same way — the attention weights between any pair of words don't change. "Cat sat mat" and "mat cat sat" produce identical attention patterns. For language, where word order is everything — "dog bites man" versus "man bites dog" — this is a disaster.</p>
+<p>Self-attention is <strong>permutation-equivariant</strong>. Shuffle input words → output words shuffle same way, attention weights unchanged. "Cat sat mat" and "mat cat sat" produce identical attention patterns. For language where word order is everything — "dog bites man" vs "man bites dog" — this is disaster.</p>
 
-<p>The fix: inject positional information into the word embeddings before they enter the attention layers. The model's input becomes token_embedding + positional_encoding, and now every word carries a signal about where it sits in the sequence.</p>
+<p>Fix: inject positional information into word embeddings before attention layers. Input becomes token_embedding + positional_encoding — every word carries signal about position in sequence.</p>
 
-<p>Three approaches have emerged, each an improvement on the last.</p>
+<p>Three approaches emerged, each improving on last.</p>
 
 <h3>Sinusoidal Positional Encoding</h3>
 
-<p>The original Transformer paper encoded each position using a pattern of sine and cosine waves at different frequencies:</p>
+<p>Original Transformer encoded each position using sine and cosine waves at different frequencies:</p>
 
 <pre><code>PE(pos, 2i)   = sin(pos / 10000^(2i/d_model))
 PE(pos, 2i+1) = cos(pos / 10000^(2i/d_model))</code></pre>
 
-<p>Each dimension oscillates at a different frequency. The first dimensions change rapidly — like the seconds hand on a clock. The last dimensions change slowly — like the hour hand. Together, they give every position a unique "fingerprint" of wave values.</p>
+<p>Each dimension oscillates at different frequency. First dimensions change rapidly — like seconds hand. Last dimensions change slowly — like hour hand. Together give every position unique "fingerprint" of wave values.</p>
 
-<p>Why sines and cosines? There's an elegant mathematical property: for any fixed offset k, PE(pos + k) can be expressed as a linear function of PE(pos). This means the model can learn to attend to "the word 3 positions to my left" by learning a fixed linear combination of the positional dimensions. The relative position between any two words is encoded as a rotation in the sine/cosine space — a kind of foreshadowing of the approach that would eventually replace this one.</p>
+<p>Why sines and cosines? Elegant property: for any fixed offset k, PE(pos + k) = linear function of PE(pos). Model can learn "word 3 positions to my left" via fixed linear combination of positional dimensions. Relative position encoded as rotation in sine/cosine space — foreshadowing RoPE.</p>
 
-<p>The other advantage: since the formula works for any position, the model can handle sequences longer than anything it saw during training. No lookup table to run off the end of.</p>
+<p>Other advantage: formula works for any position, so model handles sequences longer than anything seen during training. No lookup table to overflow.</p>
 
 <pre><code class="language-python">import torch, math
 
@@ -548,21 +548,21 @@ pe = sinusoidal_pe(100, 16)
 
 <h3>Learned Positional Embeddings</h3>
 
-<p>BERT and GPT-2 took a more direct approach: make the positions trainable parameters. Create an embedding table with one row per possible position, and let backpropagation figure out what each position vector should look like.</p>
+<p>BERT and GPT-2 — more direct approach: make positions trainable parameters. Embedding table with one row per position, backprop figures out what each position vector should be.</p>
 
-<p>This works well — often slightly better than sinusoidal when training data is plentiful, because the model can learn whatever positional patterns are useful rather than being constrained to sine waves. The catch: learned embeddings can't extrapolate. If you trained with max_len = 512, position 513 doesn't exist. You'd need to retrain or fine-tune to handle longer sequences.</p>
+<p>Works well — often slightly better than sinusoidal when training data plentiful (model learns useful patterns, not constrained to sine waves). Catch: can't extrapolate. Trained with max_len = 512 → position 513 doesn't exist. Need retrain/fine-tune for longer sequences.</p>
 
 <h3>RoPE — Rotary Position Embeddings</h3>
 
-<p><strong>Rotary Position Embeddings (RoPE)</strong>, introduced by Su et al. in 2021, are what most modern large language models use — LLaMA, Mistral, Qwen, and many others.</p>
+<p><strong>Rotary Position Embeddings (RoPE)</strong>, Su et al. 2021 — what most modern LLMs use: LLaMA, Mistral, Qwen.</p>
 
-<p>The insight is subtle and beautiful. Instead of <em>adding</em> a position signal to the embedding, RoPE <em>rotates</em> the query and key vectors by an angle that depends on position. Pairs of dimensions are treated as 2D coordinates and rotated by pos × θᵢ, where θᵢ varies across dimension pairs.</p>
+<p>Key insight: instead of <em>adding</em> position signal to embedding, RoPE <em>rotates</em> query and key vectors by angle depending on position. Dimension pairs treated as 2D coordinates, rotated by pos × θᵢ, where θᵢ varies across dimension pairs.</p>
 
-<p>In complex number notation, if we treat each pair of dimensions as a complex number z_k, then RoPE at position p computes: z_k' = z_k · e^(iθ_k·p). That's a rotation in the complex plane.</p>
+<p>Complex number notation: treat each dimension pair as complex number z_k, RoPE at position p computes z_k' = z_k · e^(iθ_k·p). Rotation in complex plane.</p>
 
-<p>The beauty shows up in the dot product. When we compute the attention score between positions m and n, the rotation at position m and the conjugate rotation at position n partially cancel, leaving a factor of e^(iθ_k(m-n)). The result depends only on the <em>relative distance</em> (m - n), not on the absolute positions. RoPE naturally encodes relative position without anyone explicitly computing it.</p>
+<p>Beauty shows in dot product. Attention score between positions m and n: rotation at m and conjugate rotation at n partially cancel, leaving factor e^(iθ_k(m-n)). Result depends only on <em>relative distance</em> (m - n), not absolute positions. RoPE naturally encodes relative position without explicit computation.</p>
 
-<p>I'm still building my intuition for why rotation specifically is such a natural fit here. The mathematical argument is clean — the dot product only sees the difference in angles — but there's something deeper about geometry and position that I suspect connects to much older ideas in signal processing. What I can say with confidence is that RoPE extrapolates to longer sequences far better than learned embeddings, and it's the default choice if you're building a Transformer today.</p>
+<p>Mathematical argument clean — dot product only sees difference in angles. RoPE extrapolates to longer sequences far better than learned embeddings. Default choice for building Transformers today.</p>
 
 
 
@@ -573,19 +573,19 @@ pe = sinusoidal_pe(100, 16)
 
 <h2>The Residual Stream: How Information Flows Through a Transformer</h2>
 
-<p>Before we assemble the architecture, I want to introduce a mental model that changed how I think about Transformers.</p>
+<p>Mental model that changes how to think about Transformers.</p>
 
-<p>Picture a river. The token embeddings — the initial numerical representations of our words — enter at the headwaters and flow downstream through every layer of the network. This river is the <strong>residual stream</strong>. Each attention layer and each feed-forward layer sits on the riverbank. They reach in, scoop out a copy of the water, process it, and pour their result back in. The river keeps flowing with its original water plus whatever each layer added.</p>
+<p>Picture river. Token embeddings enter at headwaters, flow downstream through every layer. This = <strong>residual stream</strong>. Each attention/FFN layer sits on riverbank — scoops out copy of water, processes it, pours result back in. River keeps flowing with original water plus whatever each layer added.</p>
 
-<p>Mechanically, this is the <strong>residual connection</strong>: the output of each sub-layer is x + SubLayer(x), not SubLayer(x) alone. The sub-layer doesn't replace the representation — it adds a correction, a delta, on top of it. The original embedding travels through the entire network essentially untouched, with each layer contributing its refinement.</p>
+<p>Mechanically = <strong>residual connection</strong>: output of each sub-layer is x + SubLayer(x), not SubLayer(x) alone. Sub-layer doesn't replace representation — adds correction, delta, on top. Original embedding travels through entire network untouched, each layer contributing refinement.</p>
 
-<p>Why does this matter so much? Two reasons.</p>
+<p>Why matters? Two reasons.</p>
 
-<p>First, during backpropagation, the gradient flows through two paths: through the sub-layer (which may shrink the gradient) and directly through the skip connection (which preserves it perfectly). Our river analogy holds — even if one tributary dries up, the main channel keeps flowing. This is why you can stack 96 Transformer layers (like GPT-3) and still train successfully. Without residual connections, gradients vanish and deep networks collapse.</p>
+<p>First: during backprop, gradient flows through two paths — through sub-layer (may shrink gradient) and directly through skip connection (preserves perfectly). Even if one tributary dries up, main channel keeps flowing. Why you can stack 96 layers (GPT-3) and still train. Without residual connections, gradients vanish, deep networks collapse.</p>
 
-<p>Second, it gives us a way to think about what each layer <em>does</em>. The attention layer reads from the stream, identifies relevant information from other positions, and writes an update back. The feed-forward layer reads from the stream, processes each position independently, and writes its update. Each layer is a small contribution. The final output is the sum of all contributions plus the original input. This "residual stream" interpretation, popularized by the mechanistic interpretability community, turns out to be deeply useful for understanding how information moves through Transformers.</p>
+<p>Second: gives way to understand what each layer <em>does</em>. Attention layer reads from stream, identifies relevant info from other positions, writes update back. FFN reads from stream, processes each position independently, writes its update. Each layer = small contribution. Final output = sum of all contributions + original input. "Residual stream" interpretation from mechanistic interpretability community — deeply useful for understanding information flow.</p>
 
-<p>Our river will come back. For now, let's look at what sits on the banks.</p>
+<p>River analogy continues. Now — what sits on the banks.</p>
 
 
 <!-- ═══════════════════════════════════════════════════════ -->
@@ -594,25 +594,25 @@ pe = sinusoidal_pe(100, 16)
 
 <h2>Layer Normalization and the Pre-Norm Revolution</h2>
 
-<p>If you stack many layers deep and each one adds its update to the residual stream, the magnitudes of the activations can drift — growing larger and larger, or oscillating wildly. Something needs to keep them in check. That something is <strong>layer normalization</strong>.</p>
+<p>Stack many layers, each adding updates to residual stream → activation magnitudes drift (grow larger, oscillate wildly). Something must keep them in check. That's <strong>layer normalization</strong>.</p>
 
-<p>Layer normalization works on each token independently. It takes the d_model-dimensional vector for a single token, computes its mean and variance across those dimensions, and normalizes to zero mean and unit variance. Then it applies learned scale (γ) and shift (β) parameters to let the model restore any useful scaling.</p>
+<p>Layer norm works per token independently. Takes d_model-dimensional vector for single token, computes mean and variance across dimensions, normalizes to zero mean/unit variance. Then applies learned scale (γ) and shift (β) to restore useful scaling.</p>
 
-<p>Unlike batch normalization (which normalizes across the batch), layer norm doesn't depend on what other sentences happen to be in the same training batch. This makes it stable for variable-length sequences and small batch sizes — the regime Transformers operate in.</p>
+<p>Unlike batch normalization (normalizes across batch), layer norm doesn't depend on other sentences in same batch. Stable for variable-length sequences and small batch sizes — regime Transformers operate in.</p>
 
-<p>Now, here's a detail that seems minor but changed the course of Transformer development.</p>
+<p>Detail that seems minor but changed Transformer development:</p>
 
-<p>The original 2017 paper places the normalization <em>after</em> the residual addition:</p>
+<p>Original 2017 paper: normalization <em>after</em> residual addition:</p>
 
 <pre><code>output = LayerNorm(x + SubLayer(x))          ← Post-Norm</code></pre>
 
-<p>Most modern models flip it — normalization happens <em>before</em> the sub-layer:</p>
+<p>Most modern models flip it — normalization <em>before</em> sub-layer:</p>
 
 <pre><code>output = x + SubLayer(LayerNorm(x))          ← Pre-Norm</code></pre>
 
-<p>In Pre-Norm, the residual connection is a clean identity shortcut — the gradient flows through it without passing through any normalization. The practical effect is dramatic. Pre-Norm models train reliably without learning rate warmup tricks, even at 100+ layers depth. Post-Norm models are notoriously finicky about warmup and initialization — skip either one and the first few training steps produce NaN losses.</p>
+<p>Pre-Norm: residual connection = clean identity shortcut, gradient flows without passing through normalization. Practical effect dramatic. Pre-Norm trains reliably without warmup tricks, even 100+ layers. Post-Norm notoriously finicky — skip warmup/initialization → NaN losses.</p>
 
-<p>GPT-2, GPT-3, LLaMA — they all use Pre-Norm. The original Post-Norm Transformer is like a classic car: historically important, but you wouldn't choose it for a road trip today unless you enjoy tinkering with the engine at every rest stop.</p>
+<p>GPT-2, GPT-3, LLaMA — all use Pre-Norm. Original Post-Norm = historically important, but not what you'd choose today.</p>
 
 <pre><code class="language-python">import torch.nn as nn
 
@@ -625,7 +625,7 @@ class PreNormBlock(nn.Module):
     def forward(self, x):
         return x + self.sublayer(self.norm(x))    # clean skip connection</code></pre>
 
-<p>In that code, notice how x passes straight through the addition untransformed. The normalization only affects what goes <em>into</em> the sub-layer. The skip connection is an unimpeded highway for both information and gradients.</p>
+<p>Notice: x passes straight through addition untransformed. Normalization only affects what goes <em>into</em> sub-layer. Skip connection = unimpeded highway for information and gradients.</p>
 
 
 <!-- ═══════════════════════════════════════════════════════ -->
