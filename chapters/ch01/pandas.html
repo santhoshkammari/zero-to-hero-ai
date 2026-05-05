@@ -301,16 +301,16 @@
 <!-- ═══════════ End Table of Contents ═══════════ -->
 <div class="tldr">
   <div class="tldr-label">TL;DR</div>
-  <p>Pandas is a labeled, dtype-aware wrapper around NumPy arrays, organized internally by a BlockManager that groups same-type columns into contiguous memory blocks. The real leverage comes from understanding this architecture — why index alignment silently produces NaN, why <code>apply()</code> is orders of magnitude slower than vectorized operations, why <code>transform</code> is the workhorse of feature engineering while <code>agg</code> is for summaries, and why an unvalidated merge can silently double your row count. Once you see the engine underneath, every Pandas pattern stops being memorization and starts being obvious.</p>
+  <p>Pandas wraps NumPy arrays with labels and dtype awareness. <b>BlockManager</b> groups same-type columns into contiguous memory blocks. Know this engine. Then index alignment producing NaN, <code>apply()</code> running much slower than vectorized ops, <code>transform</code> driving feature engineering, <code>agg</code> summarizing groups, and unvalidated merges doubling row count all make sense. See engine underneath. Pandas patterns stop feeling memorized.</p>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!--  OPENER — PERSONAL CONFESSION                              -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 
-<p>When something goes wrong in Pandas — a silent NaN appearing after an arithmetic operation, a DataFrame mysteriously doubling in size after a merge, a <code>SettingWithCopyWarning</code> you suppress without understanding — you need a mental model to fall back on. This chapter opens the hood.</p>
+<p>Pandas breaks in quiet ways. Arithmetic adds silent NaN. Merge doubles DataFrame size. <code>SettingWithCopyWarning</code> appears and gets suppressed. Need mental model. This chapter opens hood.</p>
 
-<p>Pandas is the de facto tool for tabular data manipulation in Python — the thing you reach for when you have rows and columns and need to clean, transform, explore, or prepare data for modeling. It sits on top of NumPy, but adds something NumPy lacks: labels. Rows have an index. Columns have names. And that labeling system, as we'll see, is both Pandas' greatest strength and its most dangerous trap.</p>
+<p>Pandas handles tabular data in Python. Use it for rows, columns, cleaning, transforming, exploring, preparing data for modeling. It sits on NumPy and adds labels. Rows get index. Columns get names. That labeling system is Pandas' biggest strength and biggest trap.</p>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!--  TABLE OF CONTENTS                                         -->
@@ -322,7 +322,7 @@
 
 <h2>What a DataFrame Actually Is</h2>
 
-<p>Let's start with something tiny. Imagine we're tracking three employees at a small company:</p>
+<p>Start small. Track three employees at small company:</p>
 
 <pre><code class="language-python">import pandas as pd
 
@@ -333,21 +333,21 @@ df = pd.DataFrame({
 })
 print(df)</code></pre>
 
-<p>What you see is a table — three rows, three columns. What Pandas sees is something different. Under the hood, a DataFrame is managed by an internal object called the <b>BlockManager</b>. The BlockManager doesn't store columns individually. Instead, it groups columns of the same data type into contiguous blocks of memory — each block is a NumPy array. Our tiny DataFrame above would have two blocks: one for the integer column (<code>salary</code>), and one for the object columns (<code>name</code>, <code>department</code>).</p>
+<p>You see table: three rows, three columns. Pandas sees internal layout. Under hood, DataFrame uses internal object called <b>BlockManager</b>. It does not store columns one by one. It groups same-dtype columns into contiguous memory blocks, each block a NumPy array. Tiny DataFrame above has two blocks: integer column <code>salary</code>, object columns <code>name</code> and <code>department</code>.</p>
 
-<p>Think of it like a filing cabinet. You don't throw every document into one drawer. You group financial documents in one drawer, legal documents in another. The BlockManager does the same thing with dtypes — all the <code>int64</code> columns sit together in one contiguous NumPy array, all the <code>float64</code> columns in another, all the <code>object</code> columns in a third. This grouping is what makes vectorized operations fast. When you compute <code>df["salary"] * 1.1</code>, Pandas doesn't loop through three Python integers. It hands the entire block to NumPy, which operates on a contiguous chunk of C-level memory in one pass.</p>
+<p>Think filing cabinet. Financial docs in one drawer. Legal docs in another. <b>BlockManager</b> does same with dtypes. All <code>int64</code> columns sit in one contiguous NumPy array, all <code>float64</code> columns in another, all <code>object</code> columns in third. This grouping makes vectorized ops fast. Compute <code>df["salary"] * 1.1</code>. Pandas skips Python loop over integers. It hands whole block to NumPy, which works over contiguous C-level memory in one pass.</p>
 
-<p>You can actually peek at this machinery:</p>
+<p>Can peek at this machinery:</p>
 
 <pre><code class="language-python">print(df._data)  # the BlockManager
 for block in df._data.blocks:
     print(type(block).__name__, block.shape, block.dtype)</code></pre>
 
-<p>I'll be honest — I went a long time without knowing this existed. But once I saw it, a lot of Pandas' quirks started making sense. Why is adding a new column with a different dtype slightly expensive? Because it creates a new block. Why are operations across columns of the same type fast but mixed-type operations slower? Because same-type columns share a contiguous NumPy array while mixed types live in separate blocks.</p>
+<p>Went long time not knowing this existed. Then many Pandas quirks made sense. New column with different dtype costs extra because new block gets created. Same-type column ops run fast because they share contiguous NumPy array. Mixed-type ops run slower because data lives in separate blocks.</p>
 
-<p>A <b>Series</b> is what you get when you pull a single column out of a DataFrame. It's a one-dimensional labeled array — the values plus an index. The relationship between a DataFrame and its Series is like the relationship between a spreadsheet and a single column in that spreadsheet: the column inherits the row labels.</p>
+<p><b>Series</b> comes from pulling one column out of DataFrame. One-dimensional labeled array: values plus index. DataFrame-to-Series relationship looks like spreadsheet to one column in spreadsheet. Column keeps row labels.</p>
 
-<p>That labeling system — the index — is where things get interesting. And dangerous.</p>
+<p>Labeling system — index — gets interesting. Dangerous too.</p>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!--  THE INDEX TRAP                                            -->
@@ -355,7 +355,7 @@ for block in df._data.blocks:
 
 <h2>The Index Trap — loc, iloc, and Alignment</h2>
 
-<p>Every DataFrame has an index, even if you never set one. By default it's <code>0, 1, 2, ...</code> — a <b>RangeIndex</b>. And here's where the first trap lives. Pandas has two selection mechanisms: <code>.loc[]</code> selects by <em>label</em>, and <code>.iloc[]</code> selects by <em>position</em>. When your index is the default 0-based integers, labels and positions happen to be the same thing, and everything feels consistent. The moment they diverge — say you filter some rows and the index now goes <code>[0, 2, 5]</code> — the two give different results.</p>
+<p>Every DataFrame has index, even if you never set one. Default is <code>0, 1, 2, ...</code>, a <b>RangeIndex</b>. First trap lives here. Pandas has two selectors: <code>.loc[]</code> picks by <em>label</em>. <code>.iloc[]</code> picks by <em>position</em>. With default 0-based index, labels and positions match, so things feel same. Once they diverge — after filter leaving index <code>[0, 2, 5]</code> — results diverge too.</p>
 
 <pre><code class="language-python">filtered = df[df["salary"] > 75000]
 print(filtered.index)  # Int64Index([0, 2]) — positions 0 and 2 from the original
@@ -364,11 +364,11 @@ print(filtered.loc[2])   # row with LABEL 2 (Carol) — works
 print(filtered.iloc[1])  # row at POSITION 1 (also Carol) — works
 print(filtered.loc[1])   # KeyError! There is no label 1 in this index</code></pre>
 
-<p><code>.loc[0:2]</code> gives you rows with labels 0 through 2 <em>inclusive</em> — that's how label slicing works. <code>.iloc[0:2]</code> gives you positions 0 and 1, exclusive of 2 — standard Python slicing. The inclusive-vs-exclusive difference catches everyone at least once.</p>
+<p><code>.loc[0:2]</code> returns labels 0 through 2 <em>inclusive</em>. Label slicing works that way. <code>.iloc[0:2]</code> returns positions 0 and 1, excluding 2. Standard Python slicing. Inclusive vs exclusive bites everyone once.</p>
 
-<p>Use <code>.loc</code> as your default. Use <code>.query()</code> for complex filters. Use <code>.iloc</code> when you explicitly need positional access. And when in doubt about what your index looks like, call <code>.reset_index(drop=True)</code> to get a clean 0-based sequence again.</p>
+<p>Default move: use <code>.loc</code>. Use <code>.query()</code> for complex filters. Use <code>.iloc</code> when you need positions. Unsure about index? Call <code>.reset_index(drop=True)</code> and get clean 0-based sequence.</p>
 
-<p>But the index isn't done causing trouble. Its most dangerous behavior isn't selection at all.</p>
+<p>But index not finished causing trouble. Worst behavior is not selection.</p>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!--  THE SILENT NAN FACTORY                                    -->
@@ -376,7 +376,7 @@ print(filtered.loc[1])   # KeyError! There is no label 1 in this index</code></p
 
 <h2>The Silent NaN Factory</h2>
 
-<p>This is the Pandas behavior that cost me an entire day of debugging on a real project, and I want to make sure it doesn't cost you the same. Pandas aligns on the index for every arithmetic operation. Not on position. On the label. Watch what happens:</p>
+<p>This bug cost me day of debugging on real project. Want you to avoid same hit. Pandas aligns arithmetic on index labels. Not position. Watch:</p>
 
 <pre><code class="language-python">s1 = pd.Series([10, 20, 30], index=["A", "B", "C"])
 s2 = pd.Series([1, 2, 3], index=["B", "C", "D"])
@@ -388,11 +388,11 @@ print(result)
 # C    32.0
 # D     NaN</code></pre>
 
-<p>We asked for a sum of two three-element Series. We got four elements, two of which are NaN. No error. No warning. Pandas looked at the index labels, matched "B" with "B" and "C" with "C", and for every label that appeared in only one Series — "A" and "D" — it produced NaN.</p>
+<p>Asked for sum of two three-element Series. Got four elements, two NaN. No error. No warning. Pandas matched labels <code>"B"</code> with <code>"B"</code> and <code>"C"</code> with <code>"C"</code>. Labels appearing in only one Series — <code>"A"</code> and <code>"D"</code> — became NaN.</p>
 
-<p>In a notebook, you'd probably notice immediately. In a production pipeline where these Series are intermediate results buried inside a function, this produces wrong numbers that <em>look</em> plausible. The output is the right shape. The values are in the right ballpark. Everything downstream — aggregations, model training, reports — runs without error. But the data is wrong.</p>
+<p>In notebook, you notice fast. In production pipeline, these Series hide inside intermediate steps. Then you get wrong numbers that <em>look</em> plausible. Output shape looks right. Values look close enough. Downstream aggregations, model training, reports all run. Data is wrong.</p>
 
-<p>The defense is simple. Before any arithmetic between two Series or DataFrames, either ensure the indexes match, or reset them:</p>
+<p>Defense is simple. Before arithmetic between Series or DataFrames, make sure indexes match or reset them:</p>
 
 <pre><code class="language-python"># Option 1: assert alignment
 assert s1.index.equals(s2.index), "Index mismatch — will produce NaN"
@@ -400,9 +400,9 @@ assert s1.index.equals(s2.index), "Index mismatch — will produce NaN"
 # Option 2: reset both to positional
 result = s1.values + s2.values  # pure NumPy, no alignment</code></pre>
 
-<p>Once you know this behavior exists, you start noticing it everywhere. It's why <code>pd.concat([df1, df2], axis=1)</code> with mismatched indexes fills columns with NaN. It's why assigning a filtered Series back to a DataFrame sometimes works and sometimes doesn't. The index is always mediating, silently.</p>
+<p>Once you know this, you see it everywhere. Mismatched indexes in <code>pd.concat([df1, df2], axis=1)</code> fill columns with NaN. Assigning filtered Series back into DataFrame works sometimes and fails sometimes for same reason. Index always mediates, silently.</p>
 
-<p>That's enough danger for now. Let's build something pleasant.</p>
+<p>Enough danger. Build something pleasant.</p>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!--  METHOD CHAINING                                           -->
@@ -410,7 +410,7 @@ result = s1.values + s2.values  # pure NumPy, no alignment</code></pre>
 
 <h2>Method Chaining as an Assembly Line</h2>
 
-<p>Going back to our small company, imagine the data has grown. We now have a CSV with employee records — names, departments, salaries, hire dates, performance scores. The old way to work with this data looks like this:</p>
+<p>Back to small company. Data grew. Now CSV has employee records — names, departments, salaries, hire dates, performance scores. Old style looks like this:</p>
 
 <pre><code class="language-python"># Assume df has columns: name, department, salary, hire_date, performance
 df2 = df[df["salary"] > 50000]
@@ -420,9 +420,9 @@ grouped = df2.groupby("department")
 result = grouped.agg(avg_score=("performance", "mean"))
 result = result.sort_values("avg_score", ascending=False)</code></pre>
 
-<p>Five intermediate variables. Each one is a snapshot of a DataFrame that exists only to be consumed by the next line. If you want to insert a step — say, filter out contractors — you have to renumber everything downstream. If you want to remove a step, same problem. It's like an assembly line where every worker puts their output on a separate table, and the next worker has to walk over and pick it up.</p>
+<p>Five intermediate variables. Each is DataFrame snapshot used once by next line. Insert step — like filtering contractors — and you renumber downstream logic. Remove step, same mess. Like assembly line where each worker drops output on separate table and next worker walks over to grab it.</p>
 
-<p>Method chaining is the same assembly line, but with a conveyor belt. Each step takes the DataFrame from the step before, transforms it, and passes it along:</p>
+<p>Method chaining keeps assembly line but adds conveyor belt. Each step takes previous DataFrame, transforms it, passes it along:</p>
 
 <pre><code class="language-python">result = (
     df
@@ -433,9 +433,9 @@ result = result.sort_values("avg_score", ascending=False)</code></pre>
     .sort_values("avg_score", ascending=False)
 )</code></pre>
 
-<p>Same result. Reads top-to-bottom. Add a step by inserting a line. Remove a step by deleting a line. Nothing else changes.</p>
+<p>Same result. Reads top to bottom. Add step by inserting line. Remove step by deleting line. Nothing else changes.</p>
 
-<p>Three methods make the conveyor belt work. <code>.assign()</code> creates new columns mid-chain. The <code>lambda d:</code> pattern references the DataFrame as it exists <em>at that point</em> in the chain, not whatever variable existed three lines ago. <code>.query()</code> filters rows using a string expression — more readable than the <code>&amp;</code>/<code>|</code>/parentheses gymnastics of boolean indexing, and it uses the numexpr engine under the hood for large DataFrames, which can be 2-10x faster for numeric conditions. And <code>.pipe()</code> plugs custom functions into the chain — each function takes a DataFrame, returns a DataFrame, and becomes a named, testable step in the pipeline:</p>
+<p>Three methods keep conveyor belt moving. <code>.assign()</code> creates new columns mid-chain. <code>lambda d:</code> sees DataFrame as it exists <em>at that point</em> in chain, not some variable from three lines back. <code>.query()</code> filters rows with string expression. More readable than <code>&amp;</code>/<code>|</code>/parentheses-heavy boolean indexing, and for large numeric DataFrames it can use numexpr for 2-10x speedups. <code>.pipe()</code> plugs custom functions into chain. Each function takes DataFrame, returns DataFrame, becomes named testable pipeline step:</p>
 
 <pre><code class="language-python">def remove_outliers(df, col, n_std=3):
     mean, std = df[col].mean(), df[col].std()
@@ -454,9 +454,9 @@ features = (
     .drop(columns=["hire_date", "employee_id"])
 )</code></pre>
 
-<p>Why <code>.pipe()</code> instead of nesting function calls? Because <code>add_tenure(remove_outliers(df, "salary"))</code> reads inside-out and becomes unreadable past two functions. The assembly line analogy holds: you want each station in order, left to right, not nested like Russian dolls.</p>
+<p>Use <code>.pipe()</code> instead of nested calls because <code>add_tenure(remove_outliers(df, "salary"))</code> reads inside-out and turns ugly after two functions. Assembly line rule: keep stations in order, left to right. Not nested like Russian dolls.</p>
 
-<p>Chaining is elegant, but it only handles one DataFrame at a time, flowing in one direction. What about when we need to compute something <em>within groups</em> of rows? That's where the real work begins.</p>
+<p>Chaining looks elegant, but it handles one DataFrame moving one way. What if you need work <em>within groups</em> of rows? Real work starts there.</p>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!--  GROUPBY                                                   -->
@@ -464,7 +464,7 @@ features = (
 
 <h2>GroupBy — Split, Apply, Combine from Scratch</h2>
 
-<p>Let's go back to our employee DataFrame, now with five people across three departments:</p>
+<p>Back to employee DataFrame. Now five people across three departments:</p>
 
 <pre><code class="language-python">df = pd.DataFrame({
     "name": ["Alice", "Bob", "Carol", "Dave", "Eve"],
@@ -472,16 +472,16 @@ features = (
     "salary": [95000, 72000, 88000, 68000, 102000],
 })</code></pre>
 
-<p>Suppose we want the average salary per department. The mental model is three steps. First, <b>split</b> the rows into groups — all the Eng rows in one pile, all the Sales rows in another. Second, <b>apply</b> an operation to each pile — compute the mean salary. Third, <b>combine</b> the results into a new DataFrame. This is the split-apply-combine pattern, and it's the backbone of <code>groupby</code>.</p>
+<p>Need average salary per department. Mental model has three steps. First, <b>split</b> rows into groups — Eng rows in one pile, Sales rows in another. Second, <b>apply</b> operation to each pile — compute mean salary. Third, <b>combine</b> results into new DataFrame. That split-apply-combine pattern powers <code>groupby</code>.</p>
 
 <pre><code class="language-python">df.groupby("department")["salary"].mean()
 # department
 # Eng      95000.0
 # Sales    70000.0</code></pre>
 
-<p>Under the hood, Pandas builds a mapping from each unique value in the grouping column to the row positions where that value appears. For categorical columns, this mapping is almost free — the category codes are already integer positions. For string columns, Pandas has to hash every value to figure out which rows belong together. This is why <code>groupby</code> on a categorical column can be meaningfully faster than on a string column — the hashing step is skipped.</p>
+<p>Under hood, Pandas builds mapping from each unique grouping value to row positions where that value appears. For categorical columns, mapping is almost free because category codes already are integer positions. For string columns, Pandas must hash every value to group rows. That is why <code>groupby</code> on categorical column can run meaningfully faster than on string column. Hashing step gets skipped.</p>
 
-<p>The modern way to aggregate is <b>named aggregation</b>, where each keyword argument becomes a column name in the output:</p>
+<p>Modern aggregation uses <b>named aggregation</b>. Each keyword argument becomes output column name:</p>
 
 <pre><code class="language-python">summary = (
     df.groupby("department")
@@ -492,9 +492,9 @@ features = (
     )
 )</code></pre>
 
-<p>This gives you clean column names in the result instead of a MultiIndex that you immediately have to flatten. In production code, named aggregation is the style you want.</p>
+<p>Result gets clean column names instead of MultiIndex you flatten right away. In production code, named aggregation is style you want.</p>
 
-<p>But aggregation compresses each group down to a single row. What about when you need the result <em>back on every original row</em>?</p>
+<p>But aggregation shrinks each group to one row. What if you need result <em>back on every original row</em>?</p>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!--  TRANSFORM VS AGG                                          -->
@@ -502,9 +502,9 @@ features = (
 
 <h2>transform vs agg — The Distinction That Matters</h2>
 
-<p>This is the concept that separates someone who knows Pandas from someone who is productive in Pandas. Both operate on groups. Both accept functions. But they return fundamentally different shapes, and using the wrong one leads to either an error or an hour of confused debugging.</p>
+<p>This concept separates knowing Pandas from being productive in Pandas. Both work on groups. Both accept functions. But return shapes differ completely. Pick wrong one and you get error or hour of confused debugging.</p>
 
-<p><code>agg</code> reduces each group to one row. You put in a DataFrame with 5 rows across 2 groups, you get out 2 rows. It's a summary. <code>transform</code> returns a value for <em>every row in the original DataFrame</em>, broadcasting the group-level result back to each member of that group. Same number of rows in, same number of rows out.</p>
+<p><code>agg</code> reduces each group to one row. Put in DataFrame with 5 rows across 2 groups, get 2 rows out. Summary. <code>transform</code> returns value for <em>every row in original DataFrame</em>, broadcasting group result back to each row in that group. Same row count in. Same row count out.</p>
 
 <pre><code class="language-python"># agg: 5 rows in → 2 rows out (one per department)
 df.groupby("department")["salary"].agg("mean")
@@ -519,26 +519,26 @@ print(df)
 # 3   Dave      Sales   68000   70000.0
 # 4    Eve        Eng  102000   95000.0</code></pre>
 
-<p>See what happened? Every Eng employee got 95000 as their <code>dept_avg</code>. Every Sales employee got 70000. The group result was broadcast back. This is the workhorse for feature engineering in ML — anytime you need "this row's value relative to its group," that's <code>transform</code>.</p>
+<p>See it? Every Eng employee got 95000 as <code>dept_avg</code>. Every Sales employee got 70000. Group result broadcast back. This drives feature engineering in ML. Need "this row relative to its group"? Use <code>transform</code>.</p>
 
-<p>A z-score within each department? That's <code>transform</code>:</p>
+<p>Z-score inside each department? <code>transform</code>:</p>
 
 <pre><code class="language-python">df["salary_zscore"] = (
     df.groupby("department")["salary"]
     .transform(lambda x: (x - x.mean()) / x.std())
 )</code></pre>
 
-<p>Fill missing ages with the group median instead of the global median? <code>transform</code>:</p>
+<p>Fill missing ages with group median instead of global median? <code>transform</code>:</p>
 
 <pre><code class="language-python">df["age"] = df.groupby("department")["age"].transform(lambda x: x.fillna(x.median()))</code></pre>
 
-<p>Rank employees within their department? <code>transform</code>:</p>
+<p>Rank employees inside department? <code>transform</code>:</p>
 
 <pre><code class="language-python">df["salary_rank"] = df.groupby("department")["salary"].transform("rank", ascending=False)</code></pre>
 
-<p>I still occasionally reach for <code>apply</code> as my first instinct when I need per-group logic, then catch myself. <code>apply</code> is the escape hatch — it runs a Python function on each group, which means Python-level overhead per group, no vectorization, and the GIL holding everything to a single thread. Before reaching for <code>apply</code>, ask: can <code>agg</code> or <code>transform</code> or a vectorized operation do this? Almost always, yes. Reserve <code>apply</code> for truly custom per-group logic, like "give me the top 3 rows per group by score" — and even then, <code>nlargest</code> inside <code>apply</code> is often avoidable with clever sorting and <code>.head()</code>.</p>
+<p>I still reach for <code>apply</code> first sometimes, then stop myself. <code>apply</code> is escape hatch. It runs Python function on each group, so you pay Python overhead per group, lose vectorization, and GIL keeps work on one thread. Before using <code>apply</code>, ask if <code>agg</code>, <code>transform</code>, or vectorized ops can do job. Almost always yes. Save <code>apply</code> for truly custom group logic, like "top 3 rows per group by score" — and even there, clever sorting plus <code>.head()</code> often beats <code>nlargest</code> inside <code>apply</code>.</p>
 
-<p>So far we've been working with a single DataFrame. Real data lives in multiple tables. Combining them is where things get treacherous.</p>
+<p>So far, one DataFrame. Real data lives in multiple tables. Combining them gets treacherous.</p>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!--  MERGE                                                     -->
@@ -546,20 +546,20 @@ print(df)
 
 <h2>Merge — Hash Joins, Row Explosions, and Defensive Coding</h2>
 
-<p>Let's add a second table to our running example — a department budget lookup:</p>
+<p>Add second table to running example — department budget lookup:</p>
 
 <pre><code class="language-python">budgets = pd.DataFrame({
     "department": ["Eng", "Sales", "Marketing"],
     "budget": [500000, 300000, 200000],
 })</code></pre>
 
-<p>We want to attach each employee's department budget to their row. That's a merge — specifically a left join, because we want all employees even if their department has no budget entry:</p>
+<p>We want each employee row to carry department budget. That means merge — specifically left join, because we want all employees even if department has no budget row:</p>
 
 <pre><code class="language-python">merged = pd.merge(df, budgets, on="department", how="left")</code></pre>
 
-<p>Under the hood, Pandas builds a hash table from the join keys of one table (typically the smaller one), then scans the other table, looking up each key in the hash table. This is an O(N) operation, fast for unsorted data. When both sides are already sorted on the join key, Pandas can use a sort-merge join instead — walk through both tables simultaneously, matching keys as it goes. You don't choose which algorithm runs; Pandas picks based on the data.</p>
+<p>Under hood, Pandas often builds hash table from join keys in one table — usually smaller one — then scans other table and looks up each key. That is O(N), fast for unsorted data. If both sides are already sorted on join key, Pandas can use sort-merge join instead — walk both tables together and match keys on way through. You do not pick algorithm. Pandas picks from data.</p>
 
-<p>The mechanics are straightforward for one-to-one and many-to-one joins. The nightmare starts with many-to-many.</p>
+<p>Mechanics stay straightforward for one-to-one and many-to-one joins. Nightmare starts with many-to-many.</p>
 
 <table>
 <tr><th>Merge Type</th><th>Keeps</th><th>SQL Equivalent</th><th>Typical Use</th></tr>
@@ -570,10 +570,10 @@ print(df)
 
 <div class="callout callout-danger">
   <div class="callout-label">🚨 The Row Explosion</div>
-  <p>If the left table has 3 rows with key "Eng" and the right table has 4 rows with key "Eng," you get 12 rows for that key alone. That's a Cartesian product — a many-to-many join. Your DataFrame can silently quadruple in size. The numbers downstream still look reasonable. The model still trains. But it trains on duplicated, corrupted data. I've seen this go unnoticed for weeks in production.</p>
+  <p>If left table has 3 rows with key <code>"Eng"</code> and right table has 4 rows with key <code>"Eng"</code>, result gets 12 rows for that key alone. Cartesian product. Many-to-many join. DataFrame can silently quadruple in size. Downstream numbers still look reasonable. Model still trains. But data is duplicated and corrupted. Seen this hide in production for weeks.</p>
 </div>
 
-<p>The defense is one parameter:</p>
+<p>Defense is one parameter:</p>
 
 <pre><code class="language-python"># This will raise MergeError if the right side has duplicate keys
 merged = pd.merge(df, budgets, on="department", validate="many_to_one")
@@ -584,7 +584,7 @@ print(merged["_merge"].value_counts())
 # both          5
 # right_only    1   ← Marketing had no employees — investigate or ignore</code></pre>
 
-<p>For stacking rows (appending DataFrames with the same columns), use <code>pd.concat([df1, df2], ignore_index=True)</code>. Always pass <code>ignore_index=True</code> — without it, you get duplicate index values, and any subsequent index-aligned operation will produce wrong results. The silent NaN factory, again.</p>
+<p>For stacking rows — appending DataFrames with same columns — use <code>pd.concat([df1, df2], ignore_index=True)</code>. Always pass <code>ignore_index=True</code>. Without it, duplicate index values remain, and later index-aligned operations produce wrong results. Silent NaN factory again.</p>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!--  REST STOP                                                 -->
@@ -596,28 +596,28 @@ print(merged["_merge"].value_counts())
 
 <h2>Memory — Where the Bytes Go</h2>
 
-<p>Remember the filing cabinet analogy from earlier — the BlockManager grouping columns by dtype? That architecture has a direct consequence for memory. A DataFrame's memory footprint is the sum of its blocks, and each block's size depends on the dtype of the columns it holds.</p>
+<p>Remember filing cabinet analogy — <b>BlockManager</b> grouping columns by dtype? That architecture directly shapes memory use. DataFrame memory footprint equals sum of its blocks, and each block size depends on column dtypes inside it.</p>
 
-<p>The single biggest memory waste in most Pandas code is string columns stored as <code>object</code> dtype. When a column has <code>object</code> dtype, every cell is a full Python object — a pointer to a Python string on the heap, plus the string itself, plus Python's object overhead. For a column like "department" with 3 unique values across a million rows, that's a million separate Python string objects, most of them duplicates.</p>
+<p>Biggest memory waste in most Pandas code: string columns stored as <code>object</code>. Then each cell is full Python object — pointer to Python string on heap, string itself, plus Python object overhead. For column like <code>"department"</code> with 3 unique values across million rows, that means million separate Python string objects, mostly duplicates.</p>
 
-<p>The <b>category</b> dtype fixes this. It stores a dictionary of unique values (the "categories") plus an array of integer codes pointing into that dictionary. Three unique values means three stored strings plus a million tiny integers. That's often 90%+ memory savings:</p>
+<p><b>category</b> dtype fixes this. It stores dictionary of unique values — categories — plus array of integer codes pointing into dictionary. Three unique values means three stored strings plus million tiny integers. Often saves 90%+ memory:</p>
 
 <pre><code class="language-python">print(df["department"].memory_usage(deep=True))  # e.g., 320 bytes as object
 df["department"] = df["department"].astype("category")
 print(df["department"].memory_usage(deep=True))  # e.g., 179 bytes as category — small data, small savings
 # On 1M rows: object ~60MB → category ~2MB. That's where it matters.</code></pre>
 
-<p>Numeric columns have a similar story. Pandas defaults to <code>int64</code> — 8 bytes per value. If your column holds ages (0-120), <code>int8</code> (1 byte) is enough. That's an 87% reduction per column. <code>pd.to_numeric(df["age"], downcast="integer")</code> picks the smallest integer type that fits your data's range.</p>
+<p>Numeric columns have same story. Pandas defaults to <code>int64</code> — 8 bytes per value. If column holds ages 0-120, <code>int8</code> — 1 byte — is enough. That cuts 87% per column. <code>pd.to_numeric(df["age"], downcast="integer")</code> picks smallest integer type that fits data range.</p>
 
-<p>For string-heavy DataFrames in pandas 2.0+, there's an even more powerful option: the <b>PyArrow backend</b>. Instead of Python objects, strings are stored in Apache Arrow's native format — contiguous, immutable, and operable from C++ without Python overhead. Memory usage drops 2-5x, and string operations like <code>.str.contains()</code> can run 2-10x faster:</p>
+<p>For string-heavy DataFrames in pandas 2.0+, stronger option exists: <b>PyArrow backend</b>. Strings stop being Python objects. They use Apache Arrow native format — contiguous, immutable, operable from C++ without Python overhead. Memory drops 2-5x. String ops like <code>.str.contains()</code> can run 2-10x faster:</p>
 
 <pre><code class="language-python">df = pd.read_csv("data.csv", dtype_backend="pyarrow")  # all columns use Arrow types
 # or selectively:
 df["name"] = df["name"].astype("string[pyarrow]")</code></pre>
 
-<p>The Arrow backend also enables zero-copy interchange with Polars, Spark, and other Arrow-native tools — no serialization, no copies. If you're building pipelines that move DataFrames between systems, this is the future.</p>
+<p>Arrow backend also enables zero-copy interchange with Polars, Spark, and other Arrow-native tools — no serialization, no copies. If pipelines move DataFrames between systems, this is future.</p>
 
-<p>Check your total memory footprint with <code>df.memory_usage(deep=True).sum() / 1e6</code> to get megabytes. If a 100K-row DataFrame is eating 500MB, you don't have a Pandas problem. You have a dtype problem.</p>
+<p>Check total memory with <code>df.memory_usage(deep=True).sum() / 1e6</code> for megabytes. If 100K-row DataFrame eats 500MB, problem is not Pandas. Problem is dtype.</p>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!--  PERFORMANCE                                               -->
@@ -625,7 +625,7 @@ df["name"] = df["name"].astype("string[pyarrow]")</code></pre>
 
 <h2>Performance — Why apply() Is a Python Loop in Disguise</h2>
 
-<p>Every Pandas performance problem I've diagnosed in production boils down to one root cause: Python-level iteration over rows. The assembly line analogy is useful here. A vectorized operation is like a machine that stamps every piece on the conveyor belt in one pass — one call to C-level NumPy code, millions of operations. <code>apply(axis=1)</code> is like pulling each piece off the belt, handing it to a human, waiting for them to process it, and putting it back. The human is the Python interpreter, and it's thousands of times slower than the machine.</p>
+<p>Almost every Pandas performance problem I have seen in production comes from one root cause: Python-level row iteration. Assembly-line analogy helps. Vectorized operation is machine stamping every piece on conveyor in one pass — one call to C-level NumPy code, millions of ops. <code>apply(axis=1)</code> is worker pulling each piece off belt, handling it by hand, then putting it back. Worker is Python interpreter. Machine is thousands of times faster.</p>
 
 <pre><code class="language-python"># SLOW: apply with axis=1 — Python loop over every row
 df["full_name"] = df.apply(lambda r: r["first"] + " " + r["last"], axis=1)
@@ -639,11 +639,11 @@ df["clean"] = df["name"].apply(lambda x: x.strip().lower())
 # FAST: .str accessor methods — vectorized
 df["clean"] = df["name"].str.strip().str.lower()</code></pre>
 
-<p>The <code>.str</code> and <code>.dt</code> accessors are Pandas' vectorized interfaces for string and datetime operations, respectively. Every time you see <code>.apply(lambda x: x.some_string_method())</code>, there's almost certainly a <code>.str</code> equivalent that runs 5-50x faster. Same for datetime operations and <code>.dt</code>.</p>
+<p><code>.str</code> and <code>.dt</code> are Pandas vectorized interfaces for string and datetime work. Whenever you see <code>.apply(lambda x: x.some_string_method())</code>, there is almost certainly matching <code>.str</code> version running 5-50x faster. Same story for datetime work with <code>.dt</code>.</p>
 
-<p>For complex numeric expressions across columns, <code>.eval()</code> and <code>.query()</code> use the <b>numexpr</b> engine, which compiles expressions into bytecode and executes them in multi-threaded C, processing data in cache-friendly chunks. On DataFrames with millions of rows, this can be 2-10x faster than equivalent Python expressions. The tradeoff: numexpr only handles numeric and boolean operations, not string manipulation or custom Python functions.</p>
+<p>For complex numeric expressions across columns, <code>.eval()</code> and <code>.query()</code> use <b>numexpr</b>. It compiles expressions to bytecode and runs them in multi-threaded C on cache-friendly chunks. On million-row DataFrames, this can be 2-10x faster than equivalent Python expressions. Tradeoff: numexpr handles numeric and boolean ops, not string manipulation or custom Python functions.</p>
 
-<p>When you absolutely must iterate (rare), use <code>df.itertuples()</code> over <code>df.iterrows()</code>. <code>iterrows()</code> constructs a new Series object for every row — that's Python object allocation overhead multiplied by your row count. <code>itertuples()</code> returns lightweight namedtuples, 5-10x faster. But if you're reaching for either, step back and ask whether a vectorized approach exists. It almost always does.</p>
+<p>When you truly must iterate — rare — use <code>df.itertuples()</code> over <code>df.iterrows()</code>. <code>iterrows()</code> builds new Series for every row. That is Python object allocation overhead multiplied by row count. <code>itertuples()</code> returns lightweight namedtuples, 5-10x faster. But if you want either one, pause and ask whether vectorized approach exists. Usually it does.</p>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!--  MISSING DATA                                              -->
@@ -651,11 +651,11 @@ df["clean"] = df["name"].str.strip().str.lower()</code></pre>
 
 <h2>Missing Data — The Kind That Looks Like Data</h2>
 
-<p>Missing values are deceptive because they participate in computations without raising errors. <code>NaN + 5</code> is <code>NaN</code>. <code>NaN > 3</code> is <code>False</code>. A mean computed over a column with NaNs will silently exclude them by default. The data doesn't scream "I'm broken" — it whispers.</p>
+<p>Missing values trick you because they join computations without errors. <code>NaN + 5</code> gives <code>NaN</code>. <code>NaN > 3</code> gives <code>False</code>. Mean over column with NaNs silently skips them by default. Data does not shout "broken." It whispers.</p>
 
-<p>Before you reach for <code>fillna()</code>, the most important question is: <em>why</em> is this value missing? A null <code>treatment_end_date</code> might mean the patient is still being treated — that's structural missingness, and filling it with a date would be lying. A null <code>age</code> in a survey might be random — the person skipped the question. The two require completely different strategies, and Pandas won't tell you which is which.</p>
+<p>Before <code>fillna()</code>, ask most important question: <em>why</em> is value missing? Null <code>treatment_end_date</code> may mean patient still in treatment — structural missingness. Filling date there would lie. Null <code>age</code> in survey may be random because person skipped question. These cases need different strategies. Pandas will not tell you which.</p>
 
-<p>The gotcha that bites everyone once: <code>NaN != NaN</code> in IEEE 754 floating point. You cannot check for missing values with <code>==</code>:</p>
+<p>Gotcha that bites everyone once: <code>NaN != NaN</code> in IEEE 754 floating point. Do not check missing values with <code>==</code>:</p>
 
 <pre><code class="language-python">import numpy as np
 print(np.nan == np.nan)  # False — by definition
@@ -668,7 +668,7 @@ df[df["col"].isna()]  # finds the actual missing values</code></pre>
 
 <div class="callout callout-danger">
   <div class="callout-label">🚨 fillna Leakage in ML</div>
-  <p>When imputing missing values for a machine learning pipeline, never compute fill statistics on the full dataset. The median you compute from all data includes test-set information, and using it to fill training data is a form of data leakage. Compute on train, apply to both: <code>median_val = X_train["age"].median()</code>, then <code>X_train["age"].fillna(median_val)</code> and <code>X_test["age"].fillna(median_val)</code>.</p>
+  <p>When imputing missing values in machine learning pipeline, never compute fill statistics on full dataset. Median from all data includes test-set information, and using it on training data creates leakage. Compute on train. Apply to both: <code>median_val = X_train["age"].median()</code>, then <code>X_train["age"].fillna(median_val)</code> and <code>X_test["age"].fillna(median_val)</code>.</p>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
@@ -677,13 +677,13 @@ df[df["col"].isna()]  # finds the actual missing values</code></pre>
 
 <h2>Copy-on-Write and the Future</h2>
 
-<p>For years, nobody fully understood when Pandas returned a view versus a copy. I don't mean beginners — I mean experienced engineers. The rules were genuinely inconsistent. A single-dtype slice might return a view (modifying it changes the original). A multi-dtype slice might return a copy (modifying it does nothing to the original). Chained indexing like <code>df[mask]["col"] = value</code> might update the DataFrame or might silently do nothing, depending on internal implementation details that could change between Pandas versions. The <code>SettingWithCopyWarning</code> existed specifically because the library itself couldn't guarantee what would happen.</p>
+<p>For years, nobody fully knew when Pandas returned view versus copy. Not just beginners. Experienced engineers too. Rules were inconsistent. Single-dtype slice might be view, so edits changed original. Multi-dtype slice might be copy, so edits changed nothing. Chained indexing like <code>df[mask]["col"] = value</code> might update DataFrame or silently do nothing, depending on internal details that could change across Pandas versions. <code>SettingWithCopyWarning</code> existed because library itself could not guarantee outcome.</p>
 
-<p>Starting with pandas 3.0, <b>Copy-on-Write</b> (CoW) is the default behavior. The rule becomes clean: when you write <code>df2 = df1</code>, both point to the same underlying data. The moment you modify either one, only the modified object gets its own private copy of the affected data. Until that write happens, no memory is wasted on duplication.</p>
+<p>Starting in pandas 3.0, <b>Copy-on-Write</b> (CoW) becomes default. Rule gets clean. Write <code>df2 = df1</code>, both point to same underlying data. Modify either one, and only modified object gets its own private copy of affected data. Until write happens, memory is not wasted on duplication.</p>
 
-<p>This eliminates the entire class of view-vs-copy bugs. Chained assignment becomes predictable. Intermediate DataFrames in a method chain share memory until they're mutated. Read-only operations — filtering, selecting, passing DataFrames between functions — become essentially free in terms of memory. The first write incurs the copy cost, but that's a cost you'd have paid anyway.</p>
+<p>This kills whole class of view-vs-copy bugs. Chained assignment becomes predictable. Intermediate DataFrames in method chain share memory until mutation. Read-only ops — filtering, selecting, passing DataFrames between functions — become almost free in memory terms. First write pays copy cost, but you would pay that cost anyway.</p>
 
-<p>If you're on pandas 2.x, you can opt in early with <code>pd.set_option("mode.copy_on_write", True)</code>. For new projects, there's no reason not to.</p>
+<p>If you're on pandas 2.x, opt in early with <code>pd.set_option("mode.copy_on_write", True)</code>. For new projects, no reason to skip it.</p>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
 <!--  WHEN PANDAS ISN'T ENOUGH                                  -->
@@ -691,13 +691,13 @@ df[df["col"].isna()]  # finds the actual missing values</code></pre>
 
 <h2>When Pandas Isn't Enough</h2>
 
-<p>Pandas is an eager execution engine. Every operation — a filter, a <code>groupby</code>, a merge — runs immediately and produces a full intermediate result in memory. For a 100MB dataset, this is fine. For a 10GB dataset, those intermediates stack up fast. You run out of RAM not because your final result is large, but because the three intermediate DataFrames that got you there are sitting in memory simultaneously.</p>
+<p>Pandas uses eager execution. Every filter, <code>groupby</code>, merge runs immediately and materializes full intermediate result in memory. At 100MB dataset, fine. At 10GB, intermediates pile up fast. RAM runs out not because final result is huge, but because three intermediate DataFrames sit in memory at same time.</p>
 
-<p><b>Polars</b> is the library that most directly addresses this. Written in Rust, it supports both eager and lazy execution. In lazy mode, you describe a chain of operations, and Polars builds a query plan — then optimizes it before executing. It can fuse filters with aggregations, eliminate unused columns, and parallelize across all CPU cores. Benchmarks consistently show 1.5-20x speedups over Pandas, depending on the workload, with significantly lower memory usage.</p>
+<p><b>Polars</b> tackles this most directly. Written in Rust. Supports eager and lazy execution. In lazy mode, you describe chain of ops, and Polars builds query plan, then optimizes before execution. It can fuse filters with aggregations, drop unused columns, and parallelize across all CPU cores. Benchmarks often show 1.5-20x speedups over Pandas, depending on workload, with lower memory use.</p>
 
-<p>The practical guideline: prototype in Pandas, because the ecosystem integration is deeper — scikit-learn, statsmodels, and most ML libraries expect Pandas DataFrames or NumPy arrays. When your data outgrows comfortable RAM usage, or when a pipeline step that should take seconds takes minutes, try Polars. The API is similar enough that migration is often a day's work, not a rewrite. And if your pipeline moves data between systems — Spark, DuckDB, other Python processes — the Arrow backend in both Pandas and Polars means zero-copy interchange, no serialization overhead.</p>
+<p>Practical rule: prototype in Pandas because ecosystem integration is deeper — scikit-learn, statsmodels, most ML libraries expect Pandas DataFrames or NumPy arrays. When data outgrows comfortable RAM or pipeline step taking seconds turns into minutes, try Polars. API is similar enough that migration is often one day of work, not rewrite. If pipeline moves data between systems — Spark, DuckDB, other Python processes — Arrow backend in both Pandas and Polars gives zero-copy interchange, no serialization overhead.</p>
 
-<p>The broader trend: Apache Arrow is becoming the lingua franca of in-memory columnar data. Pandas, Polars, DuckDB, Spark, and dozens of other tools all speak it. Learning to think in terms of Arrow-backed dtypes and columnar operations positions you well regardless of which library wins the next benchmarking contest.</p>
+<p>Broader trend: Apache Arrow is becoming lingua franca of in-memory columnar data. Pandas, Polars, DuckDB, Spark, and many other tools speak it. Thinking in Arrow-backed dtypes and columnar operations positions you well no matter which library wins next benchmark fight.</p>
 </div>
 
       <div class="page-nav">
