@@ -661,36 +661,36 @@ def moderate(content):
 
 <p>Fraud has fundamental challenge StreamFlix does not: <b>delayed labels</b>. When user watches movie, we know almost immediately whether they liked it (did they finish it?). When transaction happens, we do not know it was fraudulent until chargeback arrives — days to weeks later. Model makes decision in 100ms, but ground truth takes 14 days to materialize. Training on incomplete labels is tricky. Some transactions labeled "not fraud" today will turn out to be fraudulent next week.</p>
 
-<p><b>Architecture:</b> Real-time serving is non-negotiable — we need to block fraud <em>before</em> the payment goes through. We use a cascade: a rules engine catches the obvious cases (blocked IP addresses, impossible shipping addresses, velocity limits like "5 purchases in 2 minutes from the same card"), a lightweight gradient boosted tree handles 85% of the remaining traffic, and a deep model handles the hardest 5%. Fallback: if the model server is unresponsive, the rules engine takes over alone — higher false positives, but no missed fraud.</p>
+<p><b>Architecture:</b> Real-time serving is non-negotiable — we need to block fraud <em>before</em> payment goes through. We use cascade: rules engine catches obvious cases (blocked IP addresses, impossible shipping addresses, velocity limits like "5 purchases in 2 minutes from same card"), lightweight gradient boosted tree handles 85% of remaining traffic, and deep model handles hardest 5%. Fallback: if model server is unresponsive, rules engine takes over alone — higher false positives, but no missed fraud.</p>
 
-<p><b>Feature strategy:</b> A mix of precomputed user-level features in the feature store (purchase history, device fingerprints, number of transactions in the last hour) and transaction-level features computed at request time (amount, merchant category, time of day). The velocity features — "how many purchases has this card made in the last 10 minutes?" — are the most predictive and the hardest to compute in real-time. They require a streaming aggregation system that maintains running counts and sums over sliding time windows.</p>
+<p><b>Feature strategy:</b> Mix of precomputed user-level features in feature store (purchase history, device fingerprints, number of transactions in last hour) and transaction-level features computed at request time (amount, merchant category, time of day). Velocity features — "how many purchases has this card made in last 10 minutes?" — are most predictive and hardest to compute in real time. They require streaming aggregation system that maintains running counts and sums over sliding time windows.</p>
 
-<p><b>Training:</b> Daily retraining on a rolling 90-day window, with a staggered labeling pipeline. Transactions with no chargeback after 7 days are provisionally labeled "not fraud." As chargebacks arrive over the following weeks, labels are corrected and the model retrains with the updated ground truth.</p>
+<p><b>Training:</b> Daily retraining on rolling 90-day window, with staggered labeling pipeline. Transactions with no chargeback after 7 days are provisionally labeled "not fraud." As chargebacks arrive over following weeks, labels are corrected and model retrains with updated ground truth.</p>
 
 <h3 id="design-moderation">Content Moderation</h3>
 
-<p><b>Business problem:</b> Harmful content (hate speech, violence, spam) damages user trust and creates legal liability. The platform processes millions of posts per day.</p>
+<p><b>Business problem:</b> Harmful content (hate speech, violence, spam) damages user trust and creates legal liability. Platform processes millions of posts per day.</p>
 
-<p><b>ML formulation:</b> For each piece of content (text, image, or video), predict the probability that it violates platform policy. Block, flag for review, or approve.</p>
+<p><b>ML formulation:</b> For each piece of content (text, image, or video), predict probability that it violates platform policy. Block, flag for review, or approve.</p>
 
-<p>Content moderation is uniquely hard for three reasons. First, it's <b>multimodal</b> — a benign image with hateful overlaid text, or a video that's fine in the first 30 seconds and violent in the last 10. The model needs to understand multiple modalities and their interactions. Second, it's <b>adversarial</b> — bad actors actively try to evade detection by misspelling slurs, using code words, modifying images to defeat classifiers. The model is playing a game against opponents who adapt. Third, <b>context matters enormously</b> — the word "kill" means very different things in "I'd kill for a pizza" versus a direct threat.</p>
+<p>Content moderation is uniquely hard for three reasons. First, <b>multimodal</b> — benign image with hateful overlaid text, or video that's fine in first 30 seconds and violent in last 10. Model needs to understand multiple modalities and their interactions. Second, <b>adversarial</b> — bad actors actively try to evade detection by misspelling slurs, using code words, and modifying images to defeat classifiers. Model is playing game against opponents who adapt. Third, <b>context matters enormously</b> — word "kill" means very different things in "I'd kill for a pizza" versus direct threat.</p>
 
-<p><b>Architecture:</b> The cascade pattern — keyword and hash filter → lightweight text/image classifier → heavy multimodal transformer model → human review. The human reviewers serve a dual purpose: they handle edge cases <em>and</em> they generate the labeled training data that improves the model over time. This is the feedback loop working <em>in our favor</em> — every human decision makes the automated system better.</p>
+<p><b>Architecture:</b> Cascade pattern — keyword and hash filter → lightweight text/image classifier → heavy multimodal transformer model → human review. Human reviewers serve dual purpose: they handle edge cases <em>and</em> they generate labeled training data that improves model over time. This is feedback loop working <em>in our favor</em> — every human decision makes automated system better.</p>
 
-<p><b>Key design choice:</b> Content moderation has an asymmetric cost structure. Missing harmful content (false negative) can cause real-world harm and legal liability. Over-blocking (false positive) frustrates users but is less dangerous. This asymmetry pushes the thresholds toward higher recall (catch more bad content) at the expense of precision (some good content gets flagged too). The human review layer absorbs the resulting false positives.</p>
+<p><b>Key design choice:</b> Content moderation has asymmetric cost structure. Missing harmful content (false negative) can cause real-world harm and legal liability. Over-blocking (false positive) frustrates users but is less dangerous. This asymmetry pushes thresholds toward higher recall (catch more bad content) at expense of precision (some good content gets flagged too). Human review layer absorbs resulting false positives.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <!-- THE FLYWHEEL                                -->
 <!-- ═══════════════════════════════════════════ -->
 <h2 id="flywheel">The Flywheel</h2>
 
-<p>ML systems aren't shipped and forgotten. The best ones create a flywheel: deploy a model → collect user interactions → use those interactions to improve features and labels → retrain a better model → deploy it → collect more interactions. Each cycle makes the system smarter. The data moat deepens.</p>
+<p>ML systems are not ship-and-forget. Best ones create flywheel: deploy model → collect user interactions → use interactions to improve features and labels → retrain better model → deploy it → collect more interactions. Each cycle makes system smarter. Data moat deepens.</p>
 
-<p>At StreamFlix, the flywheel looks like this. V1 launches with collaborative filtering. Users click on recommendations, generating engagement data. That data reveals patterns the V1 model couldn't capture — maybe users who watch documentaries on weekday evenings prefer different genres on weekends. V2 adds time-of-day features and a more expressive model. The improved recommendations drive higher engagement, which generates more data, which enables V3.</p>
+<p>At StreamFlix, flywheel looks like this. V1 launches with collaborative filtering. Users click recommendations, generating engagement data. Data reveals patterns V1 model could not capture — maybe users who watch documentaries on weekday evenings prefer different genres on weekends. V2 adds time-of-day features and more expressive model. Improved recommendations drive higher engagement, which generates more data, which enables V3.</p>
 
-<p>The flywheel is why the first version doesn't need to be perfect. It needs to be good enough to generate useful data. The data makes the second version better. The second version generates better data. And so on.</p>
+<p>Flywheel is why first version does not need perfection. It needs to be good enough to generate useful data. Data makes second version better. Second version generates better data. Then repeat.</p>
 
-<p>This is also why monitoring matters so much. If you don't measure how V1 is performing in production — which recommendations get clicked, which get ignored, where users bounce — you have no data to build V2 from. The monitoring layer isn't overhead. It's the engine of improvement.</p>
+<p>This is also why monitoring matters. If you do not measure how V1 performs in production — which recommendations get clicked, which get ignored, where users bounce — you have no data to build V2 from. Monitoring layer is not overhead. Engine of improvement.</p>
 
       <div class="page-nav">
         <span></span>
