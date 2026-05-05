@@ -386,19 +386,19 @@ def welford_var(data):
 print(f"Welford variance: {welford_var(data.astype(np.float64)):.4f}")  # 0.6667
 </code></pre>
 
-<p>Catastrophic cancellation also lurks in <code>log(1 + x)</code> when x is tiny. If x = 10⁻¹⁵, then 1 + x rounds to 1.0 in float64, and <code>log(1.0)</code> is exactly 0. The true answer, approximately 10⁻¹⁵, has been completely destroyed. Python and NumPy provide <code>np.log1p(x)</code> which computes log(1 + x) directly without first adding 1, keeping full precision. Similarly, <code>np.expm1(x)</code> computes e^x - 1 for small x without cancellation. These aren't obscure library curiosities — they show up constantly in log-likelihood computations and loss functions.</p>
+<p><strong>Catastrophic cancellation</strong> also lurks in <code>log(1 + x)</code> when x is tiny. If x = 10⁻¹⁵, then 1 + x rounds to 1.0 in float64, and <code>log(1.0)</code> is exactly 0. True answer, about 10⁻¹⁵, is gone. Python and NumPy provide <code>np.log1p(x)</code>, which computes log(1 + x) directly without adding 1 first, keeping full precision. Similarly, <code>np.expm1(x)</code> computes e^x - 1 for small x without cancellation. These show up constantly in log-likelihood computations and loss functions.</p>
 
-<p>Another subtle trap: <strong>Kahan summation</strong>. When you add millions of small numbers (say, per-sample losses across a dataset), the running sum grows large while each new term is small. The small terms start getting swallowed by machine epsilon. Kahan's algorithm maintains a separate "compensation" variable that tracks the accumulated rounding error, feeding it back into the next addition. It turns O(n·ε) drift into O(ε) drift. Some frameworks use it internally for gradient accumulation, but it's worth knowing about because naive Python <code>sum()</code> does not.</p>
+<p>Another subtle trap: <strong>Kahan summation</strong>. When you add millions of small numbers (say, per-sample losses across dataset), running sum grows large while each new term stays small. Small terms start getting swallowed by machine epsilon. Kahan's algorithm keeps separate "compensation" variable that tracks accumulated rounding error and feeds it back into next addition. It turns O(n·ε) drift into O(ε) drift. Some frameworks use it internally for gradient accumulation, but naive Python <code>sum()</code> does not.</p>
 
 <h2>The Log-Sum-Exp Trick</h2>
 
-<p>If you learn one numerical trick for ML, make it this one. It shows up in softmax, in log-likelihood computations, in attention scores, in variational inference, everywhere. I'm still a little amazed at how much mileage this single idea gets.</p>
+<p>If you learn one numerical trick for ML, make it this one. It shows up in softmax, log-likelihood computations, attention scores, variational inference, everywhere. Single idea does huge amount of work.</p>
 
-<p>The problem starts innocently. You have a vector of numbers — let's say logits from a neural network — and you need to compute log(e^a₁ + e^a₂ + ... + e^aₙ). Maybe you're computing a softmax, or a log-partition function, or a log-marginal likelihood. In exact math, this is straightforward. On a computer, it's a minefield.</p>
+<p>Problem starts innocently. You have vector of numbers — say logits from neural network — and need to compute log(e^a₁ + e^a₂ + ... + e^aₙ). Maybe you compute softmax, log-partition function, or log-marginal likelihood. In exact math, straightforward. On computer, minefield.</p>
 
-<p>Let's walk through a concrete example. Suppose our logits are [1000, 1001, 1002]. We need e^1000. How big is that? It's a number with 434 digits. Float64 maxes out around 10³⁰⁸. So e^1000 overflows to infinity, and our whole computation returns <code>inf</code>. Now suppose our logits are [-1000, -1001, -1002]. Every e^aᵢ underflows to 0.0, and we're taking log(0), which gives us negative infinity. Both are garbage.</p>
+<p>Walk through concrete example. Suppose logits are [1000, 1001, 1002]. We need e^1000. How big? Number with 434 digits. Float64 maxes out around 10³⁰⁸. So e^1000 overflows to infinity, and whole computation returns <code>inf</code>. Now suppose logits are [-1000, -1001, -1002]. Every e^aᵢ underflows to 0.0, and we take log(0), which gives negative infinity. Both are garbage.</p>
 
-<p>The trick is deceptively simple. Factor out the maximum value:</p>
+<p>Trick looks simple. Factor out maximum value:</p>
 
 <p>log(Σ e^aᵢ) = max(a) + log(Σ e^(aᵢ - max(a)))</p>
 

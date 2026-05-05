@@ -405,22 +405,22 @@ def uncertainty_sample(model, X_unlabeled, n=100):
     # Return indices of the n most uncertain examples
     return np.argsort(uncertainty)[-n:]</code></pre>
 
-<p>The <code>predict_proba</code> call gives us the model's confidence for each class. Subtracting the maximum from 1 gives us a measure of confusion — high values mean the model is torn between classes. We sort by that confusion and take the top n.</p>
+<p><code>predict_proba</code> gives model confidence for each class. Subtracting maximum from 1 gives confusion measure — high values mean model is torn between classes. Sort by confusion. Take top n.</p>
 
-<p>The full loop looks like this: train a model on your initial labeled set, score the unlabeled pool, select the most uncertain examples, send them to annotators, add the new labels to your training set, retrain, and repeat. Each cycle, the model gets smarter about exactly the examples it was struggling with.</p>
+<p>Full loop: train model on initial labeled set, score unlabeled pool, select most uncertain examples, send them to annotators, add new labels to training set, retrain, repeat. Each cycle makes model smarter on examples it struggled with.</p>
 
-<p>A more sophisticated variant is <strong>query by committee</strong>: train multiple models (an "ensemble" or "committee") and pick examples where the committee members disagree most. If three random forests and two neural networks all disagree about whether an email is spam, that email is genuinely ambiguous and worth labeling.</p>
+<p>More sophisticated variant: <strong>query by committee</strong>. Train multiple models — ensemble or committee — and pick examples where members disagree most. If three random forests and two neural networks disagree on whether email is spam, that email is genuinely ambiguous and worth labeling.</p>
 
-<p>Real-world results are striking. Teams using active learning routinely reach the same accuracy with 50–80% fewer labels compared to random sampling. In one medical imaging study, uncertainty sampling matched the performance of 450 random labels using only 200 targeted ones — a 55% reduction in annotation effort. The catch is infrastructure. You need a pipeline that can retrain models, score unlabeled pools, and route selected examples to annotators in a tight loop. That's engineering work, but the label savings usually justify it.</p>
+<p>Real-world results are strong. Teams using active learning often reach same accuracy with 50–80% fewer labels than random sampling. In one medical imaging study, uncertainty sampling matched 450 random labels using only 200 targeted ones — 55% less annotation effort. Catch: infrastructure. You need pipeline that retrains models, scores unlabeled pools, and routes selected examples to annotators in tight loop. Engineering work. Usually worth label savings.</p>
 
 <!-- ═══════════ Finding Bad Labels ═══════════ -->
 <h2>Finding Bad Labels After the Fact</h2>
 
-<p>Sometimes the damage is already done. You've collected labels — maybe through crowdsourcing, maybe through a legacy process — and you suspect some fraction of them are wrong. Auditing all of them manually is too expensive. Can you find the bad ones automatically?</p>
+<p>Sometimes damage is already done. You collected labels — maybe through crowdsourcing, maybe through legacy process — and you suspect some are wrong. Auditing all labels manually costs too much. Question: can you find bad ones automatically?</p>
 
-<p>This is exactly what <strong>Cleanlab</strong> does, built on a method called <strong>Confident Learning</strong>. The core idea is elegant: if you train a model and it consistently predicts a different class than the given label with high confidence, that label is probably wrong. The model isn't confused — the label is.</p>
+<p>This is exactly what <strong>Cleanlab</strong> does, built on method called <strong>Confident Learning</strong>. Core idea: if you train model and it repeatedly predicts different class than given label with high confidence, label is probably wrong. Model is not confused. Label is.</p>
 
-<p>The workflow is straightforward. Train a classifier on your (noisy) labeled dataset. Use cross-validation to get out-of-sample predicted probabilities for every example — this avoids the model memorizing its own training labels. Then pass those probabilities and the given labels to Cleanlab, which estimates a joint distribution of "true label" vs. "given label" and flags the likely errors.</p>
+<p>Workflow is straightforward. Train classifier on noisy labeled dataset. Use cross-validation to get out-of-sample predicted probabilities for every example — this prevents model from memorizing its own training labels. Then pass probabilities and given labels to Cleanlab, which estimates joint distribution of "true label" vs. "given label" and flags likely errors.</p>
 
 <pre><code>from cleanlab import Datalab
 
@@ -435,18 +435,18 @@ issue_df = lab.get_issues()
 errors = issue_df[issue_df["is_label_issue"]].sort_values("label_quality", ascending=True)
 print(f"Found {len(errors)} likely label errors out of {len(labels)} examples")</code></pre>
 
-<p>The <code>find_issues</code> method looks at each example and compares the model's predicted probability distribution against the given label. If the model assigns 95% probability to "ham" but the label says "spam," that's a strong signal the label is wrong. Cleanlab ranks these by severity so you can review the worst offenders first.</p>
+<p><code>find_issues</code> compares model's predicted probability distribution against given label for each example. If model assigns 95% probability to "ham" but label says "spam," that is strong signal label is wrong. Cleanlab ranks issues by severity so you can review worst offenders first.</p>
 
-<p>In practice, real-world datasets often contain 5–10% label errors. Fixing even the worst 2–3% typically produces a noticeable accuracy boost — sometimes more than any architecture change would give you. I still get a knot in my stomach thinking about the months I spent debugging a model when the problem was sitting right there in the labels.</p>
+<p>In practice, real-world datasets often contain 5–10% label errors. Fixing even worst 2–3% usually gives noticeable accuracy boost — sometimes more than architecture change would. I still get knot in stomach thinking about months spent debugging model when problem sat in labels.</p>
 
 <!-- ═══════════ Data Augmentation ═══════════ -->
 <h2>Data Augmentation — Manufacturing Training Signal</h2>
 
-<p>Let's shift gears from label quality to data quantity. Even with perfect labels, more training data usually helps. But collecting and labeling new data is expensive. <strong>Data augmentation</strong> offers a shortcut: create new training examples by applying transformations to existing ones.</p>
+<p>Shift from label quality to data quantity. Even with perfect labels, more training data usually helps. But collecting and labeling new data is expensive. <strong>Data augmentation</strong> offers shortcut: create new training examples by applying transformations to existing ones.</p>
 
-<p>Going back to our kitchen analogy — augmentation is like a chef who can't get more tomatoes but learns to slice them ten different ways. Each slice presents the same tomato from a different angle, and a model trained on all those angles learns to recognize "tomato" regardless of how it's cut. Technically, augmentation acts as a regularizer. It smooths the loss landscape in a similar way to dropout or weight decay, but from the data side instead of the model side.</p>
+<p>Back to kitchen analogy — augmentation is like chef who cannot get more tomatoes but learns ten different cuts. Each slice shows same tomato from different angle, and model trained on all angles learns "tomato" regardless of cut. Technically, augmentation acts as regularizer. It smooths loss landscape like dropout or weight decay, but from data side instead of model side.</p>
 
-<p>Consider a model trained on 1,000 photos of cats. Without augmentation, it memorizes "tabby on blue couch" — the specific pixels, the specific background. Flip the image horizontally and the model hesitates. It learned the couch, not the cat. Augmentation forces the model to find features that survive transformations: the shape of ears, the pattern of whiskers, the curve of the spine. Those are the features that generalize.</p>
+<p>Consider model trained on 1,000 cat photos. Without augmentation, it memorizes "tabby on blue couch" — specific pixels, specific background. Flip image horizontally and model hesitates. It learned couch, not cat. Augmentation forces model to find features that survive transformations: ear shape, whisker pattern, spine curve. Those features generalize.</p>
 
 <pre><code>import torchvision.transforms as T
 
@@ -459,32 +459,32 @@ train_transform = T.Compose([
     T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])</code></pre>
 
-<p><code>RandomResizedCrop</code> crops a random region of the image and resizes it — forcing the model to recognize objects at different scales and positions. <code>RandomHorizontalFlip</code> mirrors the image with 50% probability. <code>RandomRotation</code> tilts it slightly. <code>ColorJitter</code> randomly shifts brightness, contrast, saturation, and hue — because the same cat under fluorescent light looks different than under sunlight, but it's still a cat. <code>Normalize</code> at the end standardizes pixel values to what pretrained models expect.</p>
+<p><code>RandomResizedCrop</code> crops random region and resizes it — forcing model to recognize objects at different scales and positions. <code>RandomHorizontalFlip</code> mirrors image with 50% probability. <code>RandomRotation</code> tilts it slightly. <code>ColorJitter</code> randomly shifts brightness, contrast, saturation, and hue — same cat under fluorescent light looks different than under sunlight, but still cat. <code>Normalize</code> standardizes pixel values to what pretrained models expect.</p>
 
-<p>One critical rule: never augment your validation or test set. Those must reflect the real data distribution. If you augment them, your evaluation metrics become meaningless — you'd be measuring how well the model handles synthetic transformations, not real-world inputs.</p>
+<p>Critical rule: never augment validation or test set. Those must reflect real data distribution. If you augment them, evaluation metrics become meaningless — you measure model performance on synthetic transformations, not real-world inputs.</p>
 
 <!-- ═══════════ Mixing Strategies ═══════════ -->
 <h2>Mixing Strategies and Text Augmentation</h2>
 
-<p>Standard transforms modify a single image. Mixing strategies go further — they combine two images into one and mix their labels proportionally.</p>
+<p>Standard transforms modify one image. Mixing strategies go further — they combine two images into one and mix labels proportionally.</p>
 
-<p><strong>CutMix</strong> takes a rectangular patch from one image and pastes it onto another. If the patch covers 30% of the image area, the label becomes 70% "original class" + 30% "patch class." This forces the network to attend to all regions of the image, not fixate on a single discriminative area. It's particularly effective for tasks where occlusion matters — object detection, segmentation — because the model learns to make predictions even when part of the object is obscured.</p>
+<p><strong>CutMix</strong> takes rectangular patch from one image and pastes it onto another. If patch covers 30% of image area, label becomes 70% "original class" + 30% "patch class." This forces network to attend to all image regions, not fixate on one discriminative area. It is especially effective when occlusion matters — object detection, segmentation — because model learns to predict even when part of object is hidden.</p>
 
-<p><strong>MixUp</strong> takes a different approach: it linearly blends two entire images together (and their labels by the same ratio), producing ghostly superimpositions. This creates smoother decision boundaries and acts as a strong regularizer against overconfidence. In practice, MixUp is the better choice for classification with noisy labels, while CutMix excels when you need localization. Both can be combined, and modern training recipes like those used for Vision Transformers routinely stack both.</p>
+<p><strong>MixUp</strong> uses different approach: linearly blend two whole images together, and blend labels by same ratio. Result is ghostly superimposition. This creates smoother decision boundaries and strongly regularizes against overconfidence. In practice, MixUp is better for classification with noisy labels, while CutMix is better when you need localization. Both can be combined, and modern Vision Transformer recipes often stack both.</p>
 
-<p>For text, augmentation is trickier because language has structure that random perturbation can destroy. <strong>Back-translation</strong> — translating to another language and back — produces the highest-quality paraphrases but is slow. <strong>Synonym replacement</strong> via WordNet is fast but shallow. <strong>LLM paraphrasing</strong> (asking a language model to rephrase) gives the best quality-to-effort ratio in 2024, though at a per-example cost that adds up.</p>
+<p>For text, augmentation is trickier because language has structure and random perturbation can destroy it. <strong>Back-translation</strong> — translating to another language and back — gives highest-quality paraphrases but is slow. <strong>Synonym replacement</strong> via WordNet is fast but shallow. <strong>LLM paraphrasing</strong> gives best quality-to-effort ratio in 2024, though per-example cost adds up.</p>
 
-<p>For tabular data, augmentation is less mature. <strong>SMOTE</strong> synthesizes minority-class examples by interpolating between neighbors — useful for class imbalance. <strong>Gaussian noise injection</strong> adds small random perturbations to numeric features. Both act as regularizers, though neither is as transformative as image augmentation tends to be.</p>
+<p>For tabular data, augmentation is less mature. <strong>SMOTE</strong> synthesizes minority-class examples by interpolating between neighbors — useful for class imbalance. <strong>Gaussian noise injection</strong> adds small random perturbations to numeric features. Both act as regularizers, though neither is as transformative as image augmentation.</p>
 
 <div class="callout callout-info">
   <div class="callout-label">The One Rule of Augmentation</div>
-  <p>Every transformation must preserve the label. Flipping a car horizontally? Fine — a car is still a car. Rotating a handwritten "6" by 180°? You've turned it into a "9." The transformation broke the label. If you're unsure whether a transform preserves your label, don't apply it. This requires domain knowledge, and there's no shortcut around that.</p>
+  <p>Rule: every transformation must preserve label. Flipping car horizontally? Fine — car stays car. Rotating handwritten "6" by 180°? Now "9." Transformation broke label. If you are unsure whether transform preserves label, do not apply it. Domain knowledge required. No shortcut.</p>
 </div>
 
 <!-- ═══════════ TTA ═══════════ -->
 <h2>Test-Time Augmentation</h2>
 
-<p>Augmentation isn't limited to training. At inference time, you can run the same input through several augmented versions — a few different crops, a horizontal flip, a slight rotation — and average the model's predictions. This is called <strong>test-time augmentation (TTA)</strong>, and it typically buys you a 1–2% accuracy improvement with no retraining required.</p>
+<p>Augmentation is not only for training. At inference time, you can run same input through several augmented versions — different crops, horizontal flip, slight rotation — and average model predictions. This is <strong>test-time augmentation (TTA)</strong>, and it typically gives 1–2% accuracy boost with no retraining.</p>
 
 <pre><code>import torch
 
@@ -497,7 +497,7 @@ with torch.no_grad():
         predictions.append(pred)
     final_pred = torch.stack(predictions).mean(dim=0)</code></pre>
 
-<p>Each pass through the loop applies a different random augmentation. The five predictions represent the model's judgment from five slightly different perspectives, and averaging them cancels out noise. The tradeoff is inference latency — five forward passes take five times as long. Use TTA when accuracy matters more than speed, like in medical diagnosis or competition submissions.</p>
+<p>Each loop pass applies different random augmentation. Five predictions represent model judgment from five slightly different views, and averaging cancels noise. Tradeoff: inference latency — five forward passes take five times as long. Use TTA when accuracy matters more than speed, like medical diagnosis or competition submissions.</p>
 
 <!-- ═══════════ Data Validation ═══════════ -->
 <h2>Data Validation — Unit Tests for DataFrames</h2>
