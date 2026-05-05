@@ -670,9 +670,9 @@ model.print_trainable_parameters()
 
 <p><strong>Double quantization.</strong> Per-group quantization stores one FP16 scale per 128 weights. For 7B model: ~55M scale factors &times; 2 bytes = ~110 MB overhead. Double quantization quantizes these scale factors <em>themselves</em> to 8-bit, cutting overhead roughly in half. Quantizing quantization constants. Small per-parameter savings, meaningful at 7 billion.</p>
 
-<p><strong>Paged optimizers.</strong> Even with a 4-bit base model and tiny LoRA adapters, optimizer states can occasionally spike beyond GPU memory &mdash; especially with gradient accumulation on long sequences. Paged optimizers use CUDA unified memory to transparently move optimizer states to CPU RAM when GPU memory fills up, then bring them back when needed. Think of it as virtual memory for your GPU.</p>
+<p><strong>Paged optimizers.</strong> Even with 4-bit base and tiny LoRA adapters, optimizer states can spike beyond GPU memory &mdash; especially with gradient accumulation on long sequences. Paged optimizers use CUDA unified memory to transparently move optimizer states to CPU RAM when GPU fills up, bring them back when needed. Virtual memory for GPU.</p>
 
-<p>Putting it together, the memory budget becomes remarkable:</p>
+<p>Memory budget becomes remarkable:</p>
 
 <pre><code>Method                Weights    Gradients  Optimizer   Total
 ──────────────────────────────────────────────────────────────
@@ -684,7 +684,7 @@ QLoRA (NF4 base)       3.5 GB    ~0.04 GB   ~0.16 GB    ~3.7 GB
 Full fine-tune        130 GB     130 GB     520 GB      ~780 GB
 QLoRA                  ~35 GB    ~0.2 GB    ~0.8 GB     ~36 GB  &larr; one A100!</code></pre>
 
-<p>Our running scenario: we can now fine-tune all three client-specific adapters on a single A100, one after the other. Each run takes a few hours and costs $10&ndash;50 in cloud GPU time. That $2,400 weekly bill is a distant memory.</p>
+<p>Running scenario: can now fine-tune all three client adapters on single A100, one after another. Each run takes few hours, costs $10&ndash;50 in cloud GPU time. That $2,400 weekly bill = distant memory.</p>
 
 <pre><code>from transformers import AutoModelForCausalLM, BitsAndBytesConfig, TrainingArguments
 import torch
@@ -718,7 +718,7 @@ training_args = TrainingArguments(
 )</code></pre>
 
 <div class="warning-box">
-  <strong>A mistake I&rsquo;ve seen too often:</strong> fine-tuning with QLoRA (4-bit base), merging the adapter, then quantizing the merged model again to 4-bit for deployment. You&rsquo;re quantizing an already-quantized model &mdash; double rounding. Instead: reload the base in FP16, merge the LoRA adapter at full precision, <em>then</em> quantize once for deployment. The adapter was trained against the 4-bit base, but the final merge should happen at full precision.
+  <strong>Common mistake:</strong> fine-tuning with QLoRA (4-bit base), merging adapter, then quantizing merged model again to 4-bit for deployment. Double rounding. Instead: reload base in FP16, merge LoRA adapter at full precision, <em>then</em> quantize once for deployment. Adapter trained against 4-bit base, but final merge should happen at full precision.
 </div>
 
 <!-- ═══════════════════════════════════════════ -->
@@ -727,19 +727,19 @@ training_args = TrainingArguments(
 
 <h2>The Rest of the PEFT Family</h2>
 
-<p>LoRA dominates the PEFT landscape, but it&rsquo;s not the only game in town. Four other methods are worth knowing, because each one teaches something about what parts of a transformer are malleable.</p>
+<p>LoRA dominates PEFT landscape, but not only option. Four other methods worth knowing &mdash; each teaches something about what parts of transformer are malleable.</p>
 
-<p><strong>Adapters</strong> (Houlsby et al., 2019) were the original PEFT method. They insert small bottleneck layers &mdash; a down-projection, a nonlinearity, an up-projection &mdash; <em>between</em> existing transformer layers. Data flows through the adapter on every forward pass. The idea is sound, but unlike LoRA, adapters can&rsquo;t be merged away after training. They add permanent inference latency. That&rsquo;s why they&rsquo;ve been largely superseded.</p>
+<p><strong>Adapters</strong> (Houlsby et al., 2019) = original PEFT method. Insert small bottleneck layers &mdash; down-projection, nonlinearity, up-projection &mdash; <em>between</em> existing transformer layers. Data flows through adapter every forward pass. Unlike LoRA, adapters can&rsquo;t merge away after training. Add permanent inference latency. Largely superseded.</p>
 
-<p>Think of adapters as building a detour in a highway. The cars still get where they need to go, but there&rsquo;s always extra travel time. LoRA, by contrast, is like widening a lane that already exists &mdash; once the construction is done, traffic flows at full speed.</p>
+<p>Adapters = building detour in highway. Cars get there, but extra travel time always. LoRA = widening existing lane &mdash; once construction done, traffic flows full speed.</p>
 
-<p><strong>Prefix tuning</strong> (Li &amp; Liang, 2021) is an entirely different idea. Instead of modifying weights, it learns a set of &ldquo;virtual tokens&rdquo; &mdash; continuous key-value pairs that get prepended to every attention layer. These virtual tokens steer the attention mechanism without changing any model parameters. The approach works well for generation tasks, but the virtual tokens consume context window space, which is a scarce resource in long-context applications.</p>
+<p><strong>Prefix tuning</strong> (Li &amp; Liang, 2021) = entirely different idea. Instead of modifying weights, learns &ldquo;virtual tokens&rdquo; &mdash; continuous key-value pairs prepended to every attention layer. Steers attention without changing model parameters. Works well for generation tasks, but virtual tokens consume context window space &mdash; scarce resource in long-context applications.</p>
 
-<p><strong>Prompt tuning</strong> (Lester et al., 2021) is the minimal version of prefix tuning. It learns soft prompt embeddings that are prepended at the input layer <em>only</em>, not at every attention layer. Extremely parameter-efficient &mdash; sometimes fewer than 100K trainable parameters &mdash; but correspondingly less expressive. The sweet spot is when you have many tasks and want a tiny adapter per task (imagine hundreds of clients, each with a 100KB adapter file).</p>
+<p><strong>Prompt tuning</strong> (Lester et al., 2021) = minimal prefix tuning. Learns soft prompt embeddings prepended at input layer <em>only</em>, not every attention layer. Extremely parameter-efficient &mdash; sometimes &lt;100K trainable parameters &mdash; but less expressive. Sweet spot: many tasks, tiny adapter per task (hundreds of clients, each with 100KB adapter file).</p>
 
-<p><strong>IA3</strong> (Liu et al., 2022) takes minimalism further: it learns three vectors (not matrices) that rescale the key, value, and feed-forward activations. Even fewer parameters than LoRA. It&rsquo;s competitive on some benchmarks, but for complex tasks that require significant behavioral change, the lack of capacity shows. I think of IA3 as adjusting the volume knobs on an existing signal, while LoRA is remixing the signal itself.</p>
+<p><strong>IA3</strong> (Liu et al., 2022) = more minimal: learns three vectors (not matrices) that rescale key, value, and FFN activations. Even fewer parameters than LoRA. Competitive on some benchmarks, but for complex tasks needing significant behavioral change, lack of capacity shows. IA3 adjusts volume knobs on existing signal; LoRA remixes signal itself.</p>
 
-<p>The practical takeaway, which I&rsquo;ve arrived at after trying more methods than I care to admit: <strong>use LoRA</strong>. If memory is the bottleneck, use QLoRA. The ecosystem support (HuggingFace PEFT, Axolotl, LLaMA-Factory, Unsloth) is overwhelmingly focused on LoRA. The quality is near full fine-tuning. The inference overhead is zero after merging. Only reach for other methods if LoRA doesn&rsquo;t satisfy a specific constraint &mdash; and know exactly which constraint that is.</p>
+<p>Practical takeaway: <strong>use LoRA</strong>. Memory bottleneck → use QLoRA. Ecosystem support (HuggingFace PEFT, Axolotl, LLaMA-Factory, Unsloth) overwhelmingly LoRA-focused. Quality near full fine-tuning. Inference overhead zero after merging. Reach for other methods only if LoRA doesn&rsquo;t satisfy specific constraint &mdash; know exactly which constraint.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <!-- CHOOSING YOUR METHOD -->
@@ -747,9 +747,9 @@ training_args = TrainingArguments(
 
 <h2>Choosing Your Method</h2>
 
-<p>I&rsquo;ve gotten this decision wrong more times than I&rsquo;d like to admit. Here&rsquo;s the decision tree I&rsquo;ve converged on, distilled from a lot of expensive mistakes.</p>
+<p>Decision tree distilled from expensive mistakes.</p>
 
-<p>If you need to <strong>shrink a model for inference</strong>: quantize it. AWQ 4-bit for GPU serving, GGUF Q4_K_M for CPU/laptop. This is the first thing you should try, always. The quality loss is smaller than most people expect.</p>
+<p>Need to <strong>shrink model for inference</strong>: quantize. AWQ 4-bit for GPU serving, GGUF Q4_K_M for CPU/laptop. First thing to try, always. Quality loss smaller than most expect.</p>
 
 <p>If you need to <strong>customize a model&rsquo;s behavior</strong>: fine-tune it with LoRA (r=16, all linear layers). If your GPU has less than 24 GB, use QLoRA instead. Save the adapter, merge it into the base model, then quantize the merged model for deployment.</p>
 

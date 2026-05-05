@@ -608,15 +608,15 @@ x = x + FFN(RMSNorm(x))         # normalize BEFORE FFN</code></pre>
 # their binoculars too... the person at the top of a 32-story
 # tower has information from the entire horizon.</code></pre>
 
-<p>The information from early tokens reaches late tokens — it propagates upward through the layer stack, getting compressed at each layer. It's lossy compared to full attention, but empirically the quality difference is small. And the memory benefit is dramatic: Mistral pairs sliding window attention with a <strong>rolling KV cache</strong> — a fixed-size circular buffer. Positions older than the window get overwritten. Memory usage is constant regardless of how long the sequence gets. You never run out of KV cache memory during inference.</p>
+<p>Early token info propagates up through layer stack, compressed at each layer. Lossy vs. full attention, but quality difference small empirically. Memory benefit: Mistral pairs sliding window with <strong>rolling KV cache</strong> — fixed-size circular buffer. Old positions overwritten. Memory usage constant regardless of sequence length. KV cache never exhausted during inference.</p>
 
-<p>This was the binoculars analogy I mentioned — we'll come back to it when we compare architecture choices at the end.</p>
+<p>Binoculars analogy: limited local view per layer, information passed upward. 32-layer tower has info from entire horizon.</p>
 
 <h3>Mixture-of-Experts (MoE)</h3>
 
-<p>Mixture-of-Experts keeps appearing in this chapter — Mixtral, GPT-4 (rumored), Gemini. Let's nail down what it actually is, because it's the key to understanding how a model can have 47 billion parameters but run at the speed of a 13 billion parameter model.</p>
+<p>MoE appears everywhere — Mixtral, GPT-4 (rumored), Gemini. Key: how model has 47B params but runs at speed of 13B.</p>
 
-<p>In a standard transformer, every token passes through the same FFN in each layer. The FFN is the biggest parameter hog — it typically accounts for about two-thirds of the total parameters. Mixture-of-Experts replaces that single FFN with N parallel FFNs (the "experts"), and a small <strong>router network</strong> selects which experts process each token:</p>
+<p>Standard transformer: every token passes through same FFN each layer. FFN = biggest parameter hog (~2/3 of total params). MoE: replace single FFN with N parallel FFNs ("experts"), small <strong>router network</strong> selects which experts process each token:</p>
 
 <pre><code># Standard FFN: Every token goes through the same kitchen.
 #   y = FFN(x)
@@ -636,43 +636,43 @@ x = x + FFN(RMSNorm(x))         # normalize BEFORE FFN</code></pre>
 # Result: The model has the knowledge of a 47B model
 # but the inference speed of a 13B model.</code></pre>
 
-<p>The router learns to specialize experts during training. In analysis of trained MoE models, researchers have found that different experts activate for different types of content — one handles code, another mathematical reasoning, another conversational text. It's not perfectly clean specialization, and I'm still developing my intuition for exactly how the router learns to partition the input space, but the empirical results are consistent.</p>
+<p>Router learns to specialize during training. Researchers found different experts activate for different content — code, math reasoning, conversational text. Not perfectly clean specialization, but empirical results consistent.</p>
 
-<p>The main engineering challenge is <strong>load balancing</strong>. Without intervention, the router tends to collapse — it finds two favorite experts and sends everything to them, leaving the other six undertrained. The fix is an auxiliary loss that penalizes uneven expert usage, encouraging the router to spread the load. There's also a communication overhead during distributed training: if experts live on different GPUs (which they have to, at scale), tokens need to be routed across the network.</p>
+<p>Main engineering challenge: <strong>load balancing</strong>. Without intervention, router collapses — picks 2 favorites, sends everything to them, other six undertrained. Fix: auxiliary loss penalizing uneven usage. Also: communication overhead in distributed training — experts on different GPUs, tokens routed across network.</p>
 
-<p>For TinyChat, MoE models offer an incredible deal: Mixtral 8×7B gives you GPT-3.5-class quality at a fraction of the GPU cost, because only 13B parameters are active per token. The catch is that the full 47B parameters still need to fit in GPU memory — you're saving compute, not memory. But with quantization (covered in a later section), even that becomes manageable.</p>
+<p>MoE deal: Mixtral 8×7B gives GPT-3.5-class quality, fraction of GPU compute cost — only 13B params active per token. Catch: full 47B params still need to fit in memory — saving compute, not memory. Quantization (covered later) makes that manageable.</p>
 
 <!-- ═══════════════════════════════════════════ BROADER LANDSCAPE ═══════════════════════════════════════════ -->
 <h2>The Broader Landscape — Claude, Gemini, DeepSeek, Phi</h2>
 
-<p>GPT, LLaMA, and Mistral don't exist in a vacuum. Several other model families have introduced distinctive ideas worth knowing, because they show up in interviews, in production decisions, and in the evolution of the field.</p>
+<p>GPT, LLaMA, Mistral not alone. Other families introduced distinctive ideas worth knowing — interviews, production decisions, field evolution.</p>
 
-<p><strong>Claude</strong> (Anthropic) is built on <strong>Constitutional AI (CAI)</strong>. Most LLMs are aligned via RLHF: human labelers rank model outputs, and the model is fine-tuned to match those preferences. Claude's twist is that the model critiques <em>its own</em> outputs against a written set of principles — a "constitution" — and revises them. Then it trains on its own revisions. This self-critique loop reduces the dependence on expensive human labelers and makes the alignment criteria explicit and auditable. Claude 3 (2024) came in three sizes — Haiku (fast, cheap), Sonnet (balanced), Opus (maximum capability) — with 200K token context. The safety-first philosophy means Claude tends to be more cautious, but also more reliable for sensitive applications.</p>
+<p><strong>Claude</strong> (Anthropic) built on <strong>Constitutional AI (CAI)</strong>. Most LLMs aligned via RLHF: humans rank outputs, model fine-tuned to match. Claude: model critiques <em>own</em> outputs against written principles ("constitution"), revises them, trains on revisions. Self-critique loop reduces dependence on human labelers, makes alignment criteria explicit and auditable. Claude 3 (2024): Haiku (fast, cheap), Sonnet (balanced), Opus (max capability) — 200K context. Safety-first → more cautious, more reliable for sensitive applications.</p>
 
-<p><strong>Gemini</strong> (Google) is <strong>natively multimodal</strong>. While GPT-4 was trained primarily on text and had vision capabilities added (likely through a separate vision encoder), Gemini was trained from the ground up on interleaved text, images, audio, and video. The practical difference: Gemini can reason across modalities more fluidly — understanding a diagram in a document, or answering questions about a video's content. Gemini 1.5 Pro pushed the context window to 1 million tokens using a Mixture-of-Experts architecture. Google also released <strong>Gemma</strong> (2B and 7B) as an open-weight derivative, using the same architectural innovations but optimized for community use.</p>
+<p><strong>Gemini</strong> (Google): <strong>natively multimodal</strong>. GPT-4 trained on text, vision added later. Gemini trained from ground up on interleaved text, images, audio, video. Cross-modal reasoning more fluid — diagrams, video Q&amp;A. Gemini 1.5 Pro: 1M token context via MoE. Google also released <strong>Gemma</strong> (2B, 7B) as open-weight derivative for community use.</p>
 
-<p><strong>DeepSeek</strong> (China) introduced <strong>Multi-head Latent Attention (MLA)</strong> in DeepSeek-V2, compressing the KV cache through a low-dimensional latent projection. DeepSeek-V3 combined MLA with MoE for a model that's remarkably efficient at inference. These models demonstrate that architectural innovation is happening globally, not only in US labs.</p>
+<p><strong>DeepSeek</strong> (China): introduced <strong>MLA</strong> in DeepSeek-V2, compressing KV cache via low-dimensional latent projection. DeepSeek-V3 combined MLA + MoE for remarkably efficient inference. Architectural innovation is global.</p>
 
-<p><strong>Phi</strong> (Microsoft) challenged the "scale is all you need" thesis head-on. Phi-1 (1.3B parameters) was trained primarily on textbook-quality data and synthetic examples generated by larger models. It matched models 10× its size on coding benchmarks. Phi-2 (2.7B) and Phi-3 (3.8B) continued the thesis: <em>data quality matters more than data quantity</em>. If you're deploying on a phone, a laptop, or at the edge — anywhere compute is limited — Phi demonstrates that a small, well-trained model can be surprisingly capable.</p>
+<p><strong>Phi</strong> (Microsoft) challenged "scale is all you need." Phi-1 (1.3B) trained on textbook-quality data + synthetic examples from larger models. Matched models 10× its size on coding benchmarks. Phi-2 (2.7B), Phi-3 (3.8B) continued thesis: <em>data quality &gt; data quantity</em>. Phone, laptop, edge deployment — small, well-trained model is surprisingly capable.</p>
 
-<p><strong>Qwen</strong> (Alibaba) and <strong>Yi</strong> (01.AI) are leading Chinese open-weight families with strong multilingual and coding capabilities. Qwen-2 ships in sizes from 0.5B to 72B and competes with LLaMA-3 class models on many benchmarks.</p>
+<p><strong>Qwen</strong> (Alibaba) and <strong>Yi</strong> (01.AI): leading Chinese open-weight families. Strong multilingual + coding. Qwen-2 ships 0.5B–72B, competes with LLaMA-3 class on many benchmarks.</p>
 
-<p>The thing that strikes me about this landscape is the convergence. Strip away the names and marketing, and Claude, Gemini, LLaMA, Mistral, Qwen, and DeepSeek all share the same engine block: decoder-only transformer, pre-norm with RMSNorm, SwiGLU FFN, RoPE positions. They differ in fuel (training data), tuning (alignment methods), turbochargers (MoE, MLA), and paint job (API vs. open weights). The engine is the same. We'll make that explicit in a moment.</p>
+<p>Strip away names and marketing: Claude, Gemini, LLaMA, Mistral, Qwen, DeepSeek all share same engine block — decoder-only transformer, pre-norm + RMSNorm, SwiGLU FFN, RoPE. Differ in fuel (training data), tuning (alignment), turbochargers (MoE, MLA), paint job (API vs. open weights). Same engine.</p>
 
 <!-- ═══════════════════════════════════════════ OPEN VS CLOSED ═══════════════════════════════════════════ -->
 <h2>Open vs. Closed — The Great Divide</h2>
 
-<p>The LLM world has a fundamental fault line, and if you're building TinyChat (or any production system), understanding it is more important than understanding any single architecture choice.</p>
+<p>LLM world has fundamental fault line. More important than any single architecture choice.</p>
 
-<p><strong>Closed models</strong> — GPT-4, Claude, Gemini — push the frontier of capabilities. You access them through APIs, paying per token. You don't see the weights. You can't fine-tune them (mostly). You can't deploy them on your own infrastructure. You're subject to the provider's usage policies, pricing decisions, and uptime guarantees. If OpenAI changes their content policy, your chatbot's behavior changes overnight.</p>
+<p><strong>Closed models</strong> (GPT-4, Claude, Gemini): frontier capabilities. API access, pay per token. No weights. Can't fine-tune (mostly). Can't self-host. Subject to provider policies, pricing, uptime. OpenAI changes content policy — chatbot behavior changes overnight.</p>
 
-<p><strong>Open-weight models</strong> — LLaMA, Mistral, Qwen, Phi — give you the weights. You can fine-tune them on your data. You can quantize them to run on cheaper hardware. You can deploy them on-premise, in any cloud, on a laptop. You control the model's behavior completely. If your restaurant chain handles health-related dietary restrictions, you can fine-tune specifically for food allergy accuracy in a way that API-based models don't allow.</p>
+<p><strong>Open-weight models</strong> (LLaMA, Mistral, Qwen, Phi): weights available. Fine-tune on own data. Quantize for cheaper hardware. Deploy anywhere — on-prem, any cloud, laptop. Full behavior control. Need food allergy accuracy? Fine-tune specifically — API models don't allow this.</p>
 
-<p>The capability gap between closed and open has been shrinking rapidly. LLaMA-3 405B approaches GPT-4 on many benchmarks. Mistral's models punch far above their weight. For most production use cases — and I say this after spending too long agonizing over the decision for my own projects — the question isn't "which model has the highest benchmark score?" It's "what are my constraints?" Latency, cost, data privacy, deployment control, and fine-tuning needs often matter more than the last few points on MMLU.</p>
+<p>Capability gap between closed and open shrinking fast. LLaMA-3 405B approaches GPT-4 on many benchmarks. Mistral punches above weight. For most production use cases: question isn't "highest benchmark score?" — it's "what are constraints?" Latency, cost, data privacy, deployment control, fine-tuning needs usually matter more than last few points on MMLU.</p>
 
-<p>For TinyChat: if you're prototyping, use GPT-4's API. It's the fastest path to a working demo. If you're going to production at scale — hundreds of thousands of restaurant customers generating conversations daily — an open-weight model you own and operate will be dramatically cheaper and more controllable. There's no universal right answer. There's a right answer for your specific constraints.</p>
+<p>Prototyping: use GPT-4 API. Fastest path to working demo. Production at scale: own open-weight model — dramatically cheaper, more controllable. No universal right answer. Right answer for specific constraints.</p>
 
-<p>I still don't have a clean framework for this decision. Every project I've been involved with ends up in a spreadsheet weighing latency, cost, privacy, and quality, and the answer is always "it depends." That ambiguity is honest. Anyone who tells you to always use open models or always use closed APIs is selling something.</p>
+<p>No clean framework for this decision. Every project: spreadsheet weighing latency, cost, privacy, quality — answer always "it depends." Honest ambiguity. Anyone saying always use open or always use closed APIs is selling something.</p>
 
 <!-- ═══════════════════════════════════════════ MODEL CARDS ═══════════════════════════════════════════ -->
 <h2>Model Cards and Responsible Release</h2>
