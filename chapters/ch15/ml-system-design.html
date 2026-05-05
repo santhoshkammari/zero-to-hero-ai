@@ -616,50 +616,50 @@ def moderate(content):
 
 <p>For high-stakes decisions — medical diagnoses, loan approvals, content moderation edge cases — model should not have final word. Route low-confidence predictions to human reviewers. Model handles 85% of cases where confidence is high. Humans handle rest. Not crutch — design choice that acknowledges limits of model training data.</p>
 
-<p>The hard part is calibrating the confidence threshold. Set it too high and humans drown in reviews. Set it too low and the model makes confident-but-wrong calls on cases it shouldn't have touched. The threshold is a knob you tune continuously based on the cost of human review versus the cost of a wrong automated decision.</p>
+<p>Hard part: calibrating confidence threshold. Set it too high and humans drown in reviews. Set it too low and model makes confident-but-wrong calls on cases it should not touch. Threshold is knob you tune continuously based on cost of human review versus cost of wrong automated decision.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <!-- FOUR SYSTEM DESIGNS                         -->
 <!-- ═══════════════════════════════════════════ -->
 <h2 id="four-systems">Walking the Full Design: Four Real Systems</h2>
 
-<p>Everything we've built so far — problem formulation, metrics, data strategy, features, models, serving, feedback loops, patterns — comes together when you design a complete system. Let's walk through four systems that come up over and over in interviews and in practice. For each one, I'll trace the path from business problem to architecture, using the framework we've developed.</p>
+<p>Everything we built so far — problem formulation, metrics, data strategy, features, models, serving, feedback loops, patterns — comes together when you design complete system. Walk through four systems that come up again and again in interviews and practice. For each one, trace path from business problem to architecture using framework we built.</p>
 
 <h3 id="design-recs">Recommendation System (StreamFlix)</h3>
 
-<p>We've been building this throughout. Let me tie it all together.</p>
+<p>We built this throughout. Now tie it together.</p>
 
-<p><b>Business problem:</b> Users can't find movies they like. Subscriber retention is dropping.</p>
+<p><b>Business problem:</b> Users cannot find movies they like. Subscriber retention is dropping.</p>
 
-<p><b>ML formulation:</b> For each user, rank all unseen movies by predicted relevance. Show the top 20 on the homepage.</p>
+<p><b>ML formulation:</b> For each user, rank all unseen movies by predicted relevance. Show top 20 on homepage.</p>
 
 <p><b>Metrics:</b> Offline — NDCG@20 and Recall@50. Online — CTR on recommendations and watch completion rate. Business — subscriber retention and revenue per user.</p>
 
-<p><b>Architecture:</b> Hybrid batch + real-time. Candidate generation (two-tower model producing embeddings, ANN index for fast retrieval) runs in batch, refreshed every few hours. Ranking (feature-rich gradient boosted tree or neural ranker using 200+ features) runs in real-time when the user opens the app. A business rules layer handles diversity and freshness. The feature store handles both training-time and serving-time feature access, eliminating training-serving skew.</p>
+<p><b>Architecture:</b> Hybrid batch + real-time. Candidate generation (two-tower model producing embeddings, ANN index for fast retrieval) runs in batch and refreshes every few hours. Ranking (feature-rich gradient boosted tree or neural ranker using 200+ features) runs in real time when user opens app. Business rules layer handles diversity and freshness. Feature store handles both training-time and serving-time feature access, eliminating training-serving skew.</p>
 
-<p><b>Feedback loop defense:</b> 5% exploration traffic. Diversity injection in the business rules layer. Weekly audit of impression concentration — if the top 1% of movies receive more than 50% of impressions, the exploration rate increases automatically.</p>
+<p><b>Feedback loop defense:</b> 5% exploration traffic. Diversity injection in business rules layer. Weekly audit of impression concentration — if top 1% of movies receive more than 50% of impressions, exploration rate increases automatically.</p>
 
-<p><b>Fallback:</b> If the ranking model is down, serve the batch-computed candidate list (stale but functional). If the batch pipeline also failed, fall back to "most popular this week." The restaurant always has food — even if it's from the backup menu.</p>
+<p><b>Fallback:</b> If ranking model is down, serve batch-computed candidate list (stale but functional). If batch pipeline also failed, fall back to "most popular this week." Restaurant always has food — even if it comes from backup menu.</p>
 
 <h3 id="design-search">Search Ranking</h3>
 
-<p><b>Business problem:</b> Users search for movies but the results are poor. "Action movies with robots" returns irrelevant results.</p>
+<p><b>Business problem:</b> Users search for movies but results are poor. "Action movies with robots" returns irrelevant results.</p>
 
-<p><b>ML formulation:</b> Given a query and a corpus of movies, rank movies by relevance to the query.</p>
+<p><b>ML formulation:</b> Given query and corpus of movies, rank movies by relevance to query.</p>
 
-<p>Search ranking introduces a new stage we haven't discussed: <b>query understanding</b>. Before we retrieve anything, we need to understand what the user means. "Action movies with robots" needs to be parsed into intent: genre=action, theme=robots. Misspelled queries need correction. Ambiguous queries ("The Ring" — the horror movie or the jewelry?) need disambiguation. This is often a separate NLP model or a set of heuristics that enriches the raw query before it hits the retrieval stage.</p>
+<p>Search ranking introduces new stage we have not discussed: <b>query understanding</b>. Before retrieval, we need to understand what user means. "Action movies with robots" must be parsed into intent: genre=action, theme=robots. Misspelled queries need correction. Ambiguous queries ("The Ring" — horror movie or jewelry?) need disambiguation. Often separate NLP model or set of heuristics enriches raw query before it hits retrieval stage.</p>
 
-<p><b>Architecture:</b> Query understanding → retrieval (BM25 keyword matching combined with dense retrieval using query and movie embeddings) → ranking (a learned ranker using query features, movie features, and click-through signals) → re-ranking (a personalization layer that adjusts for the specific user's taste). Each stage is a finer sieve — the same cascade principle at work.</p>
+<p><b>Architecture:</b> Query understanding → retrieval (BM25 keyword matching combined with dense retrieval using query and movie embeddings) → ranking (learned ranker using query features, movie features, and click-through signals) → re-ranking (personalization layer that adjusts for specific user's taste). Each stage is finer sieve — same cascade principle at work.</p>
 
-<p><b>Key metric subtlety:</b> In search, the user tells you what they want (the query), unlike in recommendations where you have to guess. This means the feedback signal is richer — a click on result #5 implies that results #1 through #4 were probably less relevant. This pairwise signal is gold for training <b>learning-to-rank</b> models, which are trained on pairs of documents rather than individual relevance scores.</p>
+<p><b>Key metric subtlety:</b> In search, user tells you what they want (query), unlike recommendations where you must guess. This means feedback signal is richer — click on result #5 implies results #1 through #4 were probably less relevant. This pairwise signal is gold for training <b>learning-to-rank</b> models, which train on pairs of documents rather than individual relevance scores.</p>
 
 <h3 id="design-fraud">Fraud Detection</h3>
 
-<p><b>Business problem:</b> Fraudulent transactions cost the platform $150 on average (chargebacks plus investigation). False positives cost $5 (support tickets plus lost goodwill).</p>
+<p><b>Business problem:</b> Fraudulent transactions cost platform $150 on average (chargebacks plus investigation). False positives cost $5 (support tickets plus lost goodwill).</p>
 
-<p><b>ML formulation:</b> For each transaction, predict the probability of fraud. Block or flag high-probability transactions before payment authorization.</p>
+<p><b>ML formulation:</b> For each transaction, predict probability of fraud. Block or flag high-probability transactions before payment authorization.</p>
 
-<p>Fraud has a fundamental challenge that StreamFlix doesn't: <b>delayed labels</b>. When a user watches a movie, we know almost immediately whether they liked it (did they finish it?). When a transaction happens, we don't know it was fraudulent until the chargeback arrives — days to weeks later. The model makes a decision in 100ms, but the ground truth takes 14 days to materialize. Training on incomplete labels is tricky. Some transactions labeled "not fraud" today will turn out to be fraudulent next week.</p>
+<p>Fraud has fundamental challenge StreamFlix does not: <b>delayed labels</b>. When user watches movie, we know almost immediately whether they liked it (did they finish it?). When transaction happens, we do not know it was fraudulent until chargeback arrives — days to weeks later. Model makes decision in 100ms, but ground truth takes 14 days to materialize. Training on incomplete labels is tricky. Some transactions labeled "not fraud" today will turn out to be fraudulent next week.</p>
 
 <p><b>Architecture:</b> Real-time serving is non-negotiable — we need to block fraud <em>before</em> the payment goes through. We use a cascade: a rules engine catches the obvious cases (blocked IP addresses, impossible shipping addresses, velocity limits like "5 purchases in 2 minutes from the same card"), a lightweight gradient boosted tree handles 85% of the remaining traffic, and a deep model handles the hardest 5%. Fallback: if the model server is unresponsive, the rules engine takes over alone — higher false positives, but no missed fraud.</p>
 

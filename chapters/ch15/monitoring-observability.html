@@ -751,13 +751,13 @@ def log_prediction(model_version, features, prediction, confidence, metadata=Non
         "experiment_variant": metadata.get("variant") if metadata else None,
     }</code></pre>
 
-<p>Every field earns its place. The <code>prediction_id</code> is your correlation key &mdash; it ties this prediction to downstream outcomes, user actions, and debug sessions. The <code>model_version</code> tells you which model made this call (critical when you&rsquo;re running A/B tests or shadow deployments). The <code>features</code> are the input snapshot &mdash; without them, you can&rsquo;t reproduce a bad prediction three weeks later. The <code>feature_hash</code> is a compact fingerprint for deduplication and quick comparison.</p>
+<p><code>prediction_id</code>: correlation key — ties prediction to downstream outcomes and debug sessions. <code>model_version</code>: which model made call (critical during A/B tests or shadow deployments). <code>features</code>: input snapshot — without it, can&rsquo;t reproduce bad prediction three weeks later. <code>feature_hash</code>: compact fingerprint for deduplication.</p>
 
-<p>A word on storage: yes, logging every feature vector for every prediction gets expensive at scale. If that&rsquo;s a constraint, log the hash and store full feature vectors in a time-limited queryable store (like a 90-day TTL on a columnar database). The hash lets you find matching records when you need the details.</p>
+<p>Storage cost: logging every feature vector for every prediction gets expensive at scale. If constrained, log hash and store full feature vectors in time-limited queryable store (90-day TTL on columnar database). Hash lets you find matching records when needed.</p>
 
 <h3>Metrics &mdash; The Time-Series Dashboard Layer</h3>
 
-<p>Metrics are aggregated numbers tracked over time. For ML serving, the essential ones are:</p>
+<p>Metrics: aggregated numbers tracked over time. Essential ones for ML serving:</p>
 
 <pre><code class="language-python">from prometheus_client import Histogram, Counter, Gauge
 
@@ -779,11 +779,11 @@ DRIFT_PSI = Gauge(
     ["feature_name"]
 )</code></pre>
 
-<p>The <code>Histogram</code> tracks the full distribution of latencies (not the average &mdash; averages hide tail behavior). The <code>Counter</code> tracks prediction volume and class distribution over time &mdash; if the model suddenly starts predicting one class 90% of the time, you&rsquo;ll see it here. The <code>Gauge</code> for PSI makes drift scores visible on Grafana dashboards and alertable via Prometheus rules.</p>
+<p><code>Histogram</code> tracks full latency distribution (not average — averages hide tail behavior). <code>Counter</code> tracks prediction volume and class distribution — if model suddenly predicts one class 90% of time, visible here. <code>Gauge</code> for PSI makes drift scores visible on Grafana and alertable via Prometheus rules.</p>
 
 <h3>Traces &mdash; Following a Prediction Through the System</h3>
 
-<p>A single prediction request at ShopFlow might touch: the API gateway, a feature store lookup, a preprocessing step, the model inference engine, a post-processing step with business rules, and the response serializer. When latency spikes, which stage caused it?</p>
+<p>Single prediction at ShopFlow touches: API gateway, feature store lookup, preprocessing, model inference, post-processing with business rules, response serializer. Latency spikes — which stage?</p>
 
 <pre><code class="language-python">from opentelemetry import trace
 
@@ -808,25 +808,25 @@ def predict_with_tracing(request):
         parent.set_attribute("model.confidence", float(result.confidence))
         return result</code></pre>
 
-<p>Each <code>start_as_current_span</code> creates a timed segment in the trace. The spans nest automatically &mdash; &ldquo;feature-retrieval&rdquo; appears as a child of &ldquo;ml-prediction.&rdquo; Ship these traces to Jaeger or Tempo and you get a visual timeline for every request. When someone reports &ldquo;predictions are slow today,&rdquo; you pull up the trace view and immediately see whether the bottleneck is in the feature store, the model, or the business rules layer.</p>
+<p>Each <code>start_as_current_span</code> creates timed segment. Spans nest — &ldquo;feature-retrieval&rdquo; appears as child of &ldquo;ml-prediction.&rdquo; Ship to Jaeger or Tempo: visual timeline per request. &ldquo;Predictions slow today&rdquo; → pull trace view, immediately see bottleneck: feature store, model, or business rules.</p>
 
-<p>The three pillars connect through shared identifiers. The <code>prediction_id</code> from your logs matches the trace ID from OpenTelemetry, which labels your Prometheus metrics. When a dashboard shows a spike in latency (metrics), you click through to the traces for that time window, identify the slow span, then search the logs for the corresponding prediction IDs to see what features were involved. That cross-pillar navigation is what turns monitoring data into debugging power.</p>
+<p>Three pillars connect via shared identifiers. <code>prediction_id</code> from logs matches trace ID from OpenTelemetry, labels Prometheus metrics. Dashboard shows latency spike (metrics) → click through to traces for that window, identify slow span → search logs for prediction IDs to see features involved. Cross-pillar navigation turns monitoring data into debugging power.</p>
 
 
 <!-- ===== DEBUGGING PLAYBOOK ===== -->
 <h2>Debugging Production Models &mdash; The Investigation Playbook</h2>
 
-<p>It&rsquo;s 2&nbsp;AM. An alert fires. ShopFlow&rsquo;s recommendation accuracy dropped from 78% to 52% over the last 6 hours. Here&rsquo;s the playbook I&rsquo;ve learned to follow, in order. Each step either resolves the issue or narrows the search space for the next step.</p>
+<p>2&nbsp;AM. Alert fires. ShopFlow recommendation accuracy dropped 78% → 52% over last 6 hours. Playbook in order — each step resolves issue or narrows search space.</p>
 
-<p><strong>First: is it infrastructure or is it the model?</strong> Check latency, error rates, CPU/memory utilization, pod health. If the serving container is running out of memory and crashing, that&rsquo;s not an ML problem &mdash; it&rsquo;s an ops problem. Our weather station analogy: before questioning whether the thermometer is wrong, check if it&rsquo;s still plugged in.</p>
+<p><strong>First: infrastructure or model?</strong> Check latency, error rates, CPU/memory, pod health. Serving container out of memory and crashing — ops problem, not ML. Weather station: check if thermometer is plugged in before questioning readings.</p>
 
-<p><strong>Second: is it the data?</strong> Run your schema validation. Check null rates, feature distributions, PSI scores. In my experience, roughly 40% of &ldquo;model problems&rdquo; are actually data pipeline problems. Someone upstream renamed a column, a third-party API changed its response format, a feature store cache expired and started returning stale values. My favorite thing about this step is that it has the highest hit rate. The least glamorous check catches the most bugs.</p>
+<p><strong>Second: data problem?</strong> Run schema validation. Check null rates, feature distributions, PSI scores. ~40% of &ldquo;model problems&rdquo; are data pipeline problems: upstream column renamed, third-party API changed format, feature store cache expired. Highest hit rate, least glamorous check.</p>
 
-<p><strong>Third: is it a specific segment?</strong> Slice your accuracy by every dimension you have &mdash; country, device, user cohort, time of day, traffic source. If accuracy dropped to 52% overall but it&rsquo;s still 78% for desktop users and 15% for mobile users, you&rsquo;ve narrowed the blast radius dramatically. The segment tells you where to look next.</p>
+<p><strong>Third: specific segment?</strong> Slice accuracy by every dimension — country, device, user cohort, time, traffic source. 52% overall but 78% desktop and 15% mobile → blast radius dramatically narrowed. Segment tells you where to look next.</p>
 
-<p><strong>Fourth: when did it start?</strong> Plot the metric over time and find the inflection point. Then overlay deployments, data pipeline runs, upstream service changes, and external events on the same timeline. The timestamp of the degradation is your biggest clue. If accuracy dropped at 8&nbsp;PM and a data pipeline ran at 7:45&nbsp;PM, that&rsquo;s not a coincidence.</p>
+<p><strong>Fourth: when did it start?</strong> Plot metric over time, find inflection point. Overlay deployments, pipeline runs, upstream changes, external events. Accuracy dropped at 8&nbsp;PM, pipeline ran at 7:45&nbsp;PM — not coincidence.</p>
 
-<p><strong>Fifth: can you reproduce it?</strong> Pull specific production examples where the model was wrong. Run them through the model locally with the exact same feature values. If you logged the features (as we covered in the observability section), this is straightforward. If you didn&rsquo;t &mdash; this is the moment you promise yourself you&rsquo;ll start logging them.</p>
+<p><strong>Fifth: can you reproduce it?</strong> Pull production examples where model was wrong. Run through model locally with exact same feature values. If features were logged: straightforward. If not — this is when you promise to start logging them.</p>
 
 <pre><code class="language-python">def investigate(predictions_log, bad_period, good_period):
     """Automated first-pass: compare bad period against a known-good baseline."""
@@ -856,29 +856,29 @@ def predict_with_tracing(request):
 
     return report</code></pre>
 
-<p>This function automates the first pass of the investigation. It compares the prediction distribution, identifies which features drifted, and breaks down accuracy by segment. It won&rsquo;t solve the problem for you &mdash; that still requires judgment &mdash; but it saves 20 minutes of manual slicing at 2&nbsp;AM when your brain is running at half capacity.</p>
+<p>Automates first-pass investigation: compares prediction distribution, identifies drifted features, breaks down accuracy by segment. Won&rsquo;t solve problem — still requires judgment — but saves 20 minutes of manual slicing at 2&nbsp;AM when brain runs at half capacity.</p>
 
 <div class="callout callout-info">
-<strong>The approximate breakdown of production ML incidents:</strong> ~40% data pipeline problems, ~25% upstream schema or feature changes, ~20% genuine drift, ~15% infrastructure issues. Starting with data is not a guess &mdash; it&rsquo;s playing the odds.
+<strong>Production ML incident breakdown:</strong> ~40% data pipeline problems, ~25% upstream schema/feature changes, ~20% genuine drift, ~15% infrastructure. Start with data — not a guess, playing the odds.
 </div>
 
 
 <!-- ===== TOOLS ===== -->
 <h2>Choosing Your Tools</h2>
 
-<p>The monitoring tool landscape is crowded, and I won&rsquo;t pretend to have used every tool deeply. But after working with several of them, here&rsquo;s my honest assessment of what each one does well.</p>
+<p>Tool landscape crowded. Honest assessment after working with several:</p>
 
-<p><strong>Evidently AI</strong> is open-source, Python-native, and produces beautiful interactive reports. It&rsquo;s the fastest path from &ldquo;zero monitoring&rdquo; to &ldquo;useful drift dashboard.&rdquo; Best for batch monitoring, notebook-based exploration, and teams that want full control without SaaS pricing. The limitation: it&rsquo;s not optimized for high-volume real-time streaming.</p>
+<p><strong>Evidently AI</strong>: open-source, Python-native, interactive reports. Fastest path from zero monitoring to useful drift dashboard. Best for batch monitoring, notebook exploration, full control without SaaS pricing. Limitation: not optimized for high-volume real-time streaming.</p>
 
-<p><strong>NannyML</strong> is also open-source and specializes in the delayed-label problem. Its CBPE implementation lets you estimate model performance without ground truth &mdash; a capability none of the other tools match. If your labels take days or weeks to arrive (insurance claims, loan defaults, medical outcomes), NannyML fills a gap that other tools leave open.</p>
+<p><strong>NannyML</strong>: open-source, specializes in delayed-label problem. CBPE implementation estimates performance without ground truth — no other tool matches this. Labels take days or weeks (insurance, loans, medical) → NannyML fills gap.</p>
 
-<p><strong>WhyLabs</strong> is a SaaS platform with open-source agents. It&rsquo;s built for enterprise scale: privacy-preserving analytics, real-time monitoring, cross-team collaboration. The best fit for larger organizations with compliance requirements (healthcare, banking) who are willing to pay for managed infrastructure.</p>
+<p><strong>WhyLabs</strong>: SaaS with open-source agents. Enterprise scale: privacy-preserving analytics, real-time monitoring, cross-team collaboration. Best for larger orgs with compliance requirements (healthcare, banking) willing to pay for managed infrastructure.</p>
 
-<p><strong>Prometheus + Grafana</strong> is the DIY path. If your ops team already runs this stack, you can expose ML-specific metrics from your serving endpoint and get monitoring integrated into existing dashboards. You build the ML-specific parts yourself, but you get full control and zero vendor lock-in.</p>
+<p><strong>Prometheus + Grafana</strong>: DIY path. Ops team already runs this stack? Expose ML-specific metrics from serving endpoint, integrate into existing dashboards. Build ML-specific parts yourself. Full control, zero vendor lock-in.</p>
 
-<p><strong>Alibi Detect</strong> is a drift-detection library from Seldon, strong on statistical tests and outlier detection. It&rsquo;s more of a toolkit than a platform &mdash; bring your own infrastructure for storing results and alerting.</p>
+<p><strong>Alibi Detect</strong>: drift-detection toolkit from Seldon, strong statistical tests and outlier detection. Toolkit, not platform — bring own infrastructure for storing results and alerting.</p>
 
-<p>For ShopFlow, which is small and budget-conscious, I&rsquo;d start with Evidently for drift reports and Prometheus + Grafana for operational metrics. If labels are delayed, add NannyML for performance estimation. If the company grows and needs enterprise features, evaluate WhyLabs. No one tool covers everything, and that&rsquo;s fine.</p>
+<p>For ShopFlow (small, budget-conscious): Evidently for drift reports, Prometheus + Grafana for operational metrics. Labels delayed → add NannyML. Company grows → evaluate WhyLabs. No one tool covers everything.</p>
 
       <div class="page-nav">
         <a href="mlops.html">
