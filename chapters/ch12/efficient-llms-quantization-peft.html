@@ -305,11 +305,11 @@
 <!-- OPENING -->
 <!-- ═══════════════════════════════════════════ -->
 
-<p>I treated my first large language model like a museum exhibit. Look, don&rsquo;t touch. When someone on my team suggested &ldquo;quantizing it to 4-bit,&rdquo; I physically winced. You want to <em>round</em> seven billion carefully trained floating-point numbers down to four bits each? That felt like compressing a symphony into a ringtone. So I avoided it. I kept renting larger and larger GPU instances, watching the bills climb, telling myself that precision was non-negotiable.</p>
+<p>First LLM felt like museum exhibit. Look, don&rsquo;t touch. Teammate suggested &ldquo;quantizing to 4-bit&rdquo; &mdash; physically winced. <em>Round</em> seven billion trained floats to four bits each? Felt like compressing symphony into ringtone. Avoided it. Kept renting bigger GPU instances, watching bills climb, telling myself precision was non-negotiable.</p>
 
-<p>Then one morning I woke up to a $2,400 cloud bill for a single week of inference. And I also needed to fine-tune the model for three different clients, each wanting their own domain-specific behavior. The full fine-tuning run for a 7B model was going to need 84 GB of VRAM &mdash; more than my A100 could offer. That was the morning the discomfort of not understanding quantization and parameter-efficient fine-tuning grew too painful to keep ignoring. Here is that dive.</p>
+<p>Then: $2,400 cloud bill for single week of inference. Also needed fine-tuning for three clients, each wanting domain-specific behavior. Full fine-tuning for 7B model needs 84 GB VRAM &mdash; more than A100 offers. That morning, discomfort of not understanding quantization and PEFT grew too painful. Here&rsquo;s that dive.</p>
 
-<p><strong>Quantization</strong> is the practice of representing model weights (and sometimes activations) in fewer bits &mdash; going from 16-bit or 32-bit floating point down to 8-bit integers, 4-bit integers, or even lower. The first practical 4-bit methods for LLMs appeared in 2022&ndash;2023 (GPTQ, AWQ), and they&rsquo;ve become the standard way large models actually get deployed. <strong>Parameter-Efficient Fine-Tuning (PEFT)</strong> is a family of techniques that customize a model&rsquo;s behavior by training only a small fraction of its parameters &mdash; often less than 1%. LoRA (2021) is the dominant method, and QLoRA (2023) married quantization with LoRA to let you fine-tune a 65B model on a single GPU.</p>
+<p><strong>Quantization</strong> = representing model weights (sometimes activations) in fewer bits &mdash; 16-bit or 32-bit float down to 8-bit, 4-bit integers, or lower. First practical 4-bit LLM methods appeared 2022&ndash;2023 (GPTQ, AWQ), now standard for deployment. <strong>Parameter-Efficient Fine-Tuning (PEFT)</strong> = family of techniques customizing model behavior by training &lt;1% of parameters. LoRA (2021) dominates. QLoRA (2023) married quantization with LoRA &mdash; fine-tune 65B model on single GPU.</p>
 
 
 <!-- TABLE OF CONTENTS -->
@@ -320,15 +320,15 @@
 
 <h2>The Suitcase Problem</h2>
 
-<p>Imagine you&rsquo;re packing for a two-week trip, but the airline says your suitcase can only weigh 24 kilograms. Your entire wardrobe weighs 140 kg. You have two choices: buy a bigger suitcase (rent more GPUs), or learn to pack smarter (quantization). Most people start by trying to buy a bigger suitcase. Eventually, everyone learns to pack.</p>
+<p>Imagine packing for two-week trip, airline says suitcase max 24 kg. Wardrobe weighs 140 kg. Two choices: buy bigger suitcase (rent more GPUs), or pack smarter (quantization). Everyone starts buying bigger suitcases. Eventually everyone learns to pack.</p>
 
-<p>Let&rsquo;s make this concrete. A 7-billion-parameter model stores each parameter as a 16-bit floating-point number. That&rsquo;s 2 bytes per parameter. So the weight storage alone is:</p>
+<p>Concrete numbers. 7B-parameter model stores each param as FP16 = 2 bytes per parameter. Weight storage:</p>
 
 <pre><code>7,000,000,000 parameters &times; 2 bytes = 14,000,000,000 bytes = 14 GB</code></pre>
 
-<p>An NVIDIA RTX 4090 has 24 GB of VRAM. An A100 has 80 GB. So a 7B model in FP16 fits on a 4090 with room to spare, and a 70B model (140 GB) doesn&rsquo;t fit on <em>anything</em> with a single GPU. That&rsquo;s the suitcase problem for inference.</p>
+<p>RTX 4090 = 24 GB VRAM. A100 = 80 GB. 7B model in FP16 fits on 4090 with room to spare. 70B model (140 GB) doesn&rsquo;t fit on <em>anything</em> single-GPU. That&rsquo;s suitcase problem for inference.</p>
 
-<p>For fine-tuning, the suitcase gets even heavier. You need the weights, the gradients (same size as weights), and the optimizer states. Adam keeps two extra copies &mdash; a running mean and a running variance &mdash; both in FP32. The math shakes out like this:</p>
+<p>For fine-tuning, suitcase gets heavier. Need weights, gradients (same size), and optimizer states. Adam keeps two extra copies &mdash; running mean and variance &mdash; both FP32. Math:</p>
 
 <pre><code># The memory budget for fine-tuning a 7B model
 
@@ -341,9 +341,9 @@ total                       &asymp;  84 GB
 # For a 70B model:  840 GB.  That&rsquo;s ten A100-80GB GPUs,
 # and we haven&rsquo;t even counted activations yet.</code></pre>
 
-<p>This is the problem that the rest of this section exists to solve. We&rsquo;re going to pack the same model into a much smaller suitcase &mdash; and we&rsquo;re going to learn to customize it without unpacking everything.</p>
+<p>This problem = what rest of this section solves. Pack same model into much smaller suitcase &mdash; and customize it without unpacking everything.</p>
 
-<p>I&rsquo;ll be using a running scenario throughout: you&rsquo;ve trained (or downloaded) a 7B language model that works well for general conversation. Now you need to deploy it for a customer support product. You need it to run on a single GPU. And three different clients want their own customized version. This is the kind of real-world problem where quantization and PEFT go from &ldquo;nice to know&rdquo; to &ldquo;I literally cannot ship without this.&rdquo;</p>
+<p>Running scenario throughout: you have 7B language model, works well for general conversation. Need to deploy for customer support product. Must run on single GPU. Three different clients want customized versions. This is where quantization and PEFT go from &ldquo;nice to know&rdquo; to &ldquo;cannot ship without this.&rdquo;</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <!-- WHAT QUANTIZATION DOES TO A NUMBER -->
@@ -351,9 +351,9 @@ total                       &asymp;  84 GB
 
 <h2>What Quantization Actually Does to a Number</h2>
 
-<p>Before we get to fancy methods with intimidating acronyms, we need to understand one very simple operation: rounding.</p>
+<p>Before fancy methods with intimidating acronyms, need to understand one simple operation: rounding.</p>
 
-<p>A 16-bit floating-point number (FP16) can represent about 65,000 distinct values. An 8-bit integer (INT8) can represent 256 values. A 4-bit integer can represent 16 values. <strong>Quantization</strong> is the act of mapping those 65,000 possible values down to 256, or 16, or even fewer. Every value in the original weight matrix gets snapped to the nearest value on a much coarser grid.</p>
+<p>FP16 can represent ~65,000 distinct values. INT8 = 256 values. INT4 = 16 values. <strong>Quantization</strong> maps those 65,000 possible values down to 256, or 16, or fewer. Every weight gets snapped to nearest value on much coarser grid.</p>
 
 <p>Let&rsquo;s walk through a tiny example. Say we have four weights from one layer of our model:</p>
 
