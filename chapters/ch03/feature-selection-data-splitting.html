@@ -359,13 +359,13 @@ redundant = [col for col in upper_triangle.columns
 
 <p>Pantry version: notice three bottles of olive oil — regular, extra virgin, "premium" that tastes same as extra virgin. Keep one. Toss duplicates.</p>
 
-<p>But here's where Pearson fails us, and this took me a while to fully internalize. Pearson correlation only measures <em>linear</em> relationships. If feature X and the target Y are related in a curved, U-shaped, or any other nonlinear way, Pearson can return a value near zero — as if there's no relationship at all. For a feature like "distance from city center" predicting house prices, where prices might be high both in the city core and in wealthy suburbs but low in between, Pearson would shrug and say "no correlation." That's a lie by omission.</p>
+<p>But Pearson fails here. Pearson measures only <em>linear</em> relationships. If feature X and target Y relate in curved, U-shaped, or other nonlinear way, Pearson can return near zero — as if no relationship exists. For "distance from city center" predicting house prices, prices may be high in city core and wealthy suburbs but low between. Pearson shrugs: "no correlation." Omission lie.</p>
 
 <h2>Mutual Information — The Nonlinear Detective</h2>
 
-<p><strong>Mutual information</strong> doesn't care about the shape of the relationship. It measures something more fundamental: how much knowing the value of one variable reduces your uncertainty about the other. If knowing a customer's "average transaction amount" tells you a lot about whether they'll commit fraud — regardless of whether that relationship is linear, quadratic, or some bizarre staircase shape — mutual information will catch it.</p>
+<p><strong>Mutual information</strong> does not care about relationship shape. It asks more basic question: how much does knowing one variable reduce uncertainty about other? If knowing customer's "average transaction amount" strongly helps predict fraud — linear, quadratic, weird staircase, anything — mutual information catches it.</p>
 
-<p>The value ranges from 0 (completely independent — knowing one tells you nothing about the other) up toward infinity (knowing one perfectly determines the other). Unlike Pearson's tidy −1 to +1 range, MI values aren't directly comparable across datasets, but they're excellent for ranking features within a single dataset.</p>
+<p>Value ranges from 0 (complete independence — knowing one tells you nothing about other) upward toward infinity (knowing one perfectly determines other). Unlike Pearson's tidy −1 to +1, MI values are not directly comparable across datasets. Good for ranking features inside one dataset.</p>
 
 <pre><code>from sklearn.feature_selection import mutual_info_classif
 
@@ -375,15 +375,15 @@ ranking = np.argsort(mi_scores)[::-1]
 for i in ranking[:10]:
     print(f"Feature {i}: MI = {mi_scores[i]:.3f}")</code></pre>
 
-<p>I'm still developing my intuition for exactly how MI estimation works under the hood — it involves partitioning the feature space and estimating probability densities, which gets computationally hairy with many features. But as a ranking tool, it's remarkably reliable. Think of it as upgrading from a metal detector that only finds iron (Pearson) to one that finds any metal (MI).</p>
+<p>I am still building intuition for MI estimation under hood — it partitions feature space and estimates probability densities, which gets computationally hairy with many features. But as ranking tool, it is remarkably reliable. Think metal detector that finds only iron (Pearson) versus one that finds any metal (MI).</p>
 
-<p>These three techniques — variance threshold, correlation filtering, and mutual information ranking — are all <strong>filter methods</strong>. They're called that because they filter features using statistics alone, without ever training a model. They're fast, model-agnostic, and a solid first pass. But they evaluate each feature in isolation (or in pairs, for correlation), which means they can miss features that are weak alone but powerful in combination. For that, we need a different approach.</p>
+<p>These three techniques — variance threshold, correlation filtering, mutual information ranking — are <strong>filter methods</strong>. Name fits: they filter with statistics alone, without training model. Fast. Model-agnostic. Good first pass. But they judge each feature alone, or in pairs for correlation. They can miss features weak alone but strong together. For that, need different approach.</p>
 
 <h2>Wrapper Methods — Search with Feedback</h2>
 
-<p>What if, instead of evaluating features with statistics, we trained a model, checked how it performed, then asked: "What happens if I remove this feature?" That's the core idea behind wrapper methods. They wrap a model inside a search loop — try different subsets of features, measure performance, and converge on the best set.</p>
+<p>What if, instead of scoring features with statistics, we train model, check performance, then ask: "What happens if I remove this feature?" Core wrapper idea. Wrap model inside search loop — try subsets, measure performance, converge on best set.</p>
 
-<p><strong>Recursive Feature Elimination (RFE)</strong> is the most commonly used wrapper. It works by training a model on all features, ranking them by importance (using whatever the model provides — coefficients for linear models, impurity reduction for trees), removing the least important one, and repeating. It's like a cooking competition elimination round: every iteration, the weakest ingredient gets sent home.</p>
+<p><strong>Recursive Feature Elimination (RFE)</strong> is most common wrapper. It trains model on all features, ranks them by importance — coefficients for linear models, impurity reduction for trees — removes least important one, repeats. Cooking competition version: each round, weakest ingredient goes home.</p>
 
 <pre><code>from sklearn.feature_selection import RFECV
 from sklearn.ensemble import RandomForestClassifier
@@ -395,19 +395,19 @@ rfe = RFECV(
 rfe.fit(X_train, y_train)
 print(f"Optimal feature count: {rfe.n_features_}")</code></pre>
 
-<p>RFECV adds cross-validation to the mix, so you get a reliable estimate of performance at each feature count. The optimal number is wherever the CV score peaks.</p>
+<p>RFECV adds cross-validation, so you get reliable performance estimate at each feature count. Optimal number is where CV score peaks.</p>
 
-<p>The cost is real. With 200 features and 5-fold CV, you're training roughly 1,000 models. If each takes a minute, that's 16 hours of compute. For a production pipeline that runs daily, that's a non-starter. For a one-time feature audit on a new dataset, it can be worth every minute.</p>
+<p>Cost is real. With 200 features and 5-fold CV, you train about 1,000 models. If each takes minute, compute bill is 16 hours. Bad for daily production pipeline. Fine for one-time feature audit on new dataset.</p>
 
-<p>There's also a subtle instability issue. RFE can give you different feature sets from slightly different data samples, especially when features are correlated. If features A and B carry similar information, one run might keep A and drop B, while another run does the opposite. <strong>Stability selection</strong> addresses this by running the selection process on many random subsamples and keeping only features that survive consistently — but that multiplies the compute cost further.</p>
+<p>Subtle instability too. RFE can produce different feature sets from slightly different data samples, especially when features are correlated. If features A and B carry similar information, one run may keep A and drop B, another may do opposite. <strong>Stability selection</strong> helps: run selection on many random subsamples, keep only features that survive consistently. Compute cost grows again.</p>
 
-<p>The pantry version: instead of eyeballing ingredients, you actually cook 1,000 versions of the dish, each time leaving out one ingredient, and see which removals make no difference. Thorough, but exhausting.</p>
+<p>Pantry version: instead of eyeballing ingredients, cook 1,000 versions of dish, each time leaving one ingredient out, then see which removals change nothing. Thorough. Exhausting.</p>
 
 <h2>Embedded Methods — Selection Baked Into Training</h2>
 
-<p>What if the model itself could decide which features matter as part of learning? That's what embedded methods do. Feature selection isn't a separate step — it's woven into the training process.</p>
+<p>What if model itself decides which features matter while learning? That is embedded methods. Feature selection is not separate step — it is built into training.</p>
 
-<p>Tree-based models like Random Forest and XGBoost naturally produce <strong>feature importance scores</strong>. Every time a tree splits on a feature, it records how much that split reduced prediction error. Features that appear in many splits, high up in the tree, get high importance. Features the trees rarely bother with get low importance.</p>
+<p>Tree-based models like Random Forest and XGBoost naturally produce <strong>feature importance scores</strong>. Every time tree splits on feature, it records how much split reduced prediction error. Features used often, high in tree, get high importance. Features trees rarely use get low importance.</p>
 
 <pre><code>from sklearn.ensemble import RandomForestClassifier
 
@@ -419,13 +419,13 @@ top_10 = np.argsort(importances)[-10:][::-1]
 for idx in top_10:
     print(f"Feature {idx}: importance = {importances[idx]:.4f}")</code></pre>
 
-<p>This is computationally free — you were going to train the model anyway, and the importance scores are a byproduct. The limitation is that these scores are specific to the model that produced them. Features that a Random Forest considers unimportant might matter a great deal to a neural network with different inductive biases.</p>
+<p>This is computationally free — you already planned to train model, and importance scores come as byproduct. Limitation: scores are specific to model that made them. Feature Random Forest ignores may matter a lot to neural network with different inductive biases.</p>
 
 <h2>The L1 Geometry That Makes Lasso Special</h2>
 
-<p><strong>L1 regularization</strong>, also called Lasso, does something that L2 (Ridge) cannot: it drives feature coefficients to exactly zero. Not close to zero. Exactly zero. The feature is gone, as if it never existed. This makes Lasso a genuine feature selector.</p>
+<p><strong>L1 regularization</strong>, also called Lasso, does what L2 (Ridge) cannot: it drives feature coefficients to exactly zero. Not close. Exactly zero. Feature is gone. That makes Lasso real feature selector.</p>
 
-<p>The reason comes down to geometry, and I'll be honest — I find it hard to visualize beyond two dimensions, but the 2D picture is illuminating enough. Imagine you're trying to find the best coefficients for a linear model. Without regularization, you'd land at whatever point minimizes your loss — call it the unconstrained optimum. Now add a constraint: the sum of the absolute values of your coefficients must be below some budget.</p>
+<p>Reason: geometry. Hard to visualize beyond two dimensions, but 2D picture is enough. You want best coefficients for linear model. Without regularization, solution lands at unconstrained optimum. Add constraint: sum of absolute coefficient values must stay below budget.</p>
 
 <p>In 2D, L1's constraint region is a diamond — a square rotated 45 degrees. L2's constraint region is a circle. The loss function creates elliptical contours radiating out from the unconstrained optimum. As you expand these contours, they'll eventually touch the constraint region. With L2's circle, the contact point can be anywhere along the smooth surface — almost never on an axis, meaning both coefficients stay nonzero. With L1's diamond, the contours almost always hit a corner first, and corners sit on the axes where one coefficient is exactly zero.</p>
 
