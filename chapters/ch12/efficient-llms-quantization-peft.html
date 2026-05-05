@@ -551,9 +551,9 @@ Q8_0          8.0 bits       ~7.2 GB     Near-lossless</code></pre>
 
 <h2>LoRA: The Low-Rank Insight</h2>
 
-<p>I&rsquo;ll be honest &mdash; when I first read the LoRA paper (Hu et al., 2021), I didn&rsquo;t believe the central claim. They argued that when you fine-tune a pre-trained model, the actual change to each weight matrix lives in a <em>tiny subspace</em>. Even though a weight matrix might be 4096 &times; 4096 (about 16 million numbers), the update during fine-tuning has very low <strong>intrinsic rank</strong> &mdash; maybe 8 or 16 meaningful dimensions out of 4096.</p>
+<p>First reading LoRA paper (Hu et al., 2021), didn&rsquo;t believe central claim. They argued: when you fine-tune pre-trained model, actual change to each weight matrix lives in <em>tiny subspace</em>. Weight matrix might be 4096 &times; 4096 (~16M numbers), but fine-tuning update has very low <strong>intrinsic rank</strong> &mdash; maybe 8 or 16 meaningful dimensions out of 4096.</p>
 
-<p>Let&rsquo;s build this up from a toy example. Say we have a small 4 &times; 4 weight matrix W in our model. During fine-tuning, the update &Delta;W would normally be another 4 &times; 4 matrix &mdash; 16 new parameters to learn:</p>
+<p>Build from toy example. Small 4 &times; 4 weight matrix W. During fine-tuning, update &Delta;W normally another 4 &times; 4 matrix &mdash; 16 new parameters:</p>
 
 <pre><code>W (frozen base)        &Delta;W (full update)
 ┌                 ┐     ┌                 ┐
@@ -563,7 +563,7 @@ Q8_0          8.0 bits       ~7.2 GB     Near-lossless</code></pre>
 │ 0.6  0.0 -0.5  0.9│     │ 0.03  0.015 -0.015 0.045│
 └                 ┘     └                 ┘</code></pre>
 
-<p>Look closely at &Delta;W. Every row is a scaled version of the same pattern: [2, 1, -1, 3]. Row 1 is that pattern &times; 0.01, row 2 is that pattern &times; 0.02, row 3 is &times; 0.005, row 4 is &times; 0.015. This matrix has <strong>rank 1</strong> &mdash; all the information can be captured by one column vector times one row vector:</p>
+<p>Look at &Delta;W. Every row = scaled version of same pattern: [2, 1, -1, 3]. Row 1 = pattern &times; 0.01, row 2 &times; 0.02, row 3 &times; 0.005, row 4 &times; 0.015. Matrix has <strong>rank 1</strong> &mdash; all info captured by one column vector times one row vector:</p>
 
 <pre><code>&Delta;W = B &middot; A
 
@@ -573,18 +573,18 @@ and   A (1&times;4) = [2, 1, -1, 3]
 Parameters: 4 + 4 = 8  (instead of 16)
 That&rsquo;s a 2&times; reduction for our tiny example.</code></pre>
 
-<p>For a real 4096 &times; 4096 matrix with rank r = 16:</p>
+<p>For real 4096 &times; 4096 matrix with rank r = 16:</p>
 
 <pre><code>Full &Delta;W:   4096 &times; 4096 = 16,777,216 parameters
 LoRA:       4096 &times; 16 + 16 &times; 4096 = 131,072 parameters
 
 That&rsquo;s a 128&times; reduction.  0.78% of the original.</code></pre>
 
-<p>This is the LoRA decomposition. Instead of learning a full update matrix &Delta;W, we learn two small matrices: <strong>A</strong> (the &ldquo;down-projection,&rdquo; from d dimensions to r) and <strong>B</strong> (the &ldquo;up-projection,&rdquo; from r back to d). Their product B&middot;A is a rank-r approximation of whatever update the model needs.</p>
+<p>This = LoRA decomposition. Instead of learning full &Delta;W, learn two small matrices: <strong>A</strong> (down-projection, d→r) and <strong>B</strong> (up-projection, r→d). Product B&middot;A = rank-r approximation of whatever update model needs.</p>
 
-<p>The reason this works connects to a concept called <strong>intrinsic dimensionality</strong>. Research has shown that for most downstream tasks, the useful fine-tuning updates live in a subspace of perhaps a few hundred dimensions, even though the parameter space has billions of dimensions. Think of it like steering a ship: the ship has millions of parts, but to change its course, you only need to turn the rudder. LoRA is learning the rudder, not rebuilding the hull.</p>
+<p>Why this works: <strong>intrinsic dimensionality</strong>. Research shows useful fine-tuning updates live in subspace of perhaps few hundred dimensions, even though parameter space has billions. Like steering ship: millions of parts, but changing course only requires turning rudder. LoRA learns the rudder, not rebuilding hull.</p>
 
-<p>I should note: this works <em>because</em> the pre-trained model is already good. It has learned rich, general representations during pre-training. Fine-tuning is making small adjustments to these representations for a specific task. If you were training from scratch, the updates wouldn&rsquo;t be low-rank at all. The foundation has to be solid before the rudder metaphor applies.</p>
+<p>Important: works <em>because</em> pre-trained model already good. Rich general representations learned during pre-training. Fine-tuning = small adjustments for specific task. Training from scratch → updates wouldn&rsquo;t be low-rank. Foundation must be solid before rudder metaphor applies.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <!-- LORA IN PRACTICE -->
@@ -592,15 +592,15 @@ That&rsquo;s a 128&times; reduction.  0.78% of the original.</code></pre>
 
 <h2>LoRA in Practice: Initialization, Scaling, and Rank</h2>
 
-<p>The LoRA paper made several specific design choices that turn out to matter a lot in practice.</p>
+<p>LoRA paper made specific design choices that matter a lot in practice.</p>
 
-<p><strong>Initialization.</strong> Matrix A is initialized with small random Gaussian values (standard Xavier/Kaiming). Matrix B is initialized to <strong>all zeros</strong>. This means that at the start of training, B &middot; A = 0, so the model is <em>identical</em> to the pre-trained base. There&rsquo;s no random perturbation at step 0, no sudden change in behavior. Training starts from exactly where pre-training left off. This is a small detail that makes a big difference in training stability.</p>
+<p><strong>Initialization.</strong> Matrix A initialized with small random Gaussian (Xavier/Kaiming). Matrix B initialized to <strong>all zeros</strong>. At training start, B &middot; A = 0, so model = identical to pre-trained base. No random perturbation at step 0, no sudden behavior change. Training starts from exactly where pre-training left off. Small detail, big difference in training stability.</p>
 
-<p><strong>The alpha parameter.</strong> The LoRA output gets scaled by &alpha;/r before being added to the base model&rsquo;s output:</p>
+<p><strong>The alpha parameter.</strong> LoRA output scaled by &alpha;/r before adding to base model output:</p>
 
 <pre><code>output = W&middot;x + (&alpha;/r) &middot; B&middot;A&middot;x</code></pre>
 
-<p>The ratio &alpha;/r controls how aggressively the LoRA adapter modifies the base model. Common choices: &alpha; = r (scaling factor of 1, no extra amplification) or &alpha; = 2r (scaling factor of 2, more aggressive updates). Higher &alpha; means faster adaptation but more risk of instability. For most tasks, &alpha; = 2r is a solid default.</p>
+<p>Ratio &alpha;/r controls how aggressively LoRA adapter modifies base model. Common choices: &alpha; = r (scaling factor 1) or &alpha; = 2r (scaling factor 2, more aggressive). Higher &alpha; = faster adaptation but more instability risk. For most tasks, &alpha; = 2r solid default.</p>
 
 <p><strong>Which layers to adapt.</strong> You don&rsquo;t have to put LoRA on every weight matrix. The original paper targeted only the query and value projections in attention. In practice, targeting all linear layers (Q, K, V, O projections in attention plus gate, up, and down projections in the feed-forward network) gives the best results. The overhead is still tiny &mdash; less than 1% of total parameters even with all layers adapted.</p>
 
