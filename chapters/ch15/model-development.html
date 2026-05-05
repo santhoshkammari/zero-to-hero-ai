@@ -321,7 +321,7 @@
 
 <p><b>Baseline model</b> = dumbest thing that could work. For TuneKeep: "if user hasn't listened to any music in last 14 days, predict churn." No machine learning. One feature. On historical data, rule catches 41% of churners with 67% precision. That is floor. Everything else gets measured against it.</p>
 
-<p>The next baseline is the simplest statistical model that learns from data. Logistic regression with three features: days since last listen, total listening hours last month, and number of playlist additions.</p>
+<p>Next baseline is simplest statistical model that learns from data. Logistic regression with three features: days since last listen, total listening hours last month, and number of playlist additions.</p>
 
 <pre><code>from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score
@@ -600,7 +600,7 @@ for test_month in months:
 
 <p>If performance stays stable across all five windows, confidence in generalization goes up. If it swings wildly — 0.74 in March, 0.61 in May, 0.73 in July — model may be sensitive to seasonal patterns or distribution shifts. Understand why before shipping.</p>
 
-<p>There's another trap I fell into early on. Model A scores 0.72 F1. Model B scores 0.74 F1. Is B better? Maybe. With a test set of 2,000 examples, that 0.02 difference might be noise. A <b>paired bootstrap test</b> helps: resample the test set thousands of times, compute the metric difference each time, and check whether the difference consistently favors B.</p>
+<p>Another early trap: Model A scores 0.72 F1. Model B scores 0.74 F1. Is B better? Maybe. With test set of 2,000 examples, that 0.02 gap might be noise. <b>Paired bootstrap test</b> helps: resample test set thousands of times, compute metric difference each time, and check whether difference consistently favors B.</p>
 
 <pre><code>import numpy as np
 
@@ -614,80 +614,80 @@ def paired_bootstrap(y_true, preds_a, preds_b, metric_fn, n_boot=10000):
     p_value = np.mean(np.array(diffs) &lt;= 0)
     return {"mean_diff": np.mean(diffs), "p_value": p_value}</code></pre>
 
-<p>If the p-value is above 0.05, the difference isn't statistically significant. I've learned to resist the temptation to claim victory on a 0.02 improvement without this check. "The new model is better" sounds convincing in a slide deck. "The new model is 0.02 better and the confidence interval includes zero" does not. Both statements describe the same result — only one is honest.</p>
+<p>If p-value is above 0.05, difference is not statistically significant. Do not claim victory on 0.02 improvement without this check. "New model is better" sounds strong on slide deck. "New model is 0.02 better and confidence interval includes zero" sounds weaker. Same result. Only one is honest.</p>
 
-<p>Offline metrics tell us whether a model learned something useful. They don't tell us whether users will notice or whether it will move the business metric we care about. For that, we need to put the model in front of real people.</p>
+<p>Offline metrics tell us whether model learned something useful. They do not tell us whether users notice or whether business metric moves. For that, put model in front of real people.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <!-- A/B Testing                                 -->
 <!-- ═══════════════════════════════════════════ -->
 <h2 id="ab-testing">A/B Testing: Letting Users Vote</h2>
 
-<p>An <b>A/B test</b> splits live traffic between two models — the current production model (control, "A") and the new candidate (treatment, "B") — and measures which one performs better on a business metric. For TuneKeep, the metric might be 30-day retention among users who received a "stay" offer, because the point of our churn model is to target those offers at the right people.</p>
+<p><b>A/B test</b> splits live traffic between two models — current production model (control, "A") and new candidate (treatment, "B") — and measures which one wins on business metric. For TuneKeep, metric might be 30-day retention among users who received "stay" offer, because churn model exists to target those offers at right people.</p>
 
-<p>The mechanics are deceptively straightforward: randomly assign 90% of users to the old model and 10% to the new one. Serve predictions accordingly. Wait. Measure.</p>
+<p>Mechanics look simple: randomly assign 90% of users to old model and 10% to new one. Serve predictions. Wait. Measure.</p>
 
-<p>The pitfalls, however, have eaten entire teams alive. Three mistakes come up over and over again.</p>
+<p>Pitfalls still wreck teams. Three mistakes appear again and again.</p>
 
-<p><b>Peeking.</b> You check the dashboard daily. On day 3, the new model shows a 4% lift with p &lt; 0.05. You celebrate and ship it. The problem: checking repeatedly and stopping as soon as you see significance massively inflates false positive rates. If you check every day for 14 days, your effective false positive rate is closer to 25% than 5%. The fix is to decide your sample size upfront — based on the minimum effect size you care about — and not look until you've collected enough data. This requires discipline that feels unnatural, and I still find it hard.</p>
+<p><b>Peeking.</b> You check dashboard daily. Day 3 shows 4% lift with p &lt; 0.05. You celebrate and ship. Problem: repeated checking and stopping at first significance massively inflates false positive rates. Check every day for 14 days, and effective false positive rate is closer to 25% than 5%. Fix: decide sample size upfront based on minimum effect size you care about, then do not look until enough data arrives.</p>
 
-<p><b>Wrong randomization unit.</b> If you randomize by request instead of by user, the same user might see model A on Monday and model B on Tuesday. Their experience is contaminated by both models, and you can't attribute outcomes to either one. Always randomize by the entity whose behavior you're measuring — users, in our case.</p>
+<p><b>Wrong randomization unit.</b> If you randomize by request instead of by user, same user might see model A on Monday and model B on Tuesday. Experience gets contaminated by both models, and outcomes cannot be attributed cleanly. Always randomize by entity whose behavior you measure — users here.</p>
 
-<p><b>Running too short.</b> Some effects take time to manifest. A recommendation model might show no short-term difference in click-through rate, but over three weeks, the better model increases session length because users develop trust in the recommendations. If we stopped the test after four days, we'd miss this entirely.</p>
+<p><b>Running too short.</b> Some effects need time to appear. Recommendation model may show no short-term click-through-rate difference, but over three weeks better model can increase session length because users develop trust in recommendations. Stop after four days, and you miss it.</p>
 
-<p>Before a full A/B test, many teams run a <b>shadow deployment</b>: the new model receives live traffic and produces predictions, but those predictions are never shown to users. The production model still serves all real responses. This lets you compare the new model's predictions against the old model's on real data, catch crashes and latency issues, and validate that nothing breaks — all without risking user experience. Think of it as a dress rehearsal before opening night.</p>
+<p>Before full A/B test, many teams run <b>shadow deployment</b>: new model receives live traffic and produces predictions, but users never see them. Production model still serves all real responses. This lets you compare new and old predictions on real data, catch crashes and latency issues, and validate that nothing breaks without risking user experience. Dress rehearsal before opening night.</p>
 
-<p>After shadow deployment looks clean, a <b>canary release</b> exposes the new model to a tiny fraction of traffic — say, 1%. Monitor closely. If metrics hold, ramp to 5%, then 10%, then 50%, then 100%. This graduated rollout limits the blast radius if something goes wrong. It's the bridge between "offline metrics look good" and "we're confident enough to serve everyone."</p>
+<p>After shadow deployment looks clean, <b>canary release</b> exposes new model to tiny traffic fraction — say, 1%. Monitor closely. If metrics hold, ramp to 5%, then 10%, then 50%, then 100%. Graduated rollout limits blast radius if something goes wrong. Bridge between "offline metrics look good" and "serve everyone."</p>
 
-<p>The progression — shadow → canary → full A/B test → rollout — is the standard path from "this model exists" to "this model serves all users." Each stage adds confidence while limiting risk.</p>
+<p>Progression — shadow → canary → full A/B test → rollout — is standard path from "model exists" to "model serves all users." Each stage adds confidence and limits risk.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <!-- Model Cards                                 -->
 <!-- ═══════════════════════════════════════════ -->
 <h2 id="model-cards">Model Cards and Documentation: The README for Your Model</h2>
 
-<p>Here is something that caught me off guard. The model works. It passed offline evaluation. It survived an A/B test. It's in production. Six months later, a new team member asks: "What does this model do? What data was it trained on? Where does it fail?" And nobody can answer confidently, because the person who trained it left the company, and the experiment logs show metrics but not context.</p>
+<p>This catches many teams off guard. Model works. It passed offline evaluation. It survived A/B test. It is in production. Six months later, new team member asks: "What does this model do? What data was it trained on? Where does it fail?" Nobody answers confidently, because person who trained it left company and experiment logs show metrics without context.</p>
 
-<p>A <b>model card</b>, proposed by Margaret Mitchell and collaborators at Google in 2019, is a structured document that accompanies a trained model — a README, but for a model instead of a codebase. The idea emerged from a real problem: as ML models get deployed in sensitive contexts (hiring, lending, content moderation), the people making deployment decisions need to understand what the model does and where it fails, even if they weren't involved in building it.</p>
+<p><b>Model card</b>, proposed by Margaret Mitchell and collaborators at Google in 2019, is structured document that accompanies trained model — README for model instead of codebase. Reason: as ML models move into sensitive contexts like hiring, lending, and content moderation, people making deployment decisions must understand what model does and where it fails, even if they did not build it.</p>
 
-<p>A model card for our TuneKeep churn predictor would include:</p>
+<p>Model card for TuneKeep churn predictor would include:</p>
 
-<p><b>Model details:</b> GradientBoostingClassifier, trained January 2024, version 3, trained by the retention team. Input: 23 user behavioral features from the last 30 days. Output: probability of churn in the next 30 days.</p>
+<p><b>Model details:</b> GradientBoostingClassifier, trained January 2024, version 3, by retention team. Input: 23 user behavioral features from last 30 days. Output: probability of churn in next 30 days.</p>
 
-<p><b>Intended use:</b> Prioritize retention offers for users likely to churn. Not intended for automated account termination or pricing decisions.</p>
+<p><b>Intended use:</b> Prioritize retention offers for users likely to churn. Not for automated account termination or pricing decisions.</p>
 
-<p><b>Training data:</b> 50,000 TuneKeep users, Jan 2023 – Oct 2023. Class balance: 12% churners, 88% retained. Oversampled minority class during training using class_weight="balanced".</p>
+<p><b>Training data:</b> 50,000 TuneKeep users, Jan 2023 – Oct 2023. Class balance: 12% churners, 88% retained. Minority class handled during training with class_weight="balanced".</p>
 
-<p><b>Evaluation results:</b> F1 = 0.74, precision = 0.71, recall = 0.77 on Nov–Dec 2023 temporal holdout. Performance broken down by user segment: power users (F1 = 0.81), casual listeners (F1 = 0.68), free-tier users (F1 = 0.59).</p>
+<p><b>Evaluation results:</b> F1 = 0.74, precision = 0.71, recall = 0.77 on Nov–Dec 2023 temporal holdout. Segment breakdown: power users (F1 = 0.81), casual listeners (F1 = 0.68), free-tier users (F1 = 0.59).</p>
 
 <p><b>Limitations and failure modes:</b> Performs poorly on users with fewer than 7 days of activity history (cold-start problem). Does not account for external factors like competitor launches or credit card expiration. Performance degrades by ~3% F1 per month without retraining.</p>
 
-<p><b>Ethical considerations:</b> Model uses listening behavior and engagement metrics, not demographic data. However, engagement patterns correlate with age and income; disparate impact across demographic groups has not been formally tested.</p>
+<p><b>Ethical considerations:</b> Model uses listening behavior and engagement metrics, not demographic data. But engagement patterns correlate with age and income; disparate impact across demographic groups has not been formally tested.</p>
 
-<p>That last section is the one most teams skip. It's also the most important one. I'll be honest — writing "we haven't tested for disparate impact" feels uncomfortable. It's supposed to feel uncomfortable. The model card isn't meant to make you look good. It's meant to tell the truth about what the model does and doesn't do, so the next person who touches it can make informed decisions.</p>
+<p>Last section is one most teams skip. Also most important. Writing "we haven't tested for disparate impact" feels uncomfortable. Good. Model card is not for looking good. Model card tells truth about what model does and does not do, so next person can make informed decisions.</p>
 
-<p>Beyond model cards, the everyday documentation that makes a difference is unglamorous: a decision log ("We tried LSTM but Random Forest was 0.03 better F1 and 20x faster to train, so we went with RF"), a data dictionary ("days_since_listen: integer, capped at 90, 0 means listened today"), and a runbook ("To retrain, run scripts/train.py with the latest monthly snapshot. Expected training time: 12 minutes on a single GPU. If F1 drops below 0.70, escalate to the retention ML team").</p>
+<p>Beyond model cards, everyday documentation matters too: decision log ("We tried LSTM but Random Forest was 0.03 better F1 and 20x faster to train, so we went with RF"), data dictionary ("days_since_listen: integer, capped at 90, 0 means listened today"), and runbook ("To retrain, run scripts/train.py with latest monthly snapshot. Expected training time: 12 minutes on single GPU. If F1 drops below 0.70, escalate to retention ML team").</p>
 
-<p>None of this is exciting. All of it saves dozens of hours when something breaks at 2 AM and the person on call wasn't the one who built the model.</p>
+<p>None of this is exciting. All of it saves dozens of hours when something breaks at 2 AM and person on call did not build model.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <!-- Full Lifecycle                               -->
 <!-- ═══════════════════════════════════════════ -->
 <h2 id="lifecycle">The Full Lifecycle</h2>
 
-<p>Let's zoom out and trace the complete path our TuneKeep model traveled. This is the model development lifecycle — not as a textbook diagram, but as the sequence of things that actually happened.</p>
+<p>Zoom out. Trace complete path TuneKeep model traveled. This is model development lifecycle — not textbook diagram, but sequence of what actually happened.</p>
 
-<p>We started with a business problem: predict churn to target retention offers. We built a baseline — a heuristic rule, then logistic regression — and established an F1 floor of 0.583. We set up experiment tracking with MLflow, so every attempt was logged with its configuration, data version, and results. We pinned our seeds and environment for reproducibility, ensuring that improvements were real and not random noise.</p>
+<p>We started with business problem: predict churn to target retention offers. We built baseline — heuristic rule, then logistic regression — and established F1 floor of 0.583. We set up experiment tracking with MLflow, so every attempt logged configuration, data version, and results. We pinned seeds and environment for reproducibility, so improvements were real and not random noise.</p>
 
-<p>We ran an Optuna hyperparameter search, exploring 100 configurations of a GradientBoostingClassifier, and found a configuration that scored 0.74 F1. We registered the trained model in the MLflow model registry as version 1, stage "None."</p>
+<p>We ran Optuna hyperparameter search, explored 100 GradientBoostingClassifier configurations, and found one that scored 0.74 F1. We registered trained model in MLflow model registry as version 1, stage "None."</p>
 
-<p>We ran offline evaluation using temporal splits and backtesting, confirming that the 0.74 held across multiple months. We used a paired bootstrap test to verify the improvement over the baseline was statistically significant. We promoted the model to "Staging."</p>
+<p>We ran offline evaluation with temporal splits and backtesting, confirming 0.74 held across multiple months. We used paired bootstrap test to verify improvement over baseline was statistically significant. We promoted model to "Staging."</p>
 
-<p>We deployed a shadow version alongside the existing rule-based system, confirmed there were no crashes or latency issues, then ran a canary deployment to 5% of users. After a week with stable metrics, we launched a full A/B test: 50/50 split between the old rule-based system and the new model. After three weeks, the new model showed a 2.1% lift in 30-day retention among targeted users, with p &lt; 0.01. We promoted the model to "Production."</p>
+<p>We deployed shadow version beside existing rule-based system, confirmed no crashes or latency issues, then ran canary deployment to 5% of users. After one week of stable metrics, we launched full A/B test: 50/50 split between old rule-based system and new model. After three weeks, new model showed 2.1% lift in 30-day retention among targeted users, with p &lt; 0.01. We promoted model to "Production."</p>
 
-<p>We wrote a model card documenting the model's details, training data, performance across user segments, known limitations, and ethical considerations. We set up monthly retraining on fresh data, with automatic offline evaluation that flags any significant performance degradation before the new version gets promoted.</p>
+<p>We wrote model card documenting model details, training data, performance across user segments, known limitations, and ethical considerations. We set up monthly retraining on fresh data, with automatic offline evaluation that flags significant performance degradation before new version gets promoted.</p>
 
-<p>That loop — baseline → track → reproduce → optimize → register → evaluate offline → test online → document → retrain — is the lifecycle. It's not linear. We went back to the experiment tracking phase three times when results didn't make sense. We rebuilt the feature set once when we discovered temporal leakage. The diagram in a textbook shows this as a clean circle. In practice, it's more like a spiral with detours.</p>
+<p>That loop — baseline → track → reproduce → optimize → register → evaluate offline → test online → document → retrain — is lifecycle. Not linear. We went back to experiment-tracking phase three times when results made no sense. We rebuilt feature set once after discovering temporal leakage. Textbook diagram shows clean circle. Practice looks more like spiral with detours.</p>
 
       <div class="page-nav">
         <a href="data-infrastructure.html">

@@ -285,24 +285,24 @@
 <!-- ═══════════ Table of Contents ═══════════ -->
 <nav class="section-toc" aria-label="Table of Contents" style="margin: 2em 0; padding-left: 1.5em; border-left: 3px solid var(--accent, #666); line-height: 2;">
   <strong style="display:block; margin-bottom:0.5em; font-size:0.9em; text-transform:uppercase; letter-spacing:0.05em; opacity:0.7;">In This Section</strong>
-  Why valid HTTP 200 responses can hide a broken model<br>
-  Distinguishing covariate shift, concept drift, and prior probability shift<br>
-  Measuring drift with PSI, Kolmogorov-Smirnov tests, and KL divergence<br>
-  Estimating model performance without ground truth labels using CBPE<br>
-  Designing alert tiers with static thresholds and CUSUM change detection<br>
-  Testing new models safely with shadow mode and champion-challenger patterns<br>
-  A/B testing pitfalls — network effects, peeking, and delayed outcomes<br>
-  Choosing retraining triggers — time, drift, performance, or data volume<br>
-  Building the ML observability stack with structured logs, Prometheus, and traces<br>
-  A step-by-step playbook for debugging production model failures<br>
-  Comparing monitoring tools — Evidently, WhyLabs, Fiddler, and NannyML
+  HTTP 200 can hide broken model<br>
+  Covariate shift vs concept drift vs prior probability shift<br>
+  Measuring drift: PSI, KS test, KL divergence<br>
+  Estimating performance without ground truth using CBPE<br>
+  Alert tiers: static thresholds and CUSUM change detection<br>
+  Shadow mode and champion-challenger testing<br>
+  A/B testing pitfalls — network effects, peeking, delayed outcomes<br>
+  Retraining triggers — time, drift, performance, data volume<br>
+  ML observability stack: structured logs, Prometheus, traces<br>
+  Debugging production model failures playbook<br>
+  Monitoring tools — Evidently, WhyLabs, Fiddler, NannyML
 </nav>
 <!-- ═══════════ End Table of Contents ═══════════ -->
 <!-- ===== OPENING ===== -->
 
-<p>I&rsquo;ll be honest &mdash; I once shipped a recommendation model that returned wrong predictions for three straight weeks before anyone noticed. No alert fired. No error log. No angry Slack message. The API responded with 200 OK, the JSON was well-formed, and our uptime dashboard beamed a reassuring green. Meanwhile, the model was confidently suggesting winter coats to users in July because an upstream feature pipeline had silently started sending stale data. Three weeks. That was the moment I realized that deploying a model and <em>monitoring</em> a model are entirely different disciplines.</p>
+<p>Recommendation model shipped. Returned wrong predictions three straight weeks. No alert fired. No error log. No Slack message. API said 200 OK, JSON well-formed, uptime dashboard green. Meanwhile, model confidently suggested winter coats to July users — upstream feature pipeline silently sending stale data. Three weeks. Deploying a model and <em>monitoring</em> a model are different disciplines.</p>
 
-<p><strong>Monitoring</strong> is the practice of watching an ML system after deployment to detect when it stops behaving as expected. <strong>Observability</strong> is the broader ability to investigate <em>why</em> it misbehaved, using the signals you chose to record. Together, they cover everything from statistical drift detection to the 2&nbsp;AM investigation playbook. These ideas have roots in traditional DevOps, but the ML-specific layers &mdash; data drift, silent degradation, delayed ground truth &mdash; are challenges that classical software monitoring never had to face.</p>
+<p><strong>Monitoring</strong>: watching ML system post-deployment to detect unexpected behavior. <strong>Observability</strong>: broader ability to investigate <em>why</em> it misbehaved, using signals you recorded. Together: statistical drift detection to 2&nbsp;AM investigation playbook. Roots in DevOps, but ML-specific layers — data drift, silent degradation, delayed ground truth — are challenges classical software monitoring never faced.</p>
 
 <!-- ===== TABLE OF CONTENTS ===== -->
 
@@ -312,27 +312,27 @@
 <!-- ===== THE SILENT FAILURE PROBLEM ===== -->
 <h2>The Silent Failure Problem</h2>
 
-<p>Let&rsquo;s start with a small thought experiment. Imagine we run a tiny online shop &mdash; let&rsquo;s call it <strong>ShopFlow</strong> &mdash; that sells three products: headphones, a notebook, and a coffee mug. We built a recommendation model. When a user visits, the model picks which product to show first. During training, the model learned that younger users tend to buy headphones, older users prefer notebooks, and coffee mugs are everyone&rsquo;s fallback. We deploy it, and the accuracy on the first day is 78%. Not bad for three products.</p>
+<p>ShopFlow sells three products: headphones, notebook, coffee mug. Recommendation model picks which product to show first. Training: younger users → headphones, older → notebooks, mugs as fallback. Day-one accuracy: 78%.</p>
 
-<p>A traditional software engineer would monitor this system by checking: is the server up? Is the response time under 200ms? Is the error rate below 1%? And all three answers would stay &ldquo;yes&rdquo; even if the model starts recommending coffee mugs to every single person on earth.</p>
+<p>Traditional software monitor checks: server up? Response under 200ms? Error rate below 1%? All three stay &ldquo;yes&rdquo; even if model recommends coffee mugs to every person on earth.</p>
 
-<p>That&rsquo;s the fundamental asymmetry. A broken model produces <em>valid outputs</em>. There&rsquo;s no stack trace for &ldquo;wrong prediction.&rdquo; There&rsquo;s no HTTP 500 for &ldquo;the world changed and I didn&rsquo;t notice.&rdquo; The model keeps humming along, returning valid JSON, while the business metric &mdash; actual purchases &mdash; quietly tanks.</p>
+<p>Fundamental asymmetry: broken model produces <em>valid outputs</em>. No stack trace for &ldquo;wrong prediction.&rdquo; No HTTP 500 for &ldquo;world changed, model didn&rsquo;t notice.&rdquo; Model keeps returning valid JSON while business metric &mdash; actual purchases &mdash; quietly tanks.</p>
 
-<p>Think of it like a weather station. Traditional monitoring checks whether the instruments are powered on and transmitting data. ML monitoring needs to also check whether the thermometer is reading 35&deg;C in January. The instruments can work perfectly while producing nonsense readings. That gap &mdash; between &ldquo;is the system running?&rdquo; and &ldquo;is the system <em>right</em>?&rdquo; &mdash; is where everything in this section lives.</p>
+<p>Weather station analogy: traditional monitoring checks instruments are powered and transmitting. ML monitoring must also check if thermometer reads 35&deg;C in January. Instruments work perfectly while producing nonsense. Gap between &ldquo;system running?&rdquo; and &ldquo;system <em>right</em>?&rdquo; &mdash; that&rsquo;s where this section lives.</p>
 
 
 <!-- ===== THE THREE FACES OF DRIFT ===== -->
 <h2>The Three Faces of Drift</h2>
 
-<p>People throw the word &ldquo;drift&rdquo; around as if it&rsquo;s one thing. It&rsquo;s actually three distinct phenomena, and confusing them leads to exactly the wrong response. I still occasionally mix them up under pressure in interviews, so let&rsquo;s build them from our ShopFlow example and make them stick.</p>
+<p>&ldquo;Drift&rdquo; sounds like one thing. Actually three distinct phenomena. Confusing them leads to wrong response.</p>
 
 <h3>Covariate Shift &mdash; The Inputs Moved</h3>
 
-<p>Back to ShopFlow. Suppose our training data came from a marketing campaign that mostly attracted users aged 25&ndash;35. Then we run a new campaign targeting retirees. Suddenly our users are aged 55&ndash;70 &mdash; a region of the feature space the model has barely seen. The <em>relationship</em> between age and product preference hasn&rsquo;t changed (older users still prefer notebooks), but the model was never trained on this population. It&rsquo;s making extrapolations instead of interpolations.</p>
+<p>Training data came from campaign targeting users aged 25&ndash;35. New campaign targets retirees: users now 55&ndash;70, region model barely saw. Relationship between age and preference unchanged (older users still prefer notebooks), but model never trained on this population. Extrapolation instead of interpolation.</p>
 
-<p>In more formal language, the distribution of inputs P(X) changed, while the mapping P(Y|X) stayed the same. That&rsquo;s <strong>covariate shift</strong>. The model&rsquo;s learned function is still correct &mdash; it was trained on data from a region it&rsquo;s no longer seeing.</p>
+<p>Formal: input distribution P(X) changed; mapping P(Y|X) unchanged. That&rsquo;s <strong>covariate shift</strong>. Model&rsquo;s learned function still correct &mdash; trained on region it&rsquo;s no longer seeing.</p>
 
-<p>Let&rsquo;s make this concrete with numbers. During training, the average user age was 30 with a standard deviation of 5. Now the average is 62 with a standard deviation of 8. We can picture the two distributions side by side:</p>
+<p>Concrete numbers: training avg user age 30, std 5. Production avg 62, std 8. Two distributions side by side:</p>
 
 <pre><code class="language-text">Training distribution:     [    ████████████    ]
                           20   25   30   35   40
@@ -342,24 +342,24 @@ Production distribution:                    [  ███████████
 
 Almost no overlap. The model is flying blind.</code></pre>
 
-<p>The fix for covariate shift: retrain with data that covers the new input distribution, or collect more data from the underrepresented region. The old training data is still useful &mdash; the underlying relationship hasn&rsquo;t changed, you&rsquo;re expanding coverage.</p>
+<p>Fix: retrain with data covering new input distribution, or collect from underrepresented region. Old training data still useful — underlying relationship unchanged, just expanding coverage.</p>
 
 <h3>Concept Drift &mdash; The Rules Changed</h3>
 
-<p>Now imagine something different. ShopFlow&rsquo;s users still have the same age distribution as during training. But a cultural shift happened &mdash; a viral TikTok made coffee mugs the &ldquo;cool&rdquo; accessory for twenty-somethings. Suddenly, users aged 25 who always bought headphones now buy mugs. Same inputs, different correct answer.</p>
+<p>Same age distribution as training. Cultural shift happened — viral TikTok made mugs &ldquo;cool&rdquo; for twenty-somethings. Users aged 25 who always bought headphones now buy mugs. Same inputs, different correct answer.</p>
 
-<p>The distribution P(X) is untouched. What changed is P(Y|X) &mdash; the mapping from features to the correct label. That&rsquo;s <strong>concept drift</strong>, and it&rsquo;s the scarier of the two because your old training data becomes actively misleading. It teaches the model a relationship that no longer exists.</p>
+<p>P(X) untouched. P(Y|X) changed — mapping from features to correct label. That&rsquo;s <strong>concept drift</strong>, scarier of the two. Old training data becomes actively misleading — encodes relationship that no longer exists.</p>
 
-<p>The fix for concept drift is more aggressive: retrain on <em>recent</em> data with fresh labels. Old data isn&rsquo;t helpful &mdash; it encodes the old relationship. This is the one where you might need to shorten your training window or apply time-based weighting.</p>
+<p>Fix: retrain on <em>recent</em> data with fresh labels. Old data harmful, not helpful. May need shorter training window or time-based weighting.</p>
 
 <h3>Prior Probability Shift &mdash; The Outcomes Moved</h3>
 
-<p>One more flavor. Suppose neither the user demographics nor their preferences changed, but ShopFlow ran a &ldquo;Buy One Get One Free&rdquo; promotion on notebooks. The return rate for notebooks shot from 5% to 25%. The distribution of outcomes P(Y) shifted. Even if our model&rsquo;s predictions are exactly as accurate as before, the <em>business impact</em> of each prediction changed. A model calibrated around a 5% return rate now makes poor decisions in a 25% return world.</p>
+<p>Neither demographics nor preferences changed, but BOGO promotion on notebooks pushed return rate from 5% to 25%. Distribution of outcomes P(Y) shifted. Model&rsquo;s predictions as accurate as before, but <em>business impact</em> of each prediction changed. Model calibrated for 5% returns makes poor decisions in 25% return world.</p>
 
-<p>That&rsquo;s <strong>prior probability shift</strong> (also called label drift). The fix: recalibrate your thresholds and decision boundaries. You may not need to retrain the model at all &mdash; adjusting the operating point can be enough.</p>
+<p>That&rsquo;s <strong>prior probability shift</strong> (also called label drift). Fix: recalibrate thresholds and decision boundaries. May not need to retrain at all &mdash; adjusting operating point can be enough.</p>
 
 <div class="callout callout-info">
-<strong>Why the distinction matters in practice:</strong> I&rsquo;ve seen teams waste a week retraining from scratch for what turned out to be prior probability shift &mdash; a simple threshold adjustment would have fixed it in minutes. And I&rsquo;ve seen teams adjust thresholds when the actual problem was concept drift, which is like adjusting the thermostat when the house is on fire. Different diagnoses demand different treatments.
+<strong>Why the distinction matters:</strong> Teams waste a week retraining for what was prior probability shift — threshold adjustment fixes it in minutes. Others adjust thresholds when problem is concept drift — adjusting thermostat while house is on fire. Different diagnoses demand different treatments.
 </div>
 
 <p>Our ShopFlow weather station analogy helps here. Covariate shift is like measuring temperature in a city you&rsquo;ve never calibrated for &mdash; your thermometer works, but it&rsquo;s in an unfamiliar environment. Concept drift is like the laws of physics changing &mdash; the temperature reading is correct, but what that temperature <em>means</em> for people has shifted. Prior probability shift is like the overall climate warming &mdash; the instrument and the physics are fine, but the baseline expectation needs updating.</p>
