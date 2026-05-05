@@ -302,20 +302,20 @@
 <!-- ════════════════════════════════════════════ -->
 <h2>A Confession and an Invitation</h2>
 
-<p>Every explanation of dimensionality reduction I found would start reasonably — "PCA finds directions of maximum variance" — and within two paragraphs descend into eigenvectors and covariance matrices with no motivation. The problem wasn't the math. It was that nobody explained <em>why</em> these tools exist before dumping the machinery, or walked through a tiny example where you could watch the thing work with your own eyes.</p>
+<p>Every explanation starts reasonable — "PCA finds directions of maximum variance" — then drops into eigenvectors and covariance matrices with no motivation. Problem was not math. Nobody explained <em>why</em> these tools exist before dumping machinery, or showed tiny example where you watch thing work.</p>
 
-<p>So here's what this chapter is: the explanation I wish I'd found back then. We're going to start with a real problem — too many features, not enough signal — and build every tool from scratch using examples small enough to hold in your head. We'll start with PCA, the workhorse that handles 80% of cases, then move into the wilder territory of t-SNE, UMAP, and a handful of specialized methods that solve problems PCA can't touch.</p>
+<p>This chapter gives explanation I wanted back then. Start with real problem — too many features, not enough signal — then build each tool from scratch with examples small enough for head. Start with PCA, workhorse for 80% of cases, then move to t-SNE, UMAP, and specialized methods PCA cannot handle.</p>
 
 
 
 <!-- ════════════════════════════════════════════ -->
 <h2>The Curse of Dimensionality</h2>
 
-<p>Before we learn how to reduce dimensions, we need to feel <em>why</em> high dimensions hurt. Not in the abstract "it's computationally expensive" way, but viscerally, in a way that changes how you think about data.</p>
+<p>Before learning reduction, feel <em>why</em> high dimensions hurt. Not abstract "it's computationally expensive" hurt. Real hurt. Hurt that changes how you think about data.</p>
 
-<p>Let's start with two data points. In one dimension, place them at 0 and 1. The distance between them is 1. Now add a second dimension — put them at (0, 0) and (1, 1). Distance is √2 ≈ 1.41. Three dimensions: (0, 0, 0) and (1, 1, 1). Distance is √3 ≈ 1.73. In 100 dimensions, the distance between the two corners of the unit hypercube is √100 = 10.</p>
+<p>Start with two data points. In one dimension: 0 and 1. Distance = 1. Add second dimension — (0, 0) and (1, 1). Distance = √2 ≈ 1.41. Three dimensions: (0, 0, 0) and (1, 1, 1). Distance = √3 ≈ 1.73. In 100 dimensions, distance between corners of unit hypercube is √100 = 10.</p>
 
-<p>That doesn't sound so bad. But here's the part that breaks your intuition: generate a thousand random points uniformly inside the 100-dimensional unit hypercube, and measure all the pairwise distances. The average distance will be large, but much more importantly, the <em>spread</em> of those distances will be tiny relative to the mean. Every point is roughly the same distance from every other point.</p>
+<p>Sounds harmless. Then intuition breaks. Generate thousand random points uniformly inside 100-dimensional unit hypercube and measure all pairwise distances. Average distance is large. More important: <em>spread</em> of distances is tiny relative to mean. Every point sits roughly same distance from every other point.</p>
 
 <pre><code class="language-python">import numpy as np
 
@@ -332,43 +332,43 @@ for d in [2, 10, 100, 1000]:
     print(f"d={d:4d}  mean={pair_dists.mean():.2f}  "
           f"std={pair_dists.std():.3f}  std/mean={ratio:.4f}")</code></pre>
 
-<p>Run that and watch the std/mean ratio shrink toward zero. In 1000 dimensions, the farthest pair and the nearest pair are almost the same distance apart. This is <strong>distance concentration</strong>, and it follows a clean mathematical pattern: the relative spread of distances scales roughly as 1/√d. As dimensions grow, distances lose their ability to discriminate.</p>
+<p>Run code. Watch std/mean shrink toward zero. In 1000 dimensions, farthest pair and nearest pair are almost same distance. This is <strong>distance concentration</strong>. Pattern clean: relative spread of distances scales roughly as 1/√d. More dimensions. Less discrimination.</p>
 
-<p>Think about what that means for k-nearest neighbors. The algorithm works by finding the k closest points and taking a vote. If every point is roughly equidistant, the "nearest" neighbors are barely closer than the farthest strangers. The vote becomes random. K-NN doesn't gradually degrade in high dimensions — it effectively stops working.</p>
+<p>Now think about k-nearest neighbors. Algorithm finds k closest points, then votes. If every point is roughly equidistant, "nearest" neighbors are barely closer than far strangers. Vote turns random. K-NN does not slowly degrade in high dimensions. It effectively stops working.</p>
 
-<p>Three things break as dimensions grow. <strong>Speed</strong> — distance calculations scale linearly with features, and tree-based indexing structures (like KD-trees) degrade to brute-force search beyond about 20 dimensions. <strong>Overfitting</strong> — a dataset with 200 samples and 500 features gives your model enormous room to memorize noise. There's always some spurious direction in 500-D space that separates any two classes perfectly by accident. <strong>Visualization</strong> — you cannot plot 500 axes. You can barely fake 3.</p>
+<p>Three things break as dimensions grow. <strong>Speed</strong> — distance calculations scale linearly with features, and tree-based indexes like KD-trees collapse toward brute-force search past about 20 dimensions. <strong>Overfitting</strong> — 200 samples with 500 features gives model huge room to memorize noise. Some spurious direction in 500-D space will separate classes by accident. <strong>Visualization</strong> — you cannot plot 500 axes. Barely fake 3.</p>
 
-<p>That's why we need dimensionality reduction. Not because it's elegant, but because without it, large swaths of machine learning stop functioning.</p>
+<p>Reason for dimensionality reduction: without it, large parts of machine learning stop working.</p>
 
 <!-- ════════════════════════════════════════════ -->
 <h2>The Manifold Hypothesis — Why Reduction Even Works</h2>
 
-<p>Here's a question that bugged me for a long time: if we throw away dimensions, aren't we throwing away information? How can we compress a 500-feature dataset down to 50 and still have a useful model?</p>
+<p>Question bugged me long time: if we throw away dimensions, do we throw away information? How compress 500 features to 50 and still keep useful model?</p>
 
-<p>The answer is the <strong>manifold hypothesis</strong>, and it's one of those ideas that sounds fancy but is actually very intuitive. The claim is that real-world high-dimensional data doesn't fill the entire space it lives in. Instead, it lies on or near a lower-dimensional surface — a <strong>manifold</strong> — embedded in the high-dimensional space.</p>
+<p>Answer is <strong>manifold hypothesis</strong>. Name sounds fancy. Idea simple. Real high-dimensional data usually does not fill whole space. It lies on or near lower-dimensional surface — <strong>manifold</strong> — inside high-dimensional space.</p>
 
-<p>Picture a Swiss roll. Take a flat 2D sheet of paper and curl it up in 3D space. The data points live in 3D, but the <em>real</em> structure — the relationships between points — is 2D. Two points that are far apart in 3D (one on the outside of the roll, one on the inside) might actually be close together if you unroll the sheet. The 2D surface is the manifold.</p>
+<p>Picture Swiss roll. Take flat 2D sheet and curl it in 3D space. Data points live in 3D, but <em>real</em> structure — relationships between points — is 2D. Two points far apart in 3D — one outside roll, one inside — may be close when you unroll sheet. 2D surface is manifold.</p>
 
-<p>This happens constantly in real data. Images of faces live in a space with millions of pixel dimensions, but the actual variation — pose, lighting, expression, identity — has maybe a few hundred degrees of freedom. A user behavior dataset might have 300 features, but users really fall along a handful of behavioral axes: price-sensitive vs. brand-loyal, frequent-browser vs. targeted-buyer, impulse vs. deliberate.</p>
+<p>This happens all time in real data. Face images live in millions of pixel dimensions, but real variation — pose, lighting, expression, identity — has maybe few hundred degrees of freedom. User behavior dataset may have 300 features, but users often vary along handful of axes: price-sensitive vs. brand-loyal, frequent-browser vs. targeted-buyer, impulse vs. deliberate.</p>
 
-<p>Dimensionality reduction works because the data was never truly high-dimensional to begin with. We're not compressing information — we're finding the lower-dimensional surface the data actually lives on and throwing away the empty space around it. Think of it like a map projection: the Earth's surface is 2D, even though it's embedded in 3D. A good map preserves the relationships that matter while discarding the dimension (altitude, for most purposes) that doesn't.</p>
+<p>Dimensionality reduction works because data was never truly high-dimensional. We are not crushing information. We are finding lower-dimensional surface where data lives and throwing away empty space around it. Think map projection: Earth's surface is 2D even though embedded in 3D. Good map preserves relationships that matter and drops dimension — altitude, for most uses — that does not.</p>
 
-<p>This map projection analogy will come back. Different dimensionality reduction methods are like different map projections — they all sacrifice something, and the right choice depends on what you need to preserve.</p>
+<p>Keep map projection analogy. Different dimensionality reduction methods are different map projections. Each sacrifices something. Right choice depends on what you need to preserve.</p>
 
 <!-- ════════════════════════════════════════════ -->
 <h2>PCA: Finding the Best Camera Angle</h2>
 
 <h3>The Photography Analogy</h3>
 
-<p>Imagine you have a 3D sculpture and you need to photograph it for a catalog. You get exactly one photo — one 2D image to capture as much of the sculpture's detail as possible. You walk around it, looking for the angle where the most interesting features are visible. From the front, you can see the face and the arms. From the side, the arms disappear behind the torso. From directly above, everything flattens into an unrecognizable blob.</p>
+<p>Imagine 3D sculpture. Need one catalog photo — one 2D image that keeps as much detail as possible. Walk around searching for angle that shows most. Front shows face and arms. Side hides arms behind torso. Directly above flattens everything into blob.</p>
 
-<p><strong>PCA is the algorithm that finds the best camera angle.</strong> It rotates your coordinate system so that the first axis captures the most variation in the data, the second axis captures the most remaining variation perpendicular to the first, and so on. Then you drop the axes that show the least — the ones where the sculpture looks the same from every angle along that axis.</p>
+<p><strong>PCA finds best camera angle.</strong> It rotates coordinate system so first axis captures most variation, second axis captures most remaining variation perpendicular to first, and so on. Then it drops axes that show least — axes where sculpture looks same from every angle.</p>
 
-<p>The key insight: PCA doesn't warp, stretch, or distort your data. It rotates it. The new axes — called <strong>principal components</strong> — are ordered by how much of the data's spread they capture. The first few components show you the "interesting directions." The rest are noise you can safely ignore.</p>
+<p>Key insight: PCA does not warp, stretch, or distort data. It rotates data. New axes — <strong>principal components</strong> — are ordered by how much spread they capture. First few show interesting directions. Rest is noise you can ignore.</p>
 
 <h3>A Tiny Example: 4 Products, 3 Features</h3>
 
-<p>Let's make this concrete. Suppose you're building a product recommendation system for a small online store. You have 4 products, and for each one you've measured 3 features of user behavior: average time spent on the product page (in seconds), number of times it was added to a wishlist, and number of purchases.</p>
+<p>Make it concrete. Suppose you build product recommendation system for small online store. You have 4 products. For each, you measure 3 user-behavior features: average time on product page in seconds, wishlist adds, and purchases.</p>
 
 <pre><code class="language-python">import numpy as np
 
@@ -389,13 +389,13 @@ print(X_centered)
 #  [-47.5 -6.25 -19.5 ]
 #  [-37.5 -4.25 -16.5 ]]</code></pre>
 
-<p>Look at those centered values. Products A and B have positive values across all three features. Products C and D have negative values across all three. The features are moving together — when page time goes up, wishlists and purchases go up too. That correlated movement is exactly what PCA will exploit.</p>
+<p>Look at centered values. Products A and B are positive across all three features. Products C and D are negative across all three. Features move together — page time up, wishlists and purchases up too. PCA exploits this correlated movement.</p>
 
-<p>If all three features are telling roughly the same story ("this product is popular"), then we don't need three numbers to describe each product. One number — a "popularity score" — might capture most of what's going on. That's what the first principal component will be.</p>
+<p>If all three features tell roughly same story — "product popular" — you do not need three numbers per product. One number — "popularity score" — may capture most of it. First principal component becomes that score.</p>
 
 <h3>The Covariance Matrix</h3>
 
-<p>To find the direction of maximum spread, we need to quantify how features vary together. That's what the <strong>covariance matrix</strong> does.</p>
+<p>To find direction of maximum spread, quantify how features vary together. <strong>covariance matrix</strong> does that.</p>
 
 <pre><code class="language-python"># Step 2: Compute the covariance matrix
 n = X_centered.shape[0]
@@ -406,15 +406,15 @@ print(np.round(C, 1))
 #  [ 266.6   35.6   83.2]
 #  [ 634.2   83.2  203.0]]</code></pre>
 
-<p>The covariance matrix <strong>C = (1/(n−1)) Xᵀ X</strong> has shape (features × features) — here, 3×3. The diagonal entries are the variances of each feature. C[0,0] = 2091.7 is the variance of page_time; it's large because page_time has big numbers. The off-diagonal entry C[0,1] = 266.6 is the covariance between page_time and wishlists — it's positive, confirming they move together.</p>
+<p><strong>C = (1/(n−1)) Xᵀ X</strong> has shape (features × features) — here, 3×3. Diagonal entries are feature variances. C[0,0] = 2091.7 is variance of page_time; large because page_time uses big numbers. Off-diagonal C[0,1] = 266.6 is covariance between page_time and wishlists — positive, so they move together.</p>
 
-<p>Every entry in this matrix tells you something about how two features relate. The covariance matrix is a complete summary of the linear relationships in your data. PCA's job is to find the directions in this matrix where the variance is concentrated.</p>
+<p>Each entry says how two features relate. Covariance matrix summarizes linear relationships in data. PCA looks for directions where variance concentrates.</p>
 
 <h3>Eigendecomposition</h3>
 
-<p>I'll be honest — when I first saw that PCA was "eigendecomposition of the covariance matrix," I nearly closed the tab. It sounded like someone had combined every intimidating word from linear algebra into one phrase designed to repel beginners.</p>
+<p>First time I saw PCA described as "eigendecomposition of covariance matrix," I almost closed tab. Phrase sounded built to scare beginners.</p>
 
-<p>But here's what eigendecomposition actually does. You give it a square matrix (our covariance matrix C), and it returns two things: a set of <strong>eigenvectors</strong> — directions — and a set of <strong>eigenvalues</strong> — one number per direction, telling you how much variance lives along that direction. The eigenvectors are perpendicular to each other. Ordered by eigenvalue, they give you a ranking: first direction captures the most variance, second captures the next most, and so on.</p>
+<p>Actual eigendecomposition: give it square matrix — our covariance matrix C. It returns <strong>eigenvectors</strong> — directions — and <strong>eigenvalues</strong> — one number per direction showing variance along that direction. Eigenvectors are perpendicular. Sort by eigenvalue. First direction captures most variance, second captures next, and so on.</p>
 
 <pre><code class="language-python"># Step 3: Eigendecompose the covariance matrix
 eigenvalues, eigenvectors = np.linalg.eigh(C)
@@ -436,11 +436,11 @@ print("\nFirst eigenvector (PC1 direction):")
 print(np.round(eigenvectors[:, 0], 4))
 # [-0.9539 -0.1220 -0.2740]</code></pre>
 
-<p>Look at those eigenvalues. The first one (2322.6) dwarfs the other two (7.2 and 0.5). That means 99.67% of all the variance in our 3-feature dataset lives along a single direction. The data cloud isn't a sphere — it's a cigar, elongated along one axis. We came in with 3 features and the data is screaming that it's essentially one-dimensional.</p>
+<p>Look at eigenvalues. First one (2322.6) crushes other two (7.2 and 0.5). So 99.67% of variance in this 3-feature dataset lives along one direction. Data cloud is not sphere. Data cloud is cigar. We started with 3 features. Data screams: one dimension.</p>
 
-<p>The first eigenvector [-0.95, -0.12, -0.27] tells us the direction of that cigar. It loads heavily on page_time (the first entry is -0.95), with smaller contributions from wishlists and purchases. This is our "popularity score" direction.</p>
+<p>First eigenvector [-0.95, -0.12, -0.27] gives cigar direction. It loads heavily on page_time, with smaller contributions from wishlists and purchases. This is our "popularity score" direction.</p>
 
-<p>The formal decomposition is <strong>C = VΛVᵀ</strong>, where V is the matrix of eigenvectors as columns, and Λ is the diagonal matrix of eigenvalues. That's the equation. The columns of V are our principal component directions. The eigenvalues in Λ tell us how important each direction is.</p>
+<p>Formal decomposition: <strong>C = VΛVᵀ</strong>. V holds eigenvectors as columns. Λ holds eigenvalues on diagonal. Equation done. Columns of V are principal component directions. Eigenvalues in Λ say how important each direction is.</p>
 
 <pre><code class="language-python"># Step 4: Project the data onto the first principal component
 pc1 = X_centered @ eigenvectors[:, 0]  # 4 products → 4 scores
@@ -451,13 +451,13 @@ print("PC1 scores:", np.round(pc1, 1))
 # Products C and D get large positive scores (niche)
 # One number now captures most of the 3-feature story</code></pre>
 
-<p>That's it. That's PCA. Center the data, compute the covariance matrix, find the eigenvectors, project onto the top k. Everything else is optimization, numerics, and practical advice.</p>
+<p>That is PCA. Center data. Compute covariance matrix. Find eigenvectors. Project onto top k. Everything else is optimization, numerics, and practical advice.</p>
 
 <h3>SVD: What Actually Runs Under the Hood</h3>
 
-<p>In our toy example with 3 features, we formed the covariance matrix Xᵀ X and eigendecomposed it. That works fine for small problems. But imagine a gene expression dataset with 20,000 features. Xᵀ X would be a 20,000 × 20,000 matrix — that's 400 million entries. Forming it is expensive. Decomposing it is worse. And there's a subtler problem: multiplying Xᵀ X can amplify floating-point errors, making the result numerically unstable.</p>
+<p>In toy example with 3 features, we built Xᵀ X and eigendecomposed it. Fine for small problems. Now imagine gene expression data with 20,000 features. Xᵀ X becomes 20,000 × 20,000 — 400 million entries. Building it costs a lot. Decomposing it costs more. Worse, multiplying Xᵀ X can amplify floating-point error and hurt numerical stability.</p>
 
-<p>In practice, nobody forms Xᵀ X. Instead, we apply <strong>Singular Value Decomposition</strong> directly to the data matrix X:</p>
+<p>In practice, nobody forms Xᵀ X. We apply <strong>Singular Value Decomposition</strong> directly to data matrix X:</p>
 
 <pre><code class="language-python"># X = U Σ Vᵀ
 # U: (n × n) — left singular vectors (row space)
@@ -477,19 +477,19 @@ print("PC directions from SVD (rows of Vt):")
 print(np.round(Vt[0], 4))
 # Same direction as eigenvectors[:, 0], possibly sign-flipped</code></pre>
 
-<p>The right singular vectors (rows of Vᵀ) are exactly the principal component directions. The singular values σᵢ relate to eigenvalues by λᵢ = σᵢ² / (n − 1). Same answer, better numerics, and we never build the covariance matrix.</p>
+<p>Right singular vectors — rows of Vᵀ — are principal component directions. Singular values σᵢ relate to eigenvalues by λᵢ = σᵢ² / (n − 1). Same answer. Better numerics. No covariance matrix build.</p>
 
-<p><strong>Randomized SVD</strong> goes a step further. If you only need the top 50 components out of 20,000 features, why compute all 20,000? Randomized algorithms use random projections to approximate the top-k singular vectors dramatically faster. Scikit-learn uses this automatically when you set <code>svd_solver='randomized'</code> or <code>'auto'</code> (which selects randomized when n_components is small relative to features).</p>
+<p><strong>Randomized SVD</strong> goes further. If you need top 50 components out of 20,000 features, do not compute all 20,000. Randomized algorithms use random projections to approximate top-k singular vectors much faster. Scikit-learn does this automatically when you set <code>svd_solver='randomized'</code> or <code>'auto'</code> and n_components is small relative to features.</p>
 
-<p>But here's the limitation that matters: both eigendecomposition and SVD find <strong>linear</strong> directions. They can rotate the data, but they can't bend it. Remember the Swiss roll — a 2D sheet curled up in 3D? PCA would try to flatten it by finding the direction of maximum variance, which would project the spiral onto a line and mangle the structure. PCA can find the best camera angle for a sculpture, but it can't unroll the sculpture into a flat photograph. We'll need nonlinear methods for that, and we'll get to them shortly.</p>
+<p>Big limitation: eigendecomposition and SVD find <strong>linear</strong> directions. They can rotate data. They cannot bend data. Remember Swiss roll — 2D sheet curled in 3D. PCA would flatten by maximum variance, project spiral onto line, and mangle structure. PCA finds best camera angle for sculpture. PCA cannot unroll sculpture into flat photograph. Nonlinear methods handle that. Next section.</p>
 
 <h3>How Many Components? The Scree Plot</h3>
 
-<p>Knowing how PCA works is one thing. Deciding how many components to keep is the actual practical question you'll face every time you use it.</p>
+<p>Knowing PCA mechanics is one thing. Choosing how many components to keep is real question.</p>
 
-<p>The <strong>explained variance ratio</strong> for component k is its eigenvalue divided by the sum of all eigenvalues. In our product example, PC1 explained 99.67% — we were lucky, the data was almost perfectly one-dimensional. Real datasets are messier.</p>
+<p><strong>explained variance ratio</strong> for component k is its eigenvalue divided by sum of all eigenvalues. In product example, PC1 explained 99.67%. Lucky case. Data was almost one-dimensional. Real datasets are messier.</p>
 
-<p>A <strong>scree plot</strong> shows explained variance ratios in order, from largest to smallest. You're looking for an <strong>elbow</strong> — the point where the curve drops off and each additional component contributes diminishing returns. Everything past the elbow is mostly noise.</p>
+<p><strong>scree plot</strong> shows explained variance ratios from largest to smallest. Look for <strong>elbow</strong> — point where curve drops and each extra component gives diminishing returns. Past elbow: mostly noise.</p>
 
 <pre><code class="language-python">import numpy as np
 from sklearn.decomposition import PCA
@@ -520,17 +520,17 @@ X_back = pca.inverse_transform(X_reduced)
 mse = np.mean((X_scaled - X_back) ** 2)
 print(f"Reconstruction MSE: {mse:.4f}")</code></pre>
 
-<p>The pragmatic rule: <strong>keep enough components to reach 90–95% cumulative explained variance</strong>. Then validate on your actual downstream task — if classification accuracy doesn't drop, you've successfully compressed your data. If it does, bump the threshold up.</p>
+<p>Pragmatic rule: <strong>keep enough components to reach 90–95% cumulative explained variance</strong>. Then validate on real downstream task. If classification accuracy holds, compression worked. If not, raise threshold.</p>
 
-<p>I should confess something here: the 90–95% rule is a useful starting point, but it's not gospel. I've seen datasets where 80% variance was plenty, and others where even 99% wasn't enough because the signal lived in the small-variance components. The scree plot is a guide, not a commandment. Always let your downstream metric have the final word.</p>
+<p>Confession: 90–95% rule is starting point, not gospel. Some datasets are fine at 80%. Others fail even at 99% because signal lives in low-variance components. Scree plot guides. Downstream metric decides.</p>
 
 <h3>PCA in Production</h3>
 
-<p>There's one mistake I see more often than any other with PCA, and I made it myself more than once: fitting PCA on the entire dataset, including the test set, before doing cross-validation. This leaks information. The principal components are computed using statistics (means, variances, covariances) from the data — if those statistics include test data, your model has peeked at information it shouldn't have.</p>
+<p>Common PCA mistake: fit PCA on whole dataset, including test set, before cross-validation. That leaks information. Principal components use data statistics — means, variances, covariances. If those include test data, model already peeked.</p>
 
-<div class="callout"><strong>Standardize first!</strong> PCA maximizes variance. If feature A ranges from 0 to 1,000,000 and feature B ranges from 0 to 1, PCA will think A dominates — not because it's more informative, but because it has bigger numbers. StandardScaler before PCA. Every time. No exceptions. I learned this the hard way when my first PCA reduced 50 features down to one that was 99.9% "revenue in dollars."</div>
+<div class="callout"><strong>Standardize first!</strong> PCA maximizes variance. If feature A ranges from 0 to 1,000,000 and feature B from 0 to 1, PCA will think A dominates — not because A is more informative, but because A has bigger numbers. Use StandardScaler before PCA. Every time. My first PCA reduced 50 features to one component that was 99.9% "revenue in dollars."</div>
 
-<p>The fix is to put PCA inside a scikit-learn Pipeline, so it only sees training data in each fold:</p>
+<p>Fix: put PCA inside scikit-learn Pipeline, so it sees only training data in each fold:</p>
 
 <pre><code class="language-python">from sklearn.pipeline import Pipeline
 from sklearn.ensemble import RandomForestClassifier
@@ -554,22 +554,22 @@ pipe_full = Pipeline([
 scores_full = cross_val_score(pipe_full, X, y, cv=5, scoring='accuracy')
 print(f"Full features accuracy: {scores_full.mean():.3f} ± {scores_full.std():.3f}")</code></pre>
 
-<p>Passing <code>n_components=0.95</code> as a float tells PCA to automatically keep however many components reach 95% explained variance. No manual tuning needed — the number of components adapts to the data in each training fold.</p>
+<p>Passing <code>n_components=0.95</code> as float tells PCA: keep however many components reach 95% explained variance. No manual tuning. Component count adapts to data in each training fold.</p>
 
 <h3>PCA ≈ Linear Autoencoder</h3>
 
-<p>This is one of those connections that clicked for me once and permanently changed how I think about learned representations.</p>
+<p>This connection clicked once, then changed how I think about learned representations.</p>
 
-<p>Build a neural network with one hidden layer, linear activations, and MSE loss. The input and output are the same data (it's an autoencoder — it tries to reconstruct its own input). The hidden layer has k neurons, fewer than the input dimension — a bottleneck. Train it.</p>
+<p>Build neural network with one hidden layer, linear activations, and MSE loss. Input and output are same data — autoencoder reconstructs its own input. Hidden layer has k neurons, fewer than input dimension — bottleneck. Train it.</p>
 
-<p>That network learns to project the data down to k dimensions and back up, minimizing reconstruction error. The subspace it finds is <em>exactly</em> the same subspace PCA finds. Mathematically identical. The encoder learns the top-k eigenvectors, and the decoder learns their transpose.</p>
+<p>Network learns projection down to k dimensions and back up, minimizing reconstruction error. Subspace it finds is <em>exactly</em> PCA subspace. Same math. Encoder learns top-k eigenvectors. Decoder learns their transpose.</p>
 
-<p>Add nonlinear activations and you get something strictly more powerful — a nonlinear autoencoder that can capture curves and folds PCA misses. But the linear case <em>is</em> PCA. This makes PCA the theoretical baseline for all learned compressions. When someone claims their fancy autoencoder is great at dimensionality reduction, PCA is the sanity check: are you actually doing better than a linear projection?</p>
+<p>Add nonlinear activations and you get something stronger — nonlinear autoencoder that captures curves and folds PCA misses. But linear case <em>is</em> PCA. So PCA is baseline for learned compressions. Fancy autoencoder claim? Check whether it beats linear projection first.</p>
 
 <!-- ════════════════════════════════════════════ -->
 <h2>When PCA Fails: The Nonlinear World</h2>
 
-<p>Remember the Swiss roll — a 2D sheet of paper curled up into a spiral in 3D space? Let's see what PCA does with it.</p>
+<p>Remember Swiss roll — 2D sheet curled into spiral in 3D? Watch PCA touch it.</p>
 
 <pre><code class="language-python">from sklearn.datasets import make_swiss_roll
 from sklearn.decomposition import PCA
@@ -589,54 +589,54 @@ X_pca = pca.fit_transform(X_swiss)
 print(f"Variance explained: {pca.explained_variance_ratio_.sum():.2%}")
 # High! PCA thinks it did great. But the structure is mangled.</code></pre>
 
-<p>PCA finds the two directions of maximum variance in 3D and projects onto them. Those happen to be the width and height of the roll. The spiral structure — which is the <em>actual</em> geometry of the data — gets flattened and folded on top of itself. Points that were far apart along the surface of the sheet end up on top of each other in the PCA projection.</p>
+<p>PCA finds two directions of maximum variance in 3D and projects onto them. Those are width and height of roll. Spiral structure — <em>actual</em> geometry of data — gets flattened and folded onto itself. Points far apart along sheet surface land on top of each other in PCA projection.</p>
 
-<p>Going back to our map analogy: this is like trying to make a flat map of the Earth using only a single photograph from space. You'll capture one hemisphere but lose the other completely. What you need is a proper map projection — an algorithm that knows the Earth is curved and unfolds it intelligently. That's what nonlinear methods do.</p>
+<p>Back to map analogy: this is like making flat Earth map from one photo in space. You capture one hemisphere and lose other. Need real map projection — algorithm that knows Earth is curved and unfolds it well. Nonlinear methods do that.</p>
 
-<p><strong>Kernel PCA</strong> is one approach — it applies the kernel trick to PCA, mapping data into a higher-dimensional space where linear PCA can capture nonlinear structure. It works, but you need to choose a kernel (RBF is the usual default), it doesn't scale well to large datasets, and in practice it's been largely displaced by the methods we'll cover next.</p>
+<p><strong>Kernel PCA</strong> is one option — apply kernel trick to PCA, map data into higher-dimensional space where linear PCA captures nonlinear structure. It works, but you must choose kernel — RBF usually — it scales poorly on large datasets, and newer methods mostly replaced it in practice.</p>
 
 <!-- ════════════════════════════════════════════ -->
 <h2>t-SNE: The Visualization Microscope</h2>
 
-<p>Let me say this upfront and in bold: <strong>t-SNE is a visualization tool.</strong> Not a feature engineering method. Not a preprocessing step. Not a way to produce inputs for a downstream model. It makes pretty 2D pictures of high-dimensional data. That's what it's for, and it's spectacularly good at it — but using it for anything else is a mistake I see constantly.</p>
+<p>Say this upfront: <strong>t-SNE is visualization tool.</strong> Not feature engineering method. Not preprocessing step. Not input generator for downstream model. It makes pretty 2D pictures of high-dimensional data. That job it does extremely well. Anything else is mistake.</p>
 
-<p>I still get tripped up interpreting t-SNE plots, if I'm being honest. After years of using it, I sometimes catch myself staring at a gap between two clusters and thinking "those groups are very different" — which is exactly the kind of conclusion t-SNE doesn't support. Old habits die hard.</p>
+<p>I still misread t-SNE plots sometimes. Years later, I still stare at gap between clusters and think "those groups are very different." t-SNE does not support that conclusion. Old habits stick.</p>
 
 <h3>How It Works</h3>
 
-<p>The core idea has three steps, and each one is worth understanding.</p>
+<p>Core idea has three steps. Each one matters.</p>
 
-<p><strong>Step 1 — Build a probability distribution in high-D.</strong> For each data point, t-SNE computes the probability that it would "pick" every other point as a neighbor. This uses a Gaussian kernel centered on each point: nearby points get high probability, distant points get near-zero. The width of the Gaussian is adapted per point so that each one has roughly the same number of effective neighbors (controlled by the perplexity parameter). The result is a probability distribution over all pairs of points that encodes the local neighborhood structure of the data.</p>
+<p><strong>Step 1 — Build probability distribution in high-D.</strong> For each data point, t-SNE computes probability that it would pick every other point as neighbor. Gaussian kernel sits on each point: nearby points get high probability, distant points get near-zero. Kernel width adapts per point so each point has roughly same number of effective neighbors, controlled by perplexity. Result is probability distribution over point pairs that encodes local neighborhood structure.</p>
 
-<p><strong>Step 2 — Build a similar distribution in 2D, but with a different kernel.</strong> Place points randomly in 2D. Compute pairwise similarities again — but this time, use a <strong>Student's t-distribution</strong> with one degree of freedom (which is the same as a Cauchy distribution) instead of a Gaussian. This is the key innovation, and the reason for the name t-SNE.</p>
+<p><strong>Step 2 — Build similar distribution in 2D, but with different kernel.</strong> Place points randomly in 2D. Compute pairwise similarities again, but use <strong>Student's t-distribution</strong> with one degree of freedom — same as Cauchy — instead of Gaussian. This is key innovation. This gives name t-SNE.</p>
 
-<p><strong>Step 3 — Make the two distributions match.</strong> Use gradient descent to minimize the KL divergence between the high-D distribution and the low-D distribution. Points shuffle around in 2D until the neighborhood structure matches as closely as possible — things that were close in high-D end up close in 2D.</p>
+<p><strong>Step 3 — Make distributions match.</strong> Use gradient descent to minimize KL divergence between high-D distribution and low-D distribution. Points shuffle in 2D until neighborhood structure matches as closely as possible. Things close in high-D end up close in 2D.</p>
 
 <h3>The Crowding Problem and Why Heavy Tails Fix It</h3>
 
-<p>This is the insight that made t-SNE work where earlier methods (like the original SNE) failed, and it took me a while to really internalize it.</p>
+<p>This insight made t-SNE work where earlier methods like original SNE failed. Took me while to internalize.</p>
 
-<p>In 100 dimensions, a single point can have dozens of roughly equidistant neighbors. The surface area of a hypersphere is enormous — there's room for everyone. In 2D, you can pack maybe 6 equidistant neighbors around a point before they start colliding with other clusters. Trying to preserve all those high-D neighborhoods with a Gaussian in 2D creates a traffic jam — everything smushes into the center. This is the <strong>crowding problem</strong>.</p>
+<p>In 100 dimensions, one point can have dozens of roughly equidistant neighbors. Hypersphere surface area is enormous — room for everyone. In 2D, maybe 6 equidistant neighbors fit around point before collisions start. Trying to preserve all high-D neighborhoods with Gaussian in 2D creates traffic jam — everything smushes into center. This is <strong>crowding problem</strong>.</p>
 
-<p>The Student's t-distribution has <strong>heavier tails</strong> than the Gaussian. Points that are moderately far apart in high-D get pushed <em>much</em> further apart in the 2D embedding. This creates breathing room — clusters separate, and the local neighborhoods can be preserved without everything collapsing into a blob. The heavy tails are like adding extra lanes to a highway during rush hour.</p>
+<p>Student's t-distribution has <strong>heavier tails</strong> than Gaussian. Points moderately far apart in high-D get pushed much farther apart in 2D embedding. This creates breathing room — clusters separate, local neighborhoods survive, blob collapse stops. Heavy tails add extra lanes to highway.</p>
 
 <h3>Perplexity: The One Knob That Matters</h3>
 
-<p><strong>Perplexity</strong> (typical range: 5–50) roughly controls "how many effective neighbors each point considers." Think of it as a soft version of k in k-nearest neighbors. Low perplexity (5–10) means tight local focus — you'll see fine-grained structure, but clusters might fragment into subclusters that aren't real. High perplexity (30–50) means broader context — clusters are chunkier and their relative positions are more stable, but you might miss internal structure.</p>
+<p><strong>Perplexity</strong> (typical range: 5–50) roughly controls how many effective neighbors each point considers. Think soft version of k in k-nearest neighbors. Low perplexity (5–10) means tight local focus — fine-grained structure shows up, but clusters may split into fake subclusters. High perplexity (30–50) means broader context — clusters get chunkier and relative positions stabilize, but internal structure can disappear.</p>
 
-<div class="callout"><strong>Golden rule for t-SNE interpretation.</strong> Run it at perplexity 5, 30, and 50. If a cluster appears in all three, it's probably real. If it only appears at low perplexity, it might be an artifact of the algorithm splitting a continuous group.</div>
+<div class="callout"><strong>Golden rule for t-SNE interpretation.</strong> Run perplexity 5, 30, and 50. If cluster appears in all three, it is probably real. If it appears only at low perplexity, it may be artifact from algorithm splitting continuous group.</div>
 
 <h3>The Gotchas — Read This Before Interpreting Any t-SNE Plot</h3>
 
-<p><strong>Cluster sizes are meaningless.</strong> The algorithm can inflate or squash clusters freely. A big blob on screen might be tighter in the original space than a tiny blob next to it.</p>
+<p><strong>Cluster sizes are meaningless.</strong> Algorithm can inflate or squash clusters freely. Big blob on screen may be tighter in original space than tiny blob beside it.</p>
 
-<p><strong>Distances between clusters are meaningless.</strong> Two well-separated groups might be nearly identical in high-D. The gap between them tells you nothing reliable.</p>
+<p><strong>Distances between clusters are meaningless.</strong> Two well-separated groups may be nearly identical in high-D. Gap between them tells you nothing reliable.</p>
 
-<p><strong>Only cluster existence and membership are trustworthy.</strong> "These points group together" — yes, you can believe that. "This cluster is far from that one" — no, you can't.</p>
+<p><strong>Only cluster existence and membership are trustworthy.</strong> "These points group together" — yes. Believe that. "This cluster is far from that one" — no. Do not believe that.</p>
 
-<p><strong>Never use t-SNE output as features for a model.</strong> The embedding is optimized for visual aesthetics, not predictive power. The axes have no consistent meaning. Different random seeds produce different layouts. Training a classifier on t-SNE coordinates is like training on random art.</p>
+<p><strong>Never use t-SNE output as features for model.</strong> Embedding is optimized for visual aesthetics, not predictive power. Axes have no stable meaning. Different random seeds give different layouts. Training classifier on t-SNE coordinates is like training on random art.</p>
 
-<p><strong>Run it multiple times.</strong> Even with PCA initialization (which helps a lot), the results can vary. If the structure changes dramatically across runs, be skeptical of whatever you think you're seeing.</p>
+<p><strong>Run it multiple times.</strong> Even with PCA initialization, which helps a lot, results can vary. If structure changes a lot across runs, be skeptical.</p>
 
 <pre><code class="language-python">from sklearn.manifold import TSNE
 from sklearn.datasets import load_digits
@@ -661,30 +661,30 @@ X_2d = tsne.fit_transform(X)
 # plt.show()
 print(f"t-SNE output shape: {X_2d.shape}")  # (1797, 2)</code></pre>
 
-<p>The Barnes-Hut approximation brings t-SNE's complexity from O(n²) to O(n log n), making it usable for up to about 100,000 points. Beyond that, the runtime becomes painful. For larger datasets, UMAP is the way to go.</p>
+<p>Barnes-Hut approximation reduces t-SNE complexity from O(n²) to O(n log n), so it works up to about 100,000 points. Beyond that, runtime hurts. For larger datasets, use UMAP.</p>
 
 <!-- ════════════════════════════════════════════ -->
 <h2>UMAP: The Modern Default</h2>
 
-<p>UMAP (Uniform Manifold Approximation and Projection) showed up in 2018 and quickly became the tool most practitioners reach for first. It's faster than t-SNE, preserves more global structure, and — this is the big one — you can actually use its output as features for downstream models.</p>
+<p>UMAP (Uniform Manifold Approximation and Projection) arrived in 2018 and quickly became default first choice. Faster than t-SNE. Preserves more global structure. Big one: you can use output as features for downstream models.</p>
 
 <h3>How It Works</h3>
 
-<p>UMAP's theoretical foundation involves fuzzy simplicial sets and Riemannian geometry. I won't pretend I fully understand the topology paper. But the practical algorithm is surprisingly clean:</p>
+<p>UMAP theory involves fuzzy simplicial sets and Riemannian geometry. Paper gets heavy. Practical algorithm is much cleaner:</p>
 
-<p><strong>Step 1 — Build a weighted k-nearest-neighbor graph in high-D.</strong> For each point, find its <code>n_neighbors</code> closest points. Assign edge weights based on distance: closer means stronger. Each point's distances are normalized relative to its own local scale, so dense regions and sparse regions are treated on equal footing.</p>
+<p><strong>Step 1 — Build weighted k-nearest-neighbor graph in high-D.</strong> For each point, find <code>n_neighbors</code> closest points. Assign edge weights from distance: closer means stronger. Normalize each point's distances by its local scale, so dense and sparse regions get fair treatment.</p>
 
-<p><strong>Step 2 — Build a similar graph in low-D.</strong> Initialize points in 2D (or whatever target dimension) using spectral embedding. Compute edge weights in the low-D space.</p>
+<p><strong>Step 2 — Build similar graph in low-D.</strong> Initialize points in 2D or target dimension with spectral embedding. Compute edge weights in low-D space.</p>
 
-<p><strong>Step 3 — Optimize the low-D layout so the two graphs match.</strong> Minimize the <strong>cross-entropy</strong> between the high-D and low-D edge weight distributions using stochastic gradient descent.</p>
+<p><strong>Step 3 — Optimize low-D layout so graphs match.</strong> Minimize <strong>cross-entropy</strong> between high-D and low-D edge-weight distributions with stochastic gradient descent.</p>
 
-<p>That cross-entropy objective is the key difference from t-SNE. KL divergence (t-SNE's loss) penalizes "things that should be close but aren't" — attractive forces. Cross-entropy also penalizes "things that should be far apart but aren't" — repulsive forces. This is why UMAP preserves global structure better: it actively pushes apart points that don't belong together, maintaining the large-scale relationships between clusters, not only the local neighborhoods within them.</p>
+<p>That cross-entropy objective is key difference from t-SNE. KL divergence, t-SNE's loss, penalizes things that should be close but are not — attractive forces. Cross-entropy also penalizes things that should be far apart but are not — repulsive forces. That is why UMAP preserves global structure better: it pushes apart points that do not belong together, preserving large-scale cluster relationships, not only local neighborhoods.</p>
 
 <h3>The Two Knobs</h3>
 
-<p><strong><code>n_neighbors</code></strong> (default 15): how many neighbors define "local." Small values (5–15) emphasize fine-grained local structure — you'll see detailed clusters, possibly with more noise. Large values (50–200) capture broader topology — the big picture of how clusters relate to each other, at the cost of losing internal detail. This is the most important parameter.</p>
+<p><strong><code>n_neighbors</code></strong> (default 15): number of neighbors that define local structure. Small values (5–15) emphasize fine local detail — more cluster detail, sometimes more noise. Large values (50–200) capture broader topology — big picture of cluster relationships, less internal detail. Most important parameter.</p>
 
-<p><strong><code>min_dist</code></strong> (default 0.1): how tightly points can pack in the embedding. Set to 0.0 for dense, well-separated clusters with clear boundaries. Set to 0.5 or higher if you want to see the continuous structure within clusters rather than hard edges.</p>
+<p><strong><code>min_dist</code></strong> (default 0.1): how tightly points can pack in embedding. Set 0.0 for dense, well-separated clusters with clear boundaries. Set 0.5 or higher if you want continuous structure inside clusters instead of hard edges.</p>
 
 <pre><code class="language-python"># pip install umap-learn
 import umap
@@ -715,7 +715,7 @@ X_sup = reducer_sup.fit_transform(X, y=y)
 print(f"Supervised UMAP shape: {X_sup.shape}")
 # Class boundaries become much sharper — great for exploration</code></pre>
 
-<p>That supervised mode is worth calling out. By passing labels to <code>fit_transform</code>, UMAP adjusts the neighbor graph to favor same-class connections. The result is an embedding where class boundaries are cleaner and the structure is more interpretable. It's not cheating — it's using available information to make a better map.</p>
+<p>Supervised mode matters. Pass labels to <code>fit_transform</code>, and UMAP adjusts neighbor graph to favor same-class connections. Result: cleaner class boundaries, more interpretable structure. Not cheating. Using available information to draw better map.</p>
 
 <h3>t-SNE vs UMAP — When to Use Which</h3>
 
@@ -734,20 +734,20 @@ print(f"Supervised UMAP shape: {X_sup.shape}")
   </tbody>
 </table>
 
-<p>The honest answer: use UMAP by default. Use t-SNE when you want a second opinion on the visualization, or when a reviewer asks for it. Run both with multiple parameter settings before drawing any biological, business, or scientific conclusions from the plots.</p>
+<p>Honest answer: use UMAP by default. Use t-SNE for second opinion on visualization, or when reviewer asks. Run both with multiple parameter settings before making biological, business, or scientific claims from plots.</p>
 
 <!-- ════════════════════════════════════════════ -->
 <h2>LDA: Supervised Dimensionality Reduction</h2>
 
-<p>Everything we've seen so far is unsupervised — PCA, t-SNE, and UMAP don't know about class labels. <strong>Linear Discriminant Analysis</strong> flips this: it uses labels to find the directions that best <em>separate</em> classes. Different goal, different math, and sometimes dramatically better results.</p>
+<p>Everything so far is unsupervised — PCA, t-SNE, UMAP ignore class labels. <strong>Linear Discriminant Analysis</strong> flips goal: use labels to find directions that best <em>separate</em> classes. Different goal. Different math. Sometimes much better results.</p>
 
 <h3>Fisher's Criterion</h3>
 
-<p>Imagine two clouds of points in 2D — class A and class B. You need to project them onto a single line (1D) in a way that makes it easy to tell the classes apart. What line do you choose?</p>
+<p>Imagine two point clouds in 2D — class A and class B. You must project them onto one line in 1D so classes separate cleanly. Which line?</p>
 
-<p>PCA would choose the direction of maximum overall variance. But that might be a direction where the two classes overlap completely — the spread is large, but it's all within-class spread. LDA is smarter: it looks for the direction where the class <strong>means</strong> are far apart (high <strong>between-class scatter</strong>, S_B) and the points within each class are tightly packed (low <strong>within-class scatter</strong>, S_W).</p>
+<p>PCA chooses direction of maximum overall variance. That direction may have total class overlap — big spread, but all within-class spread. LDA does better: find direction where class <strong>means</strong> are far apart — high <strong>between-class scatter</strong>, S_B — and points inside each class stay tight — low <strong>within-class scatter</strong>, S_W.</p>
 
-<p>Formally, LDA finds the vector w that maximizes the ratio wᵀS_Bw / wᵀS_Ww. This is a generalized eigenvalue problem, and it gives you at most <strong>C − 1</strong> components, where C is the number of classes. Binary classification? One component. Ten digit classes? At most nine. That's a hard ceiling, and it's both LDA's strength (extreme compression) and its limitation.</p>
+<p>Formally, LDA finds vector w that maximizes wᵀS_Bw / wᵀS_Ww. This is generalized eigenvalue problem. It yields at most <strong>C − 1</strong> components, where C is number of classes. Binary classification? One component. Ten digit classes? At most nine. Hard ceiling. Also LDA's strength: extreme compression. Also limitation.</p>
 
 <pre><code class="language-python">from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.datasets import load_digits
@@ -763,20 +763,20 @@ print(f"LDA shape: {X_lda.shape}")  # (1797, 9)
 # Compare: PCA needed ~28 components for 95% variance.
 # LDA often outperforms PCA for classification despite having far fewer dimensions.</code></pre>
 
-<p>LDA assumes each class follows a Gaussian distribution with equal covariance matrices. When those assumptions roughly hold — and they hold more often than you'd expect — LDA is remarkably effective. Nine dimensions vs. 28 from PCA, and the nine are laser-focused on class boundaries rather than general variance. When the assumptions fail badly (curved decision boundaries, wildly different class shapes), LDA underperforms.</p>
+<p>LDA assumes each class follows Gaussian distribution with equal covariance matrices. When that is roughly true — more often than you expect — LDA works very well. Nine dimensions versus 28 from PCA, and those nine target class boundaries instead of general variance. When assumptions fail badly — curved decision boundaries, wildly different class shapes — LDA underperforms.</p>
 
-<div class="callout"><strong>Name collision warning.</strong> LDA in dimensionality reduction means Linear Discriminant Analysis (Fisher, 1936). LDA in NLP means Latent Dirichlet Allocation (Blei, 2003). Completely different algorithms that share an acronym. In the context of this chapter, LDA always means Fisher's method. If someone mentions LDA in a topic modeling conversation, they mean Blei's.</div>
+<div class="callout"><strong>Name collision warning.</strong> LDA in dimensionality reduction means Linear Discriminant Analysis (Fisher, 1936). LDA in NLP means Latent Dirichlet Allocation (Blei, 2003). Different algorithms. Same acronym. In this chapter, LDA always means Fisher's method. In topic modeling talk, LDA means Blei's.</div>
 
 <!-- ════════════════════════════════════════════ -->
 <h2>ICA: The Cocktail Party Solver</h2>
 
-<p>PCA finds uncorrelated directions. ICA finds <strong>statistically independent</strong> sources. The difference matters more than it sounds: uncorrelated means zero covariance (no <em>linear</em> relationship). Independent means knowing one signal tells you <em>absolutely nothing</em> about the others — not even nonlinear relationships. Independence is a much stronger condition.</p>
+<p>PCA finds uncorrelated directions. ICA finds <strong>statistically independent</strong> sources. Difference matters. Uncorrelated means zero covariance — no <em>linear</em> relationship. Independent means knowing one signal tells you nothing about others — not even nonlinear relationships. Independence is much stronger.</p>
 
 <h3>The Cocktail Party Problem</h3>
 
-<p>Three people are talking at a party. Three microphones are scattered around the room, each recording a different mix of the three voices: <code>mic1 = 0.7·Alice + 0.2·Bob + 0.1·Carol</code>. You have the three mixed recordings. You don't know the mixing weights. Can you recover the three original voices?</p>
+<p>Three people talk at party. Three microphones sit around room. Each records different mix of three voices: <code>mic1 = 0.7·Alice + 0.2·Bob + 0.1·Carol</code>. You have mixed recordings. You do not know mixing weights. Can you recover original voices?</p>
 
-<p>ICA says yes, under one key assumption: the original sources must be <strong>non-Gaussian</strong>. Why? Because of the Central Limit Theorem — when you mix independent signals, the mixture tends toward Gaussian. So the most non-Gaussian direction in the mixed data corresponds to a recovered source. ICA finds directions that maximize <strong>non-Gaussianity</strong> (measured by kurtosis or negentropy), and those directions give you the original independent signals. The <strong>FastICA</strong> algorithm does this efficiently with a fixed-point iteration.</p>
+<p>ICA says yes, under one key assumption: original sources must be <strong>non-Gaussian</strong>. Why? Central Limit Theorem. Mix independent signals, mixture moves toward Gaussian. So most non-Gaussian direction in mixed data corresponds to recovered source. ICA finds directions that maximize <strong>non-Gaussianity</strong>, measured by kurtosis or negentropy, and those directions recover original independent signals. <strong>FastICA</strong> does this efficiently with fixed-point iteration.</p>
 
 <pre><code class="language-python">from sklearn.decomposition import FastICA
 import numpy as np
@@ -800,16 +800,16 @@ S_recovered = ica.fit_transform(X)
 print(f"Recovered sources shape: {S_recovered.shape}")  # (1000, 3)
 # Columns of S_recovered ≈ original sources, possibly reordered and sign-flipped</code></pre>
 
-<p>ICA is a specialist tool. Use it for EEG/MEG signal processing (separating brain signals from eye blinks and muscle artifacts), audio source separation, or financial factor discovery. Don't use it for general dimensionality reduction — it requires the number of sources to equal the number of observations, and the sources must be non-Gaussian. If those conditions aren't met, reach for something else.</p>
+<p>ICA is specialist tool. Use it for EEG/MEG signal processing — separating brain signals from eye blinks and muscle artifacts — audio source separation, or financial factor discovery. Do not use it for general dimensionality reduction. It needs number of sources to equal number of observations, and sources must be non-Gaussian. If not, choose something else.</p>
 
 <!-- ════════════════════════════════════════════ -->
 <h2>NMF: Parts-Based Decomposition</h2>
 
-<p>Here's something that always bothered me about PCA: the components can have negative values. When you decompose a face image with PCA, the first eigenvector might have positive loadings on the nose and negative loadings on the eyes. What does a "negative eye" mean? Nothing intuitive. PCA components are holistic — they capture global patterns of variation, and the individual entries don't have clean interpretations.</p>
+<p>Problem with PCA: components can have negative values. Decompose face image with PCA and first eigenvector may load positive on nose and negative on eyes. What is "negative eye"? Nothing intuitive. PCA components are holistic — global patterns of variation. Individual entries are hard to interpret.</p>
 
-<p><strong>Non-negative Matrix Factorization</strong> (NMF) adds a single constraint: everything must be non-negative. The original data, the basis vectors, and the coefficients are all ≥ 0. This seemingly small change has a profound effect on what the algorithm learns.</p>
+<p><strong>Non-negative Matrix Factorization</strong> (NMF) adds one constraint: everything stays non-negative. Original data, basis vectors, coefficients — all ≥ 0. Small change. Big effect on what algorithm learns.</p>
 
-<p>Instead of holistic eigenfaces that combine positive and negative regions, NMF discovers <strong>parts</strong>. Apply it to face images, and you get components that correspond to eyes, noses, mouths, jawlines — recognizable parts that combine additively to build a face. Apply it to text data (word-frequency matrices), and you get topics — groups of words that co-occur because they're about the same subject.</p>
+<p>Instead of holistic eigenfaces mixing positive and negative regions, NMF discovers <strong>parts</strong>. On face images, components become eyes, noses, mouths, jawlines — recognizable pieces that add together to build face. On text data, word-frequency matrices, components become topics — word groups that co-occur because they describe same subject.</p>
 
 <pre><code class="language-python">from sklearn.decomposition import NMF
 from sklearn.datasets import load_digits
@@ -829,16 +829,16 @@ print(f"Reconstruction error: {nmf.reconstruction_err_:.2f}")
 # Unlike PCA eigenvectors, these parts are all non-negative —
 # you can visualize them as actual image patches</code></pre>
 
-<p>NMF is the right tool when your data is naturally non-negative (pixel intensities, word counts, chemical concentrations, user-item ratings) and you want components that are <em>interpretable by construction</em>. You can show an NMF component to a domain expert and they'll recognize what it represents. Try that with a PCA eigenvector and you'll get blank stares.</p>
+<p>NMF is right tool when data is naturally non-negative — pixel intensities, word counts, chemical concentrations, user-item ratings — and you want components that are <em>interpretable by construction</em>. Show NMF component to domain expert and they usually recognize it. Show PCA eigenvector and get blank stare.</p>
 
-<p>The connection to topic modeling is direct: apply NMF to a term-document matrix (TF-IDF), and the components are topics. Each topic is a distribution over words (non-negative), and each document is a mixture of topics (also non-negative). This is one of the simplest and most effective approaches to discovering themes in a text corpus.</p>
+<p>Topic modeling connection is direct. Apply NMF to term-document matrix, TF-IDF, and components become topics. Each topic is word distribution, non-negative. Each document is topic mixture, also non-negative. Simple. Effective. Good way to find themes in text corpus.</p>
 
 <!-- ════════════════════════════════════════════ -->
 <h2>Random Projections: The Brute Force Shortcut</h2>
 
-<p>Every method we've discussed so far learns something from the data — PCA learns the covariance structure, t-SNE learns the neighborhood probabilities, UMAP learns the nearest-neighbor graph. Learning takes time and compute. What if you don't have either?</p>
+<p>Every method so far learns from data — PCA learns covariance structure, t-SNE learns neighborhood probabilities, UMAP learns nearest-neighbor graph. Learning costs time and compute. What if you have neither?</p>
 
-<p>The <strong>Johnson-Lindenstrauss lemma</strong> says something remarkable: you can project n points from high-D to O(log n / ε²) dimensions using a <em>random</em> matrix, and all pairwise distances are preserved within a factor of (1 ± ε). No learning. No data dependence. You generate a random matrix, multiply, and you're done.</p>
+<p><strong>Johnson-Lindenstrauss lemma</strong> says something wild: project n points from high-D to O(log n / ε²) dimensions with <em>random</em> matrix, and all pairwise distances stay within factor (1 ± ε). No learning. No data dependence. Generate random matrix. Multiply. Done.</p>
 
 <pre><code class="language-python">from sklearn.random_projection import GaussianRandomProjection
 from sklearn.datasets import load_digits
@@ -860,14 +860,14 @@ print(f"Distance ratio — mean: {ratios[ratios > 0].mean():.3f}, "
       f"std: {ratios[ratios > 0].std():.3f}")
 # Ratios should be close to 1.0 — distances are approximately preserved</code></pre>
 
-<p>Random projection is the fastest possible dimensionality reduction. It's O(n·d·k) — one matrix multiplication. No iteration, no convergence, no hyperparameters beyond the target dimension. It doesn't find the <em>best</em> projection — PCA will always do better for the same number of components — but when you have a million samples with ten thousand features and you need to reduce dimensions in seconds, random projection gets you 90% of the way there at a fraction of the cost.</p>
+<p>Random projection is fastest dimensionality reduction possible. O(n·d·k) — one matrix multiply. No iteration. No convergence. No hyperparameters beyond target dimension. It does not find <em>best</em> projection — PCA does better for same number of components — but with million samples, ten thousand features, and seconds to spare, random projection gets you most of way at fraction of cost.</p>
 
-<p>I think of it as the "good enough" option. When speed matters more than optimality, or when you need a quick baseline before investing in something fancier, random projection is your friend.</p>
+<p>I think of it as "good enough" option. When speed matters more than optimality, or you need quick baseline before fancier method, random projection helps.</p>
 
 <!-- ════════════════════════════════════════════ -->
 <h2>Choosing a Method — The Decision Framework</h2>
 
-<p>I wish I could give you a formula. I can't. But I can give you a decision table that matches what I've seen work in practice, followed by some meta-advice that's more honest than any table.</p>
+<p>Want formula? None. Better: decision table that matches what works in practice, then blunt meta-advice.</p>
 
 <table>
   <thead>
@@ -885,11 +885,11 @@ print(f"Distance ratio — mean: {ratios[ratios > 0].mean():.3f}, "
   </tbody>
 </table>
 
-<p>And here's the meta-advice, which I think matters more than the table: <strong>evaluate by downstream performance</strong>. Dimensionality reduction is a preprocessing step, not a final answer. Run PCA → train model → measure metric. Run UMAP → train model → measure metric. Whichever wins on the metric you care about, wins. The mathematical elegance of the decomposition is irrelevant if it doesn't help your task.</p>
+<p>Meta-advice matters more than table: <strong>evaluate by downstream performance</strong>. Dimensionality reduction is preprocessing step, not final answer. Run PCA → train model → measure metric. Run UMAP → train model → measure metric. Method that wins on metric you care about wins. Mathematical elegance does not matter if task does not improve.</p>
 
-<p>I usually try 2–3 methods and compare. There's no formula for knowing in advance which one will work best on your data. The table gives you a starting point. The downstream metric gives you the answer.</p>
+<p>I usually try 2–3 methods and compare. No formula tells you in advance which one will win on your data. Table gives starting point. Downstream metric gives answer.</p>
 
-<p>One more thing nobody tells you: sometimes dimensionality reduction makes things worse. If your features are already clean, relatively low-dimensional, and informative, compressing them can only lose signal. Always compare against the "no reduction" baseline. If it wins, let it win. There's no prize for using a fancier pipeline.</p>
+<p>One more thing: sometimes dimensionality reduction makes things worse. If features are already clean, fairly low-dimensional, and informative, compression only loses signal. Always compare against "no reduction" baseline. If baseline wins, let it win. No prize for fancier pipeline.</p>
 
 <!-- ════════════════════════════════════════════ -->
 <h2>Putting It All Together</h2>
