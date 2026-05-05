@@ -399,7 +399,7 @@ class CLIPContrastiveLoss(nn.Module):
 
 <p>Subtle detail: prompt engineering matters here too. "dog" works worse than "a photo of a dog" because CLIP trained on natural captions, not single words. Original paper tested 80 prompt templates and found ensembling improved accuracy by 3-5%. Lesson: text encoder learned <em>distribution</em> of how people describe things, not dictionary of labels.</p>
 
-<p>Limits show up here too. "Three cats on a sofa" and "one cat on a sofa" produce nearly identical embeddings. "A cup to the left of a plate" and "a plate to the left of a cup" are hard to distinguish. CLIP does not count. CLIP does not really understand spatial relationships. Makes sense — model trained on whole-image, whole-caption pairs. It learns <em>what's in the image</em>, not <em>where things are</em> or <em>how many there are</em>.</p>
+<p>Limits show up here too. "Three cats on a sofa" and "one cat on a sofa" produce nearly identical embeddings. "A cup to the left of a plate" and "a plate to the left of a cup" are hard to distinguish. CLIP does not count. CLIP does not understand spatial relationships. Makes sense — model trained on whole-image, whole-caption pairs. It learns <em>what's in the image</em>, not <em>where things are</em> or <em>how many there are</em>.</p>
 
 <p>Limit pulls us toward stronger system. We can match images and text. But we cannot answer questions. We cannot say <em>why</em> something is in image, or generate new text describing what we see. For that, wire vision into language model.</p>
 
@@ -580,11 +580,11 @@ class CrossModalAttention(nn.Module):
 
 <h2>Multimodal Embeddings in Practice</h2>
 
-<p>With all this theory in hand, let's build something. The most immediately useful multimodal capability for most engineers is using CLIP embeddings as infrastructure for search and retrieval.</p>
+<p>With theory in hand, build something. Most immediately useful multimodal capability for most engineers is CLIP embeddings as search and retrieval infrastructure.</p>
 
-<p>Return to our museum guide one last time. We have a catalog of 10,000 paintings with descriptions. We want the visitor to snap a photo and find the closest match, or type "impressionist landscapes with water" and get relevant results. We also want to support reverse queries: given a painting, find related descriptions or exhibition notes.</p>
+<p>Back to museum guide one last time. We have catalog of 10,000 paintings with descriptions. We want visitor to snap photo and find closest match, or type "impressionist landscapes with water" and get relevant results. We also want reverse queries: given painting, find related descriptions or exhibition notes.</p>
 
-<p>The pattern: pre-compute CLIP embeddings for all images and all text descriptions. Store them in a vector database. At query time, encode the input (whether it's an image or text) and find the nearest neighbors. Because images and text live in the same space (modality gap notwithstanding), a text query can retrieve images and vice versa.</p>
+<p>Pattern: precompute CLIP embeddings for all images and all text descriptions. Store them in vector database. At query time, encode input (image or text) and find nearest neighbors. Because images and text live in same space (modality gap still there), text query can retrieve images and vice versa.</p>
 
 <pre><code class="language-python">import torch
 import numpy as np
@@ -622,21 +622,21 @@ class MuseumSearchEngine:
         top_idx = np.argsort(scores)[::-1][:top_k]
         return [(self.metadata[i], float(scores[i])) for i in top_idx]</code></pre>
 
-<p>That's the entire search engine. Fifty lines. The <code>index_image</code> method encodes paintings into vectors. The <code>search_by_text</code> method encodes a text query into the same space and finds the nearest painting vectors. The L2 normalization (dividing by the norm) ensures we're comparing directions, not magnitudes — cosine similarity in disguise.</p>
+<p>That is entire search engine. Fifty lines. <code>index_image</code> method encodes paintings into vectors. <code>search_by_text</code> method encodes text query into same space and finds nearest painting vectors. L2 normalization (dividing by norm) ensures we compare directions, not magnitudes — cosine similarity in disguise.</p>
 
-<p>In production, you'd swap the numpy search for FAISS (for speed), add a vector database (for persistence and scaling), and potentially add a re-ranking step with a more powerful VLM. But the core pattern — embed everything into a shared space, retrieve by nearest neighbor — is the foundation of every multimodal search system running today.</p>
+<p>In production, swap numpy search for FAISS (speed), add vector database (persistence and scaling), and maybe add re-ranking step with stronger VLM. But core pattern — embed everything into shared space, retrieve by nearest neighbor — is foundation of every multimodal search system running today.</p>
 
 <h2>The Challenges That Remain</h2>
 
-<p>We've come a long way, but I want to be honest about what's still hard.</p>
+<p>We have come long way. Hard parts still remain.</p>
 
-<p>The <strong>modality gap</strong> means cross-modal retrieval always has a systematic bias. Solutions exist but add complexity. <strong>Compositional understanding</strong> — "a red cube on top of a blue sphere" versus "a blue cube on top of a red sphere" — remains fragile across all current models, whether they're matching, generating, or answering questions. <strong>Counting</strong> is unreliable. <strong>Spatial reasoning</strong> is inconsistent.</p>
+<p><strong>Modality gap</strong> means cross-modal retrieval always carries systematic bias. Fixes exist, but they add complexity. <strong>Compositional understanding</strong> — "a red cube on top of a blue sphere" versus "a blue cube on top of a red sphere" — stays fragile across current models, whether matching, generating, or answering questions. <strong>Counting</strong> is unreliable. <strong>Spatial reasoning</strong> is inconsistent.</p>
 
-<p>Evaluation is its own problem. A generated image can be beautiful and completely miss the prompt. A VQA model can get the right answer for the wrong reason. CLIPScore (cosine similarity between CLIP embeddings of a generated image and the prompt) has become the standard automated metric, but it inherits all of CLIP's limitations. Human evaluation remains the gold standard, and it doesn't scale.</p>
+<p>Evaluation is its own problem. Generated image can be beautiful and still miss prompt completely. VQA model can get right answer for wrong reason. CLIPScore (cosine similarity between CLIP embeddings of generated image and prompt) became standard automated metric, but it inherits CLIP's limits. Human evaluation remains gold standard, and it does not scale.</p>
 
-<p>In production, messy inputs are the norm. The camera drops a frame. The user uploads an image with no description. The audio cuts out. Robust multimodal systems use <strong>modality dropout</strong> during training — randomly zeroing out entire modality inputs 20-30% of the time — so the model learns to make predictions from whatever subset is available. Some systems use learned null embeddings: when a modality is missing, substitute a special "no information" token rather than a zero vector, so the model can distinguish "nothing here" from "I see something that encodes to zero."</p>
+<p>In production, messy inputs are normal. Camera drops frame. User uploads image with no description. Audio cuts out. Robust multimodal systems use <strong>modality dropout</strong> during training — randomly zeroing whole modality inputs 20-30% of time — so model learns to predict from whatever subset is available. Some systems use learned null embeddings: when modality is missing, substitute special "no information" token instead of zero vector, so model can distinguish "nothing here" from "I see something that encodes to zero."</p>
 
-<p>And the field is moving fast enough that anything I write about specific architectures may be outdated by the time you read it. The trajectory, though, is clear: separate unimodal models are being replaced by unified architectures. The "any-to-any" model — one system that takes any combination of inputs and produces any combination of outputs — is no longer theoretical. The remaining challenges are efficient tokenization for each modality, managing the enormous context lengths that video and audio require, and training at sufficient scale.</p>
+<p>Field moves fast enough that specific architecture details may be outdated by time you read this. But trajectory is clear: separate unimodal models are being replaced by unified architectures. "Any-to-any" model — one system taking any input combination and producing any output combination — is no longer theoretical. Remaining challenges: efficient tokenization for each modality, managing enormous context lengths required by video and audio, and training at sufficient scale.</p>
 
 
       <div class="page-nav">
