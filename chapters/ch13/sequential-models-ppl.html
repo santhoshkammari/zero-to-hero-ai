@@ -299,38 +299,38 @@
 <!-- ═══════════ End Table of Contents ═══════════ -->
 <!-- ═══════════ OPENING ═══════════ -->
 
-<p>Sequential models &mdash; Hidden Markov Models, Kalman filters, particle filters &mdash; are the classic machinery for tracking a hidden state that evolves over time from noisy observations. They powered speech recognition, GPS navigation, and robot localization long before deep learning existed. Probabilistic programming languages (PPLs) are the modern layer on top: tools that let you specify any generative model as code and have the computer figure out the inference for you. Together, these ideas form the backbone of Bayesian reasoning about things that change.</p>
+<p>Sequential models &mdash; Hidden Markov Models, Kalman filters, particle filters &mdash; track hidden state that changes over time from noisy observations. They powered speech recognition, GPS navigation, and robot localization before deep learning. Probabilistic programming languages (PPLs) sit on top: tools that let you specify generative model as code and let computer handle inference. Together, these ideas form backbone of Bayesian reasoning about changing systems.</p>
 
 <!-- ═══════════ THE HIDDEN STATE PROBLEM ═══════════ -->
 <h2 id="hidden-state">The hidden state problem</h2>
 
-<p>Here is a situation that comes up constantly in the real world: there&rsquo;s something you care about, but you can&rsquo;t observe it directly. You can only see noisy, imperfect reflections of it.</p>
+<p>Real world problem comes up often: something matters, but you can&rsquo;t observe it directly. You only see noisy, imperfect reflections.</p>
 
-<p>A doctor can&rsquo;t see the disease directly &mdash; only symptoms. A self-driving car can&rsquo;t see its exact position &mdash; only GPS readings that jitter by a few meters. A stock trader can&rsquo;t see the &ldquo;regime&rdquo; the market is in &mdash; only price movements that could mean anything.</p>
+<p>Doctor can&rsquo;t see disease directly &mdash; only symptoms. Self-driving car can&rsquo;t see exact position &mdash; only GPS readings jittering by few meters. Stock trader can&rsquo;t see market &ldquo;regime&rdquo; &mdash; only price moves that could mean anything.</p>
 
-<p>The thing you care about is the <strong>hidden state</strong>. The thing you can measure is the <strong>observation</strong>. And the question is always the same: given the observations, what can we say about the hidden state?</p>
+<p>Thing you care about = <strong>hidden state</strong>. Thing you measure = <strong>observation</strong>. Question stays same: given observations, what can we say about hidden state?</p>
 
-<p>The answer, it turns out, is a loop. Predict what you think the state will be next. Observe what actually happens. Correct your prediction. Repeat. That loop &mdash; predict, observe, correct &mdash; is the heartbeat of every sequential model we&rsquo;ll build in this section. It&rsquo;s Bayes&rsquo; rule applied over and over, one time step at a time.</p>
+<p>Answer is loop. Predict next state. Observe what happens. Correct prediction. Repeat. That loop &mdash; predict, observe, correct &mdash; drives every sequential model in this section. Bayes&rsquo; rule applied again and again, one time step at time.</p>
 
 <!-- ═══════════ A TINY WEATHER STATION ═══════════ -->
 <h2 id="weather-station">A tiny weather station</h2>
 
-<p>Let&rsquo;s make this concrete with a toy example we&rsquo;ll keep coming back to throughout the entire section.</p>
+<p>Make this concrete with toy example we&rsquo;ll reuse through section.</p>
 
-<p>Imagine you run a small ice cream shop in a town where the weather forecast is unreliable. You know the weather affects your sales: sunny days mean more cones, rainy days mean fewer. But you don&rsquo;t have a window &mdash; you work in the back kitchen. All you see is how many cones you sold each day. From that sales number, you want to infer what the weather was.</p>
+<p>Imagine small ice cream shop in town with unreliable weather forecast. Weather affects sales: sunny days mean more cones, rainy days mean fewer. But you work in back kitchen with no window. You only see cone count each day. From sales, infer weather.</p>
 
-<p>We&rsquo;ll start absurdly small. The weather has two possible states: <strong>Sunny</strong> and <strong>Rainy</strong>. Each day, you observe one of three sales levels: <strong>Low</strong> (0&ndash;10 cones), <strong>Medium</strong> (11&ndash;25 cones), or <strong>High</strong> (26+ cones). That&rsquo;s it. Two hidden states, three possible observations.</p>
+<p>Start tiny. Weather has two states: <strong>Sunny</strong> and <strong>Rainy</strong>. Each day, you observe three sales levels: <strong>Low</strong> (0&ndash;10 cones), <strong>Medium</strong> (11&ndash;25 cones), or <strong>High</strong> (26+ cones). Two hidden states. Three observations.</p>
 
-<p>We also know a few things about how weather works in this town. If today is sunny, there&rsquo;s a 70% chance tomorrow will be sunny too, and a 30% chance it&rsquo;ll rain. If today is rainy, there&rsquo;s a 60% chance tomorrow will still be rainy, and a 40% chance the sun comes out. These are <strong>transition probabilities</strong> &mdash; the odds of moving from one hidden state to another.</p>
+<p>We also know town weather dynamics. If today is sunny, 70% chance tomorrow stays sunny, 30% chance rain comes. If today is rainy, 60% chance tomorrow stays rainy, 40% chance sun returns. These are <strong>transition probabilities</strong> &mdash; odds of moving from one hidden state to another.</p>
 
-<p>And we know how weather affects sales. On sunny days, there&rsquo;s a 60% chance of high sales, 30% medium, and 10% low. On rainy days, it&rsquo;s flipped: 10% high, 30% medium, 60% low. These are <strong>emission probabilities</strong> &mdash; the odds of seeing a particular observation given the hidden state.</p>
+<p>We also know weather affects sales. On sunny days, 60% chance high sales, 30% medium, 10% low. On rainy days, pattern flips: 10% high, 30% medium, 60% low. These are <strong>emission probabilities</strong> &mdash; odds of seeing observation given hidden state.</p>
 
-<p>This tiny setup &mdash; two states, three observations, a transition matrix, and an emission matrix &mdash; is all we need to build our first sequential model. Keep it in mind. We&rsquo;ll use it to walk through every algorithm that follows.</p>
+<p>This tiny setup &mdash; two states, three observations, transition matrix, emission matrix &mdash; is enough for first sequential model. Keep it handy. We&rsquo;ll use it for every algorithm below.</p>
 
 <!-- ═══════════ HIDDEN MARKOV MODELS ═══════════ -->
 <h2 id="hmms">Hidden Markov Models &mdash; the discrete case</h2>
 
-<p>Our ice cream shop setup has a formal name: a <strong>Hidden Markov Model</strong>, or HMM. The &ldquo;Markov&rdquo; part means the hidden state tomorrow depends only on the hidden state today &mdash; not on last week, not on last month. The weather tomorrow is a function of today&rsquo;s weather alone. That&rsquo;s the <strong>Markov property</strong>: the future is independent of the past, given the present. The &ldquo;hidden&rdquo; part means we never see the state directly.</p>
+<p>Ice cream shop setup has formal name: <strong>Hidden Markov Model</strong>, or HMM. &ldquo;Markov&rdquo; means hidden state tomorrow depends only on hidden state today &mdash; not last week, not last month. Weather tomorrow depends on today&rsquo;s weather alone. That is <strong>Markov property</strong>: future is independent of past, given present. &ldquo;Hidden&rdquo; means state is never observed directly.</p>
 
 <p>An HMM has three ingredients. First, a set of hidden states &mdash; in our case, Sunny and Rainy. Second, a <strong>transition matrix</strong> A, where A<sub>ij</sub> is the probability of moving from state i to state j. Third, an <strong>emission matrix</strong> B, where B<sub>ij</sub> is the probability of observing output j when in state i. There&rsquo;s also an <strong>initial distribution</strong> &pi; that tells us what state we think the system starts in.</p>
 
