@@ -301,11 +301,11 @@
 <!-- OPENING                                     -->
 <!-- ═══════════════════════════════════════════ -->
 
-<p>I avoided thinking about ML infrastructure for an embarrassingly long time. Every time someone mentioned GPU types, cloud pricing tiers, or cluster orchestration, I'd nod along and silently pray nobody asked me a follow-up question. I was an ML person, not an ops person. The model was my job. The metal it ran on was someone else's problem.</p>
+<p>Ignored ML infrastructure too long. GPU types, cloud pricing tiers, cluster orchestration came up, head nodded, follow-up feared. Model felt like job. Metal felt like somebody else's problem.</p>
 
-<p>Then I accidentally left four A100 GPUs running over a long weekend. The bill was $2,300 for a fine-tuning job that had finished Friday afternoon. That's when the discomfort of not understanding what's underneath grew too sharp to ignore. Here is that dive.</p>
+<p>Then four A100 GPUs ran through long weekend. Bill hit $2,300 for fine-tuning job finished Friday afternoon. Pain got sharp. Time to learn what sits underneath.</p>
 
-<p>ML infrastructure is the collection of hardware, cloud services, and orchestration tools that turn your <code>model.fit()</code> call into something that actually runs — fast enough, cheap enough, and reliably enough to matter. GPUs became the dominant hardware for deep learning around 2012, cloud ML platforms emerged around 2017–2018, and the landscape has been accelerating since the LLM explosion of 2022–2023. Today, the difference between a well-chosen and a poorly-chosen infrastructure setup can be a factor of 10× in cost for the same work.</p>
+<p>ML infrastructure = hardware, cloud services, orchestration tools that turn <code>model.fit()</code> into real run. Goal: fast enough, cheap enough, reliable enough. GPUs took over deep learning around 2012. Cloud ML platforms showed up around 2017–2018. LLM boom in 2022–2023 sped everything up. Good setup vs bad setup can mean 10× cost gap for same work.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <!-- TABLE OF CONTENTS                           -->
@@ -316,51 +316,51 @@
 <!-- ═══════════════════════════════════════════ -->
 <h2 id="why-hardware-matters">Why Hardware Matters at All</h2>
 
-<p>Here's a scenario we'll carry through this entire section. Imagine you're building <b>PetSnap</b> — a mobile app that identifies dog breeds from photos. You've got a ResNet-50 that works beautifully on your laptop. Accuracy is great. Latency is fine. You show it to your team and everyone's excited.</p>
+<p>Section uses one running example. Build <b>PetSnap</b> — mobile app that identifies dog breeds from photos. ResNet-50 works on laptop. Accuracy good. Latency fine. Team gets excited.</p>
 
-<p>Then someone asks: "Can we serve this to 10,000 users?" And everything changes.</p>
+<p>Then question lands: "Can we serve this to 10,000 users?" Everything changes.</p>
 
-<p>Your laptop GPU has 8 GB of memory. The model needs 100 milliseconds per image. At 10,000 requests per hour, you need either a faster GPU or multiple GPUs running in parallel. And if someone later says "What if we used a larger vision-language model instead?" — now the model itself might not fit in 8 GB at all.</p>
+<p>Laptop GPU has 8 GB memory. Model needs 100 milliseconds per image. At 10,000 requests per hour, need faster GPU or many GPUs in parallel. If team wants larger vision-language model, model may not fit in 8 GB at all.</p>
 
-<p>This is the fundamental tension of ML infrastructure. The model is the science. The hardware is the physics. You can design the most elegant architecture in the world, but it has to physically exist somewhere — on silicon that has a fixed amount of memory, a fixed number of arithmetic units, and a fixed rate at which data can flow between them. Ignoring those physical constraints is how teams end up with models that work in a notebook and fail in production.</p>
+<p>Core tension: model is science. Hardware is physics. Elegant architecture still must live on silicon with fixed memory, fixed arithmetic units, fixed data flow rate. Ignore physical limits, notebook success turns into production failure.</p>
 
-<p>Think of it this way. If training a model is like cooking a meal, the GPU is your stove. The stove's size limits how many pots you can run simultaneously. The burner heat determines how fast each pot boils. And the counter space — that's your VRAM — limits how many ingredients you can have out at once. You can be the best chef in the world, but if your kitchen is too small for the recipe, the food doesn't get made.</p>
+<p>Think kitchen. Training model = cooking meal. GPU = stove. Stove size limits how many pots run at once. Burner heat sets how fast pots boil. Counter space — VRAM — limits how many ingredients stay out. Best chef still fails if kitchen too small for recipe.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <!-- GPU AS A KITCHEN                            -->
 <!-- ═══════════════════════════════════════════ -->
 <h2 id="gpu-anatomy">The GPU as a Kitchen: VRAM, Compute, and Bandwidth</h2>
 
-<p>A GPU has three numbers that matter for ML. Understanding what each one does — and which one will bottleneck you first — is the single most useful piece of infrastructure intuition you can develop.</p>
+<p>GPU has three numbers that matter for ML. Learn what each number does and which one bottlenecks first. That intuition pays off fast.</p>
 
-<p><b>VRAM</b> (Video RAM, also called GPU memory) is the counter space in our kitchen. It's where the model weights, the input data, the intermediate activations, and the gradients all have to fit simultaneously. If your model plus its working data exceeds VRAM, the job crashes. There's no graceful fallback — it's an out-of-memory error, and your training run dies.</p>
+<p><b>VRAM</b> (Video RAM, also called GPU memory) = counter space. Model weights, input data, intermediate activations, gradients all must fit at same time. If model plus working data exceeds VRAM, job crashes. No graceful fallback. Out-of-memory error. Training run dies.</p>
 
-<p>For our PetSnap ResNet-50, the model weights in FP32 (32-bit floating point, meaning each parameter takes 4 bytes) occupy about 100 million parameters × 4 bytes = 400 MB. That's nothing. An 8 GB GPU handles it easily. But a 7-billion parameter LLM in FP16 (2 bytes per parameter) needs 14 GB for the weights alone. Add gradients, optimizer states, and activations during training, and you're looking at 80–100 GB. That doesn't fit on any single consumer GPU.</p>
+<p>For PetSnap ResNet-50, model weights in FP32 (32-bit floating point, 4 bytes per parameter) take about 100 million parameters × 4 bytes = 400 MB. Tiny. An 8 GB GPU handles that easily. But 7-billion parameter LLM in FP16 (2 bytes per parameter) needs 14 GB for weights alone. Add gradients, optimizer states, activations during training, and total reaches 80–100 GB. No single consumer GPU fits that.</p>
 
-<p><b>Compute</b> (measured in TFLOPS — trillions of floating-point operations per second) is the heat of the burners. More TFLOPS means more matrix multiplications per second, which means faster training and faster inference. Modern GPUs achieve their highest TFLOPS using specialized hardware called <b>Tensor Cores</b>, which are circuits designed specifically for the matrix multiply-accumulate operations that dominate deep learning.</p>
+<p><b>Compute</b> (measured in TFLOPS — trillions of floating-point operations per second) = burner heat. More TFLOPS means more matrix multiplications per second. Result: faster training, faster inference. Modern GPUs hit top TFLOPS with <b>Tensor Cores</b>, circuits built for matrix multiply-accumulate operations that dominate deep learning.</p>
 
-<p><b>Memory bandwidth</b> is how fast ingredients travel from the fridge to the counter. It's measured in GB/s and determines how quickly data moves between VRAM and the compute units. I'll be honest — I underestimated this number for years. I assumed TFLOPS was everything. But for LLM inference, the model spends most of its time <i>reading</i> weights from memory, not doing arithmetic. The bottleneck is bandwidth, not compute. This is called being <b>memory-bandwidth-bound</b>, and it's why two GPUs with similar TFLOPS can have wildly different inference speeds if their bandwidth differs.</p>
+<p><b>Memory bandwidth</b> = speed from fridge to counter. Measured in GB/s. It controls how fast data moves between VRAM and compute units. Easy mistake: assume TFLOPS is everything. For LLM inference, model spends most time <i>reading</i> weights from memory, not doing arithmetic. Bottleneck becomes bandwidth, not compute. Name: <b>memory-bandwidth-bound</b>. Result: two GPUs with similar TFLOPS can have very different inference speeds if bandwidth differs.</p>
 
-<p>Here's the punchline. Training is usually compute-bound — you want maximum TFLOPS to chew through billions of tokens. Inference, especially for large language models, is usually bandwidth-bound — you want fast memory reads to stream weights through the compute units. Picking hardware without knowing which bottleneck you're solving is how teams end up paying H100 prices for a job that a cheaper GPU could handle at the same speed.</p>
+<p>Punchline: training is usually compute-bound. Need maximum TFLOPS to chew through billions of tokens. Inference, especially for large language models, is usually bandwidth-bound. Need fast memory reads to stream weights into compute units. Pick hardware without knowing bottleneck, team pays H100 prices for work cheaper GPU could do at same speed.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <!-- GPU LANDSCAPE                               -->
 <!-- ═══════════════════════════════════════════ -->
 <h2 id="gpu-landscape">The GPU Landscape: T4 Through H100 and Beyond</h2>
 
-<p>Let's make this concrete. Here are the GPUs you'll actually encounter in cloud ML today, ordered from least to most expensive. I'll keep returning to our PetSnap example to show where each one fits.</p>
+<p>Make this concrete. These are GPUs you actually see in cloud ML today, ordered from cheapest to most expensive. PetSnap example stays with us.</p>
 
-<p>The <b>NVIDIA T4</b> is the budget workhorse. It has 16 GB of VRAM, delivers about 65 TFLOPS at FP16, and costs around $0.50–1.00 per hour on cloud. It's based on the Turing architecture from 2018. For PetSnap's ResNet-50 inference, a T4 is more than enough. The model fits in memory with room to spare, and the compute is sufficient for hundreds of predictions per second. Where it struggles: anything larger than about a 3-billion parameter model, and any serious training job.</p>
+<p><b>NVIDIA T4</b> = budget workhorse. Specs: 16 GB VRAM, about 65 TFLOPS at FP16, about $0.50–1.00 per hour in cloud. Built on Turing architecture from 2018. For PetSnap ResNet-50 inference, T4 is enough. Model fits easily. Compute handles hundreds of predictions per second. Weak spot: models above about 3 billion parameters and serious training jobs.</p>
 
-<p>The <b>NVIDIA L4</b> is the T4's successor, built on the Ada Lovelace architecture (2023). It bumps VRAM to 24 GB, compute to about 121 FP16 TFLOPS, and adds fourth-generation Tensor Cores. Cloud pricing runs $0.80–1.20 per hour. For PetSnap, if we upgrade to a vision-language model around 3–7B parameters with INT8 quantization, the L4 is the sweet spot. It's the inference GPU I'd recommend for most production workloads that don't involve massive models.</p>
+<p><b>NVIDIA L4</b> = T4 successor, built on Ada Lovelace architecture (2023). Specs: 24 GB VRAM, about 121 FP16 TFLOPS, fourth-generation Tensor Cores, about $0.80–1.20 per hour. For PetSnap with 3–7B vision-language model using INT8 quantization, L4 is sweet spot. Good inference GPU for most production workloads without massive models.</p>
 
-<p>The <b>NVIDIA A100</b> changed ML infrastructure when it launched in 2020. With 80 GB of HBM2e memory, 312 TF32 TFLOPS, and 2,039 GB/s memory bandwidth, it became the training workhorse of the industry. Cloud pricing runs $3–5 per hour. For PetSnap, the A100 is overkill for inference, but if we're fine-tuning a 7B language model to understand pet breed descriptions, a single A100 can handle it with QLoRA. Two A100s can handle full fine-tuning of models up to about 13B parameters.</p>
+<p><b>NVIDIA A100</b> changed ML infrastructure in 2020. Specs: 80 GB HBM2e memory, 312 TF32 TFLOPS, 2,039 GB/s memory bandwidth, about $3–5 per hour in cloud. It became training workhorse. For PetSnap, A100 is overkill for inference. For fine-tuning 7B language model on pet breed descriptions, one A100 can handle QLoRA. Two A100s can handle full fine-tuning up to about 13B parameters.</p>
 
-<p>The <b>NVIDIA H100</b> (Hopper architecture, 2022) is the current frontier. Same 80 GB of VRAM as the A100, but 3× the memory bandwidth (3,350 GB/s via HBM3), nearly 3× the compute (989 TF32 TFLOPS), and native FP8 support that the A100 lacks entirely. Cloud pricing runs $8–12 per hour. Benchmarks show the H100 training a model at the same task 3–4× faster than the A100 — and because it finishes sooner, the cost per training run can actually be <i>lower</i> despite the higher hourly rate. I didn't believe this when I first read it. The math checks out.</p>
+<p><b>NVIDIA H100</b> (Hopper architecture, 2022) = current frontier. Same 80 GB VRAM as A100, but 3× memory bandwidth (3,350 GB/s via HBM3), nearly 3× compute (989 TF32 TFLOPS), native FP8 support. Cloud pricing runs about $8–12 per hour. Benchmarks show H100 training same task 3–4× faster than A100. Finish sooner, and cost per training run can end up <i>lower</i> despite higher hourly rate. Math works.</p>
 
-<p>Beyond NVIDIA's lineup, there are two other players worth knowing. <b>Google TPUs</b> (Tensor Processing Units) are custom silicon designed for matrix multiplications. TPU v5e offers 16 GB HBM at about $1.20–2.00 per hour — competitive pricing, but you're locked into Google's JAX/TensorFlow ecosystem and XLA compilation. The TPU v5p, with 95 GB HBM and 459 TFLOPS, competes with the A100 for large training runs on GCP. <b>AWS custom chips</b> — Trainium2 for training and Inferentia2 for inference — offer competitive performance at potentially lower prices, but require Amazon's NeuronSDK, which means rewriting parts of your training code.</p>
+<p>Beyond NVIDIA, know two more players. <b>Google TPUs</b> (Tensor Processing Units) are custom silicon for matrix multiplications. TPU v5e offers 16 GB HBM at about $1.20–2.00 per hour. Good pricing, but locked into Google's JAX/TensorFlow ecosystem and XLA compilation. TPU v5p, with 95 GB HBM and 459 TFLOPS, competes with A100 for large GCP training runs. <b>AWS custom chips</b> — Trainium2 for training and Inferentia2 for inference — can offer good performance at lower prices, but require Amazon's NeuronSDK, which means rewriting parts of training code.</p>
 
-<p>I'm still developing my intuition for when custom silicon like TPUs or Trainium is worth the ecosystem lock-in versus sticking with NVIDIA's universally-supported CUDA stack. The safe answer: if you're already deep in GCP with JAX, TPUs make sense. If you're already on AWS and running standard PyTorch, stay with NVIDIA GPUs unless cost pressure forces you to explore alternatives.</p>
+<p>Rule of thumb: if team is already deep in GCP with JAX, TPUs make sense. If team is already on AWS and running standard PyTorch, stay with NVIDIA GPUs unless cost pressure forces exploration of alternatives. Lock-in cost matters.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <!-- VRAM CALCULATION                            -->
