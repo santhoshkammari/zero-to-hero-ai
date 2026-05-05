@@ -544,42 +544,42 @@ Hamilton's equations:
 
 <p>Gradient &mdash; slope of posterior surface &mdash; makes HMC dramatically more efficient than random-walk methods. In 100 dimensions, random walk does not know which direction to go. HMC follows gradient, rolling along posterior contours like marble in bowl.</p>
 
-<p>But HMC has two hyperparameters that need tuning: the step size (how finely we simulate the physics) and the number of leapfrog steps (how long we let the ball roll before stopping). Get these wrong, and HMC can be worse than a random walk.</p>
+<p>But HMC has two hyperparameters to tune: step size (how finely we simulate physics) and number of leapfrog steps (how long ball rolls before stopping). Get these wrong, and HMC can be worse than random walk.</p>
 
-<p><strong>NUTS</strong> &mdash; the <strong>No-U-Turn Sampler</strong> &mdash; eliminates this tuning problem. It runs the simulation forward and backward in time, building a tree of possible trajectories, and stops when the trajectory starts to double back on itself (a &ldquo;U-turn&rdquo;). NUTS is what makes Stan and PyMC practical for working scientists. It&rsquo;s HMC without the hand-tuning, and it works remarkably well across a wide range of models.</p>
+<p><strong>NUTS</strong> &mdash; <strong>No-U-Turn Sampler</strong> &mdash; removes this tuning burden. It runs simulation forward and backward in time, builds tree of possible trajectories, and stops when trajectory starts doubling back on itself (&ldquo;U-turn&rdquo;). NUTS makes Stan and PyMC practical for working scientists. HMC without hand-tuning. Works well across wide range of models.</p>
 
-<p>One important requirement: HMC needs the gradient of the log-posterior. Your model must be differentiable. This is exactly why modern probabilistic programming languages are built on automatic differentiation engines &mdash; PyMC on Aesara/PyTensor, NumPyro on JAX, Stan on its own AD system. They compute the gradient for free, so you write the model and the sampler handles the physics.</p>
+<p>Important requirement: HMC needs gradient of log-posterior. Model must be differentiable. Reason modern probabilistic programming languages are built on automatic differentiation engines &mdash; PyMC on Aesara/PyTensor, NumPyro on JAX, Stan on its own AD system. They compute gradient for you, so you write model and sampler handles physics.</p>
 
-<p>I&rsquo;m still developing my intuition for <em>why</em> the physics simulation preserves the right distribution. The formal answer involves Hamiltonian dynamics being volume-preserving (Liouville&rsquo;s theorem) and time-reversible, which guarantees detailed balance. But the visceral understanding &mdash; a ball rolling on the posterior surface &mdash; is the mental image that made it click for me.</p>
+<p>Formal reason physics simulation preserves right distribution: Hamiltonian dynamics are volume-preserving (Liouville&rsquo;s theorem) and time-reversible, which guarantees detailed balance. Mental image that helps: ball rolling on posterior surface.</p>
 
 
 <!-- ═══════════════════════════════════════════════ -->
 <h2 id="variational-inference">The Optimization Path: Variational Inference</h2>
 
-<p>MCMC gives you the true posterior &mdash; eventually. But &ldquo;eventually&rdquo; might mean hours or days of sampling. If you have millions of data points, or need an answer in milliseconds, or want to train a deep generative model end-to-end with gradient descent, sampling is too slow.</p>
+<p>MCMC gives true posterior &mdash; eventually. But &ldquo;eventually&rdquo; might mean hours or days of sampling. If you have millions of data points, need answer in milliseconds, or want end-to-end training of deep generative model with gradient descent, sampling is too slow.</p>
 
-<p>Variational inference takes a completely different approach. Instead of sampling from the true posterior, we <em>approximate</em> it. We choose a family of simple, tractable distributions &mdash; maybe Gaussians, maybe something else &mdash; and find the member of that family that&rsquo;s closest to the true posterior. We&rsquo;ve turned an inference problem into an optimization problem, and optimization is something we know how to do fast.</p>
+<p>Variational inference takes different route. Instead of sampling true posterior, we <em>approximate</em> it. Choose family of simple, tractable distributions &mdash; maybe Gaussians, maybe something else &mdash; and find member closest to true posterior. Inference problem becomes optimization problem, and optimization runs fast.</p>
 
-<p>The analogy from earlier: MCMC sends hikers to explore every ridge and valley of the mountain. VI takes a satellite photo and fits the smoothest surface that matches the data. It&rsquo;s faster, but it might smooth over the interesting craggy bits.</p>
+<p>Earlier mountain analogy. MCMC sends hikers through every ridge and valley. VI takes satellite photo and fits smooth surface matching data. Faster, but can smooth away craggy bits.</p>
 
-<p>&ldquo;Closest&rdquo; is measured by <strong>KL divergence</strong>, which quantifies how different one probability distribution is from another. We want to minimize KL(q || p) &mdash; the divergence from our simple approximation q(&theta;) to the true posterior p(&theta;|D). But computing this KL divergence requires knowing p(&theta;|D), which is the thing we can&rsquo;t compute. We seem stuck.</p>
+<p>&ldquo;Closest&rdquo; is measured by <strong>KL divergence</strong>, which quantifies how different one probability distribution is from another. Goal: minimize KL(q || p) &mdash; divergence from simple approximation q(&theta;) to true posterior p(&theta;|D). But computing this KL divergence requires p(&theta;|D), exact thing we can&rsquo;t compute. We seem stuck.</p>
 
-<p>This is where the ELBO comes in.</p>
+<p>ELBO solves this.</p>
 
 
 <!-- ═══════════════════════════════════════════════ -->
 <h2 id="elbo">The ELBO: The Quantity That Makes It All Work</h2>
 
-<p>There&rsquo;s a mathematical identity that saves us. The log-evidence &mdash; log p(D), the total probability of the observed data &mdash; can be decomposed as:</p>
+<p>Mathematical identity saves us. Log-evidence &mdash; log p(D), total probability of observed data &mdash; decomposes as:</p>
 
 <pre><code class="language-text">log p(D) = ELBO(q) + KL(q || p)
 </code></pre>
 
-<p>The left side is a fixed constant (it doesn&rsquo;t depend on q). The KL divergence on the right is always non-negative. That means the ELBO is always less than or equal to log p(D) &mdash; it&rsquo;s a <strong>lower bound</strong> on the log-evidence. ELBO stands for <strong>Evidence Lower BOund</strong>.</p>
+<p>Left side is fixed constant (it doesn&rsquo;t depend on q). KL divergence on right is always non-negative. So ELBO is always less than or equal to log p(D) &mdash; <strong>lower bound</strong> on log-evidence. ELBO stands for <strong>Evidence Lower BOund</strong>.</p>
 
-<p>Here&rsquo;s the trick: since log p(D) is constant, maximizing the ELBO is <em>exactly equivalent</em> to minimizing KL(q || p). We can&rsquo;t compute the KL divergence directly, but we can maximize the ELBO, and it achieves the same thing.</p>
+<p>Trick: since log p(D) is constant, maximizing ELBO is <em>exactly equivalent</em> to minimizing KL(q || p). We can&rsquo;t compute KL divergence directly, but we can maximize ELBO and get same target.</p>
 
-<p>The ELBO itself decomposes into two terms we can actually compute:</p>
+<p>ELBO decomposes into two terms we can compute:</p>
 
 <pre><code class="language-text">ELBO(q) = E_q[log p(D|θ)]  −  KL(q(θ) || p(θ))
            ─────────────────    ──────────────────
@@ -587,20 +587,20 @@ Hamilton's equations:
             explain the data?"   the prior?"
 </code></pre>
 
-<p>The first term rewards q for concentrating on parameter values that explain the data well. The second term penalizes q for straying too far from the prior. Sound familiar? It&rsquo;s the same fit-versus-regularization tradeoff that appears everywhere in machine learning, expressed in the language of probability.</p>
+<p>First term rewards q for concentrating on parameter values that explain data well. Second term penalizes q for straying too far from prior. Same fit-versus-regularization tradeoff seen across machine learning, written in language of probability.</p>
 
-<p>I won&rsquo;t pretend the algebra that derives the ELBO is the insightful part. The insight is this: we wanted to do something impossible (minimize KL to the true posterior), and we found a surrogate objective (the ELBO) that achieves the same thing and that we <em>can</em> compute. That&rsquo;s the entire intellectual move.</p>
+<p>Main insight is not algebra. We wanted impossible objective &mdash; minimize KL to true posterior. We found surrogate objective &mdash; ELBO &mdash; that achieves same thing and that we <em>can</em> compute. That&rsquo;s whole move.</p>
 
 
 <!-- ═══════════════════════════════════════════════ -->
 <h2 id="mean-field">Mean-Field: The Crudest Possible Approximation</h2>
 
-<p>We need to choose a family of distributions for q. The most dramatic simplification is the <strong>mean-field approximation</strong>: assume all latent variables are independent. The variational distribution factors as:</p>
+<p>Need family of distributions for q. Biggest simplification is <strong>mean-field approximation</strong>: assume all latent variables are independent. Variational distribution factors as:</p>
 
 <pre><code class="language-text">q(θ₁, θ₂, ..., θₙ) = q₁(θ₁) × q₂(θ₂) × ... × qₙ(θₙ)
 </code></pre>
 
-<p>Each variable gets its own little distribution, optimized independently. The optimization algorithm &mdash; <strong>coordinate ascent variational inference</strong> (CAVI) &mdash; cycles through the variables one at a time, updating each q<sub>i</sub> while holding the others fixed, until convergence.</p>
+<p>Each variable gets its own distribution, optimized independently. Optimization algorithm &mdash; <strong>coordinate ascent variational inference</strong> (CAVI) &mdash; cycles through variables one at a time, updating each q<sub>i</sub> while others stay fixed, until convergence.</p>
 
 <p>This is crude. The true posterior might have strong correlations between parameters &mdash; maybe &theta;<sub>1</sub> and &theta;<sub>2</sub> are tightly coupled, so knowing one tells you a lot about the other. Mean-field ignores this entirely. It treats them as independent, which typically <em>underestimates the posterior uncertainty</em>. The marginal distributions might be centered in the right place, but they&rsquo;re too narrow and too confident.</p>
 
