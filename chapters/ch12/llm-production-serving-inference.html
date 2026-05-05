@@ -306,9 +306,9 @@
 <!--  OPENING                                                           -->
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 
-<p>The gap between &ldquo;I can generate tokens on my laptop&rdquo; and &ldquo;I can serve 500 concurrent users at 20 tokens per second each without bankrupting my company&rdquo; is enormous. Understanding what actually happens between a user hitting Enter and a token arriving on their screen requires digging into GPU memory, batching strategies, and infrastructure choices. Here is that dive.</p>
+<p>Gap between &ldquo;I can generate tokens on my laptop&rdquo; and &ldquo;I can serve 500 concurrent users at 20 tokens per second each without bankrupting my company&rdquo; huge. User hits Enter, token shows up only after GPU memory, batching, infrastructure all do work. Here dive.</p>
 
-<p>LLM serving is the engineering discipline of running large language model inference in production&mdash;handling real users, real latency requirements, and very real GPU bills. It grew into its own specialty around 2023, when the gap between &ldquo;model works in a notebook&rdquo; and &ldquo;model works for a million users&rdquo; became the bottleneck for most AI teams. The core challenge: autoregressive generation is fundamentally different from serving a classification model, and every optimization in this space flows from that difference.</p>
+<p>LLM serving = engineering for production inference&mdash;real users, latency targets, real GPU bills. Became own specialty around 2023, when gap between &ldquo;model works in notebook&rdquo; and &ldquo;model works for million users&rdquo; became main bottleneck. Core challenge: autoregressive generation differs from classification serving. Every optimization starts there.</p>
 
 
 <!-- Table of Contents -->
@@ -319,13 +319,13 @@
 
 <h2>The Restaurant That Serves One Dish at a Time</h2>
 
-<p>Imagine you run a tiny restaurant. You have one chef (your GPU), one kitchen (your GPU memory), and customers who place orders (user prompts). For most of this journey, we&rsquo;ll be running this restaurant and discovering, one problem at a time, why LLM serving is so hard.</p>
+<p>Imagine tiny restaurant. One chef (GPU), one kitchen (GPU memory), customers place orders (user prompts). We run this restaurant, hit problems one by one, learn why LLM serving hard.</p>
 
-<p>In a normal restaurant&mdash;say, one serving image classification&mdash;a customer walks in, orders, and the chef prepares the entire dish in one go. Steak? Here&rsquo;s your steak. Done. The customer leaves. Next customer.</p>
+<p>Normal restaurant&mdash;say, image classification&mdash;customer walks in, orders, chef makes whole dish in one go. Steak? Here steak. Done. Next customer.</p>
 
-<p>Our restaurant is different. We serve a very peculiar kind of meal: a token tasting menu. Each course is a single token, and the chef cannot begin preparing course number 5 until the customer has received courses 1 through 4. The chef looks at everything served so far, decides what the next course should be, plates it, sends it out, and then starts the next one. A 500-token response means 500 sequential trips from kitchen to table.</p>
+<p>Our restaurant different. Meal = token tasting menu. Each course one token, chef cannot start course 5 until customer gets courses 1 through 4. Chef looks at all served so far, picks next course, plates it, sends it out, starts next one. 500-token response means 500 sequential trips.</p>
 
-<p>This is <strong>autoregressive generation</strong>&mdash;the model produces one token at a time, each conditioned on all previously generated tokens. And it changes everything about how we run this restaurant.</p>
+<p>This is <strong>autoregressive generation</strong>&mdash;model produces one token at time, each conditioned on all previous tokens. This changes everything.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 <!--  WHY AUTOREGRESSIVE CHANGES EVERYTHING                             -->
@@ -333,21 +333,21 @@
 
 <h2>Why Autoregressive Generation Changes Everything</h2>
 
-<p>When I first started thinking about serving LLMs, I assumed the bottleneck would be compute&mdash;the same way training is compute-bound. I was wrong, and understanding <em>why</em> I was wrong took longer than I&rsquo;d like to admit.</p>
+<p>When I first looked at LLM serving, I guessed bottleneck was compute&mdash;same as training. Wrong. Learning <em>why</em> took too long.</p>
 
-<p>Let&rsquo;s make this concrete. Say we have a 7-billion-parameter model stored in 16-bit precision. That&rsquo;s 14 GB of weights sitting in GPU memory. During the <strong>prefill phase</strong>&mdash;when the model first processes the entire input prompt&mdash;there&rsquo;s a lot of parallel computation happening. Every token in the prompt gets processed simultaneously through the attention layers. The GPU&rsquo;s thousands of cores are busy. This phase is <strong>compute-bound</strong>, meaning the math is the bottleneck.</p>
+<p>Make it concrete. Say 7-billion-parameter model in 16-bit precision. That is 14 GB of weights in GPU memory. During <strong>prefill phase</strong>&mdash;model processes full input prompt first&mdash;much parallel compute happens. Every prompt token runs through attention layers at once. GPU cores stay busy. This phase is <strong>compute-bound</strong>: math is bottleneck.</p>
 
-<p>Then the <strong>decode phase</strong> begins. The model generates one token at a time. Each forward pass for a single new token requires reading all 14 GB of model weights from GPU memory, but the actual computation for that one token is tiny. An NVIDIA A100 has about 312 TFLOPS of compute capacity but only 2 TB/s of memory bandwidth. For that single-token decode step, most of the time is spent waiting for weight data to travel from memory to the compute cores. The arithmetic units sit idle.</p>
+<p>Then <strong>decode phase</strong> starts. Model generates one token at time. Each forward pass for one new token must read all 14 GB of weights from GPU memory, but compute for one token is tiny. NVIDIA A100 has about 312 TFLOPS compute but only 2 TB/s memory bandwidth. In single-token decode, time mostly goes to moving weights from memory to compute cores. Arithmetic units wait.</p>
 
-<p>This is the <strong>memory-bandwidth-bound</strong> regime, and it&rsquo;s the defining characteristic of LLM serving. Going back to our restaurant: the chef (compute) is fast, but the walk from the pantry (memory) to the stove (compute cores) takes forever relative to the actual cooking time. The chef spends most of each course standing in the hallway, not chopping vegetables.</p>
+<p>This is <strong>memory-bandwidth-bound</strong> regime. Defining trait of LLM serving. Back to restaurant: chef (compute) fast, but walk from pantry (memory) to stove (compute cores) takes forever compared with cooking. Chef spends course in hallway, not chopping vegetables.</p>
 
-<p>This distinction between prefill and decode creates two very different latency metrics that every LLM serving engineer cares about:</p>
+<p>This prefill/decode split creates two latency metrics every LLM serving engineer cares about:</p>
 
-<p><strong>Time to First Token (TTFT)</strong> measures how long after the user sends a prompt before the first response token appears. This is dominated by the prefill phase&mdash;processing the entire input. For a chat application, you want this under 500 milliseconds or the experience feels sluggish.</p>
+<p><strong>Time to First Token (TTFT)</strong> = time from prompt send to first response token. Prefill dominates&mdash;whole input gets processed. For chat, keep under 500 milliseconds or experience feels sluggish.</p>
 
-<p><strong>Time Per Output Token (TPOT)</strong> measures the gap between consecutive output tokens during generation. This is the decode phase latency. For streaming responses that feel natural, you need roughly 50 milliseconds per token&mdash;about 20 tokens per second, which matches comfortable reading speed.</p>
+<p><strong>Time Per Output Token (TPOT)</strong> = gap between output tokens during generation. Decode latency. For natural streaming, need about 50 milliseconds per token&mdash;about 20 tokens per second, near comfortable reading speed.</p>
 
-<p>The total latency for a response is TTFT plus the number of output tokens multiplied by TPOT. A 500-token response with 400ms TTFT and 40ms TPOT takes about 20.4 seconds. Shaving 10ms off TPOT saves 5 seconds on that response. Shaving 10ms off TTFT saves 10 milliseconds. At scale, TPOT optimization dominates.</p>
+<p>Total latency = TTFT + output tokens &times; TPOT. A 500-token response with 400ms TTFT and 40ms TPOT takes about 20.4 seconds. Cut 10ms from TPOT, save 5 seconds. Cut 10ms from TTFT, save 10 milliseconds. At scale, TPOT optimization dominates.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 <!--  KV CACHE                                                          -->

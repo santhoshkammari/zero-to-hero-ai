@@ -355,15 +355,15 @@ total                       &asymp;  84 GB
 
 <p>FP16 can represent ~65,000 distinct values. INT8 = 256 values. INT4 = 16 values. <strong>Quantization</strong> maps those 65,000 possible values down to 256, or 16, or fewer. Every weight gets snapped to nearest value on much coarser grid.</p>
 
-<p>Let&rsquo;s walk through a tiny example. Say we have four weights from one layer of our model:</p>
+<p>Tiny example. Four weights from one layer:</p>
 
 <pre><code>Original (FP16):   [0.23,  -0.71,  0.02,  1.05]</code></pre>
 
-<p>We want to store these as 4-bit signed integers, which means we have values from &minus;8 to +7 &mdash; a total of 16 possible slots. First, we find the largest absolute value: 1.05. We compute a <strong>scale factor</strong> that maps 1.05 to the maximum INT4 value (7):</p>
+<p>Store as 4-bit signed integers = values from &minus;8 to +7 (16 slots). Find largest absolute value: 1.05. Compute <strong>scale factor</strong> mapping 1.05 to max INT4 value (7):</p>
 
 <pre><code>scale = 1.05 / 7 = 0.15</code></pre>
 
-<p>Now we divide each weight by the scale and round to the nearest integer:</p>
+<p>Divide each weight by scale, round to nearest integer:</p>
 
 <pre><code>0.23  / 0.15 =  1.53  &rarr;  round to  2
 -0.71 / 0.15 = -4.73  &rarr;  round to -5
@@ -372,16 +372,16 @@ total                       &asymp;  84 GB
 
 Quantized (INT4):   [2,  -5,  0,  7]</code></pre>
 
-<p>Each of those numbers fits in 4 bits instead of 16. To use the weights during inference, we multiply them back by the scale factor:</p>
+<p>Each number fits in 4 bits instead of 16. For inference, multiply back by scale factor:</p>
 
 <pre><code>Dequantized:   [2 &times; 0.15,  -5 &times; 0.15,  0 &times; 0.15,  7 &times; 0.15]
              = [0.30,      -0.75,       0.00,       1.05]
 
 Error:         [+0.07,     -0.04,       -0.02,      0.00]</code></pre>
 
-<p>That&rsquo;s quantization. We introduced some rounding error &mdash; 0.23 became 0.30, 0.02 became 0.00 &mdash; but the overall structure of the values is preserved. The weight that was biggest is still biggest. The one that was negative is still negative. And we&rsquo;re using 4&times; less memory.</p>
+<p>That&rsquo;s quantization. Introduced rounding error &mdash; 0.23 became 0.30, 0.02 became 0.00 &mdash; but overall structure preserved. Biggest weight still biggest. Negative still negative. 4&times; less memory.</p>
 
-<p>The entire field of quantization research is, at its core, about making these rounding errors as small as possible. Everything from GPTQ to AWQ to NF4 is a different strategy for minimizing the damage of this rounding step.</p>
+<p>Entire quantization research field = making rounding errors as small as possible. GPTQ, AWQ, NF4 &mdash; all different strategies for minimizing rounding damage.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <!-- SYMMETRIC VS ASYMMETRIC -->
@@ -389,11 +389,11 @@ Error:         [+0.07,     -0.04,       -0.02,      0.00]</code></pre>
 
 <h2>Symmetric vs Asymmetric Quantization</h2>
 
-<p>The example above used <strong>symmetric quantization</strong>: the range is centered at zero, stretching from &minus;max to +max. One scale factor, done. This works well for LLM weight matrices, which tend to be roughly centered around zero (they&rsquo;re usually close to a Gaussian distribution).</p>
+<p>Example above used <strong>symmetric quantization</strong>: range centered at zero, &minus;max to +max. One scale factor, done. Works well for LLM weight matrices &mdash; roughly centered around zero (close to Gaussian distribution).</p>
 
-<p>But what about values that aren&rsquo;t centered at zero? If you have activations coming out of a ReLU layer, they&rsquo;re always non-negative. If we use symmetric quantization, half of our 16 INT4 slots represent negative numbers that will never appear. We&rsquo;re wasting half our precision.</p>
+<p>But values not centered at zero? Activations after ReLU = always non-negative. Symmetric quantization wastes half of 16 INT4 slots on negative numbers that never appear. Wasting half precision.</p>
 
-<p><strong>Asymmetric quantization</strong> fixes this by allowing the range to be off-center. Instead of mapping [&minus;max, +max], it maps [min, max]. This requires a second number, the <strong>zero-point</strong>, to track where zero falls on the quantized grid.</p>
+<p><strong>Asymmetric quantization</strong> fixes this &mdash; allows off-center range. Maps [min, max] instead of [&minus;max, +max]. Requires second number, <strong>zero-point</strong>, to track where zero falls on quantized grid.</p>
 
 <pre><code># Symmetric: one number to store (scale)
 quantized = round(value / scale)
@@ -403,7 +403,7 @@ dequantized = quantized &times; scale
 quantized = round(value / scale) + zero_point
 dequantized = (quantized - zero_point) &times; scale</code></pre>
 
-<p>In practice, LLM weight quantization almost always uses symmetric quantization. The weights are well-behaved enough that the centered range works well, and you save the overhead of storing a zero-point for every group. Activation quantization sometimes benefits from asymmetric, especially after ReLU-style nonlinearities.</p>
+<p>In practice, LLM weight quantization almost always uses symmetric. Weights well-behaved enough that centered range works, saves overhead of storing zero-point per group. Activation quantization sometimes benefits from asymmetric, especially after ReLU-style nonlinearities.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <!-- GRANULARITY -->
@@ -411,17 +411,17 @@ dequantized = (quantized - zero_point) &times; scale</code></pre>
 
 <h2>Granularity: How Many Numbers Share a Ruler</h2>
 
-<p>Here&rsquo;s a subtlety I didn&rsquo;t appreciate until I saw it break things: the scale factor from our example above was computed from the entire set of four weights. In a real model, a single weight matrix might have 4096 &times; 4096 = 16 million values. If we compute one scale factor for all 16 million values, a single outlier &mdash; one weight that&rsquo;s 10&times; larger than the rest &mdash; forces us to stretch the quantization grid so wide that most values get crushed into just a few bins near zero.</p>
+<p>Subtlety that breaks things: scale factor in our example was computed from entire set of four weights. Real model: single weight matrix might be 4096 &times; 4096 = 16 million values. One scale factor for all 16M values + single outlier 10&times; larger than rest = quantization grid stretched so wide that most values crush into few bins near zero.</p>
 
-<p>Think of it like using one ruler to measure both a skyscraper and a matchbox. The tick marks on the ruler are so far apart that you can&rsquo;t tell a 2-inch matchbox from a 3-inch one.</p>
+<p>Like using one ruler to measure both skyscraper and matchbox. Tick marks so far apart you can&rsquo;t tell 2-inch matchbox from 3-inch one.</p>
 
-<p>This problem is called <strong>per-tensor quantization</strong>, and it&rsquo;s the worst option. You get one scale factor for millions of values. One outlier ruins everything.</p>
+<p>This = <strong>per-tensor quantization</strong>, worst option. One scale factor for millions of values. One outlier ruins everything.</p>
 
-<p><strong>Per-channel quantization</strong> is better: each row of the weight matrix gets its own scale factor. Now each row has its own ruler, so an outlier in row 37 doesn&rsquo;t affect row 4,000. This helps a lot.</p>
+<p><strong>Per-channel quantization</strong> better: each row gets own scale factor. Own ruler per row, so outlier in row 37 doesn&rsquo;t affect row 4,000. Helps a lot.</p>
 
-<p><strong>Per-group quantization</strong> takes it further: we chop each row into groups of, say, 128 consecutive values, and each group gets its own scale factor. Now we have 128 values sharing a ruler, which is fine-grained enough to handle local variations in the weight distribution. The cost is storing one extra FP16 scale factor per 128 INT4 values &mdash; that&rsquo;s an overhead of about 0.8 bits per parameter. Going from a theoretical 4.0 bits to about 4.8 effective bits.</p>
+<p><strong>Per-group quantization</strong> goes further: chop each row into groups of 128 consecutive values, each group gets own scale factor. 128 values sharing ruler = fine-grained enough for local weight distribution variations. Cost: one FP16 scale per 128 INT4 values &mdash; ~0.8 bits overhead per parameter. Theoretical 4.0 bits becomes ~4.8 effective bits.</p>
 
-<p>Group-128 has become the industry standard for 4-bit LLM quantization. I still don&rsquo;t have a clean theoretical explanation for why 128 is the magic number, but empirically it lands right in the sweet spot between quality and overhead. Every major method &mdash; GPTQ, AWQ, GGUF&rsquo;s k-quant &mdash; defaults to it.</p>
+<p>Group-128 = industry standard for 4-bit LLM quantization. No clean theoretical explanation for why 128 is magic number, but empirically hits sweet spot between quality and overhead. Every major method &mdash; GPTQ, AWQ, GGUF k-quant &mdash; defaults to it.</p>
 
 <p>Our suitcase analogy extends: per-tensor is like one compression bag for all your clothes. Per-group is like rolling each outfit individually &mdash; more packaging overhead, but everything arrives in better shape.</p>
 

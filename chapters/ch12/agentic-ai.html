@@ -302,11 +302,11 @@
   Key takeaways and recommended papers, benchmarks, and frameworks
 </nav>
 <!-- ═══════════ End Table of Contents ═══════════ -->
-<p>I avoided this topic for months. Not because I didn&rsquo;t find it interesting &mdash; I did, painfully so &mdash; but because the space was moving so fast that anything I wrote on Monday felt obsolete by Thursday. Every week brought a new framework, a new benchmark, a new claim that agents had &ldquo;solved&rdquo; some task. I kept waiting for things to settle. They haven&rsquo;t. But I&rsquo;ve realized something: the <em>patterns</em> have stabilized even as the implementations churn. The way we wire an LLM to tools, the way we structure planning loops, the way we manage memory &mdash; those ideas are converging. So that&rsquo;s what we&rsquo;re going to build here. Not a tour of this week&rsquo;s hottest framework, but the architectural bones underneath all of them.</p>
+<p>Avoided topic for months. Space moved fast, Monday notes felt obsolete by Thursday. New framework, new benchmark, new claim every week. I waited for calm. Calm never came. But <em>patterns</em> stabilized while implementations churned. We now know how to wire LLM to tools, structure planning loops, manage memory. Those ideas converge. Goal here: architectural bones under every framework, not tour of this week&rsquo;s hottest framework.</p>
 
-<p>Here is what this post covers: we start with a single LLM call and ask why it&rsquo;s not enough. We give it tools. We give it a thinking loop. We give it memory. We give it colleagues. By the end, you&rsquo;ll understand how an autonomous agent is built from the ground up, what goes wrong in practice, and how to measure whether any of it works.</p>
+<p>Post covers full build path. Start with single LLM call, see why not enough. Add tools. Add thinking loop. Add memory. Add colleagues. End state: understand how autonomous agent gets built, what breaks in practice, how to measure whether system works.</p>
 
-<p>We&rsquo;re going to build something together. A <strong>trip planning assistant</strong>. It starts tiny &mdash; a single tool that can look up the weather for one city &mdash; and by the end of this post, it grows into a multi-tool, multi-agent vacation planner that books flights, finds restaurants, and argues with itself about whether you can afford that beachfront hotel. Every new concept we learn gets wired into this running example, so the abstractions stay grounded in something real.</p>
+<p>We build <strong>trip planning assistant</strong>. Start tiny: one weather tool for one city. End big: multi-tool, multi-agent vacation planner that books flights, finds restaurants, argues about whether you can afford beachfront hotel. Each new concept plugs into running example. Abstractions stay grounded.</p>
 
 <p>Let&rsquo;s go.</p>
 
@@ -317,15 +317,15 @@
 
 <h2>The Perceive-Reason-Act Loop</h2>
 
-<p>Imagine you hire a summer intern. Brilliant kid &mdash; top of their class, knows a staggering amount of trivia, can write beautifully, can reason about complex problems. You sit them at a desk and say: &ldquo;Plan me a vacation to Lisbon next month.&rdquo; The intern thinks hard, then writes you a lovely three-page essay about the best neighborhoods in Lisbon, typical weather in June, estimated costs, and restaurant recommendations. Impressive. But none of those prices are current. The weather is a guess from training data two years old. And they didn&rsquo;t actually <em>book</em> anything.</p>
+<p>Imagine summer intern. Brilliant, knows huge trivia set, writes well, reasons through complex problems. You say: &ldquo;Plan vacation to Lisbon next month.&rdquo; Intern thinks hard, then writes lovely three-page essay about neighborhoods, June weather, costs, restaurants. Impressive. But prices not current. Weather guess comes from old training data. Nothing got <em>booked</em>.</p>
 
-<p>That intern is your LLM. Brilliant at reasoning. Terrible at doing things in the real world.</p>
+<p>That intern is your LLM. Strong at reasoning. Weak at real-world work.</p>
 
-<p>Now imagine you hand that same intern a phone, a browser, and a company credit card. You say: &ldquo;Plan me a vacation to Lisbon. Actually book the flights and hotel. Check the real weather forecast. Find restaurants with reservations available.&rdquo; Now the intern can <em>perceive</em> (check the weather API, search for flights), <em>reason</em> (decide which options are best given your budget and dates), and <em>act</em> (make the bookings). Same brain, wildly different capability.</p>
+<p>Now give same intern phone, browser, company credit card. You say: &ldquo;Plan vacation to Lisbon. Book flights and hotel. Check real forecast. Find restaurants with reservations available.&rdquo; Now intern can <em>perceive</em> (weather API, flight search), <em>reason</em> (pick best options for budget and dates), and <em>act</em> (make bookings). Same brain. Much bigger capability.</p>
 
-<p>That&rsquo;s the difference between a chatbot and an agent. The chatbot <em>tells</em> you what to do. The agent <em>does</em> it.</p>
+<p>That&rsquo;s chatbot vs agent. Chatbot <em>tells</em>. Agent <em>does</em>.</p>
 
-<p>Every agent, regardless of framework, runs the same fundamental loop:</p>
+<p>Every agent, whatever framework, runs same loop:</p>
 
 <pre><code># The universal agent loop (pseudocode)
 while not done:
@@ -334,11 +334,11 @@ while not done:
     result      = act(thought)            # execute a tool or respond
     environment.update(result)            # world changes</code></pre>
 
-<p>The <strong>perceive</strong> step is where the agent takes in new information: a user message, the result of a tool call, an error from a failed API request. The <strong>reason</strong> step is the LLM doing what it does best &mdash; understanding context and deciding on a next action. The <strong>act</strong> step is where something actually happens in the world: an API is called, code is executed, a file is written, a message is sent.</p>
+<p><strong>Perceive</strong> step: agent gets new information&mdash;user message, tool result, failed API error. <strong>Reason</strong> step: LLM interprets context and chooses next action. <strong>Act</strong> step: world changes&mdash;API call, code execution, file write, message send.</p>
 
-<p>A plain LLM call is one pass through this loop with no tools available in the &ldquo;act&rdquo; step. The model perceives your prompt, reasons about it, and acts by generating text. That&rsquo;s it. One shot. An agent runs this loop multiple times, accumulating observations and refining its plan. The loop is what makes it agentic.</p>
+<p>Plain LLM call = one pass through loop with no tools in &ldquo;act&rdquo; step. Model perceives prompt, reasons, acts by generating text. Done. Agent runs loop many times, accumulates observations, refines plan. Loop makes system agentic.</p>
 
-<p>Let me make this concrete with our trip planner. Right now, it has no tools. Someone asks: &ldquo;What&rsquo;s the weather in Lisbon next week?&rdquo;</p>
+<p>Make it concrete with trip planner. Right now, no tools. User asks: &ldquo;What&rsquo;s the weather in Lisbon next week?&rdquo;</p>
 
 <pre><code># No tools: the LLM guesses
 User: What's the weather in Lisbon next week?
@@ -346,7 +346,7 @@ Assistant: Lisbon typically has warm, sunny weather in summer,
            with temperatures around 25-30°C. However, I don't
            have access to real-time weather data.</code></pre>
 
-<p>Honest, but useless for trip planning. The model <em>knows</em> it can&rsquo;t help. It doesn&rsquo;t have hands. Let&rsquo;s give it some.</p>
+<p>Honest answer. Useless for trip planning. Model <em>knows</em> it can&rsquo;t help. No hands. Give some.</p>
 
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
@@ -355,11 +355,11 @@ Assistant: Lisbon typically has warm, sunny weather in summer,
 
 <h2>Tool Use &amp; Function Calling</h2>
 
-<p>Here is the first idea that confused me when I encountered it, and I want to save you that confusion: the LLM does not actually <em>call</em> functions. It outputs structured text &mdash; specifically, JSON &mdash; that <em>describes</em> which function it wants to call and with what arguments. Then <em>your code</em> on the server reads that JSON, calls the real function, and feeds the result back to the model. The model never touches your code, your database, or the internet. It writes a wish list; you fulfil it.</p>
+<p>First confusing idea. LLM does not actually <em>call</em> functions. It outputs structured text&mdash;usually JSON&mdash;that <em>describes</em> which function to call and which arguments to use. Then <em>your code</em> reads JSON, calls real function, feeds result back. Model never touches code, database, or internet. It writes wish list. You fulfill it.</p>
 
-<p>Think of it like our intern analogy again. The intern can&rsquo;t actually make phone calls on your behalf. But they can write you a note that says: &ldquo;Please call the weather service and ask about Lisbon, June 15-22.&rdquo; You make the call, get the answer, and hand the note back. The intern reads the answer and continues planning.</p>
+<p>Use intern analogy again. Intern can&rsquo;t call on your behalf. But intern can write note: &ldquo;Call weather service about Lisbon, June 15-22.&rdquo; You make call, get answer, hand note back. Intern reads answer, keeps planning.</p>
 
-<p>Here&rsquo;s how function calling works in practice. You define your tools as JSON schemas and pass them alongside the user&rsquo;s message:</p>
+<p>Function calling in practice: define tools as JSON schemas, pass them with user message:</p>
 
 <pre><code># Step 1: Define tools as JSON schemas
 tools = [
@@ -397,7 +397,7 @@ response = openai.chat.completions.create(
     tools=tools
 )</code></pre>
 
-<p>The model doesn&rsquo;t respond with a text answer. Instead, it responds with a <strong>tool call</strong> &mdash; a structured JSON object saying &ldquo;I want to call <code>get_weather</code> with these arguments&rdquo;:</p>
+<p>Model doesn&rsquo;t return normal text answer. It returns <strong>tool call</strong>: structured JSON saying &ldquo;I want <code>get_weather</code> with these arguments&rdquo;:</p>
 
 <pre><code># Step 3: The model's response contains a tool call, not text
 # response.choices[0].message.tool_calls[0] looks like:
@@ -410,7 +410,7 @@ response = openai.chat.completions.create(
     }
 }</code></pre>
 
-<p>Now here is the crucial part that I want to make very explicit. <em>Your</em> code receives this JSON. <em>Your</em> code parses the function name and arguments. <em>Your</em> code actually calls the weather API. The LLM did nothing but write structured text.</p>
+<p>Crucial part: <em>Your</em> code gets this JSON. <em>Your</em> code parses function name and arguments. <em>Your</em> code calls weather API. LLM only wrote structured text.</p>
 
 <pre><code># Step 4: YOUR code dispatches the function call
 import json
@@ -445,15 +445,15 @@ final_response = openai.chat.completions.create(
 # "Lisbon will be sunny June 15-22 with highs around 28°C and
 #  lows around 18°C. Only a 5% chance of rain. Great beach weather!"</code></pre>
 
-<p>That&rsquo;s the full round trip. User asks a question. Model decides it needs a tool. Model outputs JSON describing the call. Your code executes it. Result goes back to the model. Model generates a human-readable answer grounded in real data.</p>
+<p>Full round trip. User asks question. Model decides tool needed. Model outputs JSON for call. Your code executes it. Result goes back. Model writes human-readable answer grounded in real data.</p>
 
-<p>I want to be honest: when I first saw this pattern, my reaction was &ldquo;wait, that&rsquo;s it?&rdquo; I expected some deep magic &mdash; some special neural pathway for tool use. There isn&rsquo;t one. The model was fine-tuned to output valid JSON in a specific format when given tool schemas. That&rsquo;s the entire trick. The engineering is in the loop around the model, not in the model itself.</p>
+<p>My first reaction: &ldquo;wait, that&rsquo;s it?&rdquo; I expected deep magic, some special neural pathway for tool use. None. Model was fine-tuned to emit valid JSON in specific format when tool schemas appear. That&rsquo;s trick. Engineering lives in loop around model, not inside model.</p>
 
 <div class="info-box">
-  <strong>A kitchen analogy.</strong> Think of the LLM as a chef. The chef reads the order (user message), looks at the menu of available ingredients and kitchen tools (tool schemas), and writes a prep ticket: &ldquo;I need 200g of diced onions&rdquo; (the JSON tool call). The sous-chef (your code) does the actual chopping, hands the bowl back, and the chef continues cooking. The chef never touches the knife. The chef&rsquo;s genius is knowing <em>what</em> to ask for and <em>when</em>.
+  <strong>Kitchen analogy.</strong> LLM = chef. Chef reads order, sees ingredients and kitchen tools (tool schemas), writes prep ticket: &ldquo;Need 200g diced onions&rdquo; (JSON tool call). Sous-chef (your code) does chopping, hands bowl back, chef keeps cooking. Chef never touches knife. Chef skill: knowing <em>what</em> to ask for and <em>when</em>.
 </div>
 
-<p>Now let&rsquo;s give our trip planner a second tool: flight search.</p>
+<p>Now give trip planner second tool: flight search.</p>
 
 <pre><code>tools = [
     { ... get_weather ... },
@@ -476,9 +476,9 @@ final_response = openai.chat.completions.create(
     }
 ]</code></pre>
 
-<p>With two tools available, something interesting happens. When the user says &ldquo;Plan me a trip to Lisbon from New York, June 15-22, budget $2000,&rdquo; the model has to <em>decide</em> which tool to call first. And once it gets the first result, it needs to decide whether to call another tool or respond. This decision-making &mdash; this interleaving of thinking and acting &mdash; is what leads us to the next pattern.</p>
+<p>With two tools, interesting part starts. User says &ldquo;Plan me trip to Lisbon from New York, June 15-22, budget $2000,&rdquo; and model must <em>decide</em> which tool to call first. After first result, model must decide whether to call another tool or answer. That interleaving of thinking and acting leads to next pattern.</p>
 
-<p>But there&rsquo;s a problem. A single function-call round trip is enough for simple questions. For complex requests, the model needs to call tools <em>multiple times</em>, examining each result before deciding what to do next. It needs to <em>think out loud</em>. It needs a pattern.</p>
+<p>Problem: one function-call round trip handles simple questions. Complex requests need <em>multiple</em> tool calls, with each result examined before next move. Model must <em>think out loud</em>. Model needs pattern.</p>
 
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
@@ -487,11 +487,11 @@ final_response = openai.chat.completions.create(
 
 <h2>The ReAct Pattern</h2>
 
-<p>In 2023, Yao et al. published a paper called &ldquo;ReAct: Synergizing Reasoning and Acting in Language Models.&rdquo; The core idea is disarmingly simple: let the model <strong>think out loud</strong> before each action. Instead of going straight from observation to tool call, the model writes an explicit <strong>Thought</strong> explaining its reasoning, then specifies an <strong>Action</strong>, then receives an <strong>Observation</strong> (the result). This Thought-Action-Observation cycle repeats until the model decides it has enough information to answer.</p>
+<p>In 2023, Yao et al. published &ldquo;ReAct: Synergizing Reasoning and Acting in Language Models.&rdquo; Core idea: let model <strong>think out loud</strong> before each action. Instead of jumping from observation to tool call, model writes explicit <strong>Thought</strong>, then <strong>Action</strong>, then receives <strong>Observation</strong>. Cycle repeats until enough information exists for answer.</p>
 
-<p>I resisted this idea for a while. &ldquo;Why does the model need to think out loud?&rdquo; I thought. &ldquo;It&rsquo;s already reasoning internally.&rdquo; But the internal reasoning of an LLM is opaque &mdash; it happens in hidden states we can&rsquo;t inspect. When you force the model to write down its reasoning as literal text tokens, two things happen. First, the reasoning gets better because each thought token conditions the generation of subsequent tokens. Second, <em>you</em> get a trace you can debug, log, and audit. That second point turns out to matter enormously in production.</p>
+<p>I resisted this idea. &ldquo;Why think out loud? Model already reasons internally.&rdquo; But LLM reasoning is opaque; it lives in hidden states we can&rsquo;t inspect. Force model to write reasoning as text tokens, two things happen. Reasoning improves because each thought token conditions later tokens. And <em>you</em> get trace you can debug, log, audit. Second part matters a lot in production.</p>
 
-<p>Here is what a ReAct trace looks like for our trip planner. The user says: &ldquo;Plan a 7-day trip to Lisbon from NYC in June, budget $2000.&rdquo;</p>
+<p>Here is ReAct trace for trip planner. User says: &ldquo;Plan a 7-day trip to Lisbon from NYC in June, budget $2000.&rdquo;</p>
 
 <pre><code>Thought: The user wants a trip to Lisbon from NYC in June with a $2000 budget.
          I need to figure out: (1) weather, (2) flight costs, (3) whether the
@@ -525,9 +525,9 @@ round trip departing June 15. Weather: gorgeous — sunny skies, 27-30°C.
 Budget breakdown: $487 flights, ~$700 hotel (7 nights at ~$100/night in
 Alfama or Baixa), ~$350 food, ~$463 for activities and transport..."</code></pre>
 
-<p>Notice the rhythm. Thought, Action, Observation. Thought, Action, Observation. Each thought explicitly reasons about what the agent knows so far and what it needs next. Each action is a concrete tool call. Each observation provides new data that feeds the next thought. The model is having a conversation with the world, one careful step at a time.</p>
+<p>See rhythm. Thought, Action, Observation. Thought, Action, Observation. Each thought reasons over current knowledge and next need. Each action is concrete tool call. Each observation adds data for next thought. Model is having careful conversation with world.</p>
 
-<p>Let me show you the code that implements this loop. It&rsquo;s shorter than you might expect:</p>
+<p>Here is code for loop. Shorter than expected:</p>
 
 <pre><code>def react_agent(user_query, tools, max_steps=10):
     messages = [
@@ -568,9 +568,9 @@ respond to the user directly."""},
 
     return "Agent exceeded maximum steps without completing the task."</code></pre>
 
-<p>That <code>max_steps=10</code> parameter is doing more work than it looks. Without it, a confused agent could loop forever, burning tokens and money. I learned this the hard way when an early prototype got stuck in a loop trying to find a &ldquo;direct flight from Omaha to Reykjavik&rdquo; that didn&rsquo;t exist, calling the search API over and over with slightly different date permutations. Seventeen API calls and $0.80 in tokens later, I added the guard.</p>
+<p><code>max_steps=10</code> does heavy work. Without it, confused agent can loop forever, burning tokens and money. I learned this after early prototype chased a &ldquo;direct flight from Omaha to Reykjavik&rdquo; that didn&rsquo;t exist, hitting search API again and again with tiny date changes. Seventeen API calls and $0.80 in tokens later, I added guard.</p>
 
-<p>The ReAct pattern is beautiful for tasks where each step depends on the previous result. Check the weather, then decide on activities. Search for flights, then adjust the budget. But it has a limitation that becomes apparent on complex tasks: it&rsquo;s <em>myopic</em>. The model only decides one step at a time. It doesn&rsquo;t lay out the full plan upfront, which means it can wander, double back, or miss things entirely. For our simple trip planner, that&rsquo;s fine. For a complex multi-day research task, we need something more structured.</p>
+<p>ReAct is strong when each step depends on previous result. Check weather, then choose activities. Search flights, then adjust budget. But pattern is <em>myopic</em>. Model decides one step at a time. No full plan upfront. It can wander, backtrack, miss work. Fine for simple trip planner. Not enough for complex multi-day research task.</p>
 
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
@@ -579,21 +579,21 @@ respond to the user directly."""},
 
 <h2>Planning &amp; Task Decomposition</h2>
 
-<p>The single hardest problem in agentic AI is not tool calling or memory. It&rsquo;s planning. I&rsquo;ve spent more time debugging agent plans than any other component. A model that calls the wrong tool once can recover. A model that starts with a bad plan will confidently execute a series of perfectly-formed but fundamentally misguided steps, arriving at a detailed, well-formatted, completely wrong answer.</p>
+<p>Hardest problem in agentic AI is not tool calling or memory. It&rsquo;s planning. I&rsquo;ve spent more time debugging plans than anything else. Model that picks wrong tool once can recover. Model that starts with bad plan confidently executes many well-formed but misguided steps, then returns detailed, polished, wrong answer.</p>
 
-<p>There are three main approaches to planning, and they sit on a spectrum from reactive to deliberate.</p>
+<p>Three main planning approaches sit on spectrum from reactive to deliberate.</p>
 
 <h3>ReAct: One Step at a Time</h3>
 
-<p>We already covered this. The model doesn&rsquo;t plan ahead. It thinks about the immediate next action, takes it, observes the result, and decides the next step. It&rsquo;s greedy &mdash; in the algorithmic sense. Good for short tasks (2-5 steps). Gets lost on longer ones because there&rsquo;s no global view of what&rsquo;s been done and what remains.</p>
+<p>We already covered this. Model doesn&rsquo;t plan ahead. It picks immediate next action, takes it, observes result, picks next step. Greedy in algorithmic sense. Good for short tasks (2-5 steps). Gets lost on longer tasks because no global view of done work or remaining work.</p>
 
 <h3>Plan-and-Execute: Think First, Do Second</h3>
 
-<p>The alternative is to make the plan explicit. Before calling any tools, the model writes out a complete plan &mdash; a numbered list of steps. Then a separate execution phase works through the plan step by step, potentially revising it as new information comes in.</p>
+<p>Alternative: make plan explicit. Before any tool call, model writes complete plan&mdash;numbered steps. Then separate execution phase works through plan step by step, maybe revising as new information arrives.</p>
 
-<p>Back to our kitchen analogy: a ReAct chef starts cooking immediately, deciding each step as they go. A Plan-and-Execute chef reads the full recipe first, gathers all ingredients, then starts cooking. The second chef is slower to start but less likely to realize halfway through that they forgot to buy eggs.</p>
+<p>Kitchen analogy again. ReAct chef starts cooking immediately, deciding step by step. Plan-and-Execute chef reads full recipe first, gathers ingredients, then cooks. Second chef starts slower but is less likely to realize halfway through that eggs are missing.</p>
 
-<p>Here is what Plan-and-Execute looks like for our trip planner:</p>
+<p>Here is Plan-and-Execute for trip planner:</p>
 
 <pre><code># Phase 1: Planning (LLM generates the plan)
 User: "Plan a 7-day trip to Lisbon from NYC, June 15-22, budget $2000.
@@ -617,11 +617,11 @@ Executing step 3... search_hotels("Lisbon", "2025-06-15", 7, 100) → Hotel Alfa
 # Phase 3: Synthesis (combine results into final answer)
 Final itinerary: [detailed day-by-day plan]</code></pre>
 
-<p>The advantage is clarity. You can log the plan, show it to the user for approval, and track progress against it. The disadvantage is rigidity. What if step 1 reveals flights cost $1500 and the entire plan needs restructuring? A rigid planner will keep executing steps 2-7 as if nothing happened. A good Plan-and-Execute system includes a <strong>replanning</strong> step: after each execution, check whether the plan still makes sense given what you&rsquo;ve learned.</p>
+<p>Advantage: clarity. You can log plan, show user for approval, track progress. Disadvantage: rigidity. If step 1 reveals $1500 flights and plan must change, rigid planner still marches through steps 2-7. Good Plan-and-Execute systems add <strong>replanning</strong>: after each execution, check whether plan still fits new information.</p>
 
 <h3>Reflexion: Learn from Mistakes</h3>
 
-<p>The third approach is the most ambitious. <strong>Reflexion</strong> (Shinn et al., 2023) adds a self-critique loop. The agent attempts a task, evaluates its own output, identifies what went wrong, and tries again with the benefit of that reflection. It&rsquo;s inspired by how humans actually learn: try, fail, think about why you failed, try again differently.</p>
+<p>Third approach is most ambitious. <strong>Reflexion</strong> (Shinn et al., 2023) adds self-critique loop. Agent attempts task, evaluates output, identifies failure, tries again using reflection. Human pattern: try, fail, think why, try differently.</p>
 
 <pre><code># Reflexion loop (simplified)
 for attempt in range(max_attempts):
@@ -639,15 +639,15 @@ for attempt in range(max_attempts):
 
     agent.memory.add(reflection)  # remember for next attempt</code></pre>
 
-<p>Reflexion is powerful but expensive. Each retry costs a full execution pass. For our trip planner, it might mean planning the entire trip, realizing the budget doesn&rsquo;t work, reflecting on why (&ldquo;I should have checked flight prices before allocating the hotel budget&rdquo;), and replanning from scratch. Three attempts means three times the API calls and tokens.</p>
+<p>Reflexion is powerful but expensive. Each retry costs full execution pass. For trip planner, agent might plan whole trip, realize budget fails, reflect why (&ldquo;I should have checked flight prices before setting hotel budget&rdquo;), then replan from scratch. Three attempts = three times API calls and tokens.</p>
 
-<p>Here is a practical way to think about when to use which pattern:</p>
+<p>Practical rule for choosing pattern:</p>
 
-<p><strong>ReAct</strong> works when tasks are short (under 5 steps), each step has low cost, and the model needs to adapt quickly to new information. Good for: answering a question that requires 1-3 tool calls, real-time chat with tool access.</p>
+<p><strong>ReAct</strong> fits short tasks (under 5 steps), low-cost steps, fast adaptation to new information. Good for 1-3 tool-call questions, real-time chat with tools.</p>
 
-<p><strong>Plan-and-Execute</strong> works when tasks are complex (5-15 steps), the user benefits from seeing the plan upfront, and steps are somewhat predictable. Good for: trip planning, report generation, multi-step research.</p>
+<p><strong>Plan-and-Execute</strong> fits complex tasks (5-15 steps), cases where user benefits from seeing plan upfront, and workflows with somewhat predictable steps. Good for trip planning, report generation, multi-step research.</p>
 
-<p><strong>Reflexion</strong> works when there&rsquo;s a clear success criterion the agent can evaluate, retries are acceptable, and the task is hard enough that the first attempt often fails. Good for: code generation, math problems, any task with a verifiable answer.</p>
+<p><strong>Reflexion</strong> fits tasks with clear success criterion, acceptable retries, and enough difficulty that first attempt often fails. Good for code generation, math problems, any task with verifiable answer.</p>
 
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
