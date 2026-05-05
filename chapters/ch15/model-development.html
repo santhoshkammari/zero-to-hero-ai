@@ -422,13 +422,13 @@ wandb.finish()</code></pre>
 <!-- ═══════════════════════════════════════════ -->
 <h2 id="reproducibility">Reproducibility: Same Code, Same Data, Different Results</h2>
 
-<p>I'll be honest — the first time I ran the exact same training script twice and got different F1 scores, I assumed I'd made a mistake. I hadn't. The script was correct. The data was identical. The hyperparameters were frozen. But the model initialized its weights randomly, the data loader shuffled batches in a different order, dropout chose different neurons to mask, and the GPU used a non-deterministic algorithm for a particular matrix operation. Four invisible coin flips, each changing the final result by a fraction of a percent.</p>
+<p>First time I ran same training script twice and got different F1 scores, I assumed mistake. Wrong. Script was correct. Data was identical. Hyperparameters were frozen. But model initialized weights randomly, data loader shuffled batches differently, dropout masked different neurons, and GPU used non-deterministic algorithm for one matrix operation. Four invisible coin flips. Each changed final result by fraction of a percent.</p>
 
-<p>For TuneKeep, this matters. If our best model scored 0.72 on Monday but scores 0.70 on Wednesday with the same code and data, we can't tell whether our "improvement" from last week's experiment was genuine or whether we got lucky with the random seed.</p>
+<p>For TuneKeep, this matters. If best model scored 0.72 on Monday but 0.70 on Wednesday with same code and data, we cannot tell whether last week's "improvement" was real or random-seed luck.</p>
 
-<p><b>Reproducibility</b> means controlling every source of randomness so that the same inputs always produce the same outputs. There are three layers to this, and each one is harder than the last.</p>
+<p><b>Reproducibility</b> means controlling every randomness source so same inputs produce same outputs. Three layers. Each harder than last.</p>
 
-<p><b>Layer 1: Seeds.</b> Every library that uses randomness has a seed — a starting value for its pseudorandom number generator. Pin all of them.</p>
+<p><b>Layer 1: Seeds.</b> Every library that uses randomness has seed — starting value for pseudorandom number generator. Pin all of them.</p>
 
 <pre><code>import torch, numpy as np, random
 
@@ -440,11 +440,11 @@ def set_all_seeds(seed=42):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False</code></pre>
 
-<p>That <code>cudnn.deterministic = True</code> line forces the GPU to use deterministic algorithms for operations like convolutions, at the cost of speed. Without it, cuDNN picks the fastest algorithm available, which sometimes uses non-deterministic reductions. The <code>benchmark = False</code> line disables cuDNN's auto-tuner, which would otherwise pick different algorithms for different input sizes across runs.</p>
+<p><code>cudnn.deterministic = True</code> forces GPU to use deterministic algorithms for operations like convolutions. Cost: speed. Without it, cuDNN picks fastest algorithm, which sometimes uses non-deterministic reductions. <code>benchmark = False</code> disables cuDNN auto-tuner, which otherwise may pick different algorithms for different input sizes across runs.</p>
 
-<p>Even with all of this, some CUDA operations — like <code>atomicAdd</code>, which many scatter and gather operations use internally — are inherently non-deterministic because the order of floating-point additions depends on thread scheduling. The call <code>torch.use_deterministic_algorithms(True)</code> forces PyTorch to error out instead of silently giving non-deterministic results. Some operations have no deterministic implementation at all. You discover this at runtime, which is its own kind of fun.</p>
+<p>Even then, some CUDA operations — like <code>atomicAdd</code>, used inside many scatter and gather operations — stay inherently non-deterministic because floating-point addition order depends on thread scheduling. <code>torch.use_deterministic_algorithms(True)</code> makes PyTorch error instead of silently returning non-deterministic results. Some operations have no deterministic implementation at all. You learn that at runtime.</p>
 
-<p><b>Layer 2: Environment pinning.</b> Even with seeds locked, running the same code with NumPy 1.24 versus 1.26 can produce different results because internal implementations change. The fix is to freeze the entire software environment.</p>
+<p><b>Layer 2: Environment pinning.</b> Even with seeds locked, same code on NumPy 1.24 versus 1.26 can produce different results because internal implementations change. Fix: freeze entire software environment.</p>
 
 <pre><code># Pin exact versions — not >=, not ~=, exact ==
 # requirements.txt
@@ -453,9 +453,9 @@ numpy==1.24.3
 scikit-learn==1.3.2
 pandas==2.1.4</code></pre>
 
-<p>This works for libraries, but it doesn't capture the operating system, the GPU driver, or the CUDA toolkit version. For that, we need the third layer.</p>
+<p>This works for libraries, but not operating system, GPU driver, or CUDA toolkit version. Need third layer.</p>
 
-<p><b>Layer 3: Docker.</b> A Docker container bundles everything — the OS, the drivers, the Python version, every library — into a single reproducible image. Think of it as a photograph of your entire computing environment, frozen in time.</p>
+<p><b>Layer 3: Docker.</b> Docker container bundles everything — OS, drivers, Python version, every library — into one reproducible image. Think photograph of whole computing environment, frozen in time.</p>
 
 <pre><code>FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
 
@@ -467,34 +467,34 @@ COPY . /app
 WORKDIR /app
 ENTRYPOINT ["python3", "train.py"]</code></pre>
 
-<p>That <code>FROM nvidia/cuda:12.1.0</code> line pins the exact CUDA version. The base image is tagged, not <code>:latest</code>. The requirements file uses exact versions. If we build this image, push it to a registry, and tag it with our experiment ID, we can recreate the exact training environment months or years later.</p>
+<p><code>FROM nvidia/cuda:12.1.0</code> pins exact CUDA version. Base image is tagged, not <code>:latest</code>. Requirements file uses exact versions. Build image, push it to registry, tag it with experiment ID, and we can recreate exact training environment months or years later.</p>
 
-<p>I'm still developing my intuition for where the cost-benefit line falls between "pin everything in Docker" and "pin seeds and requirements and accept small variations." For model comparison during development, seeds plus pinned libraries is usually enough — the variations are smaller than the real differences between models. For regulatory environments where you need to prove you can reproduce an exact result, Docker is the floor, not the ceiling.</p>
+<p>Cost-benefit line between "pin everything in Docker" and "pin seeds and requirements, accept small variations" depends on context. For model comparison during development, seeds plus pinned libraries is usually enough. Variations stay smaller than real model differences. For regulatory environments where you must prove exact reproducibility, Docker is floor, not ceiling.</p>
 
-<p>With reproducibility handled, we face a new problem. Our TuneKeep Random Forest has hyperparameters — <code>n_estimators</code>, <code>max_depth</code>, <code>min_samples_leaf</code> — and we picked them by gut feel. There might be a much better combination we haven't tried. But with five hyperparameters, each having ten possible values, that's 100,000 combinations. We need a smarter way to search.</p>
+<p>With reproducibility handled, new problem appears. TuneKeep Random Forest has hyperparameters — <code>n_estimators</code>, <code>max_depth</code>, <code>min_samples_leaf</code> — and we picked them by gut feel. Better combination may exist. But five hyperparameters with ten possible values each means 100,000 combinations. Need smarter search.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <!-- Hyperparameter Optimization                 -->
 <!-- ═══════════════════════════════════════════ -->
 <h2 id="hpo">Hyperparameter Optimization: Searching Smarter</h2>
 
-<p>A <b>hyperparameter</b> is a setting we choose before training begins — learning rate, tree depth, regularization strength — as opposed to a <b>parameter</b>, which the model learns from data (like weights in a neural network). <b>Hyperparameter optimization</b> (HPO) is the process of finding the combination of hyperparameters that gives the best performance.</p>
+<p><b>Hyperparameter</b> = setting chosen before training begins — learning rate, tree depth, regularization strength. <b>Parameter</b> = value model learns from data, like neural-network weights. <b>Hyperparameter optimization</b> (HPO) finds hyperparameter combination that gives best performance.</p>
 
-<p>The naive approach is <b>grid search</b>: define a grid of values for each hyperparameter and try every combination. For our TuneKeep model, we might try <code>max_depth</code> in [5, 10, 15] and <code>n_estimators</code> in [100, 200, 500]. That's 9 combinations. Manageable. But add <code>min_samples_leaf</code> in [1, 5, 10], <code>learning_rate</code> in [0.01, 0.1, 0.3], and <code>subsample</code> in [0.7, 0.8, 1.0] — now we have 243 combinations. The curse of dimensionality hits hyperparameter search the same way it hits everything else.</p>
+<p>Naive approach is <b>grid search</b>: define value grid for each hyperparameter and try every combination. For TuneKeep, <code>max_depth</code> in [5, 10, 15] and <code>n_estimators</code> in [100, 200, 500] gives 9 combinations. Manageable. Add <code>min_samples_leaf</code> in [1, 5, 10], <code>learning_rate</code> in [0.01, 0.1, 0.3], and <code>subsample</code> in [0.7, 0.8, 1.0], and now we have 243 combinations. Curse of dimensionality hits hyperparameter search too.</p>
 
-<p><b>Random search</b> improves on this by sampling randomly from the ranges. The surprising insight, shown by Bergstra and Bengio in 2012, is that random search often finds better configurations than grid search with the same computational budget. The reason: in most problems, one or two hyperparameters matter far more than the rest. Grid search wastes most of its budget testing different values of unimportant hyperparameters. Random search, by sampling randomly, is more likely to explore different values of the important ones.</p>
+<p><b>Random search</b> improves this by sampling randomly from ranges. Bergstra and Bengio showed in 2012 that random search often beats grid search with same compute budget. Reason: in most problems, one or two hyperparameters matter far more than rest. Grid search wastes budget on unimportant ones. Random search is more likely to explore important ones.</p>
 
-<p>But both approaches are blind. They don't learn from previous trials. If the last 20 experiments showed that learning rates below 0.001 always perform poorly, grid and random search will keep trying them anyway.</p>
+<p>But both approaches are blind. They do not learn from previous trials. If last 20 experiments showed learning rates below 0.001 always perform poorly, grid and random search still keep trying them.</p>
 
 <h3 id="optuna">Optuna and the TPE Algorithm</h3>
 
-<p><b>Optuna</b> is a Python library for hyperparameter optimization that learns from its own history. Its default algorithm, <b>TPE</b> (Tree-structured Parzen Estimator), works like this.</p>
+<p><b>Optuna</b> is Python library for hyperparameter optimization that learns from its own history. Default algorithm, <b>TPE</b> (Tree-structured Parzen Estimator), works like this.</p>
 
-<p>Imagine we've run 30 trials so far. TPE takes the results and splits them into two groups: the "good" trials (say, the top 20% by validation score) and the "bad" trials (the rest). It then asks: what do the hyperparameters of good trials look like? What do the hyperparameters of bad trials look like? For each hyperparameter, it fits a probability distribution to each group — one distribution describing "values that led to good results," another describing "values that led to bad results." The next trial samples from the good distribution, then checks that the sample is much more likely under the good distribution than the bad one. This ratio — good likelihood divided by bad likelihood — is the acquisition function that guides the search.</p>
+<p>Imagine 30 trials already ran. TPE splits results into two groups: "good" trials (top 20% by validation score) and "bad" trials (rest). Then it asks: what do hyperparameters of good trials look like? What do hyperparameters of bad trials look like? For each hyperparameter, it fits one probability distribution for good results and another for bad results. Next trial samples from good distribution, then checks whether sample is much more likely under good distribution than bad one. That ratio — good likelihood divided by bad likelihood — guides search.</p>
 
-<p>The beauty of this approach is that it builds a model of what works without building a model of the entire objective surface. It doesn't try to predict what score a given configuration will achieve. It only tries to distinguish configurations that are likely to be good from those that are likely to be bad. That distinction is easier to learn, which is why TPE works well even with a small number of trials.</p>
+<p>Beauty of this approach: it models what works without modeling whole objective surface. It does not try to predict exact score for each configuration. It only separates likely-good configurations from likely-bad ones. That distinction is easier to learn. That is why TPE works well even with few trials.</p>
 
-<p>Here's what it looks like for TuneKeep:</p>
+<p>Here is TuneKeep version:</p>
 
 <pre><code>import optuna
 from sklearn.ensemble import GradientBoostingClassifier
@@ -518,34 +518,34 @@ study.optimize(objective, n_trials=100)
 print(f"Best F1: {study.best_value:.3f}")
 print(f"Best params: {study.best_params}")</code></pre>
 
-<p>That <code>log=True</code> on the learning rate tells Optuna to sample on a logarithmic scale — so it explores 0.001 to 0.01 as thoroughly as 0.01 to 0.1. Without it, the search would spend most of its budget in the 0.1–0.3 range, which is a tiny fraction of the useful space on a linear scale but dominates it.</p>
+<p><code>log=True</code> on learning rate tells Optuna to sample on logarithmic scale. That means 0.001 to 0.01 gets as much attention as 0.01 to 0.1. Without it, search spends most budget in 0.1–0.3 range, which dominates linear scale but covers only small part of useful space.</p>
 
-<p>After 100 trials, Optuna finds an F1 of 0.74 — beating our hand-tuned 0.72 without us making a single decision about what to try next.</p>
+<p>After 100 trials, Optuna finds 0.74 F1. That beats hand-tuned 0.72 without us making next-trial decisions manually.</p>
 
 <h3 id="ray-tune">Ray Tune and Early Stopping</h3>
 
-<p>When each trial takes hours — training a deep learning model, for instance — running 100 of them sequentially is painful. <b>Ray Tune</b> solves this with two ideas: parallelism and early stopping.</p>
+<p>When each trial takes hours — deep learning model, for example — running 100 sequentially hurts. <b>Ray Tune</b> helps with two ideas: parallelism and early stopping.</p>
 
-<p>Parallelism is straightforward: Ray distributes trials across multiple GPUs or machines. The interesting part is the scheduler. Ray Tune's <b>ASHA</b> (Asynchronous Successive Halving Algorithm) starts many trials with a small resource budget — say, 5 epochs each. After 5 epochs, it looks at the results and kills the bottom half. The survivors get 10 more epochs. Kill the bottom half again. Continue until only a few trials remain, having received the full training budget.</p>
+<p>Parallelism is simple: Ray distributes trials across multiple GPUs or machines. Scheduler is important part. Ray Tune's <b>ASHA</b> (Asynchronous Successive Halving Algorithm) starts many trials with small resource budget — say, 5 epochs each. After 5 epochs, it checks results and kills bottom half. Survivors get 10 more epochs. Kill bottom half again. Continue until few trials remain with full training budget.</p>
 
-<p>The insight is that a model that performs terribly after 5 epochs rarely becomes the best model after 50 epochs. By cutting losers early, ASHA explores more configurations with the same total compute. In practice, it can evaluate 10x more configurations than a naive approach with the same GPU budget.</p>
+<p>Insight: model that performs terribly after 5 epochs rarely becomes best model after 50 epochs. Cut losers early, and ASHA explores more configurations with same total compute. In practice, it can evaluate 10x more configurations than naive approach on same GPU budget.</p>
 
-<p>The "asynchronous" part means trials don't have to wait for each other. If trial 17 finishes its first 5 epochs while trial 3 is still on epoch 2, ASHA can immediately decide trial 17's fate. This keeps GPU utilization high and avoids the idle time that plagues synchronous approaches.</p>
+<p>"Asynchronous" means trials do not wait for each other. If trial 17 finishes first 5 epochs while trial 3 is still on epoch 2, ASHA can decide trial 17 immediately. This keeps GPU utilization high and avoids idle time common in synchronous approaches.</p>
 
-<p>One subtlety that tripped me up: ASHA assumes that relative ranking between trials is stable across training. If model A is worse than model B after 5 epochs, ASHA assumes A will still be worse after 50 epochs. This is usually true for the same architecture with different hyperparameters, but it can break when comparing architectures with very different learning dynamics. A large model might start slow and overtake a small model later. I haven't found a universal rule for when to trust early stopping and when to let everything run to completion — it depends on how much the learning curves cross over in your specific domain.</p>
+<p>Subtlety: ASHA assumes relative ranking between trials stays stable during training. If model A is worse than model B after 5 epochs, ASHA assumes A stays worse after 50 epochs. Usually true for same architecture with different hyperparameters. Can fail when architectures have very different learning dynamics. Large model may start slow and overtake small model later. Trust early stopping only when learning curves do not cross much in your domain.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <!-- Model Registry                              -->
 <!-- ═══════════════════════════════════════════ -->
 <h2 id="model-registry">The Model Registry: Where Models Go to Grow Up</h2>
 
-<p>Our Optuna sweep found a good configuration. We've trained the final model. Now what? We need somewhere to put it — not a file on our laptop, but a central place where the model is versioned, has metadata attached, and can be promoted through stages on its way to production.</p>
+<p>Optuna sweep found good configuration. Final model is trained. Next problem: where to put it. Not laptop file. Need central place where model is versioned, carries metadata, and moves through promotion stages toward production.</p>
 
-<p>A <b>model registry</b> is to trained models what Git is to source code. Every registered model gets a name, a version number, and a lifecycle stage. The standard stages flow like this:</p>
+<p><b>Model registry</b> is for trained models what Git is for source code. Every registered model gets name, version number, and lifecycle stage. Standard flow looks like this:</p>
 
 <p><code>None → Staging → Production → Archived</code></p>
 
-<p>When we first register our TuneKeep churn model, it enters as version 1, stage "None" — it exists, but no one trusts it yet. After offline evaluation passes, we promote it to "Staging," which means it's a candidate for production but still being tested. After it survives an A/B test, we promote it to "Production." When a newer version replaces it, we move it to "Archived."</p>
+<p>When we first register TuneKeep churn model, it enters as version 1, stage "None." It exists, but nobody trusts it yet. After offline evaluation passes, we promote it to "Staging." That means candidate for production, still under test. After it survives A/B test, we promote it to "Production." When newer version replaces it, we move it to "Archived."</p>
 
 <pre><code>import mlflow
 
@@ -561,33 +561,33 @@ client.transition_model_version_stage(
     stage="Staging"
 )</code></pre>
 
-<p>Each version carries metadata: which experiment run produced it, what data it trained on, what its evaluation metrics were, who promoted it, and when. This is the audit trail. Six months from now, when the model starts behaving oddly and someone asks "what changed?", the registry tells you that version 3 was promoted to production on March 15 after passing an A/B test with 2.1% lift in retention, and it was trained on data from January through February.</p>
+<p>Each version carries metadata: which experiment run produced it, what data it trained on, what evaluation metrics it got, who promoted it, and when. This is audit trail. Six months later, when model behaves oddly and someone asks "what changed?", registry answers: version 3 reached production on March 15 after passing A/B test with 2.1% lift in retention, trained on January-through-February data.</p>
 
-<p><b>Model versioning</b> is more nuanced than code versioning. With code, version 2 is a strict replacement for version 1 — you wouldn't run both simultaneously. With models, you often run multiple versions in parallel during A/B tests, or serve different versions to different user segments. The registry needs to support this: querying which versions are in production, rolling back to a previous version if the new one underperforms, and keeping old versions around (not deleted) in case you need to compare or restore them.</p>
+<p><b>Model versioning</b> is more nuanced than code versioning. With code, version 2 strictly replaces version 1. You do not run both at once. With models, you often run multiple versions in parallel during A/B tests, or serve different versions to different user segments. Registry must support that: query which versions are in production, roll back if new one underperforms, and keep old versions around instead of deleting them.</p>
 
-<p>A principle I learned the hard way: <b>never overwrite a model artifact.</b> Every version is immutable once registered. If you need to retrain, register a new version. This sounds wasteful until the day you need to roll back, and the model you want to restore has been overwritten by the one that's failing. Immutable artifacts are insurance you're grateful for when you need them.</p>
+<p>Hard rule: <b>never overwrite model artifact.</b> Every version is immutable once registered. If you need retraining, register new version. Sounds wasteful until rollback day, when model you need has been overwritten by failing one. Immutable artifacts are insurance.</p>
 
-<p>The registry gives us a reliable place to store and promote models. But promoting a model to "Staging" requires evidence that it's good enough. That evidence comes from offline evaluation — and not all offline evaluation strategies are created equal.</p>
+<p>Registry gives reliable place to store and promote models. But "Staging" needs evidence. That evidence comes from offline evaluation, and offline evaluation strategies are not equal.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <!-- Offline Evaluation                          -->
 <!-- ═══════════════════════════════════════════ -->
 <h2 id="offline-eval">Offline Evaluation: Measuring What Matters Before Anyone Sees It</h2>
 
-<p><b>Offline evaluation</b> means measuring a model's quality on held-out data, before exposing it to real users. It's cheap, fast, and the primary feedback loop during development. It's also deceptive, because the gap between "good offline" and "good in production" can be enormous.</p>
+<p><b>Offline evaluation</b> means measuring model quality on held-out data before exposing it to real users. Cheap. Fast. Primary feedback loop during development. Also deceptive, because gap between "good offline" and "good in production" can be huge.</p>
 
-<p>The classic approach is a random train/test split. Shuffle the data, hold out 20%, train on the rest, measure on the held-out portion. For many problems, this is fine. For TuneKeep, it's dangerously misleading.</p>
+<p>Classic approach is random train/test split. Shuffle data, hold out 20%, train on rest, measure on held-out part. Fine for many problems. Dangerously misleading for TuneKeep.</p>
 
-<p>The reason: our data is temporal. Users who churned in January behave differently from users who churned in June, because the product changed, a competitor launched, and macroeconomic conditions shifted. A random split mixes January churners into the training set and June churners into the test set. The model gets to train on the future before predicting the past. This is <b>temporal leakage</b> — a form of data leakage specific to time-ordered data — and it inflates offline metrics to levels that production performance will never reach.</p>
+<p>Reason: data is temporal. Users who churned in January behave differently from users who churned in June because product changed, competitor launched, and macroeconomic conditions shifted. Random split mixes January churners into training set and June churners into test set. Model trains on future before predicting past. This is <b>temporal leakage</b> — time-ordered data leakage — and it inflates offline metrics beyond what production will ever reach.</p>
 
-<p>The fix is a <b>temporal split</b>: train on everything before a cutoff date, test on everything after it.</p>
+<p>Fix: <b>temporal split</b>. Train on everything before cutoff date. Test on everything after it.</p>
 
 <pre><code># Temporal split: train on Jan-Oct, test on Nov-Dec
 cutoff = "2024-10-31"
 train_df = df[df["snapshot_date"] &lt;= cutoff]
 test_df  = df[df["snapshot_date"] &gt; cutoff]</code></pre>
 
-<p>A single temporal split gives us one estimate. To get a more robust picture, we use <b>backtesting</b> — also called rolling-window or expanding-window validation. We simulate what would have happened if we'd deployed the model in March, then April, then May, retraining each time on all data available up to that point.</p>
+<p>Single temporal split gives one estimate. Need stronger picture? Use <b>backtesting</b> — also called rolling-window or expanding-window validation. Simulate deployment in March, then April, then May, retraining each time on all data available up to that point.</p>
 
 <pre><code># Expanding window backtest
 months = ["2024-03", "2024-04", "2024-05", "2024-06", "2024-07"]
@@ -598,7 +598,7 @@ for test_month in months:
     score = f1_score(test["churned"], model.predict(test[features]))
     print(f"Test month {test_month}: F1 = {score:.3f}")</code></pre>
 
-<p>If performance is stable across all five windows, we can be more confident that the model generalizes. If it swings wildly — 0.74 in March, 0.61 in May, 0.73 in July — the model might be sensitive to seasonal patterns or distribution shifts, and we need to understand why before we ship it.</p>
+<p>If performance stays stable across all five windows, confidence in generalization goes up. If it swings wildly — 0.74 in March, 0.61 in May, 0.73 in July — model may be sensitive to seasonal patterns or distribution shifts. Understand why before shipping.</p>
 
 <p>There's another trap I fell into early on. Model A scores 0.72 F1. Model B scores 0.74 F1. Is B better? Maybe. With a test set of 2,000 examples, that 0.02 difference might be noise. A <b>paired bootstrap test</b> helps: resample the test set thousands of times, compute the metric difference each time, and check whether the difference consistently favors B.</p>
 
