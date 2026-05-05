@@ -300,27 +300,27 @@
   Evaluation metrics: IoU, mIoU, and mask AP for segmentation tasks
 </nav>
 <!-- ═══════════ End Table of Contents ═══════════ -->
-<p>Object detection — finding <em>what</em> objects are in an image and <em>where</em> they are — has been one of the central problems in computer vision since the early 2010s. Segmentation takes it further: instead of drawing rough rectangles, it classifies every single pixel. Together, they're the backbone of autonomous driving, medical imaging, robotics, and any system that needs to actually <em>understand</em> a visual scene, not just label it.</p>
+<p>Object detection finds <em>what</em> objects image contains and <em>where</em> they are. Core computer vision problem since early 2010s. Segmentation goes further: classify every pixel, not rough rectangles. Together, they power autonomous driving, medical imaging, robotics, and systems that must <em>understand</em> visual scenes, not only label them.</p>
 
 
 <!-- ═══════════ Object Detection ═══════════ -->
 <h2>Object Detection</h2>
 
-<p>Think about the difference between these two questions. "Is there a cat in this photo?" That's classification — one image, one label. Now consider: "Where are all the cats, dogs, and people in this photo, and how big is each one?" That's detection. And the hard part isn't the "what" — it's the "how many."</p>
+<p>Compare two questions. "Is there cat in this photo?" Classification — one image, one label. "Where are all cats, dogs, and people in this photo, and how big is each one?" Detection. Hard part is not "what." Hard part is "how many."</p>
 
-<p>A classifier always produces exactly one output. A detector might produce zero predictions, or fifty. This variable-length output is what makes detection architecturally fascinating. You can't design a fixed-size output layer when you don't know how many objects you'll find. Every major detection architecture is, at its core, an answer to this question: how do we handle a variable, unknown number of outputs?</p>
+<p>Classifier gives exactly one output. Detector may give zero predictions or fifty. Variable-length output makes detection hard. Fixed-size output layer fails when object count is unknown. Every major detector answers one question: how handle variable, unknown number of outputs?</p>
 
-<p>Let's make this concrete with a running example. Imagine we're building a security camera system for a small warehouse. The camera sees a loading dock — forklifts move in and out, workers walk around, pallets get stacked. Our job: detect and locate every person, forklift, and pallet in each frame. Some frames have two objects. Some have twenty. The system needs to handle both.</p>
+<p>Concrete example: security camera for small warehouse. Camera sees loading dock — forklifts move, workers walk, pallets stack. Job: detect and locate every person, forklift, and pallet in each frame. Some frames have two objects. Some have twenty. System must handle both.</p>
 
 <h3>The Shared Vocabulary</h3>
 
-<p>Every detection model, from the oldest R-CNN to the newest DETR variant, shares four fundamental concepts. Think of these as the tools every builder in this field carries around.</p>
+<p>Every detection model, from R-CNN to newest DETR variant, shares four core concepts. These are tools every builder carries.</p>
 
 <h4>Bounding Boxes</h4>
 
-<p>A <strong>bounding box</strong> is an axis-aligned rectangle that says "the object is somewhere inside here." It's a rough approximation — a person standing at an angle gets a rectangle that includes a lot of empty background — but it's surprisingly useful and cheap to predict.</p>
+<p><strong>Bounding box</strong> is axis-aligned rectangle saying "object is somewhere inside." Rough approximation — angled person gets rectangle with lots of empty background — but useful and cheap to predict.</p>
 
-<p>You'll encounter two main formats, and getting them confused is one of the most common detection bugs:</p>
+<p>Two main formats matter. Mixing them up causes common detection bugs:</p>
 
 <pre><code># Center format: where is the center, how big is it?
 (cx, cy, w, h)    # YOLO uses this
@@ -331,68 +331,68 @@
 # COCO uses a hybrid: top-left corner + size
 (x, y, w, h)      # x,y is top-left, NOT center</code></pre>
 
-<p>Converting between formats is trivial arithmetic, but mixing them up silently produces boxes that are shifted or scaled wrong. I've seen production bugs from exactly this. Always verify which format your data and model expect.</p>
+<p>Conversion is easy arithmetic. Mixing formats silently shifts or rescales boxes wrong. Real production bugs come from this. Always verify format expected by data and model.</p>
 
 <h4>IoU — Intersection over Union</h4>
 
-<p><strong>IoU</strong> measures how well a predicted box matches a ground-truth box. Compute the area where both boxes overlap, divide by the total area they cover together. That's it.</p>
+<p><strong>IoU</strong> measures predicted-box match to ground-truth box. Compute overlap area. Divide by union area. Done.</p>
 
 <pre><code>IoU = Area of Overlap / Area of Union
 
 Ranges from 0 (no overlap) to 1 (perfect match)</code></pre>
 
-<p>In our warehouse example, suppose the model predicts a box around a forklift, but the box is a bit too big on the right side. If the predicted box and the real forklift box share 70% of their combined area, the IoU is 0.7. The standard threshold for "that's a correct detection" is IoU &gt; 0.5, but COCO's more rigorous evaluation averages across thresholds from 0.5 to 0.95 in steps of 0.05. IoU is beautifully scale-invariant — a tiny box on a tiny object gets the same IoU as a huge box on a huge object, as long as the relative overlap matches.</p>
+<p>Warehouse example: model predicts forklift box, but right side is too wide. If predicted box and true box share 70% of combined area, IoU = 0.7. Standard "correct detection" threshold is IoU &gt; 0.5. COCO is stricter: average thresholds from 0.5 to 0.95 in steps of 0.05. IoU is scale-invariant — tiny boxes and huge boxes get same IoU when relative overlap matches.</p>
 
-<p>One subtlety worth knowing: when two boxes don't overlap at all but are close, IoU is zero — it can't tell "close miss" from "completely wrong." That limitation led to improved variants like <strong>GIoU</strong> (Generalized IoU), <strong>DIoU</strong> (Distance IoU), and <strong>CIoU</strong> (Complete IoU) that also consider the distance and aspect ratio between boxes. These are used as regression losses during training, making box predictions converge faster.</p>
+<p>Subtle limit: if boxes do not overlap, IoU is zero. Close miss and totally wrong look same. That led to <strong>GIoU</strong> (Generalized IoU), <strong>DIoU</strong> (Distance IoU), and <strong>CIoU</strong> (Complete IoU), which also use distance and aspect ratio. These often serve as regression losses during training, helping box prediction converge faster.</p>
 
 <h4>Anchor Boxes</h4>
 
-<p>Here's the problem our warehouse detector faces: boxes can be any size and any aspect ratio. A person standing upright is tall and narrow. A pallet lying flat is wide and short. A forklift is roughly square. Predicting raw coordinates from scratch turns out to be surprisingly hard for neural networks — the search space is enormous.</p>
+<p>Warehouse detector faces ugly search space. Boxes can be any size and any aspect ratio. Standing worker is tall and narrow. Flat pallet is wide and short. Forklift is roughly square. Predicting raw coordinates from scratch is hard for neural networks because search space is enormous.</p>
 
-<p><strong>Anchor boxes</strong> collapse that search space. They're predefined box templates — a set of shapes and sizes — placed at every spatial location in the feature map. Instead of predicting "there's a box at pixel (142, 87) with size 200×150 from nothing," the network predicts "the box at this grid location is 1.2× wider and 0.8× taller than anchor template #4, and shifted 5 pixels to the right."</p>
+<p><strong>Anchor boxes</strong> shrink search space. They are predefined box templates — shapes and sizes — placed at every spatial location in feature map. Instead of predicting box from nothing, network predicts offsets: "box at this grid location is 1.2× wider and 0.8× taller than anchor template #4, and shifted 5 pixels right."</p>
 
-<p>Predicting small offsets from a reasonable starting point is drastically easier than predicting absolute coordinates. A typical anchor configuration uses 3 aspect ratios (1:1, 1:2, 2:1) at 3 scales, giving 9 anchors per spatial location. In practice, teams often run k-means clustering on their dataset's ground-truth boxes to find the anchor shapes that best match their actual objects. That's a neat trick — let the data tell you what templates to use.</p>
+<p>Small offsets from good starting point are much easier than absolute coordinates. Common setup uses 3 aspect ratios (1:1, 1:2, 2:1) at 3 scales, giving 9 anchors per location. Many teams run k-means clustering on ground-truth boxes to choose anchor shapes that fit dataset.</p>
 
-<p>Anchors dominated detection from 2015 to about 2022. More recently, anchor-free methods have shown they can match or beat anchor-based ones while being simpler. We'll get to that shift later.</p>
+<p>Anchors dominated detection from 2015 to about 2022. Newer anchor-free methods can match or beat anchor-based ones with simpler designs. More on that shift later.</p>
 
 <h4>Non-Maximum Suppression (NMS)</h4>
 
-<p>Our warehouse detector evaluates thousands of candidate locations per image. Many of them will fire for the same forklift, producing a cluster of overlapping boxes around it. We need to collapse that cluster into a single detection. That's what <strong>NMS</strong> — Non-Maximum Suppression — does.</p>
+<p>Warehouse detector evaluates thousands of candidate locations per image. Many fire on same forklift, creating cluster of overlapping boxes. Need one final detection. <strong>NMS</strong> — Non-Maximum Suppression — does this.</p>
 
-<p>The idea is wonderfully straightforward. Sort all predicted boxes by confidence score. Take the most confident one — that's a keeper. Remove every other box that overlaps the keeper by more than some IoU threshold (typically 0.5). Now take the next most confident surviving box, and repeat. When no boxes remain, you're done.</p>
+<p>Idea is simple. Sort predicted boxes by confidence. Keep most confident box. Remove any other box overlapping it above IoU threshold (usually 0.5). Take next surviving box. Repeat until no boxes remain.</p>
 
-<p>NMS works well in most scenes, but it has a known weakness: when objects genuinely overlap. Two workers standing close together might share a high IoU between their correct boxes, causing NMS to suppress one valid detection. <strong>Soft-NMS</strong> helps by decaying confidence scores of overlapping boxes instead of hard-deleting them. And as we'll see, DETR eliminates NMS entirely through a fundamentally different approach.</p>
+<p>NMS usually works. Weakness: real overlap. Two workers standing close may have high-IoU correct boxes, so NMS may suppress valid detection. <strong>Soft-NMS</strong> helps by decaying scores instead of deleting boxes. DETR removes NMS entirely with different approach.</p>
 
 <div class="callout callout-info">
   <div class="callout-label">The Detection Recipe</div>
-  <p>Generate candidate locations → predict box offsets (from anchors or directly) → classify each box → apply NMS to remove duplicates. Every classical detector follows some version of this pipeline. The differences — and they're substantial — lie in <em>how</em> candidates are generated and <em>when</em> classification happens.</p>
+  <p>Generate candidate locations → predict box offsets (from anchors or directly) → classify boxes → apply NMS to remove duplicates. Every classical detector follows some form of this pipeline. Big differences lie in <em>how</em> candidates are generated and <em>when</em> classification happens.</p>
 </div>
 
 <h3>Two-Stage Detectors — The R-CNN Family</h3>
 
-<p>The story of modern detection starts with a family of models that solved the problem in two explicit steps: first <em>propose</em> regions that might contain objects, then <em>classify</em> each proposal and refine its box. This two-step approach dominated from 2014 to 2016, and its descendants remain competitive today.</p>
+<p>Modern detection story starts with family of models using two explicit steps: first <em>propose</em> regions that might contain objects, then <em>classify</em> each proposal and refine box. This two-step approach dominated from 2014 to 2016. Descendants remain competitive today.</p>
 
-<p>I'll trace the evolution because each step solves a specific, painful bottleneck — and understanding those bottlenecks makes the architecture choices feel inevitable rather than arbitrary.</p>
+<p>Trace evolution because each step fixes specific painful bottleneck. Understanding bottlenecks makes architecture choices feel inevitable, not arbitrary.</p>
 
 <h4>R-CNN (2014) — The Proof of Concept</h4>
 
-<p><strong>R-CNN</strong> (Regions with CNN features) was the work that proved deep learning could dominate detection. The idea was brute-force but effective: use a classical algorithm called Selective Search to generate about 2,000 region proposals per image — rectangular crops that "might contain something." Warp each crop to a fixed size. Feed each one through a CNN independently. Classify each with SVMs. Refine each box with regression.</p>
+<p><strong>R-CNN</strong> (Regions with CNN features) proved deep learning could dominate detection. Idea was brute force but effective: use Selective Search to generate about 2,000 region proposals per image — rectangular crops that "might contain something." Warp each crop to fixed size. Feed each through CNN independently. Classify with SVMs. Refine boxes with regression.</p>
 
-<p>Accurate? Yes — it smashed everything that came before on the Pascal VOC benchmark. Practical? Not remotely. Each image required 2,000 separate CNN forward passes. Inference took 47 seconds per image. Training took 84 hours on a GPU. For our warehouse system processing 30 frames per second, that's about 23 minutes per frame. Not ideal.</p>
+<p>Accurate? Yes — it crushed Pascal VOC. Practical? No. Each image needed 2,000 separate CNN forward passes. Inference took 47 seconds per image. Training took 84 GPU hours. Warehouse system needs 30 FPS; this gives about 23 minutes per frame. Bad.</p>
 
-<p>But the insight was powerful: CNNs extract features so rich that even a simple classifier on top of them crushes hand-engineered detectors. The question became: how do we keep that power while eliminating the absurd redundancy?</p>
+<p>But insight was powerful: CNNs extract features so rich that even simple classifier on top beats hand-engineered detectors. Next question: how keep that power while removing absurd redundancy?</p>
 
 <h4>Fast R-CNN (2015) — Share the Computation</h4>
 
-<p>The waste in R-CNN was obvious. Those 2,000 proposals overlap massively. Many of them share the same image pixels. Why compute CNN features from scratch for each one?</p>
+<p>Waste in R-CNN was obvious. Those 2,000 proposals overlap heavily. Many share same image pixels. No reason to recompute CNN features from scratch for each one.</p>
 
-<p><strong>Fast R-CNN</strong> fixed this with one crucial change: run the CNN once on the entire image to produce a single shared feature map. Then, for each proposal, extract features from the relevant region of that shared map using <strong>RoI Pooling</strong> (Region of Interest Pooling). RoI Pooling takes a variable-sized region of the feature map and produces a fixed-size output by dividing the region into a grid and max-pooling within each cell.</p>
+<p><strong>Fast R-CNN</strong> fixed this with one key change: run CNN once on full image to get one shared feature map. Then extract each proposal's features from that map with <strong>RoI Pooling</strong> (Region of Interest Pooling). RoI Pooling turns variable-sized region into fixed-size output by splitting region into grid and max-pooling within each cell.</p>
 
-<p>This was a massive speedup. The expensive CNN computation happens once, not 2,000 times. Classification and box regression now happen in a single network, trained end-to-end. But one bottleneck remained: Selective Search still ran on CPU and took about 2 seconds per image. The neural network was fast. The proposal generation wasn't.</p>
+<p>Massive speedup. Expensive CNN computation happens once, not 2,000 times. Classification and box regression now happen in one end-to-end network. But one bottleneck remained: Selective Search still ran on CPU and took about 2 seconds per image. Neural network was fast. Proposal generation was not.</p>
 
 <h4>Faster R-CNN (2015) — Proposals Go Neural</h4>
 
-<p><strong>Faster R-CNN</strong> replaced the last hand-crafted component. Instead of Selective Search, it introduced the <strong>Region Proposal Network (RPN)</strong> — a small convolutional network that slides over the shared feature map and, at each spatial position, predicts two things for each anchor: "is there an object here?" (objectness score) and "how should I adjust this anchor to better fit the object?" (box offsets).</p>
+<p><strong>Faster R-CNN</strong> removed last hand-crafted piece. Instead of Selective Search, it introduced <strong>Region Proposal Network (RPN)</strong> — small convolutional network sliding over shared feature map. At each position and for each anchor, it predicts two things: objectness and box offsets.</p>
 
 <pre><code># Faster R-CNN pipeline
 Image → Backbone CNN → Shared Feature Map
@@ -407,30 +407,30 @@ Image → Backbone CNN → Shared Feature Map
                    Classification head: "What is it?"
                    Box regression head: "Where exactly?"</code></pre>
 
-<p>The RPN is lightweight — a few convolutional layers — but it shares the backbone features, so proposals now cost almost nothing. What took 2 seconds with Selective Search takes about 10 milliseconds with the RPN. The entire pipeline — feature extraction, proposal generation, classification, box regression — is one unified network, trained end-to-end with a multi-task loss.</p>
+<p>RPN is light — only few convolutional layers — and shares backbone features, so proposals cost almost nothing. What took 2 seconds with Selective Search takes about 10 milliseconds with RPN. Full pipeline — features, proposals, classification, box regression — becomes one end-to-end network with multi-task loss.</p>
 
-<p>Think about what happened in the span of 18 months. R-CNN: 47 seconds per image, four separate stages, SVMs and external proposals. Faster R-CNN: 200 milliseconds per image, fully differentiable, one network. Same core idea — propose then classify — but the engineering went from "research prototype you can't deploy" to "the foundation of production detection systems."</p>
+<p>In 18 months, jump was huge. R-CNN: 47 seconds per image, four separate stages, SVMs, external proposals. Faster R-CNN: 200 milliseconds per image, fully differentiable, one network. Same core idea — propose then classify. Engineering changed from "research prototype" to production foundation.</p>
 
 <h4>RoI Align — A Small Fix That Mattered Enormously</h4>
 
-<p>I need to mention <strong>RoI Align</strong> because it's the kind of detail that separates someone who understands detection from someone who memorized architecture names. The original RoI Pooling snapped proposal coordinates to the nearest integer grid cell on the feature map. This quantization — rounding 3.7 to 4, for instance — introduces small spatial misalignments. For classification, this doesn't matter much. For anything pixel-level, it's destructive.</p>
+<p>Need mention <strong>RoI Align</strong>. This detail separates real understanding from memorized names. Original RoI Pooling snapped proposal coordinates to nearest integer grid cell. That quantization causes small spatial misalignments. Classification tolerates it. Pixel-level tasks do not.</p>
 
-<p><strong>RoI Align</strong> (introduced with Mask R-CNN in 2017) replaces rounding with bilinear interpolation. Instead of snapping to grid cells, it samples at the exact floating-point coordinates. A small change in the code, but it improved mask quality dramatically. Every modern two-stage detector uses RoI Align by default.</p>
+<p><strong>RoI Align</strong> (Mask R-CNN, 2017) replaces rounding with bilinear interpolation. Instead of snapping to cells, it samples exact floating-point coordinates. Small code change. Big mask-quality gain. Modern two-stage detectors use RoI Align by default.</p>
 
 <div class="callout callout-info">
   <div class="callout-label">Why Two Stages Still Make Sense</div>
-  <p>The RPN acts as a coarse attention mechanism — it eliminates 99% of the image area that's background, so the second stage only classifies a few hundred promising regions. This divide-and-conquer approach is why two-stage detectors remain the accuracy leaders on benchmarks. The cost is speed.</p>
+  <p>RPN acts like coarse attention — it removes ~99% background, so second stage classifies only few hundred promising regions. Divide-and-conquer gives two-stage detectors top accuracy on benchmarks. Cost is speed.</p>
 </div>
 
 <h3>One-Stage Detectors — The Speed Path</h3>
 
-<p>Two-stage detectors are accurate, but there's an obvious question: do we really need two steps? What if we predict class labels and bounding boxes directly from the feature map in a single pass?</p>
+<p>Two-stage detectors are accurate. Obvious question: need two steps at all? What if class labels and bounding boxes come directly from feature map in one pass?</p>
 
-<p>That's what one-stage detectors do. They sacrifice some of the careful region-by-region attention for raw speed. And it turned out that with the right training tricks, they could close the accuracy gap too.</p>
+<p>That is one-stage detection. It trades careful region-by-region attention for speed. With right training tricks, accuracy gap can shrink too.</p>
 
 <h4>YOLO — You Only Look Once</h4>
 
-<p>I'll be honest — when I first saw YOLO's approach, I thought it was too simple to work well. <strong>YOLO</strong> (2016) divides the input image into an S×S grid. Each grid cell is responsible for detecting objects whose centers fall within it. Each cell predicts B bounding boxes (with confidence scores) and C class probabilities. Everything happens in a single forward pass.</p>
+<p>YOLO first looked almost too simple. <strong>YOLO</strong> (2016) divides input image into S×S grid. Each grid cell handles objects whose centers fall inside it. Each cell predicts B bounding boxes with confidence and C class probabilities. One forward pass does everything.</p>
 
 <pre><code># YOLO's output tensor
 Input image → CNN backbone → S × S × (B × 5 + C) tensor
@@ -442,43 +442,43 @@ Input image → CNN backbone → S × S × (B × 5 + C) tensor
 # Example: S=7, B=2, C=20 (Pascal VOC)
 # Output: 7 × 7 × (2 × 5 + 20) = 7 × 7 × 30</code></pre>
 
-<p>Back to our warehouse. With a 7×7 grid, the image is divided into 49 cells. A forklift whose center falls in cell (3, 4) gets detected by that cell. The cell predicts two boxes with confidence scores, and the class distribution says "98% forklift." That's the entire detection in one shot, no proposals, no second stage.</p>
+<p>Back to warehouse. With 7×7 grid, image splits into 49 cells. Forklift whose center lands in cell (3, 4) gets detected by that cell. Cell predicts two boxes and confidence scores, and class distribution says "98% forklift." Full detection happens in one shot — no proposals, no second stage.</p>
 
-<p>YOLOv1 ran at 45 FPS — real-time on a single GPU. But it had clear limitations. Each cell could only detect B objects, so two objects near each other in the same cell meant one got missed. Small objects were particularly problematic because they occupied tiny portions of grid cells. But the core insight — treat detection as a single regression problem — opened a whole new design space.</p>
+<p>YOLOv1 ran at 45 FPS — real time on one GPU. But limits were clear. Each cell could detect only B objects, so nearby objects in same cell caused misses. Small objects suffered because they occupied tiny parts of cells. Still, core insight — treat detection as one regression problem — opened new design space.</p>
 
 <h4>The YOLO Evolution</h4>
 
-<p>The YOLO family evolved dramatically across versions, and the trajectory tells a story about what matters in practical detection.</p>
+<p>YOLO family changed dramatically across versions. Evolution shows what matters in practical detection.</p>
 
-<p><strong>YOLOv2</strong> (2017) added anchor boxes, so instead of predicting raw coordinates, the network predicted offsets from templates. It added batch normalization everywhere and trained at multiple input resolutions. Accuracy improved substantially.</p>
+<p><strong>YOLOv2</strong> (2017) added anchor boxes, so network predicted offsets from templates instead of raw coordinates. It added batch normalization everywhere and trained at multiple input resolutions. Accuracy jumped.</p>
 
-<p><strong>YOLOv3</strong> (2018) introduced multi-scale predictions — detecting objects at three different feature map resolutions using a Feature Pyramid Network. This was the fix for small objects. The backbone moved to Darknet-53, much deeper than before.</p>
+<p><strong>YOLOv3</strong> (2018) added multi-scale predictions — three feature-map resolutions via Feature Pyramid Network. This fixed small-object weakness. Backbone moved to much deeper Darknet-53.</p>
 
-<p><strong>YOLOv4</strong> (2020) was a masterclass in engineering. It introduced "bag of freebies" — training tricks like mosaic augmentation, CIoU loss, and self-adversarial training that improve accuracy without slowing inference — and "bag of specials" — architecture tweaks like CSPDarknet and PANet that slightly increase inference cost but substantially improve accuracy.</p>
+<p><strong>YOLOv4</strong> (2020) was engineering masterclass. It added "bag of freebies" — mosaic augmentation, CIoU loss, self-adversarial training — which improve accuracy without slowing inference, plus "bag of specials" — CSPDarknet and PANet — which add small inference cost for larger accuracy gains.</p>
 
-<p><strong>YOLOv5</strong> (2020) had no academic paper and the naming was controversial, but Ultralytics' PyTorch implementation became the most-deployed YOLO variant because the engineering was superb — easy to train, easy to export, well-documented.</p>
+<p><strong>YOLOv5</strong> (2020) had no academic paper and naming was controversial, but Ultralytics' PyTorch implementation became most-deployed YOLO variant because engineering was excellent — easy training, easy export, strong docs.</p>
 
-<p><strong>YOLOv8</strong> (2023) made a fundamental shift: anchor-free detection. Instead of predicting offsets from predefined templates, it directly predicts object centers and dimensions. A decoupled head separates classification from box regression, letting each task use features optimized for its own objective. YOLOv8 handles detection, instance segmentation, and pose estimation in one architecture.</p>
+<p><strong>YOLOv8</strong> (2023) made major shift: anchor-free detection. Instead of template offsets, it predicts object centers and dimensions directly. Decoupled head separates classification and box regression, letting each task use features tuned for its own goal. YOLOv8 supports detection, instance segmentation, and pose estimation in one architecture.</p>
 
-<p><strong>YOLO11</strong> (2024) is the latest, with improved backbone efficiency and accuracy across all tasks.</p>
+<p><strong>YOLO11</strong> (2024) is latest version, with better backbone efficiency and better accuracy across tasks.</p>
 
-<p>The trend across versions is striking: better backbones, better feature fusion, fewer hand-crafted components, and more task generality. YOLO started as a clever hack for speed. It's now a production-grade family that rivals two-stage detectors on accuracy while maintaining real-time performance.</p>
+<p>Trend across versions is clear: stronger backbones, better feature fusion, fewer hand-crafted parts, more general tasks. YOLO started as speed hack. Now it is production-grade family that rivals two-stage detectors on accuracy while keeping real-time performance.</p>
 
 <h4>SSD — Multi-Scale Was the Key</h4>
 
-<p><strong>SSD</strong> (Single Shot MultiBox Detector, 2016) tackled YOLO's weakness with small objects by making predictions from multiple feature map layers simultaneously. Early layers with high spatial resolution handle small objects. Later layers with large receptive fields handle big ones. SSD attaches a prediction head to each of these layers, each with its own set of anchors scaled to the appropriate resolution.</p>
+<p><strong>SSD</strong> (Single Shot MultiBox Detector, 2016) attacked YOLO's small-object weakness by predicting from multiple feature-map layers at once. Early high-resolution layers handle small objects. Later large-receptive-field layers handle big ones. SSD attaches prediction heads to each layer, each with anchors scaled to that resolution.</p>
 
-<p>This multi-scale detection idea proved so fundamental that it became standard. Feature Pyramid Networks (FPN), YOLOv3's three-scale predictions, and every modern detector adopted some version of it.</p>
+<p>This multi-scale idea proved fundamental. Feature Pyramid Networks (FPN), YOLOv3's three-scale predictions, and nearly every modern detector adopted some version.</p>
 
 <h4>RetinaNet and Focal Loss — The Training Problem</h4>
 
-<p>For years, one-stage detectors were faster but less accurate than two-stage ones. The explanation seemed architectural — two stages give you more refined features. But <strong>RetinaNet</strong> (2017) proved otherwise. The gap wasn't architecture. It was training.</p>
+<p>For years, one-stage detectors were faster but less accurate than two-stage ones. Many thought reason was architecture — two stages give richer features. <strong>RetinaNet</strong> (2017) showed real problem was training.</p>
 
-<p>Here's the problem. A one-stage detector evaluates roughly 100,000 candidate locations per image. Of those, maybe 10 contain actual objects. The rest are background. Standard cross-entropy loss treats every example equally, so the model spends 99.99% of its training compute learning to classify trivially easy background regions. The hard examples — the actual objects, the ambiguous boundaries — get drowned out.</p>
+<p>Problem: one-stage detector evaluates about 100,000 candidate locations per image. Maybe 10 contain objects. Rest are background. Standard cross-entropy weights all examples equally, so 99.99% of training compute goes into trivially easy background. Hard examples — true objects, ambiguous boundaries — get drowned out.</p>
 
-<p>Two-stage detectors sidestep this because the RPN filters out most background before classification. One-stage detectors see everything at once, and the imbalance is crushing.</p>
+<p>Two-stage detectors avoid this because RPN removes most background before classification. One-stage detectors see everything at once. Imbalance is brutal.</p>
 
-<p><strong>Focal loss</strong> fixed this with a deceptively simple modification:</p>
+<p><strong>Focal loss</strong> fixed this with simple modification:</p>
 
 <pre><code># Standard cross-entropy
 CE(p) = -log(p)
@@ -494,20 +494,20 @@ FL(p) = -(1 - p)^γ × log(p)
 #
 # γ = 2 is typical. Easy examples get ~100× less weight.</code></pre>
 
-<p>The <code>(1 - p)^γ</code> factor acts as a dynamic difficulty weight. The easier an example is (the more confident the model already is), the more aggressively the loss gets crushed. The model's training compute naturally concentrates on the hard, informative examples.</p>
+<p><code>(1 - p)^γ</code> acts as dynamic difficulty weight. Easier example means higher model confidence, so loss gets crushed harder. Training compute shifts naturally toward hard, informative examples.</p>
 
-<p>With focal loss, RetinaNet became the first one-stage detector to match Faster R-CNN's accuracy while running at one-stage speeds. It proved the performance gap was a training problem — specifically a loss function problem — not a fundamental architectural limitation. That insight changed the field's trajectory.</p>
+<p>With focal loss, RetinaNet became first one-stage detector to match Faster R-CNN accuracy at one-stage speed. It proved gap was training problem — specifically loss-function problem — not fundamental architectural limit. That insight changed field direction.</p>
 
 <div class="callout callout-warning">
   <div class="callout-label">Focal Loss Beyond Detection</div>
-  <p>Focal loss matters anywhere you have extreme class imbalance with dense predictions — segmentation, dense retrieval, multi-label classification with many rare labels. The principle is general: stop wasting training capacity on examples the model already gets right.</p>
+  <p>Focal loss matters anywhere dense predictions face extreme class imbalance — segmentation, dense retrieval, multi-label classification with many rare labels. Principle is general: stop spending training capacity on examples model already gets right.</p>
 </div>
 
 <h3>DETR — When Transformers Replaced the Pipeline</h3>
 
-<p>Everything we've discussed so far shares a pattern: anchors, proposals, NMS, hand-tuned thresholds. These components work, but they're engineering artifacts — they exist because we couldn't think of a cleaner way. <strong>DETR</strong> (DEtection TRansformer, 2020) asked: what if we threw all of it away?</p>
+<p>Everything so far shares pattern: anchors, proposals, NMS, hand-tuned thresholds. These parts work, but they are engineering artifacts. <strong>DETR</strong> (DEtection TRansformer, 2020) asked: what if all of it disappears?</p>
 
-<p>DETR reimagines detection as a <strong>direct set prediction</strong> problem. Feed the image through a CNN backbone, flatten the feature map into a sequence, process it through a Transformer encoder, then use a Transformer decoder with N learned <strong>object queries</strong> — each one a learnable embedding that learns to "ask" about a specific type of object location. The decoder outputs N predictions. That's it. No anchors. No NMS. No proposal stage.</p>
+<p>DETR treats detection as <strong>direct set prediction</strong>. Image goes through CNN backbone. Feature map becomes sequence. Transformer encoder processes sequence. Transformer decoder uses N learned <strong>object queries</strong> — embeddings that learn to ask about object locations. Decoder outputs N predictions. No anchors. No NMS. No proposal stage.</p>
 
 <pre><code># DETR pipeline
 Image → CNN backbone → Feature map → Flatten to sequence
@@ -519,13 +519,13 @@ Image → CNN backbone → Feature map → Flatten to sequence
 # Each query specializes during training to handle different
 # spatial regions or object types.</code></pre>
 
-<p>The key innovation that makes this work is <strong>bipartite matching</strong>. During training, DETR uses the Hungarian algorithm to find the optimal one-to-one assignment between its N predictions and the ground-truth objects. Each ground-truth object matches exactly one prediction slot. Unmatched slots are trained to predict "no object." This one-to-one matching eliminates duplicate detections <em>by design</em> — which is why NMS is unnecessary.</p>
+<p>Key idea is <strong>bipartite matching</strong>. During training, DETR uses Hungarian algorithm to find optimal one-to-one assignment between N predictions and ground-truth objects. Each object matches exactly one prediction slot. Unmatched slots learn "no object." Duplicate detections disappear <em>by design</em>, so NMS is unnecessary.</p>
 
-<p>I'll be honest — when I first read the DETR paper, the elegance was intoxicating. No hand-crafted components. End-to-end differentiable. Conceptually clean. But elegance had a price: DETR needed 500 training epochs (vs. ~36 for Faster R-CNN), and it was notably bad at small objects. The Transformer's global attention treats every spatial location equally, so it lacked the multi-scale bias that FPN-based detectors get for free.</p>
+<p>DETR paper felt elegant. No hand-crafted components. End-to-end differentiable. Conceptually clean. Price was high: DETR needed 500 training epochs (vs. ~36 for Faster R-CNN) and struggled with small objects. Global attention treats all spatial locations equally, so DETR lacked multi-scale bias that FPN detectors get free.</p>
 
-<p>Follow-up work fixed the practical problems. <strong>Deformable DETR</strong> replaced global attention with deformable attention — attending to a learned sparse set of sampling points instead of all locations — cutting convergence to ~50 epochs and dramatically improving small object performance. <strong>DINO</strong> introduced denoising training and better query initialization, pushing accuracy to match or exceed the best traditional detectors. <strong>RT-DETR</strong> optimized for real-time inference, making transformer-based detection practical for deployment.</p>
+<p>Follow-up work fixed practical issues. <strong>Deformable DETR</strong> replaced global attention with deformable attention — sparse learned sampling points instead of all locations — cutting convergence to ~50 epochs and greatly improving small objects. <strong>DINO</strong> added denoising training and better query initialization, reaching or beating best traditional detectors. <strong>RT-DETR</strong> optimized real-time inference, making transformer detection deployable.</p>
 
-<p>The DETR family shows something important: transformer architectures can work for detection, but they needed specific engineering — deformable attention, multi-scale features, better training recipes — before they became practical. The initial elegance was necessary but not sufficient.</p>
+<p>DETR family shows important lesson: transformers can work for detection, but they needed targeted engineering — deformable attention, multi-scale features, better training recipes — before they became practical. Initial elegance was necessary. Not sufficient.</p>
 
 <h3>Anchor-Free Detectors — Simplifying the Pipeline</h3>
 
