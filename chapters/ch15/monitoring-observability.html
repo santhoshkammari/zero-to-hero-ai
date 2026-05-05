@@ -493,13 +493,13 @@ kl_train_to_prod = kl_divergence(training_props, production_props)
 kl_prod_to_train = kl_divergence(production_props, training_props)
 # These two numbers are DIFFERENT — KL is asymmetric</code></pre>
 
-<p>That asymmetry is the key thing to internalize. KL(P||Q) &ne; KL(Q||P). &ldquo;How surprised is training by production&rdquo; is a different question from &ldquo;how surprised is production by training.&rdquo; This is why PSI &mdash; which sums the KL divergence in both directions &mdash; is sometimes preferred for monitoring: it&rsquo;s symmetric and doesn&rsquo;t depend on which distribution you call &ldquo;reference.&rdquo;</p>
+<p>Asymmetry is key: KL(P||Q) &ne; KL(Q||P). &ldquo;How surprised is training by production&rdquo; &ne; &ldquo;how surprised is production by training.&rdquo; PSI sums KL in both directions — symmetric, doesn&rsquo;t depend on which distribution is &ldquo;reference.&rdquo;</p>
 
-<p>Another catch: KL divergence is undefined when Q has zero probability where P has nonzero probability (you&rsquo;d be taking the log of infinity). In practice, you smooth both distributions with a small epsilon, or use the <strong>Jensen-Shannon divergence</strong> (the average of KL in both directions, with a smoothed midpoint), which is always finite.</p>
+<p>Catch: KL divergence undefined when Q has zero probability where P has nonzero probability (log of infinity). Fix: smooth both distributions with small epsilon, or use <strong>Jensen-Shannon divergence</strong> (average of KL both directions, always finite).</p>
 
 <h3>When to Use Which</h3>
 
-<p>After working through all three, here&rsquo;s the mental model I&rsquo;ve settled on:</p>
+<p>Mental model:</p>
 
 <table>
 <thead><tr><th>Method</th><th>Best For</th><th>Gives You</th><th>Watch Out For</th></tr></thead>
@@ -510,9 +510,9 @@ kl_prod_to_train = kl_divergence(production_props, training_props)
 </tbody>
 </table>
 
-<p>In practice, many teams run all three. PSI goes on the stakeholder dashboard. KS tests feed the alerting system. KL divergence shows up in deep-dive investigation notebooks. They&rsquo;re different lenses on the same question: did the data move?</p>
+<p>Many teams run all three. PSI on stakeholder dashboard. KS tests feed alerting. KL divergence in deep-dive notebooks. Different lenses, same question: did data move?</p>
 
-<p>But there&rsquo;s a type of drift none of these statistical tests catch directly &mdash; <strong>schema drift</strong>. That&rsquo;s not a statistical shift. It&rsquo;s structural: a column was renamed, a new enum value appeared, a field that was never null now has nulls. Usually caused by someone upstream refactoring their event logging without telling you. The only defense is validation checks that run <em>before</em> your model ever sees the data.</p>
+<p>Statistical tests don&rsquo;t catch <strong>schema drift</strong> — structural, not statistical: column renamed, new enum value appeared, field now has nulls. Usually caused by upstream engineer refactoring event logging without telling you. Defense: validation checks that run <em>before</em> model ever sees data.</p>
 
 <pre><code class="language-python">def validate_schema(df, expected):
     """Structural data checks — run BEFORE inference."""
@@ -530,26 +530,26 @@ kl_prod_to_train = kl_divergence(production_props, training_props)
                 issues.append(f"{col}: unexpected values {unexpected}")
     return issues</code></pre>
 
-<p>This function walks through each expected column, checks whether it exists, checks whether the null rate is within bounds, and checks whether categorical values are within the allowed set. It catches the class of problems that would make a statistician shrug (&ldquo;that&rsquo;s not drift, that&rsquo;s a bug&rdquo;) but causes 40% of production ML incidents.</p>
+<p>Walks each expected column: exists? null rate within bounds? categorical values in allowed set? Catches class of problems statisticians call &ldquo;bugs not drift&rdquo; — causes ~40% of production ML incidents.</p>
 
 
-<p>The short version for those heading to the exit: monitor your input distributions with PSI or KS tests, validate your data schema before every inference batch, and know that when drift is detected, the <em>type</em> of drift determines the response (retrain, recalibrate, or collect new data).</p>
+<p>Short version: monitor input distributions with PSI or KS tests, validate schema before every inference batch, know that drift type determines response (retrain, recalibrate, or collect new data).</p>
 
-<p>But detection is only half the story. Knowing that drift happened doesn&rsquo;t tell you what to do about it, how to test a replacement model safely, or how to investigate a 2&nbsp;AM production incident. If the discomfort of not knowing what comes after detection is nagging at you, read on.</p>
+<p>Detection is half the story. Drift type determines what to do, how to test replacement safely, how to investigate 2&nbsp;AM incident.</p>
 
 
 <!-- ===== PERFORMANCE MONITORING WITHOUT GROUND TRUTH ===== -->
 <h2>Performance Monitoring Without Ground Truth</h2>
 
-<p>Here&rsquo;s the uncomfortable truth that makes ML monitoring harder than anything in traditional software: you often can&rsquo;t compute accuracy in real time because you don&rsquo;t have ground truth yet. When ShopFlow recommends headphones, we won&rsquo;t know if that was the right recommendation until the user either buys them or doesn&rsquo;t &mdash; maybe minutes later, maybe days. For loan default prediction, ground truth takes <em>months</em>. For long-term health outcomes, it can take years.</p>
+<p>Uncomfortable truth: can&rsquo;t compute accuracy in real time without ground truth. ShopFlow recommendation: won&rsquo;t know if correct until user buys or doesn&rsquo;t — minutes to days later. Loan default prediction: months. Long-term health outcomes: years.</p>
 
-<p>So we need a two-layer strategy. Think of it like a doctor&rsquo;s checkup. Layer one is vital signs: temperature, heart rate, blood pressure. They don&rsquo;t tell you what disease you have, but abnormal readings tell you <em>something is wrong</em>. Layer two is the lab results that take days to come back, giving you the definitive diagnosis.</p>
+<p>Two-layer strategy. Like doctor&rsquo;s checkup: layer one is vital signs — temperature, heart rate. Don&rsquo;t tell you the disease, but abnormal means something wrong. Layer two is lab results taking days — definitive diagnosis.</p>
 
-<p><strong>Layer one &mdash; proxy signals (real-time):</strong> Track the distribution of your model&rsquo;s outputs. Is the model&rsquo;s average confidence changing? Is it suddenly predicting one class much more often than during training? Are feature values drifting? None of these tell you the model is wrong, but they&rsquo;re your vital signs &mdash; changes in them warrant investigation.</p>
+<p><strong>Layer one &mdash; proxy signals (real-time):</strong> Track output distribution. Model&rsquo;s avg confidence changing? Predicting one class more often? Features drifting? None confirm model is wrong, but changes warrant investigation — vital signs.</p>
 
-<p><strong>Layer two &mdash; true metrics (delayed):</strong> When ground truth finally arrives, compute accuracy, precision, recall, AUC &mdash; whatever matters for your task. Backfill your dashboards. Trigger retroactive alerts if the numbers are bad.</p>
+<p><strong>Layer two &mdash; true metrics (delayed):</strong> When ground truth arrives, compute accuracy, precision, recall, AUC. Backfill dashboards. Trigger retroactive alerts if numbers bad.</p>
 
-<p>There&rsquo;s a clever technique for bridging the gap, pioneered by the NannyML library. It&rsquo;s called <strong>Confidence-Based Performance Estimation (CBPE)</strong>. The idea: during validation (when you <em>do</em> have labels), you learn the relationship between the model&rsquo;s confidence scores and its actual accuracy. &ldquo;When the model says 90% confidence, it&rsquo;s correct 87% of the time.&rdquo; Then in production, you use that calibration curve to estimate performance from the confidence scores alone.</p>
+<p>Clever bridging technique from NannyML: <strong>Confidence-Based Performance Estimation (CBPE)</strong>. During validation (have labels), learn relationship between model&rsquo;s confidence and actual accuracy. &ldquo;90% confidence → correct 87% of time.&rdquo; In production, use calibration curve to estimate performance from confidence scores alone.</p>
 
 <pre><code class="language-python">import numpy as np
 
@@ -567,25 +567,25 @@ def estimate_accuracy_cbpe(confidences, calibration_map):
         estimated_correct += calibration_map[closest_bin]
     return estimated_correct / len(confidences)</code></pre>
 
-<p>This function takes a batch of confidence scores from production predictions and maps each one to its historically observed accuracy. The result is an <em>estimate</em> of how well the model is performing right now, without waiting for labels.</p>
+<p>Takes batch of production confidence scores, maps each to historically observed accuracy. Result: estimate of current model performance without labels.</p>
 
-<p>The assumption underneath is critical: the calibration relationship must hold in production. If concept drift happens &mdash; if the model becomes overconfident in a new regime &mdash; CBPE will be fooled too. It&rsquo;s a proxy, not a guarantee. I&rsquo;m still developing my intuition for when it breaks down, but the general pattern is: CBPE works well for covariate shift (the model is less confident in unfamiliar regions) and breaks down for concept drift (the model stays confident but is wrong).</p>
+<p>Critical assumption: calibration relationship must hold in production. Concept drift breaks CBPE — model stays confident but is wrong. CBPE works for covariate shift (model less confident in unfamiliar regions), breaks for concept drift.</p>
 
-<p>Regardless of which layer you&rsquo;re working with, <strong>slice your metrics</strong>. Aggregate numbers hide disasters. ShopFlow&rsquo;s overall accuracy might be 78%, but that could be 95% for returning users and 40% for new users. Or 90% for desktop and 55% for mobile. The aggregate looks fine. One segment is on fire. Monitor across every dimension you have: geography, device type, user cohort, time of day, traffic source.</p>
+<p>Slice metrics. Aggregate numbers hide disasters. ShopFlow&rsquo;s 78% overall could be 95% for returning users and 40% for new users. Or 90% desktop, 55% mobile. Aggregate looks fine. One segment on fire. Monitor every dimension: geography, device, user cohort, time of day, traffic source.</p>
 
 
 <!-- ===== ALERTING ===== -->
 <h2>Alerting That Doesn&rsquo;t Destroy Your Sanity</h2>
 
-<p>I&rsquo;ve been on teams where the monitoring system sent 50 alerts a day. Forty-eight were false positives. Within two weeks, everyone ignored all 50. The real incident &mdash; a feature pipeline silently dropping values &mdash; came in at alert number 49, and nobody looked at it for three days.</p>
+<p>50 alerts per day, 48 false positives. Within two weeks everyone ignores all 50. Real incident — feature pipeline silently dropping values — came in at alert 49. Nobody looked for three days.</p>
 
-<p>Alert fatigue is the monitoring system&rsquo;s equivalent of the boy who cried wolf. The solution isn&rsquo;t fewer checks &mdash; it&rsquo;s a severity architecture that respects your team&rsquo;s attention.</p>
+<p>Alert fatigue = boy who cried wolf. Solution: not fewer checks — severity architecture that respects team attention.</p>
 
-<p>Two types of thresholds work together. <strong>Static thresholds</strong> are your absolute floor: &ldquo;if accuracy drops below 0.70, wake someone up.&rdquo; They catch catastrophic failures fast but miss gradual decline. ShopFlow&rsquo;s accuracy could decay from 0.78 to 0.72 over six weeks and never trigger a 0.70 threshold.</p>
+<p>Two threshold types work together. <strong>Static thresholds</strong>: absolute floor — &ldquo;if accuracy drops below 0.70, wake someone up.&rdquo; Catches catastrophic failures fast. Misses gradual decline. ShopFlow accuracy could decay 0.78 → 0.72 over six weeks and never trigger.</p>
 
-<p><strong>Statistical change detection</strong> catches the slow bleed. Instead of an absolute number, it asks: &ldquo;is this week&rsquo;s performance statistically different from the trailing four-week average?&rdquo; Algorithms like <strong>CUSUM</strong> (Cumulative Sum Control Chart) and the <strong>Page-Hinkley test</strong> are designed for exactly this &mdash; they accumulate small deviations over time and fire when the cumulative evidence of change exceeds a threshold.</p>
+<p><strong>Statistical change detection</strong> catches slow bleed. Asks: &ldquo;is this week&rsquo;s performance statistically different from trailing four-week average?&rdquo; <strong>CUSUM</strong> (Cumulative Sum Control Chart) and <strong>Page-Hinkley test</strong> accumulate small deviations, fire when cumulative evidence exceeds threshold.</p>
 
-<p>Use both. Static thresholds for the &ldquo;the building is on fire&rdquo; alerts. Statistical tests for the &ldquo;something has been slowly getting worse&rdquo; alerts. Different urgencies, different response channels.</p>
+<p>Use both. Static for &ldquo;building on fire.&rdquo; Statistical for &ldquo;something slowly getting worse.&rdquo; Different urgencies, different channels.</p>
 
 <pre><code class="language-python">class CUSUMDetector:
     """Cumulative sum change-point detector for streaming metrics."""
@@ -607,9 +607,9 @@ def estimate_accuracy_cbpe(confidences, calibration_map):
             return "downward_shift"
         return None</code></pre>
 
-<p>The <code>drift_rate</code> parameter controls sensitivity &mdash; how much deviation we tolerate before accumulating evidence. The <code>threshold</code> controls how much accumulated evidence triggers an alert. Setting these correctly is more art than science; start with the defaults and calibrate against your historical data. If you&rsquo;re getting more than two false alerts per week, increase the threshold. If real incidents slip through, decrease it.</p>
+<p><code>drift_rate</code> controls sensitivity — how much deviation tolerated before accumulating evidence. <code>threshold</code> controls how much accumulated evidence triggers alert. Start with defaults, calibrate against historical data. More than two false alerts per week: increase threshold. Real incidents slipping through: decrease it.</p>
 
-<p>One more thing about alerting that took me a while to learn: not everything needs to wake someone up. Structure your alerts into tiers. Critical alerts page the on-call engineer (model accuracy catastrophically below floor, serving errors above 5%, all-nulls in a required feature). Warning alerts go to a Slack channel for investigation within hours (significant PSI, confidence score distribution shift). Info-level signals land on a dashboard for the weekly review meeting (minor drift, new categorical values appearing). This hierarchy keeps the pager sacred &mdash; when it fires, people actually respond.</p>
+<p>Structure alerts into tiers. Critical: page on-call (accuracy catastrophically below floor, serving errors above 5%, all-nulls in required feature). Warning: Slack channel for investigation within hours (significant PSI, confidence distribution shift). Info: weekly dashboard review (minor drift, new categorical values). Hierarchy keeps pager sacred — when it fires, people respond.</p>
 
 
 <!-- ===== SHADOW MODE ===== -->

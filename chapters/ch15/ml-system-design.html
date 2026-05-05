@@ -509,51 +509,51 @@ def nightly_training_pipeline():
 
 <p>First approach: chef cooks every possible dish in advance. At midnight, kitchen prepares personalized meals for every registered customer and stores them in walk-in refrigerator. When customer arrives next day, waiter opens fridge and pulls out pre-made plate. Fast service. Cheap to run. But if customer came from gym and wants something high-protein instead of pasta you pre-made twelve hours ago, bad luck. That is <b>batch serving</b>.</p>
 
-<p>The second approach: the chef cooks to order. Customer arrives, places an order, and the kitchen fires up. The food is fresh and personalized to the moment. But the customer waits, the kitchen needs to be staffed at all times, and the bills are higher. That's <b>real-time serving</b>.</p>
+<p>Second approach: chef cooks to order. Customer arrives, places order, and kitchen fires up. Food is fresh and personalized to moment. But customer waits, kitchen must be staffed at all times, and bills are higher. That is <b>real-time serving</b>.</p>
 
-<p>For StreamFlix's recommendation system, batch serving means precomputing "top 20 recommendations" for every user overnight and storing them in a fast key-value store like Redis. When Alice opens the app, we look up her pre-computed list. Response time: under a millisecond. Infrastructure cost: low — we run the batch job during off-peak hours.</p>
+<p>For StreamFlix recommendation system, batch serving means precomputing "top 20 recommendations" for every user overnight and storing them in fast key-value store like Redis. When Alice opens app, we look up her precomputed list. Response time: under millisecond. Infrastructure cost: low — batch job runs during off-peak hours.</p>
 
-<p>But here's where batch breaks down. Alice watched "Interstellar" an hour ago. Her tastes have shifted toward cerebral sci-fi. Our batch recommendations were computed twelve hours ago, before she watched it. We're still showing her the same list. The recommendations are stale.</p>
+<p>But batch breaks here. Alice watched "Interstellar" an hour ago. Her tastes shifted toward cerebral sci-fi. Batch recommendations were computed twelve hours ago, before she watched it. We still show same list. Recommendations are stale.</p>
 
-<p>Real-time serving computes recommendations <em>when Alice opens the app</em>. The server fetches her latest features — including the fact that she watched "Interstellar" an hour ago — runs the ranking model, and returns fresh recommendations. Response time: 50–200ms. Infrastructure: always-on model servers, a feature store with low-latency online access, and careful model optimization to stay within the latency budget.</p>
+<p>Real-time serving computes recommendations <em>when Alice opens app</em>. Server fetches latest features — including fact that she watched "Interstellar" an hour ago — runs ranking model, and returns fresh recommendations. Response time: 50–200ms. Infrastructure: always-on model servers, feature store with low-latency online access, and careful model optimization to stay within latency budget.</p>
 
-<p>For some problems, freshness is non-negotiable. Fraud detection at the moment of a credit card transaction. Content moderation before a post goes live. Search ranking as the user types. These need real-time inference. For others — a weekly email of "movies you might like" — batch is more than sufficient.</p>
+<p>For some problems, freshness is non-negotiable. Fraud detection at moment of credit card transaction. Content moderation before post goes live. Search ranking as user types. These need real-time inference. For others — weekly email of "movies you might like" — batch is more than sufficient.</p>
 
-<p>Here's what production actually looks like: almost every system at scale uses a <b>hybrid</b>. The computationally expensive first pass — candidate generation, where we narrow 10,000 movies down to 500 possibilities — runs in batch. The lighter second pass — ranking those 500 by personalized relevance — runs in real-time. We get batch efficiency where freshness doesn't matter and real-time precision where it does.</p>
+<p>Production reality: almost every system at scale uses <b>hybrid</b>. Computationally expensive first pass — candidate generation, where we narrow 10,000 movies to 500 possibilities — runs in batch. Lighter second pass — ranking those 500 by personalized relevance — runs in real time. Batch efficiency where freshness does not matter. Real-time precision where it does.</p>
 
-<p>Netflix, YouTube, and LinkedIn all run some version of this hybrid pattern. When I first learned this, it felt like cheating — aren't you supposed to pick one architecture? But the pragmatism makes sense. The expensive computation (scanning millions of items) doesn't need to happen every request. The cheap computation (scoring 500 items) does. Split the work where it makes economic sense.</p>
+<p>Netflix, YouTube, and LinkedIn all run some version of this hybrid pattern. When I first learned this, it felt like cheating — are you not supposed to pick one architecture? But pragmatism makes sense. Expensive computation (scanning millions of items) does not need to happen every request. Cheap computation (scoring 500 items) does. Split work where economics make sense.</p>
 
-<p>I'm still developing my intuition for exactly where to draw the batch-vs-real-time line for a given system. The question I now ask: "If the user's behavior changed five minutes ago, does the prediction need to reflect that?" If yes, that component needs real-time. If not, batch is fine.</p>
+<p>Where draw batch-vs-real-time line? Ask: "If user's behavior changed five minutes ago, does prediction need to reflect that?" If yes, that component needs real-time. If not, batch is fine.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <!-- FEEDBACK LOOPS                              -->
 <!-- ═══════════════════════════════════════════ -->
 <h2 id="feedback-loops">The System That Eats Its Own Tail</h2>
 
-<p>This is the debt nobody sees coming, and it's the one that scared me the most when I finally understood it.</p>
+<p>This debt hides well. This one scared me most when I understood it.</p>
 
-<p>StreamFlix deploys its recommendation model. The model has learned that "The Matrix" is popular, so it recommends "The Matrix" to a lot of users. Those users click on it — partly because they're interested, and partly because it's at the top of the page and they trust the system. The click gets logged as a positive interaction. The next night, the model retrains on this data and concludes that "The Matrix" is even more popular than it thought. So it recommends it even more aggressively. More clicks. More training signal. The loop tightens.</p>
+<p>StreamFlix deploys recommendation model. Model learned that "The Matrix" is popular, so it recommends "The Matrix" to many users. Users click it — partly because interested, partly because it sits at top of page and they trust system. Click gets logged as positive interaction. Next night, model retrains on this data and concludes that "The Matrix" is even more popular than before. So it recommends it more aggressively. More clicks. More training signal. Loop tightens.</p>
 
-<p>Meanwhile, "Interstellar" — a movie that many users would love — never gets recommended because it wasn't popular enough to surface in the first round. Nobody clicks on it because nobody sees it. The model never learns that users like it. It lives in a recommendation graveyard.</p>
+<p>Meanwhile, "Interstellar" — movie many users would love — never gets recommended because it was not popular enough to surface in first round. Nobody clicks it because nobody sees it. Model never learns that users like it. It lives in recommendation graveyard.</p>
 
-<p>This is a <b>feedback loop</b>. The model's predictions influence user behavior, which generates the training data for the next model version. The system eats its own tail. The result is a rich-get-richer dynamic where popular items get more popular and niche items get buried — regardless of quality.</p>
+<p>This is <b>feedback loop</b>. Model predictions influence user behavior, which generates training data for next model version. System eats own tail. Result: rich-get-richer dynamic where popular items get more popular and niche items get buried — regardless of quality.</p>
 
-<p>Direct feedback loops are the ones I described: model predicts → user acts on prediction → model trains on that action. <b>Indirect</b> feedback loops are sneakier. Suppose StreamFlix has a separate model that predicts churn risk. The recommendation model shows popular content to keep engagement up. The churn model sees that engaged users who watch popular content tend not to churn. So the churn model tells the product team: "everything is fine." But under the surface, users who prefer niche content are quietly leaving because they never see anything they like. The recommendation model's behavior infected the churn model's training data, and neither model flags the problem.</p>
+<p>Direct feedback loops are simple: model predicts → user acts on prediction → model trains on that action. <b>Indirect</b> feedback loops are sneakier. Suppose StreamFlix has separate model predicting churn risk. Recommendation model shows popular content to keep engagement up. Churn model sees that engaged users who watch popular content tend not to churn. So churn model tells product team: "everything is fine." But under surface, users who prefer niche content are quietly leaving because they never see anything they like. Recommendation model behavior infected churn model training data, and neither model flags problem.</p>
 
-<p>The fixes aren't glamorous, but they're critical. First: <b>exploration traffic</b>. Reserve 5–10% of recommendations for random or diverse picks that the model wouldn't have chosen. This ensures that unpopular items get some exposure and the model gets training signal on them. Second: <b>diversity injection</b>. After the model ranks items, apply a post-processing step that ensures the final list isn't dominated by a single genre or a single item. Third: <b>feedback loop metrics</b>. Track how concentrated the recommendations are. If the top 1% of items are getting 90% of the impressions, the loop is tightening. Sound the alarm.</p>
+<p>Fixes are not glamorous, but critical. First: <b>exploration traffic</b>. Reserve 5–10% of recommendations for random or diverse picks model would not have chosen. This ensures unpopular items get exposure and model gets training signal on them. Second: <b>diversity injection</b>. After model ranks items, apply post-processing step so final list is not dominated by single genre or single item. Third: <b>feedback loop metrics</b>. Track how concentrated recommendations are. If top 1% of items get 90% of impressions, loop is tightening. Sound alarm.</p>
 
-<p>I'll confess something: detecting indirect feedback loops is genuinely hard. I haven't figured out a reliable way to do it beyond careful logging and skeptical analysis. The best defense I know is to assume they exist and build monitoring that can surface their effects.</p>
+<p>Detecting indirect feedback loops is hard. I have not found reliable way beyond careful logging and skeptical analysis. Best defense I know: assume they exist and build monitoring that surfaces their effects.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <!-- DESIGN PATTERNS                             -->
 <!-- ═══════════════════════════════════════════ -->
 <h2 id="patterns">Patterns That Survived Production</h2>
 
-<p>After working on enough ML systems, you start seeing the same architectural patterns recur. These aren't theoretical — they survived contact with real traffic, real failure modes, and real cloud bills. Let's walk through the four that matter most.</p>
+<p>Work on enough ML systems, same architectural patterns recur. These are not theoretical — they survived real traffic, real failure modes, and real cloud bills. Four matter most.</p>
 
 <h3 id="retrieve-rank">Retrieve → Rank</h3>
 
-<p>This is the single most important pattern in production ML, and we've been building toward it with our StreamFlix example all along.</p>
+<p>Single most important pattern in production ML. We have been building toward it with StreamFlix all along.</p>
 
 <p>The problem: StreamFlix has 2,000 movies. For each user, we want to score every movie. Our ranking model uses 200 features per user-movie pair and takes about 0.1ms per prediction. Scoring all 2,000 movies takes 200ms. That's right at the edge of our latency budget for a real-time request. But what if StreamFlix grows to 100,000 movies? Now scoring takes 10 seconds. The page never loads.</p>
 

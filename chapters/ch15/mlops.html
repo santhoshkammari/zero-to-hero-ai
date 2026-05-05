@@ -474,36 +474,36 @@ jobs:
 <!-- ═══════════════════════════════════════════ -->
 <h2 id="continuous-training">Continuous Training</h2>
 
-<p>Here's the part that has no analog in traditional software: <b>Continuous Training</b>, or CT. In regular DevOps, once your code is deployed, it stays deployed until you push new code. In ML, your model's <em>environment</em> changes even when your code doesn't. Customer behavior shifts. Fraud patterns evolve. Seasonality hits. The world moves, and your model stands still.</p>
+<p>No analog in traditional software: <b>Continuous Training</b> (CT). Regular DevOps: code deployed, stays deployed until new push. ML: model's <em>environment</em> changes even when code doesn't. Customer behavior shifts. Fraud patterns evolve. Seasonality hits. World moves, model stands still.</p>
 
-<p>CT is the practice of automatically retraining models when the world moves far enough to matter. The key word is "automatically" — not "on a schedule because someone put it in a cron job," but triggered by evidence that the current model is becoming stale.</p>
+<p>CT = automatically retrain models when world shifts enough to matter. Key word: automatically — triggered by evidence model is becoming stale, not by cron job someone forgot about.</p>
 
-<p>At FraudShield, here are the triggers we set up, roughly in order of sophistication:</p>
+<p>FraudShield triggers, roughly by sophistication:</p>
 
-<p><b>Calendar trigger</b> — retrain every Monday at 6am. This is crude but effective as a starting point. It guarantees your model is never more than a week old. The downside: it wastes GPU hours when data hasn't changed, and it provides no protection if data shifts dramatically on a Wednesday.</p>
+<p><b>Calendar trigger</b> — retrain every Monday 6am. Crude but effective start. Model never more than week old. Downside: wastes GPU hours when data unchanged, no protection from Wednesday drift.</p>
 
-<p><b>Data volume trigger</b> — retrain when 100,000 new labeled transactions have accumulated. This is better because it ties retraining to actual new information. But it assumes all new data is equally informative, which it often isn't.</p>
+<p><b>Data volume trigger</b> — retrain when 100,000 new labeled transactions accumulate. Ties retraining to actual new information. Assumes all new data equally informative — often isn't.</p>
 
-<p><b>Drift trigger</b> — retrain when monitoring detects that feature distributions or prediction distributions have shifted beyond a threshold. This is the gold standard. It retrains when the model <em>needs</em> it, not when the calendar says so. The challenge is defining "shifted enough" — too sensitive and you retrain daily on noise, too loose and you miss real drift.</p>
+<p><b>Drift trigger</b> — retrain when monitoring detects feature or prediction distributions shifted beyond threshold. Gold standard. Retrains when model <em>needs</em> it. Challenge: defining 'shifted enough' — too sensitive → daily retrains on noise, too loose → miss real drift.</p>
 
-<p><b>Performance trigger</b> — retrain when live metrics (precision, recall, or a business metric like fraud dollar loss) degrade below a threshold. This is the most direct signal but also the slowest, because you need enough production traffic to measure the drop with statistical confidence.</p>
+<p><b>Performance trigger</b> — retrain when live metrics (precision, recall, fraud dollar loss) degrade below threshold. Most direct signal, slowest — needs enough traffic to measure drop with statistical confidence.</p>
 
-<p>I'll be honest: most teams start with the calendar trigger and graduate to drift triggers only when the calendar approach visibly fails. That's fine. The important thing is having <em>any</em> automated retraining, because the alternative — someone remembering to retrain the model — is the most common single point of failure in ML systems.</p>
+<p>Most teams start with calendar trigger, graduate to drift only when calendar visibly fails. Fine. Important thing: have <em>any</em> automated retraining. Alternative — someone remembering to retrain — is most common single point of failure in ML systems.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <h2 id="feature-stores">Feature Stores in Production</h2>
 
-<p>FraudShield has grown. We now have five features: transaction amount, hours since last purchase, merchant category, user account age, and a velocity feature — number of transactions in the last hour. The first four are straightforward lookups. The fifth one, velocity, is where things get treacherous.</p>
+<p>FraudShield grown. Five features now: amount, hours since last purchase, merchant category, account age, velocity (tx count in last hour). First four: straightforward lookups. Velocity: treacherous.</p>
 
-<p>During training, we compute velocity by counting rows in a Pandas DataFrame grouped by user. Fast, correct, retrospective. But during serving, when a transaction arrives in real-time, we need to compute velocity <em>right now</em>, from a stream of live events. So we write a second implementation — a Redis counter that increments on each transaction and expires after an hour.</p>
+<p>Training: compute velocity by counting rows in Pandas DataFrame grouped by user. Fast, correct, retrospective. Serving: transaction arrives real-time, need velocity <em>right now</em> from live stream. Write second implementation — Redis counter that increments per transaction, expires after hour.</p>
 
-<p>Two implementations of the same feature. Two chances to get it subtly wrong.</p>
+<p>Two implementations of same feature. Two chances to get it subtly wrong.</p>
 
-<p>And they <em>will</em> get subtly wrong. Maybe the Pandas version counts the transaction itself in the window, but the Redis version doesn't. Maybe one uses UTC and the other uses the server's local timezone. Maybe one rounds to the nearest hour and the other uses a rolling 60-minute window. These aren't bugs in the traditional sense — each implementation is "correct" in its own context. But the model was trained on one definition and is serving with another. That gap has a name: <b>training-serving skew</b>.</p>
+<p>They <em>will</em> diverge. Pandas counts transaction in window, Redis doesn't. One uses UTC, other uses server local timezone. One rounds to nearest hour, other uses rolling 60-min window. Each impl 'correct' in its own context. Model trained on one definition, serving with another. That gap: <b>training-serving skew</b>.</p>
 
-<p>I didn't understand why feature stores existed until I personally shipped a model where training velocity averaged 4.2 and serving velocity averaged 3.8, because the training code used a closed interval (≤) and the serving code used an open interval (<). The model's performance dropped by 6% and it took us two weeks to find the cause. That two weeks is what feature stores are designed to eliminate.</p>
+<p>Shipped model where training velocity averaged 4.2 and serving velocity averaged 3.8 — training used closed interval (≤), serving used open interval (&lt;). Performance dropped 6%. Took two weeks to find cause. Feature stores eliminate that two weeks.</p>
 
-<p>A <b>feature store</b> is a system that provides a single definition of each feature, computes it once using that definition, and serves the result to both training and inference. You write the feature logic once. The feature store materializes it into two stores: an <b>offline store</b> (a data warehouse or file system) for training, where you need historical values with point-in-time correctness, and an <b>online store</b> (Redis, DynamoDB, or similar) for serving, where you need low-latency lookups.</p>
+<p>A <b>feature store</b>: single definition per feature, computed once, served to both training and inference. Write logic once. Materializes into two stores: <b>offline store</b> (data warehouse or filesystem) for training — needs historical values with point-in-time correctness; <b>online store</b> (Redis, DynamoDB) for serving — needs low-latency lookups.</p>
 
 <pre><code># Feast feature definition — written once, used everywhere
 # feast_repo/features.py
@@ -537,26 +537,26 @@ transaction_features = FeatureView(
 #
 # Same definition. Same logic. No skew.</code></pre>
 
-<p><b>Feast</b> is the most widely adopted open-source feature store. It's Python-native, works with any cloud storage backend, and provides the critical guarantee of point-in-time joins — when you ask "what were this user's features at 2pm on Tuesday?", it returns the feature values as they would have existed at that exact moment, without accidentally leaking future information into the training data. That leakage, by the way, is how you get models that look amazing in offline evaluation and fail in production. The model learned to cheat by peeking at the future.</p>
+<p><b>Feast</b> — most widely adopted open-source feature store. Python-native, any cloud storage backend. Critical guarantee: point-in-time joins — 'what were user's features at 2pm Tuesday?' returns values as they existed then, no future leakage into training data. That leakage is how models look great offline and fail in production — model cheated by peeking at future.</p>
 
-<p><b>Tecton</b>, the commercial alternative, adds real-time feature computation (streaming transforms), built-in monitoring for feature drift, and tighter integration with production serving infrastructure. The trade-off is cost and lock-in, but for teams running dozens of models in production, the operational overhead of self-managing Feast starts to outweigh Tecton's price tag.</p>
+<p><b>Tecton</b> — commercial alternative. Adds real-time feature computation (streaming transforms), built-in drift monitoring, tighter production serving integration. Trade-off: cost and lock-in. For teams running dozens of models, self-managing Feast overhead outweighs Tecton price.</p>
 
-<p>When do you need a feature store? Not on day one. If you have three features and one model, a feature store is over-engineering. But the moment you find yourself maintaining two copies of the same feature logic — one for training and one for serving — you have the problem that feature stores solve. At FraudShield, we hit that point around model number three.</p>
+<p>Need feature store? Not day one. Three features, one model = over-engineering. Moment you maintain two copies of same feature logic — one for training, one for serving — you have the problem feature stores solve. FraudShield hit that point at model three.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <h2 id="orchestration">ML Pipeline Orchestration</h2>
 
-<p>FraudShield's four scripts work. But running them in order means someone has to type four commands, wait for each to finish, check the output, and decide whether to proceed. That person becomes the bottleneck. And when that person goes on vacation, nobody retrains the model.</p>
+<p>FraudShield's four scripts work. Running them in order means someone types four commands, waits, checks output, decides to proceed. That person becomes bottleneck. Person goes on vacation — nobody retrains model.</p>
 
-<p>An <b>orchestrator</b> is the system that runs pipeline stages in the right order, handles retries on failure, manages dependencies between stages, and provides visibility into what's running, what succeeded, and what failed. Think of it as the stage manager for a theater production — it doesn't act, but without it, nobody knows when to enter or exit.</p>
+<p><b>Orchestrator</b>: runs pipeline stages in order, handles retries, manages dependencies, provides visibility into running/succeeded/failed. Stage manager for theater — doesn't act, but without it nobody knows when to enter or exit.</p>
 
-<p>The orchestrator landscape is crowded, and I'll be honest, I still find it confusing. There are at least a dozen viable options. Rather than cataloging them all, here are the three categories that matter and when to pick each:</p>
+<p>Orchestrator landscape crowded. Dozen+ viable options. Three categories that matter:</p>
 
-<p><b>General-purpose orchestrators</b> — tools like <b>Apache Airflow</b>, <b>Prefect</b>, and <b>Dagster</b>. These were built for data engineering pipelines and adapted for ML. Airflow is the most widely deployed orchestrator in production today, period. Its model is a DAG (directed acyclic graph) of tasks written in Python. Prefect and Dagster are the modern alternatives — better developer experience, better error handling, more Pythonic APIs — but smaller ecosystems. If your team already uses Airflow for data pipelines, use Airflow for ML pipelines too. One orchestrator is hard enough to operate. Two is torture.</p>
+<p><b>General-purpose orchestrators</b> — <b>Apache Airflow</b>, <b>Prefect</b>, <b>Dagster</b>. Built for data engineering, adapted for ML. Airflow = most widely deployed, full stop. DAG of Python tasks. Prefect and Dagster = modern alternatives — better DX, better error handling, more Pythonic — but smaller ecosystems. Already using Airflow for data pipelines? Use it for ML too. One orchestrator hard enough. Two is torture.</p>
 
-<p><b>ML-native orchestrators</b> — tools like <b>Kubeflow Pipelines</b> and <b>ZenML</b>. These understand ML-specific concepts natively: experiment tracking, model registries, data versioning, GPU scheduling. Kubeflow runs on Kubernetes, which gives you maximum control over compute resources but requires a team that can operate Kubernetes. The learning curve is steep. I've watched teams spend three months setting up Kubeflow before running their first ML pipeline on it. But for organizations that need on-premise or hybrid-cloud deployment, or that run on Kubernetes already, it's the most flexible option.</p>
+<p><b>ML-native orchestrators</b> — <b>Kubeflow Pipelines</b>, <b>ZenML</b>. Understand ML concepts natively: experiment tracking, model registries, data versioning, GPU scheduling. Kubeflow runs on Kubernetes — maximum control, requires Kubernetes expertise. Learning curve steep. Teams spend 3 months setting up before first ML pipeline. For on-prem or hybrid-cloud, or existing Kubernetes users: most flexible option.</p>
 
-<p><b>Managed cloud orchestrators</b> — <b>Vertex AI Pipelines</b> (GCP), <b>SageMaker Pipelines</b> (AWS), and <b>Azure ML Pipelines</b>. These trade flexibility for convenience. You don't manage the infrastructure — the cloud provider does. Vertex AI Pipelines is built on Kubeflow under the hood but hides the Kubernetes layer. SageMaker Pipelines is deeply integrated with the AWS ecosystem. The downside: cloud lock-in. Once your ML pipelines depend on SageMaker, migrating to GCP is a rewrite, not a migration.</p>
+<p><b>Managed cloud orchestrators</b> — <b>Vertex AI Pipelines</b> (GCP), <b>SageMaker Pipelines</b> (AWS), <b>Azure ML Pipelines</b>. Trade flexibility for convenience — cloud provider manages infra. Vertex AI built on Kubeflow, hides Kubernetes. SageMaker tightly integrated with AWS. Downside: cloud lock-in. ML pipelines on SageMaker → migrating to GCP is rewrite, not migration.</p>
 
 <pre><code># Kubeflow Pipeline for FraudShield — the ML-native approach
 # Each step is a container. Kubeflow handles orchestration.
@@ -587,7 +587,7 @@ def training_pipeline(data_version: str, config_path: str):
     with dsl.Condition(evaluate.outputs["passed"] == "true"):
         register_op(model=train.outputs["model"], stage="staging")</code></pre>
 
-<p>For FraudShield, here's the pragmatic choice: start with GitHub Actions for the CI/CD pipelines we built earlier. When the number of models grows past five, graduate to Prefect or Dagster. Consider Kubeflow or a managed platform when you're running 20+ models and need GPU scheduling, multi-team isolation, or on-premise deployment. Don't buy the fanciest orchestrator before you've outgrown the simplest one.</p>
+<p>FraudShield pragmatic path: start with GitHub Actions. Past 5 models → Prefect or Dagster. 20+ models + GPU scheduling + multi-team isolation + on-prem → Kubeflow or managed platform. Don't buy fanciest orchestrator before outgrowing simplest.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <h2 id="iac">Infrastructure as Code for ML</h2>
