@@ -355,34 +355,34 @@
 
 <h2>The KV Cache: Your Most Expensive Memory Hog</h2>
 
-<p>Here&rsquo;s where our restaurant analogy gets uncomfortable. Remember how the chef needs to look at every previous course to decide the next one? In transformer terms, each new token needs to attend to every prior token. That means computing attention scores between the new token&rsquo;s query vector and the key vectors of <em>all</em> previous tokens, then using those scores to weight the value vectors.</p>
+<p>Here restaurant analogy gets ugly. Chef must look at every previous course to pick next one. In transformer terms, each new token attends to all prior tokens. That means attention scores between new token&rsquo;s query vector and key vectors of <em>all</em> previous tokens, then those scores weight value vectors.</p>
 
-<p>Without any optimization, generating token number 247 would require re-running the entire model on all 247 tokens from scratch. That&rsquo;s spectacularly wasteful. The key and value vectors for tokens 1 through 246 haven&rsquo;t changed&mdash;why recompute them?</p>
+<p>Without optimization, generating token 247 means rerunning whole model on all 247 tokens from scratch. Wasteful. Key and value vectors for tokens 1 through 246 did not change. No reason to recompute.</p>
 
-<p>The solution is the <strong>KV cache</strong> (key-value cache). As each token is generated, we store its key and value vectors for every attention layer. When generating the next token, we only compute the query, key, and value for the <em>new</em> token, then look up all the cached keys and values from previous tokens. This turns what would be quadratic recomputation into a linear memory read.</p>
+<p>Fix = <strong>KV cache</strong> (key-value cache). As each token appears, store its key and value vectors for every attention layer. For next token, compute query, key, value only for <em>new</em> token, then read cached keys and values for old tokens. This turns quadratic recomputation into linear memory read.</p>
 
-<p>Let&rsquo;s calculate how much memory this actually costs. For each token, at each layer, we store one key vector and one value vector. Each vector has a size equal to the number of attention heads times the head dimension. The formula:</p>
+<p>Now memory cost. For each token at each layer, we store one key vector and one value vector. Vector size = number of attention heads times head dimension. Formula:</p>
 
 <pre><code>KV cache per token = num_layers &times; num_heads &times; head_dim &times; 2 &times; bytes_per_element
                                                                   &uarr;
                                                         (2 for key + value)</code></pre>
 
-<p>Let&rsquo;s run through our 7B model&mdash;say, a Llama-2 7B. It has 32 layers, 32 attention heads, each with a head dimension of 128, and we&rsquo;re using 16-bit (2-byte) precision:</p>
+<p>Run numbers for 7B model&mdash;say, Llama-2 7B. It has 32 layers, 32 attention heads, head dimension 128, 16-bit (2-byte) precision:</p>
 
 <pre><code>Per token: 32 layers &times; 32 heads &times; 128 dim &times; 2 (K+V) &times; 2 bytes
          = 32 &times; 32 &times; 128 &times; 4
          = 524,288 bytes
          &asymp; 0.5 MB per token</code></pre>
 
-<p>Half a megabyte per token. That sounds small, until you consider a conversation with a 4,096-token context:</p>
+<p>Half megabyte per token. Sounds small. Then 4,096-token conversation shows up:</p>
 
 <pre><code>4,096 tokens &times; 0.5 MB = 2,048 MB &asymp; 2 GB per request</code></pre>
 
-<p>Two gigabytes of KV cache for a single user conversation on a 7B model. Now imagine a 70B model like Llama-2 70B, which has 80 layers and 64 attention heads. The KV cache per token jumps to roughly 2.6 MB, and a 4K context eats over 10 GB. On a single A100 with 80 GB of memory, the model weights take 140 GB in fp16 (so you need at least 2 GPUs to hold the weights), and the KV cache for a batch of 8 concurrent users at 4K context each would consume another 80+ GB.</p>
+<p>KV cache = 2 GB for one user conversation on 7B model. Now scale to 70B like Llama-2 70B: 80 layers, 64 attention heads. KV cache per token jumps to about 2.6 MB, and 4K context eats 10+ GB. On one A100 with 80 GB, weights alone take 140 GB in fp16, so weights need at least 2 GPUs. KV cache for batch of 8 concurrent users at 4K each burns another 80+ GB.</p>
 
-<p>I&rsquo;ll be honest&mdash;the first time I ran these numbers, I didn&rsquo;t believe them. I recalculated three times. The KV cache for long-context serving can consume <em>more memory than the model weights themselves</em>. This is the central resource management problem of LLM serving, and it explains why so much innovation has gone into making KV cache management smarter.</p>
+<p>First time I ran numbers, I did not believe them. Recomputed three times. Long-context KV cache can use <em>more memory than model weights</em>. This is central resource problem in LLM serving. Reason many innovations target KV cache management.</p>
 
-<p>Back at our restaurant: the KV cache is like the chef&rsquo;s memory of what every customer has ordered so far. The longer the tasting menu goes on, the more notes the chef has to keep. With enough customers at long enough meals, the notebook becomes bigger than the recipe book.</p>
+<p>Back at restaurant: KV cache = chef&rsquo;s notes on what every customer ordered. Longer tasting menu, more notes. Enough customers and long meals, notebook gets bigger than recipe book.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 <!--  CONTINUOUS BATCHING                                               -->
@@ -390,15 +390,15 @@
 
 <h2>Continuous Batching: The Conveyor Belt Upgrade</h2>
 
-<p>So we have our restaurant with one chef, and customers are trickling in. A natural idea: batch the orders. Instead of making one dish at a time, the chef prepares multiple courses for multiple customers simultaneously. In GPU terms, we process tokens for multiple requests in the same forward pass, amortizing the cost of reading model weights from memory across more useful work.</p>
+<p>We have restaurant with one chef, customers trickling in. Natural idea: batch orders. Chef makes multiple courses for multiple customers at once. In GPU terms, process tokens for multiple requests in one forward pass, spreading weight-read cost across more useful work.</p>
 
-<p>The naive approach is <strong>static batching</strong>. Four customers walk in. The chef takes all their orders, starts cooking, and doesn&rsquo;t accept new customers until all four are done. The problem? Customer A ordered a 50-token appetizer. Customer D ordered a 2,000-token banquet. Customers A, B, and C finish in seconds and sit around waiting for D. Their table is occupied, their KV cache memory is wasted, and no new customers can sit down.</p>
+<p>Naive approach = <strong>static batching</strong>. Four customers arrive. Chef takes all orders, starts cooking, accepts nobody new until all four finish. Problem: Customer A ordered 50-token appetizer. Customer D ordered 2,000-token banquet. A, B, C finish fast and wait for D. Table stays occupied, KV cache memory gets wasted, new customers cannot sit.</p>
 
-<p>This is exactly what happens with naive LLM batching. Requests get padded to the length of the longest sequence in the batch, GPU cycles are wasted on padding tokens, and shorter requests can&rsquo;t release their resources until the longest one finishes.</p>
+<p>Same problem in naive LLM batching. Requests pad to longest sequence in batch, GPU cycles burn on padding tokens, shorter requests cannot free resources until longest one ends.</p>
 
-<p>The fix, introduced in the Orca paper (Yu et al., 2022), is <strong>continuous batching</strong>&mdash;also called iteration-level scheduling or in-flight batching. Instead of processing a batch as a monolithic unit, the scheduler makes decisions at every single decode step. When Customer A finishes after 50 tokens, her seat is immediately freed and Customer E (who&rsquo;s been waiting in line) slides right in. No waiting. No padding. No wasted memory.</p>
+<p>Fix, from Orca paper (Yu et al., 2022), = <strong>continuous batching</strong>&mdash;also called iteration-level scheduling or in-flight batching. Instead of one monolithic batch, scheduler decides at every decode step. When Customer A finishes after 50 tokens, her seat frees immediately and Customer E slides in. No waiting. No padding. No wasted memory.</p>
 
-<p>Let me walk through a toy example. We have GPU capacity for a batch of 3, and 5 requests arrive:</p>
+<p>Toy example. GPU can hold batch size 3, and 5 requests arrive:</p>
 
 <pre><code>Time step 1: [Req A (token 1), Req B (token 1), Req C (token 1)]
 Time step 2: [Req A (token 2), Req B (token 2), Req C (token 2)]
@@ -408,11 +408,11 @@ Time step 4: [Req D (prefill), Req B (token 4), Req C (done!)]
              &rarr; Req C exits, Req E enters
 Time step 5: [Req D (token 1), Req B (token 5), Req E (prefill)]</code></pre>
 
-<p>The batch slots stay fully occupied. No one waits unnecessarily. In benchmarks, continuous batching delivers 10&ndash;23x higher throughput compared to static batching, depending on the variance in request lengths. The more diverse the request lengths, the bigger the win.</p>
+<p>Batch slots stay full. Nobody waits without reason. Benchmarks show 10&ndash;23x higher throughput than static batching, depending on request-length variance. More length diversity, bigger win.</p>
 
-<p>Our restaurant has upgraded from a sit-down dinner format to a conveyor belt sushi bar. Seats are always full. When a customer leaves, the next one sits down instantly. The chef never idles.</p>
+<p>Restaurant upgraded from sit-down dinner to conveyor-belt sushi bar. Seats stay full. Customer leaves, next customer sits immediately. Chef never idles.</p>
 
-<p>There&rsquo;s a subtlety I glossed over: notice that in time step 4, Request D is doing its <em>prefill</em> (processing its full prompt) while Requests B and C are doing <em>decode</em> (generating one token each). These two operations have very different computational profiles&mdash;prefill is compute-heavy, decode is memory-heavy. Modern serving engines carefully schedule these together to maximize utilization of both compute and memory bandwidth simultaneously. Getting this balance right is an art, and I&rsquo;m still developing my intuition for when the scheduler makes which tradeoff.</p>
+<p>One subtle point: in time step 4, Request D does <em>prefill</em> while Requests B and C do <em>decode</em>. These workloads differ&mdash;prefill is compute-heavy, decode is memory-heavy. Modern serving engines schedule them together to use compute and memory bandwidth at same time. Getting balance right is art.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 <!--  PAGEDATTENTION                                                    -->
@@ -490,17 +490,17 @@ Net: we got 4 tokens (3 accepted + 1 resampled) for the cost of
 
 <h2>Tensor Parallelism for Serving</h2>
 
-<p>When a model is too large to fit on a single GPU&mdash;which is the case for anything above about 13B parameters at fp16&mdash;we need to split it across multiple GPUs. For serving (as opposed to training), <strong>tensor parallelism</strong> is the preferred approach because it splits individual matrix multiplications across GPUs, keeping latency low.</p>
+<p>When model is too large for one GPU&mdash;anything above about 13B parameters at fp16&mdash;we split it across GPUs. For serving, unlike training, <strong>tensor parallelism</strong> is preferred because it splits individual matrix multiplications across GPUs and keeps latency low.</p>
 
-<p>The core idea: a large matrix multiplication can be decomposed into smaller ones that run in parallel on different GPUs, with a small communication step to combine results.</p>
+<p>Core idea: one large matrix multiplication breaks into smaller ones that run in parallel on different GPUs, then a small communication step combines results.</p>
 
-<p>Consider a weight matrix of shape [4096, 16384] in a feed-forward layer. With 4 GPUs, we can split this by columns: each GPU gets a [4096, 4096] slice. Every GPU receives the same input, multiplies by its slice, and the results get concatenated. This is <strong>column parallelism</strong>.</p>
+<p>Take weight matrix [4096, 16384] in feed-forward layer. With 4 GPUs, split by columns: each GPU gets [4096, 4096] slice. Every GPU receives same input, multiplies by its slice, results get concatenated. This is <strong>column parallelism</strong>.</p>
 
-<p>Alternatively, we split by rows: each GPU gets a [1024, 16384] slice, and the input is also split. Each GPU computes a partial result, and the results are summed (an <strong>all-reduce</strong> operation). This is <strong>row parallelism</strong>.</p>
+<p>Or split by rows: each GPU gets [1024, 16384] slice, and input is split too. Each GPU computes partial result, then results are summed with <strong>all-reduce</strong>. This is <strong>row parallelism</strong>.</p>
 
-<p>In practice, transformer serving uses both. The attention Q/K/V projections use column parallelism&mdash;each GPU handles a subset of attention heads, which is natural since heads are independent. The output projection and feed-forward layers use a combination where one matrix is split by columns and the following one by rows, so only one all-reduce is needed per pair.</p>
+<p>In practice, transformer serving uses both. Attention Q/K/V projections use column parallelism&mdash;each GPU handles subset of attention heads, which fits because heads are independent. Output projection and feed-forward layers use mixed pattern: one matrix split by columns, next by rows, so only one all-reduce is needed per pair.</p>
 
-<p>The catch is communication overhead. The all-reduce requires every GPU to send data to every other GPU. With NVLink (the high-bandwidth interconnect within a single machine), this takes about 10 microseconds for typical tensor sizes. Across machines over InfiniBand, it&rsquo;s 10&ndash;100x slower. This is why tensor parallelism works well within a single 8-GPU node but breaks down across nodes. For cross-node scaling, <strong>pipeline parallelism</strong> (splitting by layers rather than within layers) has lower communication overhead but higher latency, making it more common for offline batch workloads than latency-sensitive serving.</p>
+<p>Catch = communication overhead. All-reduce makes every GPU send data to every other GPU. With NVLink (high-bandwidth link inside one machine), this is about 10 microseconds for typical tensor sizes. Across machines over InfiniBand, it is 10&ndash;100x slower. That is why tensor parallelism works well inside one 8-GPU node but breaks across nodes. For cross-node scaling, <strong>pipeline parallelism</strong> (split by layers, not within layers) has lower communication overhead but higher latency, so it is more common for offline batch work than latency-sensitive serving.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 <!--  SERVING FRAMEWORKS                                                -->
@@ -508,19 +508,19 @@ Net: we got 4 tokens (3 accepted + 1 resampled) for the cost of
 
 <h2>The Serving Framework Landscape</h2>
 
-<p>With all these techniques&mdash;KV cache, continuous batching, PagedAttention, speculative decoding, tensor parallelism&mdash;you might wonder whether you need to implement them yourself. You don&rsquo;t. Several frameworks package all of this into deployable systems. But choosing between them is a real decision, and the tradeoffs are not obvious.</p>
+<p>With KV cache, continuous batching, PagedAttention, speculative decoding, tensor parallelism, question comes up: do you build all this yourself? No. Several frameworks package it into deployable systems. But choice still matters, and tradeoffs are not obvious.</p>
 
-<p><strong>vLLM</strong> is the most widely adopted open-source serving engine as of 2024. It pioneered PagedAttention, supports continuous batching, offers an OpenAI-compatible API out of the box, and runs on both NVIDIA and AMD GPUs. It&rsquo;s written in Python with custom CUDA kernels for the hot path. Setup takes about 10 minutes. If you have no other constraints, start here.</p>
+<p><strong>vLLM</strong> is most adopted open-source serving engine as of 2024. It pioneered PagedAttention, supports continuous batching, ships OpenAI-compatible API, and runs on NVIDIA and AMD GPUs. Written in Python with custom CUDA kernels on hot path. Setup takes about 10 minutes. No other constraints? Start here.</p>
 
-<p><strong>TensorRT-LLM</strong> is NVIDIA&rsquo;s optimized inference engine. It compiles models into highly tuned CUDA kernels, supports aggressive quantization (FP8, INT4 natively), and delivers the highest raw throughput and lowest latency on NVIDIA hardware. The cost is complexity: setup involves model compilation steps that can take hours, and debugging is harder because you&rsquo;re working with a C++ runtime. It only works on NVIDIA GPUs. For teams with NVIDIA hardware and dedicated ML infrastructure engineers, it&rsquo;s the performance ceiling.</p>
+<p><strong>TensorRT-LLM</strong> is NVIDIA&rsquo;s optimized inference engine. It compiles models into highly tuned CUDA kernels, supports aggressive quantization (FP8, INT4 natively), and gives highest raw throughput and lowest latency on NVIDIA hardware. Cost = complexity: setup needs model compilation that can take hours, and debugging is harder because runtime is C++. NVIDIA-only. For teams with NVIDIA hardware and dedicated ML infra engineers, this is performance ceiling.</p>
 
-<p><strong>Text Generation Inference (TGI)</strong> from Hugging Face is built in Rust for reliability and ease of deployment. It has native integration with the Hugging Face model hub, which means deploying a new model is often a one-line command. It supports multi-GPU inference and works on AMD GPUs. Performance is good but not at the frontier. Where TGI shines is time-to-production: you can go from &ldquo;I found a model on the hub&rdquo; to &ldquo;it&rsquo;s running behind an API&rdquo; in minutes.</p>
+<p><strong>Text Generation Inference (TGI)</strong> from Hugging Face is built in Rust for reliability and easy deployment. It integrates natively with Hugging Face model hub, so deploying new model is often one-line command. Supports multi-GPU inference and AMD GPUs. Performance is good, not frontier. TGI shines on time-to-production: go from &ldquo;I found a model on hub&rdquo; to &ldquo;it&rsquo;s running behind an API&rdquo; in minutes.</p>
 
-<p><strong>SGLang</strong> takes a different angle. Its primary innovation is programmable generation&mdash;you can enforce output structure (JSON schemas, regex patterns) and build branching logic directly into the generation process. For agentic applications where the LLM needs to produce structured output that feeds into downstream code, SGLang handles constraints that other frameworks bolt on as afterthoughts.</p>
+<p><strong>SGLang</strong> takes different angle. Main innovation = programmable generation&mdash;you can enforce output structure (JSON schemas, regex patterns) and build branching logic into generation itself. For agentic applications, where LLM must emit structured output feeding downstream code, SGLang handles constraints other frameworks often bolt on later.</p>
 
-<p><strong>Ollama</strong> is the outlier in this list. It&rsquo;s not designed for production scale&mdash;it&rsquo;s designed for running LLMs locally on your own machine. Under the hood, it uses llama.cpp, a C++ inference engine that runs efficiently on CPUs and consumer GPUs using GGUF-format quantized models. I include it because many engineers encounter Ollama first, and understanding that it occupies a completely different niche (local development, prototyping, privacy-sensitive workloads) prevents the mistake of trying to scale it to serve 500 users.</p>
+<p><strong>Ollama</strong> is outlier. Not built for production scale. Built for running LLMs locally on your machine. Under hood it uses llama.cpp, C++ inference engine that runs well on CPUs and consumer GPUs with GGUF quantized models. Important because many engineers meet Ollama first. Knowing it fills different niche&mdash;local development, prototyping, privacy-sensitive workloads&mdash;prevents mistake of scaling it for 500 users.</p>
 
-<p>I still sometimes get tripped up on framework selection because the landscape shifts so fast. A framework that was experimental six months ago might be production-ready now, and benchmarks from three months ago might be irrelevant. The safest strategy: start with vLLM (broadest community, fastest iteration), and switch to TensorRT-LLM if you&rsquo;ve measured that you need more performance and have the engineering team to handle the complexity.</p>
+<p>I still get tripped up on framework choice because landscape moves fast. Framework experimental six months ago may be production-ready now. Benchmarks from three months ago may be useless. Safest path: start with vLLM, which has broadest community and fastest iteration. Switch to TensorRT-LLM only if measurements say you need more performance and team can absorb complexity.</p>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 <!--  STREAMING AND API DESIGN                                          -->

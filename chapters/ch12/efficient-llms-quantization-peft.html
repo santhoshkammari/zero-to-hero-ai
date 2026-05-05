@@ -423,7 +423,7 @@ dequantized = (quantized - zero_point) &times; scale</code></pre>
 
 <p>Group-128 = industry standard for 4-bit LLM quantization. No clean theoretical explanation for why 128 is magic number, but empirically hits sweet spot between quality and overhead. Every major method &mdash; GPTQ, AWQ, GGUF k-quant &mdash; defaults to it.</p>
 
-<p>Our suitcase analogy extends: per-tensor is like one compression bag for all your clothes. Per-group is like rolling each outfit individually &mdash; more packaging overhead, but everything arrives in better shape.</p>
+<p>Suitcase analogy extends: per-tensor = one compression bag for all clothes. Per-group = rolling each outfit individually &mdash; more packaging overhead, but everything arrives in better shape.</p>
 
 <!-- ═══════════════════════════════════════════ -->
 <!-- POST-TRAINING QUANTIZATION -->
@@ -431,17 +431,17 @@ dequantized = (quantized - zero_point) &times; scale</code></pre>
 
 <h2>Post-Training Quantization: GPTQ, AWQ, and GGUF</h2>
 
-<p>Everything so far has been basic rounding. The question is: can we do something smarter than naive rounding to minimize the damage? That&rsquo;s what the big post-training quantization (PTQ) methods do. You take a pre-trained model, run it through a quantization algorithm, and get a smaller model with (hopefully) minimal quality loss. No retraining required.</p>
+<p>Everything so far = basic rounding. Question: can we do smarter than naive rounding to minimize damage? That&rsquo;s what post-training quantization (PTQ) methods do. Take pre-trained model, run through quantization algorithm, get smaller model with minimal quality loss. No retraining required.</p>
 
-<p>Let me walk through the three methods that matter most, in the order they appeared.</p>
+<p>Three methods that matter most, in order of appearance.</p>
 
 <h3>GPTQ: Error Compensation</h3>
 
-<p>GPTQ (Frantar et al., 2023) was the first method that could reliably quantize LLMs to 4 bits without catastrophic quality loss. The key insight: when you round one weight and introduce error, you can <em>adjust the remaining unquantized weights</em> to compensate.</p>
+<p>GPTQ (Frantar et al., 2023) = first method reliably quantizing LLMs to 4 bits without catastrophic quality loss. Key insight: when you round one weight and introduce error, you can <em>adjust remaining unquantized weights</em> to compensate.</p>
 
-<p>Imagine you&rsquo;re packing a suitcase and you fold a shirt a bit too tight &mdash; it creates a bulge. Instead of ignoring it, you rearrange the next few items to smooth things out. GPTQ does this for every weight, one at a time, using the <strong>Hessian</strong> (second-order gradient information from a small calibration dataset) to figure out which adjustments matter most.</p>
+<p>Like packing suitcase &mdash; fold shirt too tight, creates bulge. Instead of ignoring it, rearrange next items to smooth things out. GPTQ does this for every weight, using <strong>Hessian</strong> (second-order gradient info from small calibration dataset) to figure out which adjustments matter most.</p>
 
-<p>In practice, you feed 128&ndash;256 representative examples through the model to compute the Hessian, then quantize layer by layer. The whole process takes a few hours for a 7B model on a single GPU.</p>
+<p>In practice: feed 128&ndash;256 representative examples through model to compute Hessian, quantize layer by layer. Whole process takes few hours for 7B model on single GPU.</p>
 
 <pre><code># GPTQ with the AutoGPTQ library
 from auto_gptq import AutoGPTQForCausalLM, BaseQuantizeConfig
@@ -457,13 +457,13 @@ model.quantize(calibration_data)    # needs ~128 examples
 model.save_quantized("model-gptq-4bit")
 # 14 GB model &rarr; ~3.9 GB on disk</code></pre>
 
-<p>GPTQ was a breakthrough, but it has limitations. The quantization process is slow. Quality depends heavily on having good calibration data. And the Hessian-based compensation, while smart, is expensive to compute.</p>
+<p>GPTQ was breakthrough, but has limitations. Quantization process slow. Quality depends on good calibration data. Hessian-based compensation smart but expensive to compute.</p>
 
 <h3>AWQ: Protecting What Matters</h3>
 
-<p>AWQ (Lin et al., 2023) came next and took a different philosophical approach. Instead of compensating for errors after the fact, AWQ asks: <em>which weights matter most, and can we protect them?</em></p>
+<p>AWQ (Lin et al., 2023) took different approach. Instead of compensating errors after the fact, asks: <em>which weights matter most, can we protect them?</em></p>
 
-<p>The answer comes from looking at activations. About 1% of weight channels consistently produce large-magnitude activations &mdash; they&rsquo;re &ldquo;salient&rdquo; channels that carry disproportionate importance. If naive quantization crushes these salient weights, quality collapses. AWQ&rsquo;s trick: scale up the salient weights <em>before</em> quantizing (giving them more of the INT4 range), and scale down the corresponding activations to compensate. The mathematical result is identical, but the salient weights get much finer quantization resolution.</p>
+<p>Answer comes from activations. ~1% of weight channels consistently produce large-magnitude activations &mdash; &ldquo;salient&rdquo; channels carrying disproportionate importance. Naive quantization crushes these = quality collapses. AWQ trick: scale up salient weights <em>before</em> quantizing (giving them more INT4 range), scale down corresponding activations to compensate. Math identical, but salient weights get much finer quantization resolution.</p>
 
 <pre><code># AWQ conceptual trick (not actual code, but the idea)
 #
@@ -473,13 +473,13 @@ model.save_quantized("model-gptq-4bit")
 # s is chosen based on activation magnitudes
 # The math is identical: (W &middot; s) &middot; (x / s) = W &middot; x</code></pre>
 
-<p>AWQ tends to produce slightly better quality than GPTQ at the same bit width (roughly 0.1&ndash;0.2 perplexity points closer to the FP16 baseline), quantizes faster, and integrates beautifully with vLLM for production serving. For GPU deployment, it&rsquo;s become the default choice in 2024.</p>
+<p>AWQ produces slightly better quality than GPTQ at same bit width (~0.1&ndash;0.2 perplexity points closer to FP16 baseline), quantizes faster, integrates well with vLLM for production serving. Default choice for GPU deployment in 2024.</p>
 
 <h3>GGUF: The Laptop Format</h3>
 
-<p>GPTQ and AWQ are GPU-first formats. <strong>GGUF</strong> (GPT-Generated Unified Format) is something completely different: it&rsquo;s the format used by llama.cpp, and it&rsquo;s designed for <strong>CPU inference</strong>. This is what lets you run a 7B model on a MacBook with no GPU.</p>
+<p>GPTQ and AWQ are GPU-first formats. <strong>GGUF</strong> (GPT-Generated Unified Format) = completely different: format used by llama.cpp, designed for <strong>CPU inference</strong>. This lets you run 7B model on MacBook with no GPU.</p>
 
-<p>GGUF offers a whole spectrum of quantization levels, each a different tradeoff:</p>
+<p>GGUF offers spectrum of quantization levels, each different tradeoff:</p>
 
 <pre><code>Quant Type    Bits/Weight    7B Size     Quality
 ──────────────────────────────────────────────────
@@ -489,9 +489,9 @@ Q5_K_M        ~5.7 bits      ~4.8 GB     Very good
 Q6_K          ~6.6 bits      ~5.5 GB     Excellent
 Q8_0          8.0 bits       ~7.2 GB     Near-lossless</code></pre>
 
-<p>The &ldquo;K&rdquo; in those names stands for <strong>k-quant</strong>, a clever technique that allocates more bits to important layers (like attention projections) and fewer bits to less important ones (like certain feed-forward layers). The &ldquo;M&rdquo; is for medium aggressiveness. There&rsquo;s also &ldquo;S&rdquo; for small (more aggressive, lower quality) and &ldquo;L&rdquo; for large (less aggressive, higher quality).</p>
+<p>&ldquo;K&rdquo; = <strong>k-quant</strong>, technique allocating more bits to important layers (attention projections) and fewer to less important ones (certain feed-forward layers). &ldquo;M&rdquo; = medium aggressiveness. Also &ldquo;S&rdquo; for small (more aggressive, lower quality) and &ldquo;L&rdquo; for large (less aggressive, higher quality).</p>
 
-<p>GGUF matters because it democratized local LLM access. Tools like Ollama, LM Studio, and Jan all use GGUF under the hood. When someone says &ldquo;I run LLaMA on my laptop,&rdquo; they&rsquo;re almost certainly using a GGUF quantized model.</p>
+<p>GGUF democratized local LLM access. Ollama, LM Studio, Jan all use GGUF under hood. &ldquo;Run LLaMA on my laptop&rdquo; = almost certainly GGUF quantized model.</p>
 
 <p>Coming back to our scenario: if a client wants to run the model on their own hardware without a GPU, GGUF Q4_K_M is the answer. If we&rsquo;re serving from a GPU in the cloud, AWQ 4-bit with vLLM. Different suitcases for different trips.</p>
 
