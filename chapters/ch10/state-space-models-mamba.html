@@ -341,11 +341,11 @@
 
 <h2>From Continuous to Discrete</h2>
 
-<p>Those equations describe a system evolving in continuous time — temperature changing smoothly, second by second. But our thermostat samples the temperature once per minute. Our language model processes one token at a time. We need to convert the continuous equations into discrete steps.</p>
+<p>Those equations describe system evolving in continuous time — temperature changing smoothly. But thermostat samples once per minute. Language model processes one token at a time. Need to convert continuous equations into discrete steps.</p>
 
-<p>This process is called <strong>discretization</strong>, and the most common technique is the <strong>zero-order hold</strong>. The idea: assume the input u(t) stays constant between sample points. If the furnace is set to "high" when we sample at time k, assume it stays at "high" until the next sample at time k+1.</p>
+<p>Process called <strong>discretization</strong>. Most common technique: <strong>zero-order hold</strong>. Idea: assume input u(t) stays constant between sample points. Furnace set to "high" at time k? Stays "high" until next sample at k+1.</p>
 
-<p>Under that assumption, we can solve the differential equation exactly and get discrete versions of A and B:</p>
+<p>Under that assumption, solve differential equation exactly → discrete versions of A and B:</p>
 
 <pre><code class="language-python"># Zero-order hold discretization:
 #
@@ -357,21 +357,21 @@
 # y_k = C · x_k                    ← output readout
 </code></pre>
 
-<p>Look at that recurrence: x_k = Ā · x_{k-1} + B̄ · u_k. The new state is a linear combination of the previous state and the current input. If you squint, this looks <em>exactly</em> like a vanilla RNN — hidden state times a weight matrix plus input times another weight matrix.</p>
+<p>That recurrence: x_k = Ā · x_{k-1} + B̄ · u_k. New state = linear combination of previous state + current input. Squint and it looks <em>exactly</em> like vanilla RNN — hidden state × weight matrix + input × another weight matrix.</p>
 
-<p>And that's not a coincidence. An SSM <em>is</em> a kind of linear RNN. But there are two crucial differences that make it much more powerful than the RNNs we built in earlier sections. The first is that the A matrix isn't random — it comes from a carefully designed continuous-time system. The second difference is even more important, and it's what we'll explore next.</p>
+<p>Not coincidence. SSM <em>is</em> a linear RNN. Two crucial differences make it much more powerful than earlier RNNs. First: A matrix isn't random — comes from carefully designed continuous-time system. Second difference even more important — explored next.</p>
 
-<p>One thing about the step size <strong>Δ</strong>: it controls how much of the continuous dynamics happen between each discrete step. A large Δ means big jumps — the system evolves a lot between samples. A small Δ means tiny steps — the system barely changes. Think of it as the "playback speed" of the underlying continuous process. This knob will become very important when we get to Mamba.</p>
+<p>About step size <strong>Δ</strong>: controls how much continuous dynamics happen between each discrete step. Large Δ = big jumps, system evolves lot between samples. Small Δ = tiny steps, system barely changes. Think of it as "playback speed" of underlying continuous process. This knob becomes very important in Mamba.</p>
 
 <!-- ══════════════════════ CONVOLUTION RECURRENCE ══════════════════════ -->
 
 <h2>The Convolution–Recurrence Trick</h2>
 
-<p>Here's the part that made me sit up in my chair.</p>
+<p>This is the part that made me sit up.</p>
 
-<p>We have a recurrence: x_k = Ā · x_{k-1} + B̄ · u_k. Let's trace what happens if we unroll it from the beginning, starting with x_0 = 0 (empty state). At step 1, the state is B̄ · u_1. At step 2, it's Ā · B̄ · u_1 + B̄ · u_2. At step 3, it's Ā² · B̄ · u_1 + Ā · B̄ · u_2 + B̄ · u_3.</p>
+<p>We have recurrence: x_k = Ā · x_{k-1} + B̄ · u_k. Unroll from beginning, x_0 = 0 (empty state). Step 1: state = B̄ · u_1. Step 2: Ā · B̄ · u_1 + B̄ · u_2. Step 3: Ā² · B̄ · u_1 + Ā · B̄ · u_2 + B̄ · u_3.</p>
 
-<p>The output at step k, after applying C, is:</p>
+<p>Output at step k, after applying C:</p>
 
 <pre><code class="language-python"># y_k = C · Ā^(k-1) · B̄ · u_1
 #     + C · Ā^(k-2) · B̄ · u_2
@@ -386,61 +386,61 @@
 # And y = K ∗ u    (where ∗ means convolution)
 </code></pre>
 
-<p>Let me make sure this lands. The output at every position is a weighted combination of <em>all previous inputs</em>, and the weights are determined entirely by the matrices A, B, C and the step size Δ. Those weights form a fixed pattern — a <strong>convolution kernel</strong>. And convolutions can be computed in parallel using the Fast Fourier Transform (FFT), in O(n log n) time.</p>
+<p>Key insight: output at every position = weighted combination of <em>all previous inputs</em>. Weights determined entirely by matrices A, B, C and step size Δ. Weights form fixed pattern — a <strong>convolution kernel</strong>. Convolutions computed in parallel via Fast Fourier Transform (FFT), O(n log n) time.</p>
 
-<p>This is the magic: the same model has <strong>two faces</strong>.</p>
+<p>This is the magic: same model has <strong>two faces</strong>.</p>
 
-<p>During <strong>training</strong>, when you have the entire sequence available, you compute the kernel K once, then convolve it with the full input. The FFT makes this parallel and fast — no sequential bottleneck, no vanishing gradients from unrolling through time.</p>
+<p>During <strong>training</strong>: entire sequence available → compute kernel K once, convolve with full input. FFT makes it parallel and fast — no sequential bottleneck, no vanishing gradients from unrolling through time.</p>
 
-<p>During <strong>inference</strong>, when tokens arrive one at a time, you run the recurrence: take the previous state, multiply by Ā, add B̄ times the new input, read out with C. Each step costs O(1) in time and memory. The state has a fixed size regardless of how many tokens you've processed.</p>
+<p>During <strong>inference</strong>: tokens arrive one at a time → run recurrence. Previous state × Ā, add B̄ × new input, read out with C. Each step O(1) in time and memory. State = fixed size regardless of tokens processed.</p>
 
-<p>Compare this to our two earlier sequence models. RNNs are recurrences — they can do O(1) per step at inference, but they're painfully sequential during training and suffer from vanishing gradients. Transformers are parallel during training (great!), but their attention mechanism costs O(n²) for a sequence of length n, and their KV cache grows linearly at inference.</p>
+<p>Compare to earlier sequence models. RNNs = recurrences — O(1) per step at inference, but painfully sequential during training, vanishing gradients. Transformers = parallel during training (great!), but attention costs O(n²) for length n, KV cache grows linearly at inference.</p>
 
-<p>SSMs get O(n log n) parallel training <em>and</em> O(1)-per-step inference. I remember reading this and thinking "there has to be a catch." There is. But it's not where I expected.</p>
+<p>SSMs get O(n log n) parallel training <em>and</em> O(1)-per-step inference. "There has to be a catch." There is. Not where expected.</p>
 
 <!-- ══════════════════════ HiPPO ══════════════════════ -->
 
 <h2>HiPPO — Teaching the State to Remember</h2>
 
-<p>The catch is the A matrix. If you pick a random A, the recurrence either explodes (eigenvalues larger than 1 amplify previous states exponentially) or decays (eigenvalues smaller than 1 shrink old inputs to zero). Either way, the model forgets the distant past. This is the same vanishing/exploding gradient problem that plagued vanilla RNNs.</p>
+<p>Catch = A matrix. Random A → recurrence either explodes (eigenvalues > 1 amplify states exponentially) or decays (eigenvalues < 1 shrink old inputs to zero). Either way, model forgets distant past. Same vanishing/exploding gradient problem that plagued vanilla RNNs.</p>
 
-<p>Back to our thermostat. Imagine the system needs to remember that a window was opened 3 hours ago, because the room still hasn't fully recovered. A random A matrix would have lost that information within a few time steps. We need an A matrix that's specifically designed to preserve long-range history.</p>
+<p>Back to thermostat. System needs to remember window opened 3 hours ago — room still hasn't recovered. Random A matrix loses that info within few time steps. Need A matrix specifically designed to preserve long-range history.</p>
 
-<p>This is where <strong>HiPPO</strong> comes in — the <strong>High-order Polynomial Projection Operator</strong>. The name sounds intimidating, but the intuition isn't.</p>
+<p>Enter <strong>HiPPO</strong> — <strong>High-order Polynomial Projection Operator</strong>. Name sounds intimidating, intuition isn't.</p>
 
-<p>Think of it this way. You're watching a stock price over the course of a day. At any given moment, you want to be able to recall the general shape of the price curve over the entire day so far — not every tick, but the trend, the bumps, the overall trajectory. One way to do this is to fit a polynomial to the price history. A degree-0 polynomial gives you the average. Degree-1 gives you the average plus a slope. Degree-2 adds curvature. Higher degrees capture finer details.</p>
+<p>Think of it: watching stock price over course of day. At any moment, want to recall general shape of price curve over entire day so far — not every tick, but trend, bumps, overall trajectory. One way: fit polynomial to price history. Degree-0 = average. Degree-1 = average + slope. Degree-2 adds curvature. Higher degrees capture finer details.</p>
 
-<p>HiPPO says: at every time step, maintain a set of coefficients that represent the best polynomial fit to the entire input history. Specifically, it uses <strong>Legendre polynomials</strong> — a family of orthogonal polynomials that mathematicians have studied for centuries. Orthogonal means each coefficient captures independent information about the history, with no redundancy.</p>
+<p>HiPPO says: at every time step, maintain coefficients representing best polynomial fit to entire input history. Uses <strong>Legendre polynomials</strong> — family of orthogonal polynomials studied for centuries. Orthogonal = each coefficient captures independent information about history, no redundancy.</p>
 
-<p>The beautiful part: there exists a specific matrix A (the HiPPO matrix) such that if you run the recurrence x_k = Ā · x_{k-1} + B̄ · u_k with this particular A, the state x_k <em>automatically</em> encodes the optimal polynomial approximation of everything you've seen so far. The state is, in a provable mathematical sense, the best possible fixed-size compression of the input history.</p>
+<p>Beautiful part: specific matrix A (HiPPO matrix) exists such that running recurrence x_k = Ā · x_{k-1} + B̄ · u_k with this particular A → state x_k <em>automatically</em> encodes optimal polynomial approximation of everything seen so far. State is, provably, best possible fixed-size compression of input history.</p>
 
-<p>I'm still developing my intuition for <em>why</em> this particular matrix has this property — the derivation involves measure theory and function approximation in ways that take a while to absorb. But the practical takeaway is clear: models initialized with HiPPO can capture dependencies thousands of steps in the past, where vanilla RNNs and even LSTMs fail completely.</p>
+<p>Still developing intuition for <em>why</em> this particular matrix has this property — derivation involves measure theory and function approximation. Practical takeaway: models initialized with HiPPO capture dependencies thousands of steps back, where vanilla RNNs and even LSTMs fail completely.</p>
 
-<p>The A matrix in HiPPO isn't a learned weight in the usual sense. It's more like an architectural choice — a carefully designed inductive bias that gives the model a head start on the problem of remembering. Think of it as the difference between trying to memorize a phone number by staring at it (random A) versus using a mnemonic system (HiPPO). Same brain, radically different retention.</p>
+<p>HiPPO's A matrix isn't learned weight in usual sense. More like architectural choice — carefully designed inductive bias giving model head start on remembering. Difference between memorizing phone number by staring (random A) vs. using mnemonic system (HiPPO). Same brain, radically different retention.</p>
 
 <!-- ══════════════════════ S4 ══════════════════════ -->
 
 <h2>S4 — Making It Practical</h2>
 
-<p>HiPPO gave us the right A matrix. The convolution–recurrence duality gave us two modes of computation. But there was an engineering problem: computing the convolution kernel K = [C·B̄, C·Ā·B̄, C·Ā²·B̄, ...] requires repeated matrix powers of Ā, and for large state dimensions and long sequences, this is expensive.</p>
+<p>HiPPO gave right A matrix. Convolution–recurrence duality gave two compute modes. Engineering problem remained: computing kernel K = [C·B̄, C·Ā·B̄, C·Ā²·B̄, ...] requires repeated matrix powers of Ā — expensive for large state dimensions and long sequences.</p>
 
-<p><strong>S4</strong> — Structured State Spaces for Sequence Modeling (Gu et al., 2022) — solved this by exploiting the specific structure of the HiPPO matrix. The HiPPO A is not an arbitrary matrix; it has a low-rank-plus-diagonal structure. S4 decomposes the kernel computation using connections to <strong>Cauchy kernels</strong> from numerical linear algebra, reducing the cost dramatically. The details are dense, but the effect is practical: you can now compute the SSM kernel for sequences of thousands of tokens in a reasonable amount of time on a GPU.</p>
+<p><strong>S4</strong> — Structured State Spaces for Sequence Modeling (Gu et al., 2022) — solved this by exploiting HiPPO matrix structure. HiPPO A has low-rank-plus-diagonal structure. S4 decomposes kernel computation using <strong>Cauchy kernels</strong> from numerical linear algebra, reducing cost dramatically. Details dense, but effect practical: compute SSM kernel for thousands of tokens in reasonable time on GPU.</p>
 
-<p>S4 was the proof that SSMs could compete with transformers on real benchmarks. The <strong>Long Range Arena</strong> — a suite of tasks designed to test long-range dependency modeling — became the proving ground. Tasks like classifying a document by its full content (sequence length 1K–4K), determining whether two points in an image are connected by a path (sequence length 1K–16K), and matching patterns in long byte-level sequences. Transformers struggled on several of these tasks. S4 crushed them, often by wide margins, while using a fraction of the compute.</p>
+<p>S4 = proof SSMs could compete with transformers on real benchmarks. <strong>Long Range Arena</strong> — suite of tasks testing long-range dependency modeling — became proving ground. Tasks: classifying document by full content (1K–4K length), determining if two points connected by path in image (1K–16K), matching patterns in long byte-level sequences. Transformers struggled on several. S4 crushed them, often by wide margins, fraction of compute.</p>
 
-<p>But S4 had a fundamental limitation that I glossed over earlier, and it's time to confront it.</p>
+<p>But S4 had fundamental limitation. Time to confront it.</p>
 
-<p>The matrices A, B, and C in S4 are <strong>fixed</strong>. They don't change based on what the model is looking at. Every token in the sequence gets processed with the exact same dynamics. The word "the" and the word "emergency" pass through identical state transitions. The model has no ability to <em>selectively</em> pay more attention to some inputs and less to others.</p>
+<p>Matrices A, B, C in S4 are <strong>fixed</strong>. Don't change based on what model sees. Every token processed with exact same dynamics. "the" and "emergency" pass through identical state transitions. Model has no ability to <em>selectively</em> pay more attention to some inputs and less to others.</p>
 
-<p>For our thermostat, this would be like processing the signal "window opened" with the same weight as "furnace humming at steady state." One of those signals demands immediate state changes. The other is background noise. A fixed-parameter SSM can't tell the difference.</p>
+<p>For thermostat: processing "window opened" with same weight as "furnace humming at steady state." One demands immediate state changes. Other = background noise. Fixed-parameter SSM can't tell difference.</p>
 
 <!-- ══════════════════════ MAMBA ══════════════════════ -->
 
 <h2>Mamba — The Selective Revolution</h2>
 
-<p><strong>Mamba</strong> (Gu &amp; Dao, December 2023) makes one change to the SSM framework. One change. And it transforms the entire field.</p>
+<p><strong>Mamba</strong> (Gu &amp; Dao, December 2023) makes one change to SSM framework. One change. Transforms entire field.</p>
 
-<p>In S4, the matrices B, C, and the step size Δ are learned once during training and then applied identically to every token. In Mamba, <strong>B, C, and Δ become functions of the current input</strong>.</p>
+<p>In S4: B, C, Δ learned once during training, applied identically to every token. In Mamba: <strong>B, C, and Δ become functions of current input</strong>.</p>
 
 <pre><code class="language-python"># S4 (fixed parameters):
 # x_k = Ā · x_{k-1} + B̄ · u_k        ← same Ā, B̄ for every token
@@ -453,15 +453,15 @@
 # x_k = Ā_k · x_{k-1} + B̄_k · u_k    ← dynamics change per token!
 </code></pre>
 
-<p>Let me connect this back to our thermostat. In S4, the system would process every temperature reading with the same dynamics — a reading of 68°F during normal operation would update the state the same way as a sudden spike to 95°F indicating a fire. In Mamba, the system <em>looks at the incoming reading</em> and adjusts its behavior on the fly. A boring, expected reading? Small Δ — barely update the state. An alarming anomaly? Large Δ — write this strongly into memory.</p>
+<p>Connecting back to thermostat. S4: every temperature reading processed with same dynamics — 68°F during normal operation updates state same way as sudden spike to 95°F indicating fire. Mamba: system <em>looks at incoming reading</em> and adjusts behavior on fly. Boring expected reading? Small Δ — barely update state. Alarming anomaly? Large Δ — write strongly into memory.</p>
 
-<p>The step size Δ is the crucial lever here. When Δ is large, the discretized matrix Ā_k shrinks toward zero (because exp(A · Δ) decays faster), which means the model <em>forgets</em> more of the old state and writes the new input more forcefully. When Δ is small, the model <em>preserves</em> the existing state and barely notices the new input.</p>
+<p>Step size Δ = crucial lever. Large Δ → discretized Ā_k shrinks toward zero (exp(A · Δ) decays faster) → model <em>forgets</em> more old state, writes new input forcefully. Small Δ → model <em>preserves</em> existing state, barely notices new input.</p>
 
-<p>I'll be honest — this confused me at first. I expected "selective" to mean something like attention scores, where the model explicitly compares pairs of tokens. It's not that. It's more subtle. The selection happens at the <em>write</em> step: the model decides, for each token, how strongly to imprint it onto the running state. Tokens the model deems important get written in with large Δ. Tokens it deems irrelevant pass through with almost no effect. It's content-based filtering — but with O(n) complexity instead of O(n²).</p>
+<p>Confusing at first. Expected "selective" to mean attention scores — model explicitly comparing token pairs. Not that. More subtle. Selection happens at <em>write</em> step: model decides, per token, how strongly to imprint onto running state. Important tokens written with large Δ. Irrelevant tokens pass through with almost no effect. Content-based filtering — O(n) complexity instead of O(n²).</p>
 
-<p>A Mamba block also includes a short convolution (kernel size 3 or 4) before the selective scan. This handles very local patterns — adjacent-token interactions — cheaply, without needing the SSM machinery. Think of it as a tiny preprocessing step: the convolution captures "the cat" as a local bigram, and the SSM captures "the cat mentioned three paragraphs ago."</p>
+<p>Mamba block also includes short convolution (kernel size 3–4) before selective scan. Handles very local patterns — adjacent-token interactions — cheaply. Tiny preprocessing step: convolution captures "the cat" as local bigram, SSM captures "the cat mentioned three paragraphs ago."</p>
 
-<p>The full Mamba block also has a gated architecture. The input is split into two paths: one goes through the convolution and selective SSM, the other is held as a gate. They're multiplied together at the end, similar to the gated linear units used in many modern architectures. This gives the model a way to modulate the SSM output with a direct signal from the input.</p>
+<p>Full Mamba block has gated architecture. Input split into two paths: one through convolution + selective SSM, other held as gate. Multiplied together at end, similar to gated linear units. Gives model way to modulate SSM output with direct signal from input.</p>
 
 <!-- ══════════════════════ HARDWARE ══════════════════════ -->
 

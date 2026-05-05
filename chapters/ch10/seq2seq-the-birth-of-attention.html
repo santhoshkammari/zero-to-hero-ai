@@ -423,53 +423,53 @@ def train_decoder_step(decoder, encoder_hidden, target_seq,
 
 <h2>Choosing Words at Inference: Beam Search and Friends</h2>
 
-<p>At inference time, the decoder produces a probability distribution over the entire vocabulary at each step. It needs a strategy for choosing which token to emit. This choice matters more than most people realize — the same trained model can produce wildly different outputs depending on how you decode.</p>
+<p>At inference, decoder produces probability distribution over entire vocabulary each step. Needs strategy for choosing which token to emit. Same trained model produces wildly different outputs depending on decoding strategy.</p>
 
-<p>The most obvious strategy is <strong>greedy decoding</strong>: at each step, pick the single highest-probability token and move on. It's fast, but it's short-sighted. A word that looks best right now might lead to a dead end two steps later. Imagine the model is 60% sure the next word is "cook" and 40% sure it's "prepare." Greedy picks "cook." But maybe "prepare the spiced mixture" is a much better translation, and the model never gets a chance to explore that path.</p>
+<p>Most obvious: <strong>greedy decoding</strong> — each step pick highest-probability token. Fast but short-sighted. Word that looks best now might lead to dead end two steps later. Model 60% sure next word is "cook," 40% sure it's "prepare." Greedy picks "cook." But "prepare the spiced mixture" might be much better translation — model never explores that path.</p>
 
-<p><strong>Beam search</strong> fixes this by keeping multiple candidates alive at once. The key parameter is the <strong>beam width</strong>, often called <em>k</em>. Let's trace through beam search with k=2 on our cooking example, starting from the &lt;SOS&gt; token.</p>
+<p><strong>Beam search</strong> keeps multiple candidates alive. Key parameter = <strong>beam width</strong> (<em>k</em>). Trace with k=2 on cooking example, starting from &lt;SOS&gt; token.</p>
 
-<p>Step 1: the model predicts probabilities for the first word. Suppose "chop" gets probability 0.6 and "cook" gets 0.3. We keep both — these are our two beams. Step 2: for <em>each</em> beam, we expand to all possible next words. "chop the" might score 0.6 × 0.8 = 0.48, "chop a" might score 0.6 × 0.1 = 0.06, "cook the" might score 0.3 × 0.7 = 0.21. We have four candidates (two per beam), but we only keep the top 2: "chop the" (0.48) and "cook the" (0.21). We continue expanding and pruning until both beams produce an end token. The beam with the highest cumulative score wins.</p>
+<p>Step 1: model predicts first word probabilities. "chop" = 0.6, "cook" = 0.3. Keep both — two beams. Step 2: expand each beam to all possible next words. "chop the" = 0.6 × 0.8 = 0.48, "chop a" = 0.6 × 0.1 = 0.06, "cook the" = 0.3 × 0.7 = 0.21. Four candidates total, keep top 2: "chop the" (0.48), "cook the" (0.21). Continue expanding + pruning until both beams produce end token. Highest cumulative score wins.</p>
 
-<p>Beam search dominates when there's a single "right" answer, as in translation. A beam width of 4 to 10 is typical. Wider beams find better translations but cost proportionally more compute, and they tend to produce repetitive, "safe" text — the kind of bland translation that is technically correct but lacks any spark.</p>
+<p>Beam search dominates when single "right" answer exists (translation). Beam width 4–10 typical. Wider beams = better translations but proportionally more compute, tend to produce repetitive "safe" text.</p>
 
-<p>For tasks where you want diversity — story generation, dialogue, creative writing — sampling methods win. <strong>Top-k sampling</strong> picks randomly from the k most likely tokens. <strong>Nucleus sampling</strong> (also called top-p) picks from the smallest set of tokens whose cumulative probability exceeds a threshold p, typically 0.9 to 0.95. This adapts the candidate set size dynamically — confident predictions get a narrow set, uncertain ones get a wider pool. <strong>Temperature</strong> is a knob that sharpens or flattens the distribution before sampling: low temperature (0.2–0.5) makes the model more confident, high temperature (1.0+) makes it more adventurous.</p>
+<p>For diversity (story generation, dialogue, creative writing) — sampling wins. <strong>Top-k sampling</strong>: pick randomly from k most likely tokens. <strong>Nucleus sampling</strong> (top-p): pick from smallest set whose cumulative probability exceeds threshold p (typically 0.9–0.95). Adapts candidate set dynamically — confident predictions → narrow set, uncertain → wider pool. <strong>Temperature</strong>: sharpens/flattens distribution before sampling. Low (0.2–0.5) = more confident. High (1.0+) = more adventurous.</p>
 
-<p>All of these decoding strategies work with any seq2seq model — with or without attention. They're about what happens <em>after</em> the model produces probabilities. But the quality of those probabilities is only as good as the architecture that produces them, and our vanilla seq2seq architecture has that sticky-note bottleneck.</p>
+<p>All decoding strategies work with any seq2seq model — with or without attention. They handle what happens <em>after</em> model produces probabilities. But probability quality depends on architecture, and vanilla seq2seq has that sticky-note bottleneck.</p>
 
 <!-- ════════════════════ BAHDANAU ATTENTION ════════════════════ -->
 
 <h2>Letting the Decoder Peek: Bahdanau Attention</h2>
 
-<p>In 2015, Dzmitry Bahdanau, Kyunghyun Cho, and Yoshua Bengio published "Neural Machine Translation by Jointly Learning to Align and Translate." The title is modest. The impact was seismic.</p>
+<p>2015: Dzmitry Bahdanau, Kyunghyun Cho, Yoshua Bengio published "Neural Machine Translation by Jointly Learning to Align and Translate." Modest title. Seismic impact.</p>
 
-<p>The idea: instead of forcing the decoder to work from one sticky note, let it look at the full stack of encoder notes — one for every input position — and decide which notes matter <em>right now</em>.</p>
+<p>Idea: instead of forcing decoder to work from one sticky note, let it look at full stack of encoder notes — one per input position — and decide which notes matter <em>right now</em>.</p>
 
-<p>Let's trace through it with our cooking example. The encoder reads "corta las cebollas" and produces a hidden state at each position: h₁ for "corta," h₂ for "las," h₃ for "cebollas." In the original paper the encoder is <strong>bidirectional</strong> — it reads the input left-to-right and right-to-left, then concatenates the two hidden states at each position — so each hᵢ captures context from both directions. We now have three vectors sitting there, waiting to be consulted.</p>
+<p>Trace with cooking example. Encoder reads "corta las cebollas," produces hidden state at each position: h₁ for "corta," h₂ for "las," h₃ for "cebollas." Original paper uses <strong>bidirectional</strong> encoder — reads left-to-right and right-to-left, concatenates two hidden states per position — so each hᵢ captures context from both directions. Three vectors sitting there, waiting to be consulted.</p>
 
-<p>The decoder is about to predict its first English word. Its current hidden state is s₀ (initialized from the encoder). The question is: which of the three encoder states should it pay attention to?</p>
+<p>Decoder about to predict first English word. Current hidden state = s₀ (initialized from encoder). Question: which of three encoder states should it attend to?</p>
 
-<p>The first time I saw the scoring formula, it looked like three random operations stitched together. But there's a logic to it. We want a single number — a score — that says "how relevant is encoder state hᵢ to what the decoder is trying to do right now?" Bahdanau's solution is to run both vectors through a small neural network:</p>
+<p>Scoring formula looks like three random operations stitched together. But logic is clear. Want single number (score) saying "how relevant is encoder state hᵢ to what decoder is doing right now?" Bahdanau's solution — run both vectors through small neural network:</p>
 
 <p><code>eₜᵢ = v<sup>T</sup> tanh(W₁ sₜ₋₁ + W₂ hᵢ)</code></p>
 
-<p>Let me unpack that. W₁ projects the decoder state into a shared space. W₂ projects the encoder state into the same space. We add them together — that's why this is called <strong>additive attention</strong>. The tanh squashes the sum into the range [-1, 1]. Then v (a learned vector) collapses the result into a single scalar score. Three operations, but each one has a clear job: project, combine, score.</p>
+<p>Unpacking: W₁ projects decoder state into shared space. W₂ projects encoder state into same space. Add together — hence <strong>additive attention</strong>. tanh squashes sum into [-1, 1]. v (learned vector) collapses result into single scalar score. Three operations, each with clear job: project, combine, score.</p>
 
-<p>We compute this score for every encoder position, giving us a list of scores: e₁, e₂, e₃ for our three-word input. Now we normalize them into a probability distribution using softmax:</p>
+<p>Compute score for every encoder position → list of scores: e₁, e₂, e₃ for three-word input. Normalize into probability distribution via softmax:</p>
 
 <p><code>αₜᵢ = exp(eₜᵢ) / (exp(eₜ₁) + exp(eₜ₂) + exp(eₜ₃))</code></p>
 
-<p>These α values are the <strong>attention weights</strong>. They sum to 1 and tell us: "When generating the current output token, pay this fraction of your attention to each input position."</p>
+<p>These α values = <strong>attention weights</strong>. Sum to 1. Tell us: "when generating current output token, pay this fraction of attention to each input position."</p>
 
-<p>Suppose when generating "chop," the weights come out as α₁=0.85 (strong focus on "corta"), α₂=0.05 ("las"), α₃=0.10 ("cebollas"). The model is telling us it's mostly looking at "corta" — the verb — to produce the English verb "chop." That makes intuitive sense.</p>
+<p>When generating "chop," weights might be α₁=0.85 ("corta"), α₂=0.05 ("las"), α₃=0.10 ("cebollas"). Model mostly looking at "corta" (verb) to produce English verb "chop." Makes intuitive sense.</p>
 
-<p>The final step: we compute a weighted sum of the encoder hidden states.</p>
+<p>Final step: weighted sum of encoder hidden states.</p>
 
 <p><code>cₜ = α₁ h₁ + α₂ h₂ + α₃ h₃</code></p>
 
-<p>This weighted sum cₜ is the <strong>context vector for this specific decoder step</strong>. And here's what makes it powerful: it's <em>different</em> at every step. When the decoder moves on to predict "the," it recomputes new scores, gets new weights (maybe more spread out, since "las" is an article that maps to "the"), and produces a new context vector. When it predicts "onions," it shifts attention to "cebollas." Each output token gets its own custom view of the input.</p>
+<p>This cₜ = <strong>context vector for this specific decoder step</strong>. Key insight: it's <em>different</em> at every step. When decoder predicts "the," recomputes new scores, gets new weights (maybe more spread — "las" maps to "the"), produces new context vector. When predicting "onions," attention shifts to "cebollas." Each output token gets own custom view of input.</p>
 
-<p>The sticky note is gone. The decoder has the full Spanish text on the table and glances at the relevant line for each word.</p>
+<p>Sticky note gone. Decoder has full Spanish text on table, glances at relevant line for each word.</p>
 
 <pre><code class="language-python">import torch
 import torch.nn as nn
@@ -502,9 +502,9 @@ class BahdanauAttention(nn.Module):
 
         return context, weights</code></pre>
 
-<p>One detail that tripped me up for a while: Bahdanau computes attention <em>before</em> the decoder RNN step. The decoder state used for scoring is sₜ₋₁ — the state from the <em>previous</em> step. The resulting context vector gets concatenated with the current input embedding and fed into the decoder RNN to produce sₜ. This ordering matters because it means attention influences the decoder's hidden state, not the other way around.</p>
+<p>Important detail: Bahdanau computes attention <em>before</em> decoder RNN step. Decoder state used for scoring = sₜ₋₁ (previous step). Resulting context vector concatenated with current input embedding, fed into decoder RNN to produce sₜ. This ordering means attention influences decoder's hidden state, not other way around.</p>
 
-<p>The limitation? That small neural network inside the scoring function. It has learnable parameters (W₁, W₂, v), which makes it flexible but also somewhat slow. For every decoder step, we compute a forward pass through this mini-network for every encoder position. With a 100-token input and a 50-token output, that's 5,000 forward passes through the scoring network in a single sentence. People tolerated this cost for a year, but everyone suspected there had to be a leaner way.</p>
+<p>Limitation: small neural network inside scoring function has learnable parameters (W₁, W₂, v) — flexible but slow. Every decoder step requires forward pass through mini-network for every encoder position. 100-token input + 50-token output = 5,000 forward passes per sentence. People tolerated this a year, but suspected leaner way existed.</p>
 
 <!-- ════════════════════ LUONG ATTENTION ════════════════════ -->
 
